@@ -3,8 +3,10 @@
 // Gemini-era executor and router, re-exported unchanged for the old backend
 // until the engine rewrite deletes it.
 export * from "./chat";
+export * from "./errors";
 export * from "./executor";
 export * from "./legacy/index";
+export { NOT_STARTED_TEXT } from "./loop";
 export * from "./models";
 export * from "./proxy";
 export { createSandboxTools } from "./sandbox-tools";
