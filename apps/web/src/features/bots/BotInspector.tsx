@@ -1,0 +1,344 @@
+import type { Bot } from "@jj/contracts";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { isApiError } from "../../api/client";
+import {
+  Button,
+  Dialog,
+  ErrorBanner,
+  Icon,
+  IconButton,
+  Input,
+  Panel,
+  SectionLabel,
+  Select,
+  StatusTag,
+  Textarea,
+} from "../../components/ui";
+import { formatMessageTime } from "../../lib/format";
+import { useWorkspace } from "../../state/WorkspaceContext";
+import { taskHref } from "../shell/router";
+import { navigate } from "../shell/useRoute";
+import { DEFAULT_OPTION, modelOptions, profileOptions } from "./botOptions";
+import { useModels } from "./useModels";
+
+/** What the About links ask the inspector to focus when it opens. */
+export type InspectorFocus = "memory" | "tasks";
+
+export interface BotInspectorProps {
+  id: string;
+  bot: Bot;
+  /** Move focus here once rendered, then call `onFocused`. */
+  focus: InspectorFocus | null;
+  onFocused: () => void;
+  onClose: () => void;
+}
+
+const errorText = (reason: unknown) =>
+  reason instanceof Error ? reason.message : "Something went wrong.";
+
+/**
+ * The bot's profile panel (not designed; SPEC §5.1 proposal: Progress panel
+ * chrome, 340 wide): details, memory, active tasks and archive.
+ */
+export function BotInspector({
+  id,
+  bot,
+  focus,
+  onFocused,
+  onClose,
+}: BotInspectorProps) {
+  const memoryId = useId();
+  const tasksId = useId();
+
+  useEffect(() => {
+    if (!focus) return;
+    document.getElementById(focus === "memory" ? memoryId : tasksId)?.focus();
+    onFocused();
+  }, [focus, memoryId, tasksId, onFocused]);
+
+  return (
+    <Panel id={id} label={`${bot.name}'s profile`} className="bot-inspector">
+      <div className="bot-inspector__head">
+        <SectionLabel as="h2">Profile</SectionLabel>
+        <IconButton
+          label="Close profile"
+          icon={<Icon name="close" size={16} />}
+          onClick={onClose}
+        />
+      </div>
+      <DetailsForm bot={bot} />
+      <MemoryForm bot={bot} fieldId={memoryId} />
+      <ActiveTasks bot={bot} focusId={tasksId} />
+      <ArchiveSection bot={bot} />
+    </Panel>
+  );
+}
+
+type SaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "saved"; at: string }
+  | { kind: "error"; message: string };
+
+function SaveStatus({ state }: { state: SaveState }) {
+  return (
+    <span className="inspector-status" role="status">
+      {state.kind === "saving" && "Saving…"}
+      {state.kind === "saved" && `Saved ${formatMessageTime(state.at)}`}
+    </span>
+  );
+}
+
+/** Role, instructions, model and runtime profile, saved together with `updateBot`. */
+function DetailsForm({ bot }: { bot: Bot }) {
+  const { updateBot, profiles } = useWorkspace();
+  const { models, error: modelsError } = useModels();
+  const [role, setRole] = useState(bot.role);
+  const [instructions, setInstructions] = useState(bot.instructions);
+  const [model, setModel] = useState(bot.model ?? DEFAULT_OPTION);
+  const [profile, setProfile] = useState(
+    bot.runtimeProfileId ?? DEFAULT_OPTION,
+  );
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+
+  const dirty =
+    role !== bot.role ||
+    instructions !== bot.instructions ||
+    model !== (bot.model ?? DEFAULT_OPTION) ||
+    profile !== (bot.runtimeProfileId ?? DEFAULT_OPTION);
+
+  // Follow changes made elsewhere while there is nothing unsaved here.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setRole(bot.role);
+    setInstructions(bot.instructions);
+    setModel(bot.model ?? DEFAULT_OPTION);
+    setProfile(bot.runtimeProfileId ?? DEFAULT_OPTION);
+  }, [bot.role, bot.instructions, bot.model, bot.runtimeProfileId]);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!dirty) return;
+    setState({ kind: "saving" });
+    try {
+      const saved = await updateBot(bot.id, {
+        role: role.trim(),
+        instructions: instructions.trim(),
+        model: model === DEFAULT_OPTION ? null : model,
+        runtimeProfileId: profile === DEFAULT_OPTION ? null : profile,
+      });
+      setRole(saved.role);
+      setInstructions(saved.instructions);
+      setState({ kind: "saved", at: saved.updatedAt });
+    } catch (reason) {
+      setState({ kind: "error", message: errorText(reason) });
+    }
+  };
+
+  return (
+    <form className="inspector-section" onSubmit={save}>
+      <Input
+        label="Role"
+        value={role}
+        maxLength={80}
+        placeholder="e.g. Research"
+        onChange={(event) => setRole(event.target.value)}
+      />
+      <Textarea
+        label="Instructions"
+        value={instructions}
+        rows={4}
+        placeholder={`How ${bot.name} should work.`}
+        onChange={(event) => setInstructions(event.target.value)}
+      />
+      <Select
+        label="Model"
+        value={model}
+        options={modelOptions(models, bot.model)}
+        onChange={setModel}
+        hint={modelsError ? `Models did not load: ${modelsError}` : undefined}
+      />
+      <Select
+        label="Runtime profile"
+        value={profile}
+        options={profileOptions(profiles, bot.runtimeProfileId)}
+        onChange={setProfile}
+      />
+      {state.kind === "error" && <ErrorBanner>{state.message}</ErrorBanner>}
+      <div className="inspector-actions">
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={!dirty || state.kind === "saving"}
+        >
+          Save details
+        </Button>
+        <SaveStatus state={state} />
+      </div>
+    </form>
+  );
+}
+
+/** The bot's durable memory (one free-text field), saved with `putMemory`. */
+function MemoryForm({ bot, fieldId }: { bot: Bot; fieldId: string }) {
+  const { memories, saveMemory } = useWorkspace();
+  const stored = memories[bot.id];
+  const [draft, setDraft] = useState<string | null>(stored?.text ?? null);
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+  const dirty = draft !== null && draft !== (stored?.text ?? "");
+
+  // Fill in once loaded, and follow saves made elsewhere while unedited.
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  useEffect(() => {
+    if (stored && !dirtyRef.current) setDraft(stored.text);
+  }, [stored]);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (draft === null || !dirty) return;
+    setState({ kind: "saving" });
+    try {
+      const saved = await saveMemory(bot.id, draft);
+      setDraft(saved.text);
+      setState({ kind: "saved", at: saved.updatedAt });
+    } catch (reason) {
+      setState({ kind: "error", message: errorText(reason) });
+    }
+  };
+
+  return (
+    <form className="inspector-section" onSubmit={save}>
+      <Textarea
+        id={fieldId}
+        label="Memory"
+        value={draft ?? ""}
+        rows={5}
+        disabled={draft === null}
+        placeholder={draft === null ? "Loading…" : "Nothing remembered yet."}
+        hint={`Facts ${bot.name} keeps across all its sessions.`}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      {state.kind === "error" && <ErrorBanner>{state.message}</ErrorBanner>}
+      <div className="inspector-actions">
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={!dirty || state.kind === "saving"}
+        >
+          Save memory
+        </Button>
+        <SaveStatus state={state} />
+      </div>
+    </form>
+  );
+}
+
+/** Tasks the bot is in that have not finished, linking to `#/tasks/:id`. */
+function ActiveTasks({ bot, focusId }: { bot: Bot; focusId: string }) {
+  const { getTask } = useWorkspace();
+  const labelId = useId();
+  const active = bot.activeTaskIds.flatMap((taskId) => {
+    const task = getTask(taskId);
+    return task ? [task] : [];
+  });
+  return (
+    <section
+      id={focusId}
+      tabIndex={-1}
+      className="inspector-section"
+      aria-labelledby={labelId}
+    >
+      <SectionLabel
+        as="h3"
+        id={labelId}
+        tracking="part"
+        className="inspector-heading"
+      >
+        Active tasks
+      </SectionLabel>
+      {active.length ? (
+        <ul className="inspector-tasks">
+          {active.map((task) => (
+            <li key={task.id}>
+              <a className="inspector-task" href={taskHref(task.id)}>
+                <span className="inspector-task__title clamp1">
+                  {task.title}
+                </span>
+                <StatusTag status={task} />
+              </a>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="inspector-note">Not in any active tasks.</p>
+      )}
+    </section>
+  );
+}
+
+/** Archive, behind a confirmation. The server refuses while tasks are active. */
+function ArchiveSection({ bot }: { bot: Bot }) {
+  const { bots, archiveBot } = useWorkspace();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const blocked = bot.activeTaskIds.length > 0;
+
+  const archive = async () => {
+    setBusy(true);
+    setError(null);
+    const next = bots.find((other) => other.id !== bot.id);
+    try {
+      await archiveBot(bot.id);
+      navigate({ name: "bots", botId: next?.id ?? null }, { replace: true });
+    } catch (reason) {
+      setError(isApiError(reason) ? reason.message : errorText(reason));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="inspector-section">
+      <SectionLabel as="h3" tracking="part" className="inspector-heading">
+        Archive
+      </SectionLabel>
+      <p className="inspector-note">
+        {blocked
+          ? `${bot.name} is in active tasks. Stop or finish them before archiving.`
+          : `${bot.name} leaves the bot list and can no longer be messaged.`}
+      </p>
+      <div className="inspector-actions">
+        <Button
+          variant="danger"
+          disabled={blocked}
+          onClick={() => setConfirming(true)}
+        >
+          Archive bot
+        </Button>
+      </div>
+      <Dialog
+        open={confirming}
+        onClose={() => {
+          if (!busy) setConfirming(false);
+        }}
+        title={`Archive ${bot.name}?`}
+        description={`${bot.name} leaves the bot list and can no longer be messaged.`}
+        footer={
+          <>
+            <Button onClick={() => setConfirming(false)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={archive} disabled={busy}>
+              {busy ? "Archiving…" : "Archive"}
+            </Button>
+          </>
+        }
+      >
+        {error && <ErrorBanner>{error}</ErrorBanner>}
+      </Dialog>
+    </section>
+  );
+}

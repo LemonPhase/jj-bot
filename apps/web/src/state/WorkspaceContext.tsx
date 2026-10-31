@@ -5,6 +5,7 @@ import {
   type CreateBotCommand,
   emptyUsage,
   type RuntimeProfile,
+  type Task,
   type TaskSummary,
   type TaskView,
   type UpdateBotCommand,
@@ -21,9 +22,8 @@ import {
 } from "react";
 import { useApi } from "../api/ApiContext";
 import type { StreamState } from "../api/client";
+import { navigate, useRoute } from "../features/shell/useRoute";
 import { summaryFromView } from "../lib/tasks";
-
-export type MainTab = "bots" | "tasks";
 
 /** A task-chat message that has been submitted but not yet acknowledged. */
 export interface PendingTaskSend {
@@ -55,10 +55,10 @@ interface WorkspaceValue {
   getBot: (botId: string) => Bot | undefined;
   getTask: (taskId: string) => TaskSummary | undefined;
 
-  activeTab: MainTab;
-  setActiveTab: (tab: MainTab) => void;
+  /** The bot in the URL (`#/bots/:id`); null on other screens. */
   selectedBotId: string | null;
   selectBot: (botId: string) => void;
+  /** The task in the URL (`#/tasks/:id`), whose event stream is followed. */
   selectedTaskId: string | null;
   selectTask: (taskId: string) => void;
   selectedNodeId: string | null;
@@ -66,12 +66,21 @@ interface WorkspaceValue {
   jumpToTask: (taskId: string) => void;
   jumpToBot: (botId: string) => void;
 
-  createBot: (command: CreateBotCommand) => Promise<void>;
-  updateBot: (botId: string, command: UpdateBotCommand) => Promise<void>;
+  // Form actions resolve with the stored record and reject with the ApiError,
+  // so the form that called them can show the server's message in place.
+  /** Creates the bot and opens it. */
+  createBot: (command: CreateBotCommand) => Promise<Bot>;
+  updateBot: (botId: string, command: UpdateBotCommand) => Promise<Bot>;
+  /** Rejects with `CONFLICT` while the bot has active tasks. */
+  archiveBot: (botId: string) => Promise<void>;
+  saveMemory: (botId: string, text: string) => Promise<BotMemory>;
+  /** Creates the task and opens it. */
+  createTask: (input: NewTaskInput) => Promise<Task>;
+
+  // Fire-and-forget actions report failures in `error`.
   loadMemory: (botId: string) => Promise<void>;
-  saveMemory: (botId: string, text: string) => Promise<void>;
-  sendBotMessage: (botId: string, text: string) => Promise<void>;
-  createTask: (input: NewTaskInput) => Promise<void>;
+  /** Resolves false when the message was not accepted (the error is in `error`). */
+  sendBotMessage: (botId: string, text: string) => Promise<boolean>;
   postTaskMessage: (
     taskId: string,
     text: string,
@@ -122,9 +131,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [pendingTaskSends, setPendingTaskSends] = useState<
     Record<string, PendingTaskSend>
   >({});
-  const [activeTab, setActiveTab] = useState<MainTab>("bots");
-  const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const route = useRoute();
+  const selectedBotId = route.name === "bots" ? route.botId : null;
+  const selectedTaskId = route.name === "tasks" ? route.taskId : null;
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   const tasksRef = useRef(tasks);
@@ -170,8 +179,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setBots(boot.bots);
         setTasks(boot.tasks);
         setProfiles(boot.profiles);
-        setSelectedBotId((id) => id ?? boot.bots[0]?.id ?? null);
-        setSelectedTaskId((id) => id ?? boot.tasks[0]?.id ?? null);
       } catch (reason) {
         if (!cancelled) report(reason);
       } finally {
@@ -227,8 +234,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
   }, [api, botIds]);
 
-  // The open task: its snapshot, then its event stream.
+  // The open task: its snapshot, then its event stream. A new task starts
+  // with no graph node picked.
   useEffect(() => {
+    setSelectedNodeId(null);
     if (!selectedTaskId) return;
     setTaskStreamState(null);
     const unsubscribe = api.subscribeTask(
@@ -245,14 +254,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
   }, [api, selectedTaskId]);
 
-  // Pick something to show once data arrives (e.g. the first task created via chat).
-  useEffect(() => {
-    if (!selectedBotId && bots[0]) setSelectedBotId(bots[0].id);
-  }, [bots, selectedBotId]);
-  useEffect(() => {
-    if (!selectedTaskId && tasks[0]) setSelectedTaskId(tasks[0].id);
-  }, [tasks, selectedTaskId]);
-
   const run = useCallback(
     async (action: () => Promise<void>) => {
       try {
@@ -265,10 +266,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [report],
   );
 
-  const selectTask = useCallback((taskId: string) => {
-    setSelectedTaskId(taskId);
-    setSelectedNodeId(null);
-  }, []);
+  const selectTask = useCallback(
+    (taskId: string) => navigate({ name: "tasks", taskId }),
+    [],
+  );
+  const selectBot = useCallback(
+    (botId: string) => navigate({ name: "bots", botId }),
+    [],
+  );
 
   const value = useMemo<WorkspaceValue>(
     () => ({
@@ -284,79 +289,78 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       memories,
       getBot: (botId) => bots.find((b) => b.id === botId),
       getTask: (taskId) => tasks.find((t) => t.id === taskId),
-      activeTab,
-      setActiveTab,
       selectedBotId,
-      selectBot: setSelectedBotId,
+      selectBot,
       selectedTaskId,
       selectTask,
       selectedNodeId,
       selectNode: setSelectedNodeId,
-      jumpToTask: (taskId) => {
-        selectTask(taskId);
-        setActiveTab("tasks");
+      jumpToTask: selectTask,
+      jumpToBot: selectBot,
+      createBot: async (command) => {
+        const bot = await api.createBot(command);
+        setBots((current) => [...current.filter((b) => b.id !== bot.id), bot]);
+        selectBot(bot.id);
+        return bot;
       },
-      jumpToBot: (botId) => {
-        setSelectedBotId(botId);
-        setActiveTab("bots");
+      updateBot: async (botId, command) => {
+        const bot = await api.updateBot(botId, command);
+        setBots((current) => current.map((b) => (b.id === botId ? bot : b)));
+        return bot;
       },
-      createBot: (command) =>
-        run(async () => {
-          const bot = await api.createBot(command);
-          setBots((current) => [
-            ...current.filter((b) => b.id !== bot.id),
-            bot,
-          ]);
-          setSelectedBotId(bot.id);
-          setActiveTab("bots");
-        }),
-      updateBot: (botId, command) =>
-        run(async () => {
-          const bot = await api.updateBot(botId, command);
-          setBots((current) => current.map((b) => (b.id === botId ? bot : b)));
-        }),
+      archiveBot: async (botId) => {
+        await api.archiveBot(botId);
+        setBots((current) => current.filter((b) => b.id !== botId));
+        setMemories((current) => without(current, botId));
+      },
       loadMemory: (botId) =>
         run(async () => {
           const memory = await api.getMemory(botId);
           setMemories((current) => ({ ...current, [botId]: memory }));
         }),
-      saveMemory: (botId, text) =>
-        run(async () => {
-          const memory = await api.putMemory(botId, { text });
-          setMemories((current) => ({ ...current, [botId]: memory }));
-        }),
-      sendBotMessage: (botId, text) =>
-        run(async () => {
-          setPendingBotTurns((current) => ({ ...current, [botId]: text }));
-          try {
-            await api.sendBotMessage(botId, { text });
-            const view = await api.getConversation(botId);
-            setConversations((current) => ({ ...current, [botId]: view }));
-          } finally {
-            setPendingBotTurns((current) => without(current, botId));
-          }
-        }),
-      createTask: ({ goal, participantBotIds }) =>
-        run(async () => {
-          const [coordinatorBotId] = participantBotIds;
-          if (!coordinatorBotId)
-            throw new Error("A task needs at least one bot.");
-          const task = await api.createTask({
-            goal,
-            coordinatorBotId,
-            participantBotIds,
-          });
-          setTasks((current) =>
-            upsert(current, {
-              ...task,
-              activeSessionCount: 0,
-              sessionCount: 0,
-              usage: emptyUsage(),
-            }),
-          );
-          selectTask(task.id);
-          setActiveTab("tasks");
-        }),
+      saveMemory: async (botId, text) => {
+        const memory = await api.putMemory(botId, { text });
+        setMemories((current) => ({ ...current, [botId]: memory }));
+        return memory;
+      },
+      sendBotMessage: async (botId, text) => {
+        setError(null);
+        setPendingBotTurns((current) => ({ ...current, [botId]: text }));
+        try {
+          await api.sendBotMessage(botId, { text });
+        } catch (reason) {
+          report(reason);
+          return false;
+        } finally {
+          setPendingBotTurns((current) => without(current, botId));
+        }
+        // The message is stored; a failed refetch only delays showing it.
+        try {
+          const view = await api.getConversation(botId);
+          setConversations((current) => ({ ...current, [botId]: view }));
+        } catch {}
+        return true;
+      },
+      createTask: async ({ goal, participantBotIds }) => {
+        const [coordinatorBotId] = participantBotIds;
+        if (!coordinatorBotId)
+          throw new Error("A task needs at least one bot.");
+        const task = await api.createTask({
+          goal,
+          coordinatorBotId,
+          participantBotIds,
+        });
+        setTasks((current) =>
+          upsert(current, {
+            ...task,
+            activeSessionCount: 0,
+            sessionCount: 0,
+            usage: emptyUsage(),
+          }),
+        );
+        selectTask(task.id);
+        return task;
+      },
       postTaskMessage: (taskId, text, changesGoal) =>
         run(async () => {
           setPendingTaskSends((current) => ({
@@ -404,13 +408,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       taskViews,
       taskStreamState,
       memories,
-      activeTab,
       selectedBotId,
       selectedTaskId,
       selectedNodeId,
       pendingBotTurns,
       pendingTaskSends,
       selectTask,
+      selectBot,
+      report,
       run,
     ],
   );

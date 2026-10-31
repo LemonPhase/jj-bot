@@ -138,7 +138,11 @@ export function Dialog({
         event.preventDefault();
         onCloseRef.current();
       }}
-      onClose={() => {
+      onClose={(event) => {
+        // `close` fires asynchronously. A dialog that is open again by then was
+        // reopened after our own effect cleanup closed it (StrictMode mounts a
+        // dialog that starts open twice), so that event is stale.
+        if (event.currentTarget.open) return;
         // The browser closed it anyway (some Escape paths cannot be cancelled).
         if (openRef.current) onCloseRef.current();
       }}

@@ -29,6 +29,7 @@ export {
   type PanelProps,
 } from "./Card";
 export { Chip, type ChipProps } from "./Chip";
+export { Composer, type ComposerProps } from "./Composer";
 export { cx } from "./cx";
 export { Dialog, type DialogProps } from "./Dialog";
 export {

@@ -187,15 +187,3 @@ export function appearanceSummary(appearance: BotAppearance): string {
     GAIT_LABELS[appearance.gait],
   ].join(" · ");
 }
-
-/** The pre-sprite avatar glyph drawn for each appearance face. Legacy: PixelSprite replaces it. */
-export type BotGlyph = "visor" | "radar" | "pixel" | "prism";
-
-const FACE_GLYPHS: Readonly<Record<BotFace, BotGlyph>> = {
-  visor: "visor",
-  dots: "radar",
-  screen: "pixel",
-  mono: "prism",
-};
-
-export const faceGlyph = (face: BotFace): BotGlyph => FACE_GLYPHS[face];

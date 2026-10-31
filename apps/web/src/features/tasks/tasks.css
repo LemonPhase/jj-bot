@@ -1,0 +1,29 @@
+/* New task dialog. */
+.new-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.new-task-form__bots {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.new-task-form__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.new-task-form__coordinator {
+  color: var(--ink-muted);
+}
+
+.new-task-form__note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
