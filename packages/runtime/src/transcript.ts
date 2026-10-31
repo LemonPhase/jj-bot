@@ -22,10 +22,15 @@ function interruptedResult(
 }
 
 /**
- * Gives every tool call without a result (a crash mid-tool) a result saying
- * it was interrupted with an unknown outcome, placed after the results that do
- * exist for that assistant message. Nothing is re-run. Returns a new array;
- * an intact transcript comes back equal to the input.
+ * Makes a stored transcript a valid conversation again:
+ *
+ * - every tool call without a result (a crash mid-tool) gets one saying it
+ *   was interrupted with an unknown outcome; nothing is re-run;
+ * - each assistant message's results are put back in call order, since the
+ *   executor stores each result as soon as its tool finishes.
+ *
+ * Results that answer no call of the message are kept after the others.
+ * Returns a new array; an intact transcript comes back equal to the input.
  */
 export function repairTranscript(messages: readonly PiMessage[]): PiMessage[] {
   const repaired: PiMessage[] = [];
@@ -37,35 +42,54 @@ export function repairTranscript(messages: readonly PiMessage[]): PiMessage[] {
       (block): block is ToolCall => block.type === "toolCall",
     );
     if (calls.length === 0) continue;
-    const answered = new Set<string>();
+    const results: ToolResultMessage[] = [];
     let next = index + 1;
     for (; next < messages.length; next++) {
       const candidate = messages[next] as PiMessage;
       if (candidate.role !== "toolResult") break;
-      answered.add(candidate.toolCallId);
-      repaired.push(candidate);
+      results.push(candidate);
     }
+    const byId = new Map(results.map((result) => [result.toolCallId, result]));
     for (const call of calls)
-      if (!answered.has(call.id))
-        repaired.push(interruptedResult(call, message.timestamp));
+      repaired.push(
+        byId.get(call.id) ?? interruptedResult(call, message.timestamp),
+      );
+    const callIds = new Set(calls.map((call) => call.id));
+    repaired.push(
+      ...results.filter((result) => !callIds.has(result.toolCallId)),
+    );
     index = next - 1;
   }
   return repaired;
 }
 
 /**
- * Entries `repairTranscript` appended at the end of the transcript, which an
- * append-only store can persist. Empty when nothing was repaired.
+ * The results `repairTranscript` made up, when an append-only store can
+ * persist them: they answer the last assistant message and nothing but its
+ * results follows it. Reloading then repairs the order again. Empty otherwise.
  */
 export function appendedRepairs(
   original: readonly PiMessage[],
   repaired: readonly PiMessage[],
 ): PiMessage[] {
-  if (repaired.length === original.length) return [];
-  const prefixIntact = original.every(
-    (message, index) => repaired[index] === message,
+  const kept = new Set(original);
+  const added = repaired.filter((message) => !kept.has(message));
+  if (added.length === 0) return [];
+  let last = original.length - 1;
+  while (last >= 0 && original[last]?.role === "toolResult") last--;
+  const owner = original[last];
+  if (owner?.role !== "assistant") return [];
+  const ownerCalls = new Set(
+    owner.content.flatMap((block) =>
+      block.type === "toolCall" ? [block.id] : [],
+    ),
   );
-  return prefixIntact ? repaired.slice(original.length) : [];
+  return added.every(
+    (message) =>
+      message.role === "toolResult" && ownerCalls.has(message.toolCallId),
+  )
+    ? added
+    : [];
 }
 
 /**

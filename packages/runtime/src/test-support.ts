@@ -48,6 +48,7 @@ export async function localSandbox(
 /** Wraps a sandbox and records every call that reaches it. */
 export function recordingSandbox(sandbox: Sandbox) {
   const calls: string[] = [];
+  const execs: { command: string; timeoutMs: number | undefined }[] = [];
   const fs = sandbox.fs;
   const spied: Sandbox = {
     id: sandbox.id,
@@ -55,6 +56,7 @@ export function recordingSandbox(sandbox: Sandbox) {
     workspaceDir: sandbox.workspaceDir,
     exec: (command, options) => {
       calls.push(`exec ${command}`);
+      execs.push({ command, timeoutMs: options?.timeoutMs });
       return sandbox.exec(command, options);
     },
     fs: {
@@ -83,7 +85,7 @@ export function recordingSandbox(sandbox: Sandbox) {
     },
     release: (options) => sandbox.release(options),
   };
-  return { sandbox: spied, calls };
+  return { sandbox: spied, calls, execs };
 }
 
 /** Hooks that record everything and serve inbox batches in order. */

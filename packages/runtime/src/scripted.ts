@@ -238,6 +238,28 @@ const userTexts = (messages: Message[]) =>
     .filter((message) => message.role === "user")
     .map((message) => textOf(message.content));
 
+/**
+ * The engine delivers a delegate's outcome to its parent as text whose first
+ * line is exactly `Result from <bot> (session <id>):` or
+ * `Failure from <bot> (session <id>):`.
+ */
+export function parseResultHeader(
+  text: string,
+): { ok: boolean; bot: string; sessionId: string; body: string } | undefined {
+  const newline = text.indexOf("\n");
+  const first = newline < 0 ? text : text.slice(0, newline);
+  const match = /^(Result|Failure) from (.+) \(session ([^()\s]+)\):$/.exec(
+    first,
+  );
+  if (!match?.[2] || !match[3]) return undefined;
+  return {
+    ok: match[1] === "Result",
+    bot: match[2],
+    sessionId: match[3],
+    body: newline < 0 ? "" : text.slice(newline + 1).trim(),
+  };
+}
+
 const mentions = (text: string, name: string) =>
   new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
     text,
@@ -316,13 +338,15 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
       ),
   );
   const since = userTexts(messages.slice(firstDelegation + 1));
-  const reports = new Map<string, string>();
-  for (const text of since)
-    for (const name of delegated)
-      if (!reports.has(name) && mentions(text, name)) reports.set(name, text);
-  const steering = since.filter(
-    (text) => !delegated.some((name) => mentions(text, name)),
-  );
+  // Only the engine's header attributes a result; a mention of a name never does.
+  const reports = new Map<string, { ok: boolean; body: string }>();
+  const steering: string[] = [];
+  for (const text of since) {
+    const header = parseResultHeader(text);
+    if (header && delegated.includes(header.bot) && !reports.has(header.bot))
+      reports.set(header.bot, { ok: header.ok, body: header.body });
+    else if (!header) steering.push(text);
+  }
   const pending = delegated.filter((name) => !reports.has(name));
   if (pending.length > 0)
     return {
@@ -330,9 +354,10 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
     };
   const summary = [
     `Consolidated result for "${clip(goal, 300)}":`,
-    ...delegated.map(
-      (name) => `- ${name}: ${clip(reports.get(name) ?? "", 300)}`,
-    ),
+    ...delegated.map((name) => {
+      const report = reports.get(name);
+      return `- ${name}${report?.ok ? "" : " (failed)"}: ${clip(report?.body ?? "", 300)}`;
+    }),
     ...steering.map((text) => `- Steering applied: ${clip(text, 300)}`),
   ].join("\n");
   return {

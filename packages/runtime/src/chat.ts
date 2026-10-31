@@ -1,8 +1,13 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, RetryPolicy } from "@earendil-works/pi-ai";
 import { addUsage, emptyUsage, type ModelRef, type Usage } from "@jj/contracts";
+import { type RetryOptions, type RunErrorCode, retryPolicy } from "./errors";
 import { resolveOutputCap } from "./executor";
-import { collabAgentTool, runLoop, userMessage } from "./loop";
-import type { ModelRegistry, ResolvedModel } from "./models";
+import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
+import {
+  type ModelRegistry,
+  ModelResolutionError,
+  type ResolvedModel,
+} from "./models";
 import type { CollabTool, PiMessage } from "./types";
 
 /** Most model calls one chat reply may take. */
@@ -33,10 +38,15 @@ export interface ChatReply {
   usage: Usage;
 }
 
+/**
+ * Why a reply failed: cancelled, out of budget, or a model or request error
+ * classified like a run's (`auth`, `rate_limit`, `context_overflow`,
+ * `network`, `provider`, `invalid_request`, `unknown`). Messages are redacted.
+ */
 export class ChatReplyError extends Error {
   constructor(
     message: string,
-    readonly code: "aborted" | "budget" | "model" | "invalid",
+    readonly code: "aborted" | "budget" | RunErrorCode,
   ) {
     super(message);
     this.name = "ChatReplyError";
@@ -46,6 +56,8 @@ export class ChatReplyError extends Error {
 export interface ChatResponderOptions {
   models: ModelRegistry;
   outputCapBytes?: number;
+  /** Retries of transient provider failures (default: 3, from 1 s, at most 30 s apart). */
+  retry?: RetryOptions;
 }
 
 /**
@@ -55,10 +67,12 @@ export interface ChatResponderOptions {
 export class ChatResponder {
   private readonly models: ModelRegistry;
   private readonly capBytes: number;
+  private readonly retry: RetryPolicy;
 
   constructor(options: ChatResponderOptions) {
     this.models = options.models;
     this.capBytes = resolveOutputCap(options.outputCapBytes);
+    this.retry = retryPolicy(options.retry);
   }
 
   async reply(input: ChatReplyInput): Promise<ChatReply> {
@@ -66,15 +80,21 @@ export class ChatResponder {
     if (!last || last.role !== "user" || last.text.trim() === "")
       throw new ChatReplyError(
         "The conversation does not end with a user message.",
-        "invalid",
+        "invalid_request",
       );
+    const requestedTurns = input.budgets?.maxTurns ?? CHAT_DEFAULT_TURNS;
+    const problem = budgetProblem(requestedTurns, input.budgets?.deadline);
+    if (problem) throw new ChatReplyError(problem, "invalid_request");
     let resolved: ResolvedModel;
     try {
       resolved = this.models.resolve(input.model);
     } catch (error) {
+      if (!(error instanceof ModelResolutionError)) throw error;
       throw new ChatReplyError(
-        error instanceof Error ? error.message : String(error),
-        "model",
+        error.message,
+        error.code === "unconfigured" || error.code === "no_model"
+          ? "auth"
+          : "invalid_request",
       );
     }
     const transcript = input.history.map((entry) =>
@@ -103,10 +123,7 @@ export class ChatResponder {
         () => {},
       ),
     );
-    const maxTurns = Math.min(
-      CHAT_MAX_TURNS,
-      Math.max(1, Math.floor(input.budgets?.maxTurns ?? CHAT_DEFAULT_TURNS)),
-    );
+    const maxTurns = Math.min(CHAT_MAX_TURNS, Math.floor(requestedTurns));
     const outcome = await runLoop({
       resolved,
       streamFn: this.models.streamFn,
@@ -120,6 +137,7 @@ export class ChatResponder {
         input.budgets?.deadline ??
         new Date(Date.now() + CHAT_DEFAULT_TIMEOUT_MS),
       signal: input.signal,
+      retry: this.retry,
       endRequested: () => false,
       getSteering: async () => [],
       persist: async () => {},
@@ -132,8 +150,13 @@ export class ChatResponder {
       case "aborted":
         throw new ChatReplyError("The reply was cancelled.", "aborted");
       case "error":
-        throw new ChatReplyError(outcome.error, "model");
+        throw new ChatReplyError(outcome.error, outcome.code);
+      case "idle":
+        throw new ChatReplyError("Nothing to reply to.", "invalid_request");
       case "budget":
+        // A tool that succeeded (create_task) is the reply: a retry must not repeat it.
+        if (!outcome.finalText && toolText)
+          return { text: toolText, model: resolved.ref, usage };
         if (!outcome.finalText)
           throw new ChatReplyError(
             `The reply did not finish within ${maxTurns} model calls.`,
@@ -145,7 +168,7 @@ export class ChatResponder {
         if (!text)
           throw new ChatReplyError(
             "The model returned an empty reply.",
-            "model",
+            "provider",
           );
         return { text, model: resolved.ref, usage };
       }

@@ -1,4 +1,8 @@
-import { fauxProvider, Type } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  Type,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { ChatReplyError, ChatResponder } from "./chat";
 import { ModelRegistry } from "./models";
@@ -178,5 +182,75 @@ describe("ChatResponder", () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toBeInstanceOf(ChatReplyError);
+  });
+
+  it("answers with a created task's text when the budget ends the reply first", async () => {
+    const faux = fauxProvider();
+    const responder = new ChatResponder({
+      models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+    });
+    const { tools, created } = chatTools();
+    faux.setResponses([
+      callTool("create_task", { goal: "Build it", participants: [] }),
+      say("never reached"),
+    ]);
+    const answer = await responder.reply({
+      systemPrompt: "x",
+      history: [{ role: "user", text: "Build it" }],
+      model: "faux/faux-1",
+      tools,
+      budgets: { maxTurns: 1 },
+      signal: new AbortController().signal,
+    });
+    // A retry of this reply must not create a second task: it succeeded.
+    expect(answer.text).toBe("Created task task_1.");
+    expect(created).toHaveLength(1);
+  });
+
+  it("refuses invalid budgets", async () => {
+    const responder = new ChatResponder({
+      models: new ModelRegistry({ env: {}, enableScripted: true }),
+    });
+    for (const budgets of [
+      { maxTurns: Number.NaN },
+      { maxTurns: 0 },
+      { maxTurns: 2, deadline: new Date(Number.NaN) },
+    ])
+      await expect(
+        responder.reply({
+          systemPrompt: "x",
+          history: [{ role: "user", text: "hi" }],
+          model: SCRIPTED_MODEL_REF,
+          tools: [],
+          budgets,
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_request" });
+  });
+
+  it("classifies and redacts a provider failure", async () => {
+    const faux = fauxProvider();
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "401 invalid x-api-key sk-ant-api03-SECRETSECRETSECRET",
+      }),
+    ]);
+    const responder = new ChatResponder({
+      models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+      retry: { maxRetries: 0 },
+    });
+    const failure = await responder
+      .reply({
+        systemPrompt: "x",
+        history: [{ role: "user", text: "hi" }],
+        model: "faux/faux-1",
+        tools: [],
+        signal: new AbortController().signal,
+      })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ChatReplyError);
+    expect(failure).toMatchObject({ code: "auth" });
+    expect((failure as Error).message).not.toContain("SECRETSECRET");
   });
 });

@@ -1,11 +1,14 @@
+import type { RetryPolicy } from "@earendil-works/pi-ai";
 import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
-import { assistantText, collabAgentTool, runLoop, userMessage } from "./loop";
+import { type RetryOptions, redactSecrets, retryPolicy } from "./errors";
+import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
 import {
   type ModelRegistry,
   ModelResolutionError,
   type ResolvedModel,
 } from "./models";
-import { createSandboxTools, type OutputPolicy } from "./tools";
+import { createSandboxTools } from "./sandbox-tools";
+import type { OutputPolicy } from "./tools";
 import { appendedRepairs, repairTranscript } from "./transcript";
 import type { RunExecutor, RunInput, RunOutcome } from "./types";
 
@@ -16,6 +19,8 @@ export interface PiSessionExecutorOptions {
    * Clamped to `TOOL_OUTPUT_PREVIEW_LIMIT`; larger output is spilled.
    */
   outputCapBytes?: number;
+  /** Retries of transient provider failures (default: 3, from 1 s, at most 30 s apart). */
+  retry?: RetryOptions;
 }
 
 /** Clamps a configured output cap to the contract's preview limit. */
@@ -37,23 +42,67 @@ export function resolveOutputCap(requested?: number): number {
 export class PiSessionExecutor implements RunExecutor {
   private readonly models: ModelRegistry;
   private readonly capBytes: number;
+  private readonly retry: RetryPolicy;
 
   constructor(options: PiSessionExecutorOptions) {
     this.models = options.models;
     this.capBytes = resolveOutputCap(options.outputCapBytes);
+    this.retry = retryPolicy(options.retry);
   }
 
   async run(input: RunInput): Promise<RunOutcome> {
-    if (input.signal.aborted) return { kind: "aborted" };
+    const { hooks } = input;
+    const transcript = repairTranscript(input.transcript);
+    const repairs = appendedRepairs(input.transcript, transcript);
+    let inputs = input.inputs
+      .filter((text) => text.trim().length > 0)
+      .map((text) => userMessage(text));
+    // Whatever the engine handed over is persisted even when the run stops early.
+    const exitEarly = async (outcome: RunOutcome): Promise<RunOutcome> => {
+      const entries = [...repairs, ...inputs];
+      try {
+        if (entries.length > 0) await hooks.onTurnComplete(entries);
+      } catch (error) {
+        return {
+          kind: "error",
+          code: "unknown",
+          error: redactSecrets(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+      }
+      return outcome;
+    };
+
     let resolved: ResolvedModel;
     try {
       resolved = this.models.resolve(input.model);
     } catch (error) {
-      if (error instanceof ModelResolutionError)
-        return { kind: "error", error: error.message };
-      throw error;
+      if (!(error instanceof ModelResolutionError)) throw error;
+      return exitEarly({
+        kind: "error",
+        code:
+          error.code === "unconfigured" || error.code === "no_model"
+            ? "auth"
+            : "invalid_request",
+        error: error.message,
+      });
     }
-    const { hooks } = input;
+    const problem = budgetProblem(
+      input.budgets.maxTurns,
+      input.budgets.deadline,
+    );
+    if (problem)
+      return exitEarly({
+        kind: "error",
+        code: "invalid_request",
+        error: problem,
+      });
+    // Checked before draining, so an inbox item is never taken by a run that cannot use it.
+    if (input.signal.aborted) return exitEarly({ kind: "aborted" });
+    if (input.budgets.deadline.getTime() <= Date.now())
+      return exitEarly({ kind: "budget", finalText: "" });
+
     const policy: OutputPolicy = {
       capBytes: this.capBytes,
       spill: (text, label) => hooks.spillOutput(text, label),
@@ -73,31 +122,32 @@ export class PiSessionExecutor implements RunExecutor {
         }),
       ),
     ];
-    const transcript = repairTranscript(input.transcript);
-    const repairs = appendedRepairs(input.transcript, transcript);
     const drain = async () =>
       (await hooks.drainInbox())
         .filter((text) => text.trim().length > 0)
         .map((text) => userMessage(text));
 
-    let inputs = input.inputs
-      .filter((text) => text.trim().length > 0)
-      .map((text) => userMessage(text));
     const tail = transcript.at(-1);
     if (inputs.length === 0 && (!tail || tail.role === "assistant")) {
-      // Nothing to answer yet: take what is in the inbox, else there is no work.
-      inputs = await drain();
+      // A wake with nothing new: take what is in the inbox, else there is nothing to do.
+      try {
+        inputs = await drain();
+      } catch (error) {
+        return exitEarly({
+          kind: "error",
+          code: "unknown",
+          error: redactSecrets(
+            error instanceof Error ? error.message : String(error),
+          ),
+        });
+      }
       if (inputs.length === 0) {
         if (repairs.length > 0) await hooks.onTurnComplete(repairs);
-        return tail?.role === "assistant"
-          ? { kind: "ended", finalText: assistantText(tail) }
-          : {
-              kind: "error",
-              error: "Nothing to run: no transcript and no inputs.",
-            };
+        return { kind: "idle" };
       }
     }
 
+    // From here runLoop persists repairs and inputs on every path, early exits included.
     const outcome = await runLoop({
       resolved,
       streamFn: this.models.streamFn,
@@ -108,9 +158,10 @@ export class PiSessionExecutor implements RunExecutor {
       transcript,
       pendingEntries: repairs,
       inputs,
-      maxTurns: Math.max(1, Math.floor(input.budgets.maxTurns)),
+      maxTurns: input.budgets.maxTurns,
       deadline: input.budgets.deadline,
       signal,
+      retry: this.retry,
       endRequested: () => endRequested,
       getSteering: drain,
       persist: async (entries) => {

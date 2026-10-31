@@ -11,8 +11,12 @@ import {
 import {
   type AssistantMessage,
   createInitialSystemMessage,
+  type ImageContent,
   type Message,
   type Usage as PiUsage,
+  type RetryPolicy,
+  type TextContent,
+  type ToolCall,
   toToolDeclaration,
   type UserMessage,
 } from "@earendil-works/pi-ai";
@@ -21,6 +25,13 @@ import {
   TOOL_OUTPUT_PREVIEW_LIMIT,
   type Usage,
 } from "@jj/contracts";
+import {
+  classifyErrorText,
+  classifyModelError,
+  type RunErrorCode,
+  redactSecrets,
+  retryingStreamFn,
+} from "./errors";
 import type { ResolvedModel } from "./models";
 import {
   finalizeResult,
@@ -128,6 +139,8 @@ export interface LoopSpec {
   maxTurns: number;
   deadline?: Date;
   signal: AbortSignal;
+  /** Retries of transient provider failures. */
+  retry: RetryPolicy;
   /** True once a tool asked to end the run. */
   endRequested(): boolean;
   getSteering(): Promise<UserMessage[]>;
@@ -142,69 +155,133 @@ const persistable = (message: AgentMessage): message is PiMessage =>
     message.stopReason !== "error" &&
     message.stopReason !== "aborted");
 
+const toolCallsOf = (message: AssistantMessage) =>
+  message.content.filter(
+    (block): block is ToolCall => block.type === "toolCall",
+  );
 const hasToolCalls = (message: AssistantMessage) =>
-  message.content.some((block) => block.type === "toolCall");
+  toolCallsOf(message).length > 0;
+
+/** The result recorded for a call the run stopped before it started. */
+export const NOT_STARTED_TEXT = "Not started: the run was stopped.";
+
+/** A valid deadline and turn budget, or why not. */
+export function budgetProblem(
+  maxTurns: unknown,
+  deadline?: unknown,
+): string | undefined {
+  if (
+    typeof maxTurns !== "number" ||
+    !Number.isFinite(maxTurns) ||
+    maxTurns < 1
+  )
+    return "budgets.maxTurns must be a finite number of at least 1.";
+  if (
+    deadline !== undefined &&
+    !(deadline instanceof Date && Number.isFinite(deadline.getTime()))
+  )
+    return "budgets.deadline must be a valid date.";
+  return undefined;
+}
 
 /**
  * Runs pi's low-level agent loop over a transcript we own: no pi session
- * files, no settings, no context files. Persistence, steering, budgets and
- * abort are wired through the loop's hooks.
+ * files, no settings, no context files. Persistence, steering, budgets, abort
+ * and retries are wired through the loop's hooks.
  */
 export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   const { resolved } = spec;
   const ref: ModelRef = resolved.ref;
-  const controller = new AbortController();
-  const signal = controller.signal;
-  let deadlineHit = false;
-  let budgetHit = false;
-  let turns = 0;
-  const forwardAbort = () => controller.abort(spec.signal.reason);
-  if (spec.signal.aborted) return { kind: "aborted" };
-  spec.signal.addEventListener("abort", forwardAbort, { once: true });
-  let timer: NodeJS.Timeout | undefined;
-  if (spec.deadline) {
-    const remaining = spec.deadline.getTime() - Date.now();
-    if (remaining <= 0) {
-      spec.signal.removeEventListener("abort", forwardAbort);
-      return { kind: "budget", finalText: "" };
-    }
-    timer = setTimeout(
-      () => {
-        deadlineHit = true;
-        controller.abort(new Error("deadline"));
-      },
-      Math.min(remaining, MAX_TIMER_MS),
-    );
-  }
-
+  const secrets = [resolved.getApiKey()];
+  const redact = (text: string) => redactSecrets(text, secrets);
+  const fail = (code: RunErrorCode, error: string): RunOutcome => ({
+    kind: "error",
+    code,
+    error: redact(error),
+  });
   const pending: PiMessage[] = [...(spec.pendingEntries ?? [])];
   const flush = async () => {
     if (pending.length === 0) return;
     const batch = pending.splice(0, pending.length);
     await spec.persist(batch);
   };
+  /** Early exits still persist what the engine already handed over. */
+  const exitEarly = async (outcome: RunOutcome): Promise<RunOutcome> => {
+    pending.push(...spec.inputs);
+    try {
+      await flush();
+    } catch (error) {
+      return fail(
+        "unknown",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return outcome;
+  };
+
+  const problem = budgetProblem(spec.maxTurns, spec.deadline);
+  if (problem) return exitEarly(fail("invalid_request", problem));
+  if (spec.signal.aborted) return exitEarly({ kind: "aborted" });
+  if (spec.deadline && spec.deadline.getTime() <= Date.now())
+    return exitEarly({ kind: "budget", finalText: "" });
+
+  const controller = new AbortController();
+  const signal = controller.signal;
+  let deadlineHit = false;
+  let budgetHit = false;
+  let turns = 0;
+  const forwardAbort = () => controller.abort(spec.signal.reason);
+  spec.signal.addEventListener("abort", forwardAbort, { once: true });
+  let timer: NodeJS.Timeout | undefined;
+  if (spec.deadline)
+    timer = setTimeout(
+      () => {
+        deadlineHit = true;
+        controller.abort(new Error("deadline"));
+      },
+      Math.min(spec.deadline.getTime() - Date.now(), MAX_TIMER_MS),
+    );
+
   const produced: AgentMessage[] = [];
   const calls = new Map<string, { tool: string; summary: string }>();
+  const answered = new Set<string>();
   const collabByName = new Map(
     spec.collabTools.map((tool) => [tool.name, tool]),
   );
 
+  // After the run returns, late events (a tool killed after a hook failed) write nothing.
+  let closed = false;
   const emit = async (event: AgentEvent) => {
+    if (closed) return;
     switch (event.type) {
       case "message_end": {
         const message = event.message;
         produced.push(message);
+        if (message.role === "toolResult") {
+          // Already persisted when the tool finished.
+          if (answered.has(message.toolCallId)) return;
+          answered.add(message.toolCallId);
+        }
         if (persistable(message)) pending.push(message);
         if (message.role === "assistant") {
           const text = assistantText(message);
+          const failed = message.stopReason === "error";
           await spec.onEvent({
             type: "model.finished",
             model: ref,
             stopReason: message.stopReason,
             usage: toContractUsage(message.usage),
             ...(text ? { text: clip(text, 2000) } : {}),
-            ...(message.stopReason === "error" && message.errorMessage
-              ? { error: message.errorMessage }
+            ...(failed && message.errorMessage
+              ? { error: redact(message.errorMessage) }
+              : {}),
+            ...(failed
+              ? {
+                  errorCode: classifyModelError(
+                    message,
+                    resolved.model.contextWindow,
+                  ),
+                }
               : {}),
           });
           // The call must be durable before its tools run.
@@ -233,14 +310,32 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           tool: event.toolName,
           summary: event.toolName,
         };
-        const result = event.result as {
-          content?: { type: string; text?: string }[];
+        const result = (event.result ?? {}) as {
+          content?: (TextContent | ImageContent)[];
           details?: Partial<ToolCallDetails>;
         };
-        const details = result?.details ?? {};
-        const output = (result?.content ?? [])
-          .filter((block) => block.type === "text")
-          .map((block) => block.text ?? "")
+        // Durable as soon as it finishes: a crash later in the batch must not
+        // turn a finished command into "outcome unknown".
+        if (!answered.has(event.toolCallId)) {
+          answered.add(event.toolCallId);
+          pending.push({
+            role: "toolResult",
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            content: result.content ?? [],
+            details: (result.details ?? {}) as never,
+            isError: event.isError,
+            ...(event.durationMs !== undefined
+              ? { durationMs: event.durationMs }
+              : {}),
+            timestamp: Date.now(),
+          });
+          await flush();
+        }
+        const details = result.details ?? {};
+        const output = (result.content ?? [])
+          .filter((block): block is TextContent => block.type === "text")
+          .map((block) => block.text)
           .join("\n");
         await spec.onEvent({
           type: "tool.finished",
@@ -258,9 +353,30 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         });
         return;
       }
-      case "turn_end":
+      case "turn_end": {
+        const message = event.message;
+        // Stopped mid-batch: calls that never started get a result saying so.
+        if (
+          signal.aborted &&
+          message.role === "assistant" &&
+          persistable(message)
+        )
+          for (const call of toolCallsOf(message))
+            if (!answered.has(call.id)) {
+              answered.add(call.id);
+              pending.push({
+                role: "toolResult",
+                toolCallId: call.id,
+                toolName: call.name,
+                content: [{ type: "text", text: NOT_STARTED_TEXT }],
+                details: { truncated: false, notStarted: true },
+                isError: true,
+                timestamp: Date.now(),
+              });
+            }
         await flush();
         return;
+      }
       default:
         return;
     }
@@ -271,6 +387,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     ...(spec.sessionId ? { sessionId: spec.sessionId } : {}),
     // Don't attribute requests to the pi CLI.
     identity: { attribution: null },
+    // Retries happen once, in retryingStreamFn, for every provider alike.
+    maxRetries: 0,
     convertToLlm: (messages) =>
       messages.filter(
         (message): message is Message =>
@@ -307,37 +425,26 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   };
 
   const tools = spec.tools;
+  const system = createInitialSystemMessage(
+    spec.systemPrompt,
+    tools.map(toToolDeclaration),
+  );
   const context: AgentContext = {
-    messages: [
-      ...(() => {
-        const system = createInitialSystemMessage(
-          spec.systemPrompt,
-          tools.map(toToolDeclaration),
-        );
-        return system ? [system] : [];
-      })(),
-      ...spec.transcript,
-    ],
+    messages: [...(system ? [system] : []), ...spec.transcript],
     tools,
   };
+  const streamFn = retryingStreamFn(spec.streamFn, spec.retry);
 
   let loopError: unknown;
   try {
     if (spec.inputs.length > 0)
-      await runAgentLoop(
-        spec.inputs,
-        context,
-        config,
-        emit,
-        signal,
-        spec.streamFn,
-      );
-    else
-      await runAgentLoopContinue(context, config, emit, signal, spec.streamFn);
+      await runAgentLoop(spec.inputs, context, config, emit, signal, streamFn);
+    else await runAgentLoopContinue(context, config, emit, signal, streamFn);
     await flush();
   } catch (error) {
     loopError = error;
   } finally {
+    closed = true;
     if (timer) clearTimeout(timer);
     spec.signal.removeEventListener("abort", forwardAbort);
     // Nothing should still be running; make sure of it.
@@ -360,16 +467,15 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   if (deadlineHit || budgetHit) return { kind: "budget", finalText };
   if (isSandboxReleased(loopError))
     return { kind: "aborted", reason: "sandbox_released" };
-  if (loopError !== undefined)
-    return {
-      kind: "error",
-      error: loopError instanceof Error ? loopError.message : String(loopError),
-    };
+  if (loopError !== undefined) {
+    const message =
+      loopError instanceof Error ? loopError.message : String(loopError);
+    return fail(classifyErrorText(message), message);
+  }
   if (last?.stopReason === "error" || last?.stopReason === "aborted")
-    return {
-      kind: "error",
-      error:
-        last.errorMessage || `The model call ended with ${last.stopReason}.`,
-    };
+    return fail(
+      classifyModelError(last, resolved.model.contextWindow),
+      last.errorMessage || `The model call ended with ${last.stopReason}.`,
+    );
   return { kind: "ended", finalText };
 }

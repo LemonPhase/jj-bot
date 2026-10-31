@@ -1,7 +1,14 @@
-import { fauxProvider, type ToolResultMessage } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxToolCall,
+  type ToolResultMessage,
+  Type,
+} from "@earendil-works/pi-ai";
 import { CODING_TOOLS, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
+import { NOT_STARTED_TEXT } from "./loop";
 import { ModelRegistry } from "./models";
 import {
   budgets,
@@ -18,6 +25,7 @@ import {
 import {
   INTERRUPTED_BY_RESTART,
   parseTranscript,
+  repairTranscript,
   serializeEntry,
 } from "./transcript";
 import type { ExecutorEvent, PiMessage, RunInput } from "./types";
@@ -118,7 +126,6 @@ describe("PiSessionExecutor", () => {
     const notes = `${workspace.sandbox.workspaceDir}/notes`;
     expect(calls.filter((call) => call.includes(notes))).toEqual([
       // write
-      `mkdir ${notes}`,
       `write ${notes}/a.txt`,
       // edit
       `stat ${notes}/a.txt`,
@@ -357,7 +364,11 @@ describe("PiSessionExecutor", () => {
     const lost = await new PiSessionExecutor({ models: registry }).run(
       input({ hooks: crashing }),
     );
-    expect(lost).toEqual({ kind: "error", error: "worker crashed" });
+    expect(lost).toEqual({
+      kind: "error",
+      code: "unknown",
+      error: "worker crashed",
+    });
     expect(crashed.entries.map((entry) => entry.role)).toEqual([
       "user",
       "assistant",
@@ -570,38 +581,58 @@ describe("PiSessionExecutor", () => {
     const outcome = await new PiSessionExecutor({ models: registry }).run(
       input({ hooks: recorded.hooks, model: "openai/gpt-6-luna" }),
     );
-    expect(outcome.kind).toBe("error");
+    expect(outcome).toMatchObject({ kind: "error", code: "auth" });
     expect(outcome.kind === "error" && outcome.error).toContain(
       "OPENAI_API_KEY",
     );
-    expect(recorded.entries).toHaveLength(0);
+    // The delivered input is kept for the next run.
+    expect(recorded.entries.map((entry) => textOf(entry))).toEqual([
+      "Do the work.",
+    ]);
   });
 
-  it("clamps a model-chosen bash timeout to the profile limit", async () => {
-    const strict = await localSandbox("strict-limits", { execTimeoutMs: 300 });
-    try {
-      const recorded = recordingHooks();
-      faux.setResponses([
-        callTool("bash", { command: "sleep 5", timeout: 600 }),
-        say("ok"),
-      ]);
-      const startedAt = Date.now();
-      const outcome = await new PiSessionExecutor({ models: registry }).run(
-        input({
-          hooks: recorded.hooks,
-          sandbox: strict.sandbox,
-          sandboxLimits: strict.limits,
-        }),
-      );
-      expect(outcome.kind).toBe("ended");
-      expect(Date.now() - startedAt).toBeLessThan(4_000);
-      const [sleep] = finished(recorded.events, "bash");
-      expect(sleep?.ok).toBe(false);
-      expect(sleep?.interrupted).not.toBe("no");
-      expect(sleep?.output).toContain("Command timed out after 0.3 s.");
-    } finally {
-      await strict.cleanup();
-    }
+  it("clamps a model-chosen bash timeout to the profile limit itself", async () => {
+    // The driver would allow 120 s; only the runtime's clamp gives 0.3 s.
+    const { sandbox, execs } = recordingSandbox(workspace.sandbox);
+    const recorded = recordingHooks();
+    faux.setResponses([
+      callTool("bash", { command: "sleep 5", timeout: 600 }),
+      say("ok"),
+    ]);
+    const startedAt = Date.now();
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: recorded.hooks,
+        sandbox,
+        sandboxLimits: { ...workspace.limits, execTimeoutMs: 300 },
+      }),
+    );
+    expect(outcome.kind).toBe("ended");
+    expect(execs).toEqual([{ command: "sleep 5", timeoutMs: 300 }]);
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    const [sleep] = finished(recorded.events, "bash");
+    expect(sleep?.ok).toBe(false);
+    expect(sleep?.interrupted).not.toBe("no");
+    expect(sleep?.output).toContain("Command timed out after 0.3 s.");
+  });
+
+  it("honours a model-chosen timeout shorter than the profile limit", async () => {
+    const { sandbox, execs } = recordingSandbox(workspace.sandbox);
+    const recorded = recordingHooks();
+    faux.setResponses([
+      callTool("bash", { command: "sleep 5", timeout: 0.3 }),
+      say("ok"),
+    ]);
+    const startedAt = Date.now();
+    await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: recorded.hooks, sandbox }),
+    );
+    expect(workspace.limits.execTimeoutMs).toBe(120_000);
+    expect(execs).toEqual([{ command: "sleep 5", timeoutMs: 300 }]);
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+    expect(finished(recorded.events, "bash")[0]?.output).toContain(
+      "Command timed out after 0.3 s.",
+    );
   });
 
   it("ends the run as aborted when the sandbox is released mid-command", async () => {
@@ -643,5 +674,283 @@ describe("PiSessionExecutor", () => {
     expect(write?.ok).toBe(false);
     expect(write?.output).toContain("released");
     expect(faux.getPendingResponseCount()).toBe(1);
+  });
+
+  it("keeps at most maxOutputBytes of a command's output", async () => {
+    const recorded = recordingHooks();
+    faux.setResponses([
+      callTool("bash", { command: "head -c 10000000 /dev/zero | tr '\\0' a" }),
+      say("ok"),
+    ]);
+    const limit = workspace.limits.maxOutputBytes;
+    await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: recorded.hooks }),
+    );
+    const [big] = finished(recorded.events, "bash");
+    expect(big).toMatchObject({
+      ok: true,
+      truncated: true,
+      artifactId: "artifact-1",
+    });
+    const spilled = recorded.spilled[0]?.text ?? "";
+    // The 10 MB never reached memory: only the sandbox's limit plus a note.
+    expect(Buffer.byteLength(spilled)).toBeLessThanOrEqual(limit + 512);
+    expect(spilled.startsWith("a".repeat(1000))).toBe(true);
+    expect(spilled).toContain(
+      "[Output was cut at 256 KiB, the sandbox's output limit; the rest was not kept.]",
+    );
+  });
+
+  it("retries a transient provider failure", async () => {
+    const recorded = recordingHooks();
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "429 Too Many Requests: rate limit reached",
+      }),
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "503 Service Unavailable",
+      }),
+      say("Recovered."),
+    ]);
+    const outcome = await new PiSessionExecutor({
+      models: registry,
+      retry: { baseDelayMs: 5 },
+    }).run(input({ hooks: recorded.hooks }));
+    expect(outcome).toEqual({ kind: "ended", finalText: "Recovered." });
+    expect(faux.state.callCount).toBe(3);
+    expect(
+      recorded.events.filter((event) => event.type === "model.finished"),
+    ).toHaveLength(1);
+  });
+
+  it("classifies and redacts a provider error without retrying it", async () => {
+    const recorded = recordingHooks();
+    const leaked = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: `401 Incorrect API key provided: ${leaked}. Authorization: Bearer ${leaked}`,
+      }),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({
+      models: registry,
+      retry: { baseDelayMs: 5 },
+    }).run(input({ hooks: recorded.hooks }));
+    expect(outcome).toMatchObject({ kind: "error", code: "auth" });
+    expect(faux.state.callCount).toBe(1);
+    const finishedModel = recorded.events.find(
+      (event) => event.type === "model.finished",
+    );
+    for (const text of [
+      JSON.stringify(outcome),
+      JSON.stringify(finishedModel),
+    ]) {
+      expect(text).not.toContain(leaked);
+      expect(text).not.toContain("AbCdEfGh");
+      expect(text).toContain("[redacted]");
+    }
+    expect(finishedModel).toMatchObject({ errorCode: "auth" });
+  });
+
+  it("reports a context overflow", async () => {
+    faux.setResponses([
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage:
+          "400 Your input exceeds the context window of this model.",
+      }),
+    ]);
+    const outcome = await new PiSessionExecutor({
+      models: registry,
+      retry: { baseDelayMs: 5 },
+    }).run(input({ hooks: recordingHooks().hooks }));
+    expect(outcome).toMatchObject({ kind: "error", code: "context_overflow" });
+  });
+
+  it("persists the inputs when the deadline has already passed", async () => {
+    const recorded = recordingHooks([["inbox item"]]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: recorded.hooks,
+        budgets: { maxTurns: 5, deadline: new Date(Date.now() - 1) },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "budget", finalText: "" });
+    expect(recorded.entries.map((entry) => textOf(entry))).toEqual([
+      "Do the work.",
+    ]);
+    expect(recorded.drains).toBe(0);
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  it("persists drained inbox items when an abort lands right after the drain", async () => {
+    const controller = new AbortController();
+    const recorded = recordingHooks();
+    const hooks = {
+      ...recorded.hooks,
+      drainInbox: async () => {
+        controller.abort();
+        return ["late result"];
+      },
+    };
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks,
+        inputs: [],
+        transcript: [say("Waiting.")],
+        signal: controller.signal,
+      }),
+    );
+    expect(outcome).toEqual({ kind: "aborted" });
+    expect(recorded.entries.map((entry) => textOf(entry))).toEqual([
+      "late result",
+    ]);
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  it("is idle when woken with no inputs and an empty inbox", async () => {
+    for (const transcript of [[], [say("All done earlier.")]]) {
+      const recorded = recordingHooks();
+      const outcome = await new PiSessionExecutor({ models: registry }).run(
+        input({ hooks: recorded.hooks, inputs: [], transcript }),
+      );
+      expect(outcome).toEqual({ kind: "idle" });
+      expect(recorded.entries).toEqual([]);
+    }
+    expect(faux.state.callCount).toBe(0);
+  });
+
+  it("refuses an invalid turn budget, keeping the inputs", async () => {
+    for (const maxTurns of [Number.NaN, 0, Number.POSITIVE_INFINITY]) {
+      const recorded = recordingHooks();
+      const outcome = await new PiSessionExecutor({ models: registry }).run(
+        input({
+          hooks: recorded.hooks,
+          budgets: { maxTurns, deadline: new Date(Date.now() + 5000) },
+        }),
+      );
+      expect(outcome).toMatchObject({ kind: "error", code: "invalid_request" });
+      expect(recorded.entries.map((entry) => textOf(entry))).toEqual([
+        "Do the work.",
+      ]);
+    }
+  });
+
+  it("persists each finished command at once, so a crash mid-batch loses none", async () => {
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("bash", { command: "sleep 30" }, { id: "slow" }),
+          fauxToolCall("bash", { command: "echo fast" }, { id: "fast" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+    const crashed = recordingHooks();
+    const crashing = {
+      ...crashed.hooks,
+      onEvent: (event: ExecutorEvent) => {
+        crashed.hooks.onEvent(event);
+        if (event.type === "tool.finished" && event.toolCallId === "fast")
+          throw new Error("worker crashed");
+      },
+    };
+    const lost = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: crashing }),
+    );
+    expect(lost).toMatchObject({ kind: "error" });
+    expect(crashed.entries.map((entry) => entry.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+    ]);
+    expect(toolResults(crashed.entries)[0]).toMatchObject({
+      toolCallId: "fast",
+      isError: false,
+    });
+
+    faux.setResponses([
+      expecting((context) => {
+        const messages = conversation(context);
+        // Back in call order: the lost command is interrupted, the finished one keeps its output.
+        expect(
+          messages
+            .slice(-2)
+            .map((message) =>
+              message.role === "toolResult" ? message.toolCallId : "",
+            ),
+        ).toEqual(["slow", "fast"]);
+        expect(textOf(messages.at(-2))).toBe(INTERRUPTED_BY_RESTART);
+        expect(textOf(messages.at(-1))).toBe("fast");
+      }, say("Resumed.")),
+    ]);
+    const recovered = recordingHooks();
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: recovered.hooks,
+        transcript: crashed.entries,
+        inputs: [],
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Resumed." });
+    expect(
+      toolResults(recovered.entries).map((entry) => entry.toolCallId),
+    ).toEqual(["slow"]);
+  });
+
+  it("answers calls an abort kept from starting with 'Not started'", async () => {
+    const controller = new AbortController();
+    const noted: unknown[] = [];
+    const recorded = recordingHooks();
+    const hooks = {
+      ...recorded.hooks,
+      onEvent: (event: ExecutorEvent) => {
+        recorded.hooks.onEvent(event);
+        if (event.type === "tool.started")
+          setTimeout(() => controller.abort(), 200);
+      },
+    };
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          fauxToolCall("bash", { command: "sleep 30" }, { id: "first" }),
+          fauxToolCall("note", { text: "after" }, { id: "second" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks,
+        signal: controller.signal,
+        collaborationTools: [
+          {
+            name: "note",
+            description: "Record a note.",
+            parameters: Type.Object({ text: Type.String() }),
+            execute: async (args) => {
+              noted.push(args);
+              return { text: "noted" };
+            },
+          },
+        ],
+      }),
+    );
+    expect(outcome).toEqual({ kind: "aborted" });
+    expect(noted).toEqual([]);
+    const results = toolResults(recorded.entries);
+    expect(results.map((result) => result.toolCallId)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(results[0]?.details).toMatchObject({
+      interrupted: expect.not.stringMatching(/^no$/),
+    });
+    expect(textOf(results[1])).toBe(NOT_STARTED_TEXT);
+    // Nothing is left for a restart to call "outcome unknown".
+    expect(repairTranscript(recorded.entries)).toEqual(recorded.entries);
   });
 });

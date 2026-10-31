@@ -7,10 +7,10 @@ export * from "./executor";
 export * from "./legacy/index";
 export * from "./models";
 export * from "./proxy";
+export { createSandboxTools } from "./sandbox-tools";
 export * from "./scripted";
 export {
   capToolOutput,
-  createSandboxTools,
   isSandboxReleased,
   type OutputPolicy,
   type SandboxToolOptions,

@@ -15,6 +15,10 @@ afterEach(async () => {
   await workspace.cleanup();
 });
 
+/** A delegate's outcome as the engine delivers it to the parent's inbox. */
+const resultFrom = (bot: string, text: string, ok = true) =>
+  `${ok ? "Result" : "Failure"} from ${bot} (session session-${bot}):\n${text}`;
+
 // Free-form prompts: the scripted model reads the roster from tool schemas.
 const promptFor = (name: string) =>
   `You are ${name}. Work with your team and keep the user informed.`;
@@ -118,7 +122,11 @@ describe("scripted test model", () => {
 
     // The coordinator reacts to the first result before the second arrives.
     expect(
-      await run("Ada", [`Bob finished: ${reports.Bob}`], coordinatorTools),
+      await run(
+        "Ada",
+        [resultFrom("Bob", reports.Bob ?? "")],
+        coordinatorTools,
+      ),
     ).toEqual({
       kind: "ended",
       finalText: "Received the result from Bob. Still waiting for Cy.",
@@ -127,14 +135,14 @@ describe("scripted test model", () => {
 
     const last = await run(
       "Ada",
-      [`Cy finished: ${reports.Cy}`],
+      [resultFrom("Cy", reports.Cy ?? "")],
       coordinatorTools,
     );
     expect(last).toEqual({ kind: "ended", finalText: "All results are in." });
     expect(completions).toHaveLength(1);
     expect(completions[0]).toContain(goal);
-    expect(completions[0]).toContain("- Bob: Bob finished");
-    expect(completions[0]).toContain("- Cy: Cy finished");
+    expect(completions[0]).toContain("- Bob: Done: I wrote notes-bob.md");
+    expect(completions[0]).toContain("- Cy: Done: I wrote notes-cy.md");
 
     const models = events.filter((event) => event.type === "model.finished");
     expect(models.every((event) => event.model === SCRIPTED_MODEL_REF)).toBe(
@@ -187,5 +195,58 @@ describe("scripted test model", () => {
     )?.[1];
     expect(file).toBeDefined();
     expect(await workspace.sandbox.fs.stat(file ?? "")).toBeDefined();
+  });
+
+  it("credits results by the engine header only, in any order", async () => {
+    const { run, coordinatorTools, completions } = harness();
+    await run("Ada", ["Plan a party."], coordinatorTools);
+    // Cy reports first, and her report names Bob and his file.
+    expect(
+      await run(
+        "Ada",
+        [
+          resultFrom(
+            "Cy",
+            "Done. Bob still owes notes-bob.md; Bob said he is close.",
+          ),
+        ],
+        coordinatorTools,
+      ),
+    ).toEqual({
+      kind: "ended",
+      finalText: "Received the result from Cy. Still waiting for Bob.",
+    });
+    // Steering that names Bob is not Bob's result.
+    expect(
+      await run("Ada", ["Bob, please also cover the music."], coordinatorTools),
+    ).toEqual({
+      kind: "ended",
+      finalText: "Received the result from Cy. Still waiting for Bob.",
+    });
+    // A header for someone who was not delegated to counts for nothing.
+    expect(
+      await run(
+        "Ada",
+        [resultFrom("Mallory", "I did it all.")],
+        coordinatorTools,
+      ),
+    ).toMatchObject({
+      finalText: "Received the result from Cy. Still waiting for Bob.",
+    });
+    expect(completions).toEqual([]);
+
+    expect(
+      await run(
+        "Ada",
+        [resultFrom("Bob", "Could not book a venue.", false)],
+        coordinatorTools,
+      ),
+    ).toEqual({ kind: "ended", finalText: "All results are in." });
+    expect(completions).toHaveLength(1);
+    expect(completions[0]).toContain("- Bob (failed): Could not book a venue.");
+    expect(completions[0]).toContain("- Cy: Done. Bob still owes notes-bob.md");
+    expect(completions[0]).toContain(
+      "- Steering applied: Bob, please also cover the music.",
+    );
   });
 });

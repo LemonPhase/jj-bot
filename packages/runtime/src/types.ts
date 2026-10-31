@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ModelRef, ToolName, Usage } from "@jj/contracts";
 import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
+import type { RunErrorCode } from "./errors";
 
 /**
  * One persisted transcript entry: a pi message, stored as JSON in
@@ -56,8 +57,10 @@ export type ExecutorEvent =
       usage: Usage;
       /** Preview of the assistant text, at most 2000 characters. */
       text?: string;
-      /** Provider error text when `stopReason` is "error". */
+      /** Provider error text when `stopReason` is "error", redacted. */
       error?: string;
+      /** Its classification when `stopReason` is "error". */
+      errorCode?: RunErrorCode;
     }
   | {
       type: "tool.started";
@@ -122,9 +125,10 @@ export interface RunInput {
   sandbox: Sandbox;
   /**
    * The profile's sandbox limits. A model-chosen bash timeout is clamped to
-   * `execTimeoutMs` with `resolveExecTimeoutMs` (drivers apply the same rule).
+   * `execTimeoutMs` with `resolveExecTimeoutMs` (drivers apply the same rule),
+   * and bash keeps at most `maxOutputBytes` of a command's output.
    */
-  sandboxLimits: Pick<SandboxLimits, "execTimeoutMs">;
+  sandboxLimits: Pick<SandboxLimits, "execTimeoutMs" | "maxOutputBytes">;
   /** Coding tools the profile grants. */
   codingTools: readonly ToolName[];
   collaborationTools: readonly CollabTool[];
@@ -135,14 +139,19 @@ export interface RunInput {
 }
 
 export type RunOutcome =
+  /** The model ended its turn (or a tool ended the run); `finalText` is its last text. */
   | { kind: "ended"; finalText: string }
+  /** Woken with no inputs and an empty inbox: nothing was run. */
+  | { kind: "idle" }
   /**
    * The signal was aborted, or the sandbox was released under the run
    * (`reason: "sandbox_released"`): what was in flight was stopped.
    */
   | { kind: "aborted"; reason?: "sandbox_released" }
+  /** Stopped at `maxTurns` or the deadline while the model still wanted to go on. */
   | { kind: "budget"; finalText: string }
-  | { kind: "error"; error: string };
+  /** `error` is redacted: no provider key or key-shaped text. */
+  | { kind: "error"; code: RunErrorCode; error: string };
 
 /** What the engine calls to run a session. */
 export interface RunExecutor {
