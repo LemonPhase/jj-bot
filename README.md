@@ -38,15 +38,11 @@ No license has been selected yet; source availability and distribution terms rem
 
 ## Shared project context
 
-**At the start of each new session, check [Hackathon HQ in Notion](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0) for current team context before planning or implementing work.**
+Most technical, architectural, and contract context lives in the `docs/` directory and `packages/contracts` so agents and developers can work local-first. When coordinating team ownership, checking live task/handoff state, or recording cross-team decisions, look up the relevant page on demand from [Hackathon HQ in Notion](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0):
 
 - [00 · Idea Brainstorm](https://app.notion.com/p/40af13214201814abd85c00a6b20dd31): candidate ideas and comparisons.
 - [01 · Project Brief](https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea): agreed direction, scope, and success criteria.
 - [02 · Build Runbook](https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9): setup, architecture, commands, and known issues.
 - [03 · Agent Start & Handoff](https://app.notion.com/p/40af13214201812d9cfae40de515812d): collaboration workflow and continuation context.
 
-HQ links to Tasks, Decisions, Handoffs, event sources, and research. Read relevant accepted decisions and the latest related handoff. Brainstorm ideas are candidates until explicitly selected; consult live Notion context rather than assuming a previous chat reflects the current decision.
-
-**Keep Notion curated:** save concise, durable decisions, findings, tasks, and handoff context worth carrying forward. Consolidate existing entries; do not dump thread messages, routine updates, or every speculative suggestion. No Notion update is needed when nothing meaningful has changed.
-
-See [AGENTS.md](AGENTS.md) for agent startup, curation, and handoff instructions.
+See [AGENTS.md](AGENTS.md) for the full Notion context map (including direct task URLs) and guidelines on when to look up or curate Notion.

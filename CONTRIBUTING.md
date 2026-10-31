@@ -2,9 +2,9 @@
 
 ## Start with shared context
 
-Read [AGENTS.md](AGENTS.md) and connect to [Hackathon HQ in Notion](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0). Load the Brief, accepted Decisions, your task and relevant handoff. If Notion/MCP access is missing, ask the user to enable the integration and grant access before context-dependent work. Notion synchronizes team intent, ownership and continuation state.
+Read [AGENTS.md](AGENTS.md) and the local docs (`docs/development.md`, `docs/product-spec.md`, `docs/architecture.md`) first. When claiming a tracked team task, coordinating cross-lane changes, or handing off work, use the Notion context map in [AGENTS.md](AGENTS.md) to check or update the relevant task/handoff in [Hackathon HQ](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0).
 
-Claim a task and record an accountable human owner plus any agent/session. Agree shared contracts and coordinate overlapping files before implementation. Use a focused branch (`codex/…` for agent branches) and keep unrelated changes separate.
+When working on a tracked task, record an accountable human owner plus any agent/session. Agree shared contracts and coordinate overlapping files before implementation. Use a focused branch (`codex/…` for agent branches) and keep unrelated changes separate.
 
 ## Required development verification loop
 
