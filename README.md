@@ -1,48 +1,51 @@
-# JJ Bot · Halloween Hackathon
+# JJ Bot
 
-A team project for Track 1: Frontier Agents with Gemini at Halloween At Imperial: Gemini Edition.
+JJ Bot is an agent workspace. Persistent bot personas with deliberately scoped memory work on goal-oriented tasks through independently contextualized execution sessions. Every task has a coordinator, a shared and attributed group chat, and a verification plan; messages are visible to all participants without triggering every bot. Users can steer a running task or stop it, and a task only completes when its verification evidence supports it.
 
-**Status: runnable scaffold.** Option B is selected: our own application infrastructure with CopilotKit OSS/AG-UI and direct Google GenAI SDK integration. The starter UI, API and idle worker run locally; autonomous execution and persistence are not implemented yet.
+The backend owns execution and verification: it schedules sessions, runs the Google GenAI loop server-side, persists ordered events, and keeps task state independent of browser connections. CopilotKit/AG-UI is the chat and streaming boundary in front of it, not the source of task truth. The API and scheduler are the working surface today; the web client is still a shell that reports capability state rather than a task workspace.
 
 ## Run locally
 
-Use Node.js 24 and npm:
+Use Node.js 24 (minimum 22.12), npm, and Docker for the default PostgreSQL store:
 
 ```sh
 npm ci
 cp .env.example .env
+docker compose up -d postgres
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. No model key/database is required for scaffold mode. Run `npm run check` for lint, tests, typecheck and web build. See [development setup](docs/development.md), [contribution standard](CONTRIBUTING.md), and [workstreams](docs/workstreams.md).
+Open http://127.0.0.1:5173. The API listens on http://127.0.0.1:3001. Set `JJ_DATABASE_MODE=pglite` to run without Docker (single process only). Add `GEMINI_API_KEY` and `GEMINI_MODEL` to run model sessions; without them the API still stores and serves bots and tasks, but execution cannot start.
 
-Repository: [LemonPhase/jj-bot](https://github.com/LemonPhase/jj-bot).
+Run `npm run check` for lint, tests, all-package typecheck and the web build. Never commit `.env`. See [development setup](docs/development.md) for the full command set, configuration and endpoint boundaries.
 
-JJ Bot runs persistent bot personas with memory above goal-oriented tasks. Bots and tasks have a many-to-many relationship; each task has a coordinator and a shared group chat, and may use several execution sessions or subagents. Messages are visible to all participating bots without automatically triggering every bot. Users can steer through the coordinator or stop the task's active sessions. The backend can run locally or on a server.
+## Repository layout
 
-The first milestone is multi-bot end to end: create a task from bot chat, execute work in separate sessions for at least two bots, visualize activity, accept user steering, and return a consolidated result. The design must support an arbitrary configurable number of bots rather than hard-coding two; practical concurrency is resource-limited.
+| Directory            | Responsibility                                                                   |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `apps/web`           | React/Vite client, CopilotKit provider, capability and connection state          |
+| `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE, AG-UI runtime          |
+| `apps/worker`        | Optional standalone PostgreSQL worker when the API does not embed the scheduler  |
+| `packages/contracts` | Canonical Zod schemas and types; the frontend/backend boundary                   |
+| `packages/backend`   | Coordinator, delegation, verification, steering, cancellation, and scheduling    |
+| `packages/runtime`   | Direct Google GenAI execution, allowlisted tools, deterministic and model checks |
+| `packages/db`        | Transactional PGlite/PostgreSQL store with an append-only task event log         |
 
-Tasks and execution sessions must define verification criteria before work and run an execute–verify–revise loop, with evidence for session results and integrated task completion. Consult the live Notion Project Brief for current scope and implementation decisions.
+## Documentation
 
-## Initial documentation
+Docs describe stable design, contracts and constraints — not progress. Implementation behavior is established by code and tests; status, ownership and handoffs live in the team Notion workspace.
 
-- [Product specification](docs/product-spec.md): agreed bot/task/session concepts and behavior.
-- [Architecture proposal](docs/architecture.md): runtime boundaries, data model, routing, and event flow.
-- [Verification contract](docs/verification.md): task/session checks, evidence, and completion rules.
-- [Milestone 1](docs/milestone-1.md): the first multi-bot vertical slice and acceptance checklist.
-- [Technology stack proposal](docs/tech-stack.md): recommendation, alternatives, and primary sources.
-- [Implementation approach comparison](docs/approach-comparison.md): OpenBot, CopilotKit OSS, custom development, and other existing applications.
-- [Reference implementations](docs/references.md): Rakazo, OpenMausBot, and CopilotKit OpenBot.
+- [Product specification](docs/product-spec.md): bot, task, session and coordinator semantics.
+- [Architecture](docs/architecture.md): boundaries, records, event flow and context rules.
+- [Verification](docs/verification.md): checks, evidence, revision and completion rules.
+- [Milestone 1](docs/milestone-1.md): the multi-bot vertical slice and its acceptance criteria.
+- [Technology stack](docs/tech-stack.md): accepted stack, layer constraints and sources.
+- [Development setup](docs/development.md): commands, configuration and endpoint boundaries.
+- [Contract changelog](docs/contract-changelog.md): schema changes and required coordination.
+- [Approach comparison](docs/approach-comparison.md) and [reference implementations](docs/references.md): research history.
 
-No license has been selected yet; source availability and distribution terms remain a team decision.
+## Team coordination
 
-## Shared project context
+Ownership, task status and handoffs are tracked in the team Notion workspace: [project home](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0), [Project Brief](https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea), [Build Runbook](https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9). See [AGENTS.md](AGENTS.md) for the full context map and when to consult it.
 
-Most technical, architectural, and contract context lives in the `docs/` directory and `packages/contracts` so agents and developers can work local-first. When coordinating team ownership, checking live task/handoff state, or recording cross-team decisions, look up the relevant page on demand from [Hackathon HQ in Notion](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0):
-
-- [00 · Idea Brainstorm](https://app.notion.com/p/40af13214201814abd85c00a6b20dd31): candidate ideas and comparisons.
-- [01 · Project Brief](https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea): agreed direction, scope, and success criteria.
-- [02 · Build Runbook](https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9): setup, architecture, commands, and known issues.
-- [03 · Agent Start & Handoff](https://app.notion.com/p/40af13214201812d9cfae40de515812d): collaboration workflow and continuation context.
-
-See [AGENTS.md](AGENTS.md) for the full Notion context map (including direct task URLs) and guidelines on when to look up or curate Notion.
+No license has been selected; source availability and distribution terms remain a team decision.
