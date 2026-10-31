@@ -14,6 +14,7 @@ import type {
   DirectMessage,
   NewBotInput,
   NewTaskInput,
+  PendingTaskSend,
   TaskView,
 } from "../api/types";
 
@@ -52,6 +53,10 @@ interface WorkspaceValue {
   ) => Promise<void>;
   stopTask: (taskId: string) => Promise<void>;
   advanceDemoTask?: (taskId: string) => Promise<void>;
+  /** Text of a bot-chat message awaiting a response, keyed by bot id. */
+  pendingBotTurns: Record<string, string>;
+  /** Task-chat message awaiting acknowledgement, keyed by task id. */
+  pendingTaskSends: Record<string, PendingTaskSend>;
 }
 
 const WorkspaceContext = createContext<WorkspaceValue | null>(null);
@@ -67,6 +72,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [conversations, setConversations] = useState<
     Record<string, DirectMessage[]>
+  >({});
+  const [pendingBotTurns, setPendingBotTurns] = useState<
+    Record<string, string>
+  >({});
+  const [pendingTaskSends, setPendingTaskSends] = useState<
+    Record<string, PendingTaskSend>
   >({});
   const [activeTab, setActiveTab] = useState<MainTab>("bots");
   const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
@@ -217,15 +228,24 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }),
       sendDirectMessage: (botId, text) =>
         run(async () => {
-          const thread = await api.sendDirectMessage(botId, text);
-          setConversations((current) => ({ ...current, [botId]: thread }));
-          // A direct message may have started a task; refresh so its card resolves.
-          if (
-            thread.some(
-              (m) => m.taskId && !tasks.some((t) => t.id === m.taskId),
+          setPendingBotTurns((current) => ({ ...current, [botId]: text }));
+          try {
+            const thread = await api.sendDirectMessage(botId, text);
+            setConversations((current) => ({ ...current, [botId]: thread }));
+            // A direct message may have started a task; refresh so its card resolves.
+            if (
+              thread.some(
+                (m) => m.taskId && !tasks.some((t) => t.id === m.taskId),
+              )
             )
-          )
-            setTasks(await api.listTasks());
+              setTasks(await api.listTasks());
+          } finally {
+            setPendingBotTurns((current) => {
+              const next = { ...current };
+              delete next[botId];
+              return next;
+            });
+          }
         }),
       createTask: (input) =>
         run(async () => {
@@ -237,20 +257,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }),
       postTaskMessage: (taskId, text, steering) =>
         run(async () => {
-          const observedGoalVersion =
-            tasks.find((t) => t.id === taskId)?.goalVersion ?? 1;
-          upsertTask(
-            await api.postTaskMessage(taskId, {
-              text,
-              steering,
-              observedGoalVersion,
-            }),
-          );
+          setPendingTaskSends((current) => ({
+            ...current,
+            [taskId]: { text, steering },
+          }));
+          try {
+            const observedGoalVersion =
+              tasks.find((t) => t.id === taskId)?.goalVersion ?? 1;
+            upsertTask(
+              await api.postTaskMessage(taskId, {
+                text,
+                steering,
+                observedGoalVersion,
+              }),
+            );
+          } finally {
+            setPendingTaskSends((current) => {
+              const next = { ...current };
+              delete next[taskId];
+              return next;
+            });
+          }
         }),
       stopTask: (taskId) =>
         run(async () => {
           upsertTask(await api.stopTask(taskId));
         }),
+      pendingBotTurns,
+      pendingTaskSends,
       advanceDemoTask: api.advanceDemoTask
         ? (taskId) =>
             run(async () => {
@@ -270,6 +304,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectedBotId,
       selectedTaskId,
       selectedNodeId,
+      pendingBotTurns,
+      pendingTaskSends,
       selectTask,
       run,
       upsertTask,

@@ -4,6 +4,7 @@ import { formatMessageTime } from "../../lib/format";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { Composer } from "../common/Composer";
+import { TypingIndicator } from "../common/TypingIndicator";
 import { InlineTaskCard } from "./InlineTaskCard";
 
 export function BotChat({
@@ -15,14 +16,23 @@ export function BotChat({
   onNewTask: () => void;
   onToggleInspector: () => void;
 }) {
-  const { conversations, sendDirectMessage } = useWorkspace();
+  const { conversations, sendDirectMessage, pendingBotTurns, tasks } =
+    useWorkspace();
   const messages = conversations[bot.id] ?? [];
+  const pendingText = pendingBotTurns[bot.id];
+  const lastTaskId = [...messages].reverse().find((m) => m.taskId)?.taskId;
+  const linkedTask = lastTaskId
+    ? tasks.find((task) => task.id === lastTaskId)
+    : undefined;
+  const taskRunning =
+    linkedTask?.status === "running" || linkedTask?.status === "queued";
+  const busy = Boolean(pendingText) || taskRunning;
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, bot.id]);
+  }, [messages.length, pendingText, busy, bot.id]);
 
   return (
     <main className="chat-column">
@@ -51,7 +61,7 @@ export function BotChat({
       </header>
 
       <div className="messages-scroll" ref={scrollRef}>
-        {messages.length === 0 && (
+        {messages.length === 0 && !pendingText && (
           <div className="msg-row system">
             <div className="system-pill">
               Start a conversation with {bot.name}
@@ -80,11 +90,26 @@ export function BotChat({
             </div>
           );
         })}
+        {pendingText && (
+          <div className="msg-row user pending">
+            <div className="msg-content-wrap">
+              <div className="msg-bubble">{pendingText}</div>
+              <div className="msg-sender">Sending…</div>
+            </div>
+          </div>
+        )}
+        {busy && (
+          <TypingIndicator
+            avatar={<BotAvatar bot={bot} size="sm" />}
+            label={`${bot.name} is working…`}
+          />
+        )}
       </div>
 
       <Composer
         key={bot.id}
         placeholder={`Message ${bot.name}...`}
+        disabled={Boolean(pendingText)}
         onSend={(text) => void sendDirectMessage(bot.id, text)}
       />
     </main>
