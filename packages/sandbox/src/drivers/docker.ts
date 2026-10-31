@@ -25,6 +25,7 @@ import {
 import {
   type AttachedExec,
   DockerEngine,
+  DockerOutputLimitError,
   describeEndpoint,
   directoryTar,
   type ExecOutput,
@@ -64,7 +65,7 @@ import {
  * namespace, so commands interrupted by release report `"yes"`.
  *
  * Image requirements: `/bin/sh`, GNU coreutils, findutils and grep
- * (`realpath -m`, `find -printf`, `grep -z`), as in Debian- or Ubuntu-based
+ * (`realpath -m`, `head -z`, `find -printf`, `grep -z`), as in Debian- or Ubuntu-based
  * images such as `jj-sandbox:base-1`. `acquire` checks them and fails with a
  * clear error otherwise.
  */
@@ -82,6 +83,14 @@ const EXIT_SETTLE_MS = 500;
 const KILL_ROUNDS = 25;
 const MARKER = "JJ_SANDBOX_EXEC";
 const MiB = 1024 * 1024;
+const DEFAULT_MAX_FILE_BYTES = 32 * MiB;
+const DEFAULT_MAX_LIST_ENTRIES = 20_000;
+/** Ceiling on what any driver helper (list, stat, scans) may return. */
+const HELPER_OUTPUT_BYTES = 16 * MiB;
+/** Room for a read helper's stderr on top of the file itself. */
+const READ_SLACK_BYTES = 64 * 1024;
+/** Identifies this process's containers, so a later process can reap them. */
+const PROCESS_INSTANCE = randomUUID();
 const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,511}$/;
 const ENV_NAME = /^[^=\0]+$/;
@@ -96,6 +105,7 @@ const LABELS = {
   mode: "jj.sandbox.workspace-mode",
   key: "jj.sandbox.workspace-key",
   volume: "jj.sandbox.volume",
+  instance: "jj.instance",
 } as const;
 
 /** Keeps the container alive under docker-init; it holds no state. */
@@ -103,12 +113,13 @@ const IDLE_SCRIPT = "while :; do sleep 3600; done";
 
 /** Checks the image can host a sandbox: the tools the fs helper needs, and a writable workspace. */
 const READY_SCRIPT = `missing=
-for tool in cat find grep id mkdir mv realpath rm stat; do
+for tool in cat find grep head id mkdir mv realpath rm stat; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then echo "missing tools:$missing"; exit 3; fi
-realpath -m -- / >/dev/null 2>&1 && find / -maxdepth 0 -printf '' 2>/dev/null && printf 'x\\0' | grep -qz x 2>/dev/null || {
-  echo "needs GNU coreutils, findutils and grep (realpath -m, find -printf, grep -z)"; exit 3; }
+realpath -m -- / >/dev/null 2>&1 && find / -maxdepth 0 -printf '' 2>/dev/null &&
+  printf 'x\\0' | grep -qz x 2>/dev/null && printf 'x\\0' | head -z -n 1 >/dev/null 2>&1 || {
+  echo "needs GNU coreutils, findutils and grep (realpath -m, head -z, find -printf, grep -z)"; exit 3; }
 [ -d "$1" ] && [ -w "$1" ] || { echo "workspace $1 is not a directory writable by uid $(id -u)"; exit 4; }`;
 
 /**
@@ -116,7 +127,8 @@ realpath -m -- / >/dev/null 2>&1 && find / -maxdepth 0 -printf '' 2>/dev/null &&
  * root, then lexically normalised absolute paths under it. Every path is
  * resolved with `realpath -m` (all symlinks, a dangling final one included)
  * and must stay inside the root. Exit 97 means it escapes; 95 means stat
- * found nothing; a lone `E…` code on stderr names a POSIX error.
+ * found nothing; an `E…` code opening stderr names a POSIX error. `read`
+ * takes a byte limit and `list` an entry limit, so neither returns more.
  */
 const FS_SCRIPT = `op=$1 root=$2
 fail() { printf '%s\\n' "$1" >&2; exit 1; }
@@ -137,7 +149,9 @@ read)
   [ -e "$R" ] || fail ENOENT
   [ ! -d "$R" ] || fail EISDIR
   [ -f "$R" ] || fail EINVAL
-  exec cat -- "$R" ;;
+  size=$(stat -L -c %s -- "$R") || exit 1
+  [ "$size" -le "$4" ] || fail "EFBIG $size"
+  exec head -c "$(($4 + 1))" -- "$R" ;;
 write)
   real "$3" follow
   [ ! -d "$R" ] || fail EISDIR
@@ -164,8 +178,9 @@ list)
   real "$3" follow
   [ -e "$R" ] || fail ENOENT
   [ -d "$R" ] || fail ENOTDIR
-  if [ "$4" = recursive ]; then exec find "$R" -mindepth 1 -printf '%y %p\\0'; fi
-  exec find "$R" -mindepth 1 -maxdepth 1 -printf '%y %p\\0' ;;
+  depth="-maxdepth 1"
+  [ "$4" != recursive ] || depth=
+  find "$R" -mindepth 1 $depth -printf '%y %p\\0' | head -z -n "$(($5 + 1))" ;;
 move)
   real "$3" nofollow
   from=$R
@@ -215,6 +230,18 @@ export interface DockerDriverOptions {
   killGraceMs?: number;
   /** Process limit when a spec sets none. Default 1024. */
   defaultPidsLimit?: number;
+  /** Largest file `fs.read` returns; bigger ones are refused before any transfer. Default 32 MiB. */
+  maxFileBytes?: number;
+  /** Most entries `fs.list` returns, recursive or not. Default 20 000. */
+  maxListEntries?: number;
+  /** Accept a plain-HTTP `tcp://` host that is not loopback. Default false. */
+  allowInsecureTcp?: boolean;
+  /**
+   * Written to every container as `jj.instance`; `reapOrphans` removes the
+   * namespace's containers that carry another value. Default: one random id
+   * per process, so drivers in one process never reap each other.
+   */
+  instanceId?: string;
 }
 
 const delay = (ms: number) =>
@@ -265,8 +292,8 @@ const ERRNO_TEXT: Array<[RegExp, string]> = [
 function fsError(op: string, path: string, result: ExecOutput): Error {
   if (result.exitCode === 97) return new SandboxPathError(path);
   const message = result.stderr.toString("utf8").trim();
-  const code = /^E[A-Z]+$/.test(message)
-    ? message
+  const code = /^E[A-Z]+(?: |$)/.test(message)
+    ? message.split(" ", 1)[0]
     : result.exitCode === 96
       ? "ELOOP"
       : ERRNO_TEXT.find(([pattern]) => pattern.test(message))?.[1];
@@ -274,6 +301,12 @@ function fsError(op: string, path: string, result: ExecOutput): Error {
     `${op} ${path}: ${message || code || `helper exited with ${result.exitCode}`}`,
   );
   if (code) error.code = code;
+  return error;
+}
+
+function tooLarge(message: string, code: "EFBIG" | "E2BIG"): Error {
+  const error: NodeJS.ErrnoException = new Error(message);
+  error.code = code;
   return error;
 }
 
@@ -414,6 +447,8 @@ interface SandboxSetup {
   secrets: Record<string, string>;
   ephemeral: boolean;
   killGraceMs: number;
+  maxFileBytes: number;
+  maxListEntries: number;
 }
 
 class DockerSandbox implements Sandbox {
@@ -430,6 +465,8 @@ class DockerSandbox implements Sandbox {
   private readonly secrets: Record<string, string>;
   private readonly ephemeral: boolean;
   private readonly killGraceMs: number;
+  private readonly maxFileBytes: number;
+  private readonly maxListEntries: number;
   private released = false;
   private releasing?: Promise<void>;
   /** Resolves true once the container is gone, which ends every process in it. */
@@ -447,6 +484,8 @@ class DockerSandbox implements Sandbox {
     this.secrets = setup.secrets;
     this.ephemeral = setup.ephemeral;
     this.killGraceMs = setup.killGraceMs;
+    this.maxFileBytes = setup.maxFileBytes;
+    this.maxListEntries = setup.maxListEntries;
     this.fs = this.createFs();
   }
 
@@ -458,11 +497,16 @@ class DockerSandbox implements Sandbox {
     return `${kind}${++this.counter}-${randomBytes(9).toString("hex")}`;
   }
 
-  /** Runs a driver helper (fs, scan, readiness) as the sandbox user, without the spec env or secrets. */
+  /**
+   * Runs a driver helper (fs, scan, readiness) as the sandbox user, without
+   * the spec env or secrets. Its output is capped at `maxBytes`, so a helper
+   * can never make the worker buffer an unbounded amount.
+   */
   private async helper(
     script: string,
     args: string[],
     stdin?: Buffer,
+    maxBytes = HELPER_OUTPUT_BYTES,
   ): Promise<ExecOutput> {
     this.assertLive();
     try {
@@ -475,6 +519,7 @@ class DockerSandbox implements Sandbox {
           WorkingDir: "/",
         },
         stdin,
+        maxBytes,
       );
     } catch (error) {
       if (this.released) throw new SandboxReleasedError(this.id);
@@ -516,8 +561,36 @@ class DockerSandbox implements Sandbox {
       return lexicalPath(WORKSPACE_DIR, path);
     };
     return {
-      read: async (path) =>
-        (await this.fsCall("read", path, [at(path), ""])).stdout,
+      read: async (path) => {
+        const target = at(path);
+        const max = this.maxFileBytes;
+        const refuse = (size?: string) =>
+          tooLarge(
+            `read ${path}: the file is ${size ? `${size} bytes` : "larger than the limit"}, ` +
+              `over the ${max}-byte limit of fs.read (maxFileBytes); read part of it through exec, for example with head, tail or sed`,
+            "EFBIG",
+          );
+        let result: ExecOutput;
+        try {
+          result = await this.helper(
+            FS_SCRIPT,
+            ["read", WORKSPACE_DIR, target, String(max)],
+            undefined,
+            max + READ_SLACK_BYTES,
+          );
+        } catch (error) {
+          if (error instanceof DockerOutputLimitError) throw refuse();
+          throw error;
+        }
+        if (result.exitCode !== 0) {
+          const size = /^EFBIG (\d+)/.exec(result.stderr.toString("utf8"));
+          if (size) throw refuse(size[1]);
+          throw fsError("read", path, result);
+        }
+        // The file grew past the limit between the size check and the read.
+        if (result.stdout.length > max) throw refuse();
+        return result.stdout;
+      },
       write: async (path, data) => {
         const target = at(path);
         const bytes =
@@ -556,10 +629,25 @@ class DockerSandbox implements Sandbox {
         };
       },
       list: async (path, options) => {
-        const result = await this.fsCall("list", path, [
-          at(path),
-          options?.recursive ? "recursive" : "",
-        ]);
+        const target = at(path);
+        const max = this.maxListEntries;
+        const refuse = (limit: string) =>
+          tooLarge(
+            `list ${path}: more than ${limit}, the limit of fs.list; list a narrower directory, or search through exec with find or rg`,
+            "E2BIG",
+          );
+        let result: ExecOutput;
+        try {
+          result = await this.fsCall("list", path, [
+            target,
+            options?.recursive ? "recursive" : "",
+            String(max),
+          ]);
+        } catch (error) {
+          if (error instanceof DockerOutputLimitError)
+            throw refuse(`${HELPER_OUTPUT_BYTES} bytes of entries`);
+          throw error;
+        }
         const entries: SandboxDirEntry[] = [];
         for (const record of result.stdout.toString("utf8").split("\0")) {
           if (record.length < 3) continue;
@@ -568,6 +656,11 @@ class DockerSandbox implements Sandbox {
             kind: entryKind(record[0] ?? ""),
           });
         }
+        // Checked first: cutting the listing short can make find complain.
+        if (entries.length > max) throw refuse(`${max} entries`);
+        // find's own errors (an unreadable directory) arrive on stderr.
+        if (result.stderr.length > 0)
+          throw fsError("list", path, { ...result, exitCode: 1 });
         return entries;
       },
       move: async (from, to) => {
@@ -913,6 +1006,10 @@ export class DockerSandboxDriver implements SandboxDriver {
   private readonly defaultImage: string;
   private readonly extraLabels: Record<string, string>;
   private readonly images = new Map<string, Promise<void>>();
+  private readonly maxFileBytes: number;
+  private readonly maxListEntries: number;
+  /** The `jj.instance` label on every container this driver creates. */
+  readonly instanceId: string;
 
   constructor(private readonly options: DockerDriverOptions = {}) {
     this.namespace = options.namespace ?? DEFAULT_NAMESPACE;
@@ -930,14 +1027,37 @@ export class DockerSandboxDriver implements SandboxDriver {
     for (const name of Object.keys(this.extraLabels))
       if (reserved.has(name))
         throw new Error(`Label ${name} is reserved by the docker driver`);
+    const positive = (
+      name: string,
+      value: number | undefined,
+      fallback: number,
+    ) => {
+      if (value === undefined) return fallback;
+      if (!Number.isSafeInteger(value) || value <= 0)
+        throw new Error(`Invalid docker driver ${name} ${value}`);
+      return value;
+    };
+    this.maxFileBytes = positive(
+      "maxFileBytes",
+      options.maxFileBytes,
+      DEFAULT_MAX_FILE_BYTES,
+    );
+    this.maxListEntries = positive(
+      "maxListEntries",
+      options.maxListEntries,
+      DEFAULT_MAX_LIST_ENTRIES,
+    );
+    this.instanceId = options.instanceId ?? PROCESS_INSTANCE;
+    if (!this.instanceId) throw new Error("Invalid docker driver instanceId");
     try {
       this.engine = new DockerEngine(
-        parseDockerHost(
-          options.host ?? process.env.DOCKER_HOST,
-          options.host === undefined
-            ? process.env.DOCKER_TLS_VERIFY
-            : undefined,
-        ),
+        parseDockerHost(options.host ?? process.env.DOCKER_HOST, {
+          tlsVerify:
+            options.host === undefined
+              ? process.env.DOCKER_TLS_VERIFY
+              : undefined,
+          allowInsecureTcp: options.allowInsecureTcp ?? false,
+        }),
       );
     } catch (error) {
       this.endpointError =
@@ -1126,6 +1246,55 @@ export class DockerSandboxDriver implements SandboxDriver {
     };
   }
 
+  /**
+   * Removes this namespace's containers that another driver instance
+   * created, such as ones a crashed worker left running. Meant to run once at
+   * worker start, before the first acquire. Only containers are removed
+   * (with their anonymous volumes); named workspace volumes are never
+   * touched, so `task` and `bot` files survive and a crashed worker's
+   * `ephemeral` volumes stay for the operator. Two live workers must
+   * therefore not share a namespace on one daemon.
+   */
+  async reapOrphans(): Promise<{ removed: string[] }> {
+    const engine = this.requireEngine();
+    const containers = await engine.json<
+      Array<{ Id: string; Names?: string[]; Labels?: Record<string, string> }>
+    >("GET", "/containers/json", {
+      query: {
+        all: true,
+        filters: JSON.stringify({
+          label: [
+            `${LABELS.sandbox}=1`,
+            `${LABELS.namespace}=${this.namespace}`,
+          ],
+        }),
+      },
+    });
+    const removed: string[] = [];
+    const failed: string[] = [];
+    for (const container of containers) {
+      if (container.Labels?.[LABELS.namespace] !== this.namespace) continue;
+      if (container.Labels?.[LABELS.instance] === this.instanceId) continue;
+      const name = container.Names?.[0]?.replace(/^\//, "") ?? container.Id;
+      try {
+        await engine.json("DELETE", `/containers/${container.Id}`, {
+          query: { force: true, v: true },
+          timeoutMs: 120_000,
+        });
+        removed.push(name);
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        failed.push(`${name} (${errorMessage(error)})`);
+      }
+    }
+    if (failed.length > 0)
+      throw new Error(
+        `Could not remove orphaned sandbox containers: ${failed.join(", ")}` +
+          (removed.length > 0 ? `; removed ${removed.join(", ")}` : ""),
+      );
+    return { removed };
+  }
+
   async acquire(request: AcquireRequest): Promise<Sandbox> {
     const spec = this.validateSpec(request.spec);
     const key = assertWorkspaceKey(request.workspaceKey);
@@ -1155,6 +1324,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       [LABELS.mode]: spec.workspace,
       [LABELS.key]: key,
       [LABELS.volume]: volumeName,
+      [LABELS.instance]: this.instanceId,
     };
     let containerId: string | undefined;
     try {
@@ -1193,6 +1363,8 @@ export class DockerSandboxDriver implements SandboxDriver {
         secrets: { ...request.secrets },
         ephemeral,
         killGraceMs: this.options.killGraceMs ?? KILL_GRACE_MS,
+        maxFileBytes: this.maxFileBytes,
+        maxListEntries: this.maxListEntries,
       });
       await sandbox.checkReady(image);
       signal?.throwIfAborted();

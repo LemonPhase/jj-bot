@@ -26,16 +26,35 @@ const MIN_API_VERSION = "1.41";
 const MAX_API_VERSION = "1.47";
 const REQUEST_TIMEOUT_MS = 60_000;
 
+export interface DockerHostOptions {
+  /** The `DOCKER_TLS_VERIFY` value; any non-empty value other than `0` is refused. */
+  tlsVerify?: string;
+  /** Accept plain-HTTP `tcp://` to a host that is not loopback. */
+  allowInsecureTcp?: boolean;
+}
+
+/** Loopback names and addresses: where a local socket proxy listens. */
+function isLoopback(host: string): boolean {
+  const name = host.toLowerCase();
+  return (
+    name === "localhost" || name === "::1" || /^127(?:\.\d{1,3}){3}$/.test(name)
+  );
+}
+
 /**
  * Parses a `DOCKER_HOST` value: `unix:///path/to.sock` or `tcp://host[:port]`
  * (plain HTTP, default port 2375). Unset means the default socket. TLS
  * (`DOCKER_TLS_VERIFY`) is not supported: a TLS daemon is reached through a
- * local proxy instead of being silently spoken to in clear text.
+ * local proxy instead of being silently spoken to in clear text. Plain
+ * `tcp://` is accepted only for a loopback host unless `allowInsecureTcp` is
+ * set, because anyone on the network path could drive the daemon, which is
+ * root on its host.
  */
 export function parseDockerHost(
   value: string | undefined,
-  tlsVerify: string | undefined = undefined,
+  options: DockerHostOptions = {},
 ): DockerEndpoint {
+  const { tlsVerify } = options;
   if (tlsVerify !== undefined && tlsVerify !== "" && tlsVerify !== "0")
     throw new Error(
       "DOCKER_TLS_VERIFY is set, but the docker sandbox driver speaks plain HTTP only; reach a TLS daemon through a local proxy on a unix:// or tcp:// address",
@@ -58,9 +77,15 @@ export function parseDockerHost(
     }
     if (url.pathname !== "/" || url.search || url.username)
       throw new Error(`DOCKER_HOST ${host}: expected tcp://host[:port]`);
+    const hostname = url.hostname.replace(/^\[(.*)\]$/, "$1");
+    if (!isLoopback(hostname) && !options.allowInsecureTcp)
+      throw new Error(
+        `DOCKER_HOST ${host} is plain HTTP to a host that is not loopback: anyone on the network path could drive the Docker daemon, which is root on its host. ` +
+          "Use a unix:// socket or a proxy on 127.0.0.1, or opt in with allowInsecureTcp (JJ_DOCKER_ALLOW_INSECURE_TCP=true).",
+      );
     return {
       kind: "tcp",
-      host: url.hostname.replace(/^\[(.*)\]$/, "$1"),
+      host: hostname,
       port: url.port ? Number(url.port) : 2375,
     };
   }
@@ -83,6 +108,14 @@ export class DockerApiError extends Error {
   ) {
     super(message);
     this.name = "DockerApiError";
+  }
+}
+
+/** A driver helper produced more output than the caller allowed; the connection was dropped. */
+export class DockerOutputLimitError extends Error {
+  constructor(readonly limit: number) {
+    super(`Command output exceeded ${limit} bytes`);
+    this.name = "DockerOutputLimitError";
   }
 }
 
@@ -443,11 +476,17 @@ export class DockerEngine {
     );
   }
 
-  /** Runs a command to completion and collects its output (for driver helpers, not agent commands). */
+  /**
+   * Runs a command to completion and collects its output (for driver
+   * helpers, not agent commands). Output past `maxBytes`, stdout and stderr
+   * together, is never buffered: the connection is dropped and the call
+   * rejects with `DockerOutputLimitError`.
+   */
   async run(
     container: string,
     config: ExecConfig,
     stdin?: Buffer,
+    maxBytes = Number.POSITIVE_INFINITY,
   ): Promise<ExecOutput> {
     const execId = await this.createExec(container, {
       ...config,
@@ -455,12 +494,26 @@ export class DockerEngine {
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    const attached = await this.startExec(
+    let collected = 0;
+    let attached: AttachedExec | undefined;
+    let exceeded = false;
+    attached = await this.startExec(
       execId,
-      (stream, chunk) => (stream === "stdout" ? stdout : stderr).push(chunk),
+      (stream, chunk) => {
+        if (exceeded) return;
+        collected += chunk.length;
+        if (collected > maxBytes) {
+          exceeded = true;
+          attached?.destroy();
+          return;
+        }
+        (stream === "stdout" ? stdout : stderr).push(chunk);
+      },
       stdin,
     );
+    if (exceeded) attached.destroy();
     await attached.ended;
+    if (exceeded) throw new DockerOutputLimitError(maxBytes);
     const { ExitCode: exitCode } = await this.waitExec(execId);
     return {
       exitCode,

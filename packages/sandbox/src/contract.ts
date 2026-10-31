@@ -252,6 +252,14 @@ export interface SandboxDriver {
   /** Cheap reachability check for readiness probes. Unhealthy where the driver cannot run. */
   probe(): Promise<DriverHealth>;
   acquire(request: AcquireRequest): Promise<Sandbox>;
+  /**
+   * Optional. Ends sandboxes that an earlier run of the server left behind,
+   * such as containers still running after a worker crash, and returns what
+   * it removed. The engine calls it once at worker start, before the first
+   * `acquire`, so it must never touch sandboxes of the current process.
+   * Workspaces are never deleted: `task` and `bot` files survive it.
+   */
+  reapOrphans?(): Promise<{ removed: string[] }>;
 }
 
 export class SandboxPathError extends Error {

@@ -12,6 +12,7 @@ import {
 import { DOCKER_BASE_IMAGE, DockerSandboxDriver } from "./drivers/docker";
 import {
   DockerEngine,
+  DockerOutputLimitError,
   isNotFound,
   parseDockerHost,
   StreamDemuxer,
@@ -19,8 +20,9 @@ import {
 
 /**
  * Docker driver tests. Everything that needs a daemon (DOCKER_HOST, else the
- * default socket) skips when none is reachable; CI provides one. They use
- * jj-sandbox:base-1 when it is built (`npm run sandbox:image`) and otherwise
+ * default socket) skips when none is reachable; CI provides one. The image is
+ * JJ_SANDBOX_TEST_IMAGE when set (CI builds jj-sandbox:base-1 and sets it),
+ * else jj-sandbox:base-1 when it is built (`npm run sandbox:image`), else
  * node:22-bookworm-slim, which also meets the driver's image requirements.
  * Every container and volume carries a per-run label and is removed after
  * the run.
@@ -37,17 +39,23 @@ const health = await new DockerSandboxDriver().probe();
 const engine = health.ok
   ? new DockerEngine(parseDockerHost(process.env.DOCKER_HOST))
   : undefined;
+const requestedImage = process.env.JJ_SANDBOX_TEST_IMAGE?.trim() || undefined;
 const image =
-  engine &&
+  requestedImage ??
+  (engine &&
   (await engine
     .json("GET", `/images/${DOCKER_BASE_IMAGE}/json`)
     .then(() => true)
     .catch(() => false))
     ? DOCKER_BASE_IMAGE
-    : FALLBACK_IMAGE;
+    : FALLBACK_IMAGE);
 if (!health.ok)
   console.warn(
     `[docker driver] skipping daemon tests: no Docker daemon reachable (${health.detail})`,
+  );
+else if (requestedImage)
+  console.warn(
+    `[docker driver] testing with ${requestedImage} (JJ_SANDBOX_TEST_IMAGE)`,
   );
 else if (image !== DOCKER_BASE_IMAGE)
   console.warn(
@@ -65,7 +73,11 @@ const createDriver = () =>
 
 const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
-type DockerSandbox = Sandbox & { containerId: string; volumeName: string };
+type DockerSandbox = Sandbox & {
+  containerId: string;
+  containerName: string;
+  volumeName: string;
+};
 
 interface ContainerInspect {
   Config: { User: string; Env: string[] | null };
@@ -131,10 +143,13 @@ describe("docker engine client", () => {
       kind: "unix",
       socketPath: "/run/proxy.sock",
     });
-    expect(parseDockerHost("tcp://docker-proxy:2375")).toEqual({
+    expect(parseDockerHost("tcp://127.0.0.1:2375")).toEqual({
       kind: "tcp",
-      host: "docker-proxy",
+      host: "127.0.0.1",
       port: 2375,
+    });
+    expect(parseDockerHost("tcp://localhost:2375")).toMatchObject({
+      host: "localhost",
     });
     expect(parseDockerHost("tcp://[::1]")).toEqual({
       kind: "tcp",
@@ -143,7 +158,29 @@ describe("docker engine client", () => {
     });
     expect(() => parseDockerHost("ssh://user@host")).toThrow(/unsupported/);
     expect(() => parseDockerHost("unix://relative.sock")).toThrow(/absolute/);
-    expect(() => parseDockerHost("tcp://host:2376", "1")).toThrow(/TLS/);
+    expect(() =>
+      parseDockerHost("tcp://127.0.0.1:2376", { tlsVerify: "1" }),
+    ).toThrow(/TLS/);
+  });
+
+  it("refuses plain tcp:// to a non-loopback host unless the operator opts in", async () => {
+    for (const host of [
+      "tcp://docker-proxy:2375",
+      "tcp://10.0.0.5:2375",
+      "tcp://[2001:db8::1]:2375",
+      "tcp://127.0.0.1.example.com:2375",
+    ])
+      expect(() => parseDockerHost(host)).toThrow(/allowInsecureTcp/);
+    expect(
+      parseDockerHost("tcp://docker-proxy:2375", { allowInsecureTcp: true }),
+    ).toEqual({ kind: "tcp", host: "docker-proxy", port: 2375 });
+    const refused = await new DockerSandboxDriver({
+      host: "tcp://10.0.0.5:2375",
+    }).probe();
+    expect(refused.ok).toBe(false);
+    expect(refused.detail).toMatch(
+      /not loopback.*JJ_DOCKER_ALLOW_INSECURE_TCP/s,
+    );
   });
 
   it("demultiplexes attach frames split at any byte", () => {
@@ -455,6 +492,146 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         code: "ENOENT",
       });
     });
+
+    it("refuses files and listings over the fs limits instead of buffering them", async () => {
+      const limited = new DockerSandboxDriver({
+        namespace,
+        labels,
+        maxFileBytes: 1000,
+        maxListEntries: 20,
+      });
+      const sandbox = (await limited.acquire(request())) as DockerSandbox;
+      live.push(sandbox);
+      await sandbox.fs.write("fits.bin", Buffer.alloc(1000, 1));
+      expect((await sandbox.fs.read("fits.bin")).length).toBe(1000);
+      await sandbox.fs.write("over.bin", Buffer.alloc(1001, 1));
+      await expect(sandbox.fs.read("over.bin")).rejects.toMatchObject({
+        code: "EFBIG",
+        message: expect.stringMatching(/1001 bytes.*maxFileBytes/),
+      });
+      const made = await sandbox.exec(
+        "mkdir few many && (cd few && seq 1 20 | xargs touch) && (cd many && seq 1 21 | xargs touch)",
+      );
+      expect(made.exitCode).toBe(0);
+      expect(await sandbox.fs.list("few")).toHaveLength(20);
+      await expect(sandbox.fs.list("many")).rejects.toMatchObject({
+        code: "E2BIG",
+        message: expect.stringMatching(/more than 20 entries/),
+      });
+      await expect(
+        sandbox.fs.list(".", { recursive: true }),
+      ).rejects.toMatchObject({ code: "E2BIG" });
+    });
+
+    it("refuses an 80 MB file under the default 32 MiB read limit", async () => {
+      const sandbox = await acquire();
+      const made = await sandbox.exec("head -c 80000000 /dev/zero > huge.bin");
+      expect(made.exitCode).toBe(0);
+      await expect(sandbox.fs.read("huge.bin")).rejects.toMatchObject({
+        code: "EFBIG",
+        message: expect.stringMatching(/80000000 bytes.*33554432-byte/),
+      });
+    });
+
+    it("drops a helper's connection once its output passes the cap", async () => {
+      const sandbox = await acquire();
+      await expect(
+        engine?.run(
+          sandbox.containerId,
+          {
+            Cmd: ["head", "-c", "5000000", "/dev/zero"],
+            Env: [],
+            User: "1000:1000",
+          },
+          undefined,
+          1000,
+        ),
+      ).rejects.toBeInstanceOf(DockerOutputLimitError);
+      expect((await sandbox.exec("echo still-usable")).stdout).toBe(
+        "still-usable\n",
+      );
+    });
+
+    it("reaps containers another driver instance left behind, keeping workspaces", async () => {
+      const reapNamespace = `${namespace}-reap`;
+      const crashed = new DockerSandboxDriver({
+        namespace: reapNamespace,
+        labels,
+        instanceId: "crashed-worker",
+      });
+      const current = new DockerSandboxDriver({
+        namespace: reapNamespace,
+        labels,
+        instanceId: "current-worker",
+      });
+      const neighbour = new DockerSandboxDriver({
+        namespace: `${namespace}-other`,
+        labels,
+        instanceId: "crashed-worker",
+      });
+      const key = uniqueKey("reap");
+      const orphan = (await crashed.acquire(
+        request({ workspace: "task" }, key),
+      )) as DockerSandbox;
+      live.push(orphan);
+      await orphan.fs.write("kept.txt", "survives");
+      const mine = (await current.acquire(request())) as DockerSandbox;
+      const other = (await neighbour.acquire(request())) as DockerSandbox;
+      live.push(mine, other);
+
+      expect(await current.reapOrphans()).toEqual({
+        removed: [orphan.containerName],
+      });
+      await expect(
+        engine?.json("GET", `/containers/${orphan.containerId}/json`),
+      ).rejects.toSatisfy(isNotFound);
+      for (const alive of [mine, other])
+        expect((await alive.exec("true")).exitCode).toBe(0);
+      await expect(
+        engine?.json("GET", `/volumes/${orphan.volumeName}`),
+      ).resolves.toBeDefined();
+      const resumed = await current.acquire(
+        request({ workspace: "task" }, key),
+      );
+      live.push(resumed);
+      expect((await resumed.fs.read("kept.txt")).toString()).toBe("survives");
+      expect(await current.reapOrphans()).toEqual({ removed: [] });
+
+      // Drivers in one process share an instance id, so they never reap each other.
+      const sameNamespace = `${namespace}-same`;
+      const first = new DockerSandboxDriver({
+        namespace: sameNamespace,
+        labels,
+      });
+      live.push(await first.acquire(request()));
+      const second = new DockerSandboxDriver({
+        namespace: sameNamespace,
+        labels,
+      });
+      expect(second.instanceId).toBe(first.instanceId);
+      expect(await second.reapOrphans()).toEqual({ removed: [] });
+    });
+
+    it.runIf(image === DOCKER_BASE_IMAGE)(
+      "ships the tools the base image promises",
+      async () => {
+        const sandbox = await acquire();
+        const result = await sandbox.exec(
+          "id -un; stat -c %U /workspace; git --version; python3 --version; rg --version; curl --version; node --version",
+        );
+        expect(result.exitCode).toBe(0);
+        const lines = result.stdout.split("\n");
+        expect(lines.slice(0, 2)).toEqual(["sandbox", "sandbox"]);
+        for (const pattern of [
+          /git version/,
+          /Python 3/,
+          /ripgrep/,
+          /curl/,
+          /v22\./,
+        ])
+          expect(result.stdout).toMatch(pattern);
+      },
+    );
 
     it("reaches the daemon through a tcp:// DOCKER_HOST, such as a socket proxy", async (context) => {
       const endpoint = engine?.endpoint;
