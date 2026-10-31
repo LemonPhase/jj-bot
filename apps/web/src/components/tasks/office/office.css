@@ -1,0 +1,298 @@
+/* ---- Task office (3D) view ---- */
+.view-switch {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-subtle);
+  padding: 3px;
+  border-radius: 9px;
+}
+
+.view-switch button {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+
+.view-switch button.active {
+  background: var(--bg-surface);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.graph-column.office-mode {
+  grid-template-rows: 54px 1fr;
+}
+
+.office-wrap {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.office-host {
+  position: absolute;
+  inset: 0;
+}
+
+.office-canvas {
+  display: block;
+}
+
+.office-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.office-tag {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: opacity 0.2s;
+}
+
+.office-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.office-tag-status {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: #fff;
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+.office-ping {
+  display: none;
+  color: #fff;
+  background: var(--status-verifying);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+}
+
+.office-tag.ping .office-ping {
+  display: inline-block;
+}
+
+.office-bubble {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  max-width: 250px;
+  min-width: 120px;
+  background: var(--bg-surface);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--c);
+  border-radius: 12px;
+  padding: 7px 10px 8px;
+  font-size: 12px;
+  line-height: 1.42;
+  box-shadow: var(--shadow-md);
+  transition: opacity 0.35s;
+  animation: office-pop 0.25s ease;
+}
+
+.office-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.office-bubble.fade {
+  opacity: 0;
+}
+
+.office-bubble-who {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--c);
+  margin-bottom: 2px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.office-intent {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: var(--bg-hover);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+@keyframes office-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 2px)) scale(0.94);
+  }
+}
+
+.office-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  opacity: 0;
+  transition: all 0.3s;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 7px 12px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--bg-surface);
+  pointer-events: none;
+}
+
+.office-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.office-status {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.office-chip {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 3px 8px;
+  border-radius: 7px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  color: var(--ink-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.office-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-completed);
+  animation: office-blink 1.6s ease-in-out infinite;
+}
+
+@keyframes office-blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.office-card {
+  position: absolute;
+  top: 46px;
+  left: 12px;
+  width: 260px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 10px 12px;
+  font-size: 12px;
+  display: grid;
+  gap: 5px;
+}
+
+.office-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+}
+
+.office-card-close {
+  font-size: 16px;
+  color: var(--ink-muted);
+}
+
+.office-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.office-card-text {
+  color: var(--ink-secondary);
+  line-height: 1.45;
+}
+
+.office-controls {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 11px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-md);
+  white-space: nowrap;
+}
+
+.office-btn {
+  height: 30px;
+  min-width: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+  background: transparent;
+  border: none;
+}
+
+.office-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.office-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.office-btn.primary {
+  background: var(--ink);
+  color: var(--bg-surface);
+}
+
+.office-btn.on {
+  color: var(--ink);
+  background: var(--bg-subtle);
+}
