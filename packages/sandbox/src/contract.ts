@@ -30,8 +30,9 @@ export const resourceLimitsSchema = z.object({
  * `workspaceKey`: the same key in two modes never shares files.
  *
  * - `task` (default): persists across releases and is shared by every sandbox
- *   acquired with the same key. For task execution the key is the task id and
- *   the files live until the task is deleted.
+ *   acquired with the same key. For task execution the key is the task id.
+ *   No call in this contract deletes a `task` or `bot` workspace, so deleting
+ *   a task does not delete its files: the operator clears a driver's storage.
  * - `ephemeral`: a fresh, empty workspace per acquisition, discarded on
  *   release unless `persist` is set. The key is not used for reuse.
  * - `bot`: persists for one bot across tasks. Task execution never uses it:
@@ -74,6 +75,10 @@ export type SandboxSpecInput = z.input<typeof sandboxSpecSchema>;
  * Deliberately conservative, because drivers turn keys into directory, volume
  * or resource names: no separators, no `.` or `..`, no whitespace, no
  * encodings. Task ids (UUIDs) fit.
+ *
+ * Keys are compared case-sensitively. On a case-insensitive filesystem the
+ * `local` driver may alias keys that differ only by case; the keys the engine
+ * generates are lowercase or fixed-case ids, so they never collide that way.
  */
 export const WORKSPACE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -139,11 +144,16 @@ export interface SandboxDirEntry {
 
 /**
  * Workspace file access. Paths are workspace-relative, or absolute inside the
- * workspace. Containment is checked on the real path: a path that leaves the
- * workspace once symlinks are followed (including a dangling link whose target
- * would be created outside) is rejected with `SandboxPathError`. `remove` and
- * `move` act on a symlink itself, never its target, so an outward link can
- * still be deleted or renamed.
+ * workspace. Containment is checked on the real path, once per call: a path
+ * that leaves the workspace once symlinks are followed (including a dangling
+ * link whose target would be created outside) is rejected with
+ * `SandboxPathError`. The check is best effort against concurrent changes: a
+ * command inside the sandbox that swaps a directory for a symlink while a call
+ * runs can redirect that call. `remove` and `move` act on a symlink itself,
+ * never its target, so an outward link can still be deleted or renamed.
+ *
+ * An isolating driver resolves paths inside the sandbox, never on the host:
+ * an absolute link such as `/etc` means the sandbox's `/etc`.
  */
 export interface SandboxFs {
   read(path: string): Promise<Buffer>;
