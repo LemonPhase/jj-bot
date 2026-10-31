@@ -194,6 +194,9 @@ export class BackendService {
       const participants = task.participantBotIds
         .map((botId) => allBots.find((bot) => bot.id === botId))
         .filter((bot): bot is Bot => Boolean(bot));
+      const checks = (await tx.list<CheckRecord>("checks")).filter(
+        (check) => check.taskId === id,
+      );
       return {
         task,
         bots: participants,
@@ -206,9 +209,8 @@ export class BackendService {
         )
           .filter((message) => message.taskId === id)
           .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "")),
-        checks: (await tx.list<CheckRecord>("checks")).filter(
-          (check) => check.taskId === id,
-        ),
+        checks,
+        verificationResults: checks,
       };
     });
     const events = await this.store.events(id);
@@ -422,7 +424,8 @@ export class BackendService {
         );
       // Every steering update changes execution context, even when the top-level goal text stays.
       task.goalVersion += 1;
-      if (parsed.goal) task.goal = parsed.goal;
+      const nextGoal = parsed.replacementGoal ?? parsed.goal;
+      if (nextGoal) task.goal = nextGoal;
       if (parsed.verificationPlan)
         task.verificationPlan = parsed.verificationPlan;
       if (parsed.checks) task.checks = parsed.checks;

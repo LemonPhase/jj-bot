@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTRACT_VERSION,
+  createBotCommandSchema,
   createTaskCommandSchema,
   postTaskMessageCommandSchema,
   steerTaskCommandSchema,
@@ -74,8 +75,8 @@ describe("JJ domain boundaries", () => {
         .success,
     ).toBe(true);
   });
-  it("validates 0.2.0 command and taskView schemas", () => {
-    expect(CONTRACT_VERSION).toBe("0.2.0");
+  it("validates 0.3.0 command and taskView schemas", () => {
+    expect(CONTRACT_VERSION).toBe("0.3.0");
     expect(
       createTaskCommandSchema.safeParse({
         goal: "Compare sources",
@@ -108,9 +109,86 @@ describe("JJ domain boundaries", () => {
         sessions: [],
         messages: [],
         checks: [],
+        verificationResults: [],
         events: [],
         replayCursor: 0,
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("frontend command boundary", () => {
+  it("requires a verification plan and a participating coordinator to create a task", () => {
+    const command = {
+      goal: "Compare sources",
+      coordinatorBotId: "a",
+      participantBotIds: ["a", "b"],
+      verificationPlan: [criterion],
+    };
+    expect(createTaskCommandSchema.safeParse(command).success).toBe(true);
+    expect(
+      createTaskCommandSchema.safeParse({ ...command, verificationPlan: [] })
+        .success,
+    ).toBe(false);
+    expect(
+      createTaskCommandSchema.safeParse({
+        ...command,
+        coordinatorBotId: "outsider",
+      }).success,
+    ).toBe(false);
+  });
+  it("requires a bot to have both a name and instructions", () => {
+    expect(
+      createBotCommandSchema.safeParse({
+        name: "Ember",
+        instructions: "Summarise",
+      }).success,
+    ).toBe(true);
+    expect(
+      createBotCommandSchema.safeParse({ name: "Ember", instructions: "" })
+        .success,
+    ).toBe(false);
+  });
+  it("separates posting a message from steering the goal", () => {
+    expect(
+      postTaskMessageCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "For reference",
+        activateBotIds: [],
+      }).success,
+    ).toBe(true);
+    // Steering carries the version the user saw, so stale steering can be rejected.
+    expect(
+      steerTaskCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "Prioritise the primary source",
+        observedGoalVersion: 1,
+      }).success,
+    ).toBe(true);
+    expect(
+      steerTaskCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "Prioritise the primary source",
+      }).success,
+    ).toBe(false);
+  });
+  it("carries a replay cursor so a reload can resume the same event stream", () => {
+    const view = {
+      task,
+      participants: [
+        { id: "a", name: "Atlas", instructions: "Coordinate" },
+        { id: "b", name: "Beacon", instructions: "Research" },
+        { id: "c", name: "Cinder", instructions: "Check" },
+      ],
+      messages: [],
+      sessions: [],
+      verificationResults: [],
+      events: [],
+      replayCursor: 0,
+    };
+    expect(taskViewSchema.safeParse(view).success).toBe(true);
+    expect(
+      taskViewSchema.safeParse({ ...view, replayCursor: -1 }).success,
+    ).toBe(false);
   });
 });

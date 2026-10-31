@@ -183,9 +183,14 @@ export const createTaskCommandSchema = z
       });
     }
   });
+export const createBotCommandSchema = z.object({
+  name: z.string().min(1),
+  instructions: z.string().min(1),
+});
 export const postTaskMessageCommandSchema = taskMessageSchema
   .omit({ id: true, taskId: true })
   .extend({
+    taskId: id.optional(),
     authorId: id.default("user"),
     authorKind: z.enum(["user", "bot", "system"]).default("user"),
     intent: z
@@ -194,14 +199,17 @@ export const postTaskMessageCommandSchema = taskMessageSchema
     activateBotIds: z.array(id).default([]),
   });
 export const steerTaskCommandSchema = z.object({
+  taskId: id.optional(),
   text: z.string().min(1),
   authorId: id.default("user"),
-  observedGoalVersion: z.number().int().positive().optional(),
+  observedGoalVersion: z.number().int().positive(),
+  replacementGoal: z.string().min(1).optional(),
   goal: z.string().min(1).optional(),
   verificationPlan: taskSchema.shape.verificationPlan.optional(),
   checks: z.array(checkDefinitionSchema).optional(),
 });
 export const stopTaskCommandSchema = z.object({
+  taskId: id.optional(),
   reason: z.string().min(1).optional(),
   authorId: id.optional(),
   requestedBy: id.optional(),
@@ -212,7 +220,8 @@ export const taskViewSchema = z.object({
   participants: z.array(botSchema).default([]),
   sessions: z.array(executionSessionSchema),
   messages: z.array(taskMessageSchema),
-  checks: z.array(verificationResultSchema),
+  checks: z.array(verificationResultSchema).default([]),
+  verificationResults: z.array(verificationResultSchema).default([]),
   events: z.array(taskEventSchema),
   replayCursor: z.number().int().nonnegative(),
 });
@@ -235,6 +244,7 @@ export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type TaskEvent = z.infer<typeof taskEventSchema>;
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
 export type CheckDefinition = z.infer<typeof checkDefinitionSchema>;
+export type CreateBotCommand = z.infer<typeof createBotCommandSchema>;
 export type CreateTaskCommand = z.input<typeof createTaskCommandSchema>;
 export type PostTaskMessageCommand = z.input<
   typeof postTaskMessageCommandSchema

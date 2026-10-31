@@ -3,6 +3,7 @@ import {
   botSchema,
   type CheckDefinition,
   checkDefinitionSchema,
+  createBotCommandSchema,
   createTaskCommandSchema,
   executionSessionSchema,
   postTaskMessageCommandSchema,
@@ -17,6 +18,7 @@ import {
 export {
   type CheckDefinition,
   checkDefinitionSchema,
+  createBotCommandSchema,
   createTaskCommandSchema,
   postTaskMessageCommandSchema,
   steerTaskCommandSchema,
@@ -28,7 +30,9 @@ export {
 export const createBotSchema = botSchema.omit({ id: true });
 export const createTaskSchema = createTaskCommandSchema;
 export const postMessageSchema = postTaskMessageCommandSchema;
-export const steerTaskSchema = steerTaskCommandSchema;
+export const steerTaskSchema = steerTaskCommandSchema.extend({
+  observedGoalVersion: z.number().int().positive().optional(),
+});
 export const stopTaskSchema = stopTaskCommandSchema;
 export const spawnSessionSchema = executionSessionSchema
   .omit({ id: true, taskId: true, goalVersion: true, status: true })
