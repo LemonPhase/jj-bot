@@ -2,7 +2,7 @@
 
 A team project for Track 1: Frontier Agents with Gemini at Halloween At Imperial: Gemini Edition.
 
-**Status: documentation only.** No application code, dependencies, or runnable services have been added. Direct Google GenAI SDK integration is selected for the hackathon; Google ADK is deferred. OpenBot is the recommended application base pending an integration check and team selection.
+**Status: documentation only.** No application code, dependencies, or runnable services have been added. Direct Google GenAI SDK integration is selected for the hackathon; Google ADK is deferred. Option B is selected: CopilotKit OSS with our own application infrastructure and agent execution backend. OpenBot, OpenMausBot and Rakazo remain design references.
 
 Repository: [LemonPhase/jj-bot](https://github.com/LemonPhase/jj-bot).
 

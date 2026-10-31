@@ -1,10 +1,10 @@
 # JJ Bot implementation approaches
 
-Researched 31 October 2026. **Accepted:** use the official Google GenAI SDK directly for the hackathon; defer Google ADK. **Recommendation, not accepted:** extend CopilotKit OpenBot, subject to an integration check. This supersedes the earlier custom-app/LangGraph recommendation.
+Researched 31 October 2026. **Current accepted choice: B — CopilotKit OSS with our own application infrastructure and agent execution backend, using the Google GenAI SDK directly; ADK deferred.** The user selected B to control the application model while borrowing suitable ideas from existing systems. The original OpenBot-first recommendation below is retained as research history and is superseded. See [current technology direction](tech-stack.md).
 
 Method: documentation and selected source inspection, not installation, live model testing or benchmarking. Relative effort and risk are engineering judgments. No approach has passed JJ Bot's acceptance checks yet.
 
-## Recommendation
+## Original recommendation — superseded by option B selection
 
 Start by evaluating **OpenBot as the application base, with a JJ execution backend using `@google/genai` directly**. Reuse bot profiles, conversations, groups, the tool gateway, durable work queue and audit infrastructure. Add our task/session/verification model and collaboration visualization. Google ADK, LangGraph and Mastra are not prerequisites.
 
@@ -19,7 +19,7 @@ The fallback is **CopilotKit's open-source TypeScript runtime and React tooling 
 | AG-UI | Agent/frontend event protocol | Suitable boundary; does not schedule agents. |
 | CopilotKit OSS SDK/runtime | Chat/state/tool UI integration and runtime handling | Supports a custom AG-UI backend without ADK. |
 | CopilotKit Intelligence | Saved streams, realtime continuity and other services | Required by stock OpenBot's documented setup; optional for a new app using the OSS TypeScript runtime. |
-| OpenBot | Application template combining profiles, channels, groups, tools and infrastructure | Preferred reuse candidate, not a published task-framework dependency. |
+| OpenBot | Application template combining profiles, channels, groups, tools and infrastructure | Design reference; not selected as our application base. |
 
 Google recommends [`@google/genai`](https://ai.google.dev/gemini-api/docs/libraries). Its [function-calling guide](https://ai.google.dev/gemini-api/docs/function-calling) documents model/tool interaction. The SDK does not itself supply our application-owned task lifecycle or verification policy.
 
@@ -103,7 +103,7 @@ This provides complete control and no CopilotKit dependency, but all chat stream
 
 **LangGraph/Mastra/ADK:** these are execution-layer choices, not application shells. LangGraph checkpoints help recovery/human pauses but do not supply JJ membership, routing or task-wide cancellation automatically. Direct SDK calls could run within a framework, but adding one is optional. ADK is deferred; LangGraph and Mastra are not selected. Separate the provider adapter, session driver and task store so later migration is bounded; it will not necessarily be drop-in. [LangGraph persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence).
 
-## Integration gate before adopting a base
+## Original OpenBot evaluation gate — historical
 
 The following spike is proposed, not executed:
 
@@ -117,4 +117,4 @@ The following spike is proposed, not executed:
 
 Choose A if contained extensions preserve our semantics and tool boundaries. Choose B if Intelligence setup or invasive changes dominate. Choose C only if protocol/UI integration is itself the demonstrated obstacle. No precise delivery estimate is justified before this check.
 
-The repository remains documentation-only. The model SDK choice is settled; the application base is a recommendation for team review. Implementation should follow the agreed [product specification](product-spec.md), [verification contract](verification.md) and [milestone](milestone-1.md).
+The repository remains documentation-only. Option B and the direct Google SDK are now selected; the OpenBot gate above is historical. The next integration check targets CopilotKit OSS and our own backend, as described in [technology direction](tech-stack.md). Implementation should follow the agreed [product specification](product-spec.md), [verification contract](verification.md) and [milestone](milestone-1.md).

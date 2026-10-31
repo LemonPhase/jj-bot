@@ -1,28 +1,40 @@
 # Technology direction
 
-Status: documentation only; no dependencies installed or integration tested. Updated 31 October 2026.
+Status: option B selected by the user on 31 October 2026. Documentation only; no application code, dependencies or integration tests yet.
 
-**Selected:** direct use of the official Google GenAI SDK (`@google/genai`) for the hackathon. Google ADK is deferred. Exact Gemini model IDs and event-account capabilities still require validation.
+## Accepted direction
 
-**Recommended, pending team selection and an integration check:** extend CopilotKit OpenBot with a JJ execution backend, task/session records, verification loops and collaboration visualization. This supersedes the previous recommendation to build a new application with LangGraph.js. LangGraph and Mastra are not selected or required.
+Build our own JJ Bot application infrastructure using CopilotKit OSS for frontend/agent integration and the official Google GenAI SDK (`@google/genai`) directly for model calls. Google ADK is deferred. LangGraph and Mastra are not selected.
 
-Read the [implementation approach comparison](approach-comparison.md) for source-level findings, alternatives, dependencies and the proposed validation gate.
+JJ Bot owns bot identities/memory, tasks and participation, execution sessions, group messages, selective activation, durable scheduling, tool execution, verification, steering, cancellation, and event persistence/replay. CopilotKit handles chat/state/tool UI integration through AG-UI; it does not own our product model or scheduler.
 
-| Layer | Proposed starting point | Status |
+We are not forking OpenBot. Borrow and adapt its structured handoffs, leased work queues, tool boundaries and attributed events, together with OpenMausBot's assignment hierarchy and Rakazo's identity/execution separation. Preserve upstream attribution and license obligations if implementation code is reused.
+
+## Implementation baseline
+
+| Layer | Direction | Status |
 | --- | --- | --- |
-| Application base | CopilotKit OpenBot, pinned revision | Recommendation |
-| Frontend | Reuse its React/Vite app; add task/session visualization | Depends on base selection |
-| API/storage | Reuse Hono, PostgreSQL/Drizzle and durable queue foundations | Depends on base selection |
-| Model calls | Official Google GenAI SDK behind a provider adapter | Selected; untested |
-| Execution | JJ backend-owned session/tool loop with explicit verification | Required behavior; implementation open |
-| Agent/frontend boundary | Custom AG-UI endpoint and attributed task events | Proposed |
-| Service topology | Local/server execution backend; managed or self-hosted Intelligence if using OpenBot | Open; setup must be validated |
-| Visualization | Actual session activity projected into a task view; React Flow only if a graph is chosen | UI open |
+| Application | Custom JJ Bot infrastructure + CopilotKit OSS | Selected |
+| Models | Direct official Google GenAI SDK behind a provider adapter | Selected; exact model/API access untested |
+| Agent/frontend boundary | AG-UI with JJ task/session attribution | Selected direction; exact event/version mapping to validate |
+| Frontend | React + TypeScript + Vite and CopilotKit components/hooks | Proposed baseline |
+| API | Hono on a long-running TypeScript service | Proposed baseline |
+| Storage | Application-owned PostgreSQL + Drizzle | Proposed baseline |
+| Execution | Backend-owned Google SDK session/tool loop, persistent jobs and configurable concurrency | Required behavior; exact implementation open |
+| Live updates | Durable task events, HTTP commands and event streaming/replay | Required behavior; transport details open |
+| Visualization | Actual session activity projected into task views | Required; graph/timeline layout open |
+| Deployment | Backend runs locally or on a server, independent of browser lifecycle | Accepted product requirement; demo topology open |
 
-Fallback: CopilotKit OSS TypeScript runtime and React tooling with our own storage/task backend; Intelligence is optional on that route. A completely custom UI/backend is the third choice if integration evidence supports it.
+CopilotKit Intelligence is not a required dependency for this architecture. Initially plan application-owned persistence and memory. Adding an optional service later requires a concrete need and an explicit decision.
 
-Keep bot, task, execution-session and run identities application-owned. An AG-UI thread or provider session must not replace the shared JJ task. Keep model/provider integration separate from scheduling so a later runtime migration does not require redefining the product model.
+Keep bot, task, execution-session and run identities application-owned. An AG-UI thread or provider session must not replace a JJ task. Separate provider calls, session execution and task orchestration so later framework changes have bounded scope.
 
-Next implementation check: pinned OpenBot startup, direct Gemini backend tool execution with the browser closed, separate multi-bot sessions, selective activation, steering, verification failure/retry, task-wide stop and attributed event replay. The research did not run this check.
+## First integration check
 
-Sources: [Google SDK](https://ai.google.dev/gemini-api/docs/libraries), [OpenBot](https://github.com/CopilotKit/OpenBot), [CopilotKit OSS versus Intelligence](https://docs.copilotkit.ai/concepts/oss-vs-enterprise), [AG-UI](https://docs.ag-ui.com/introduction).
+Connect CopilotKit OSS to our direct-Gemini execution endpoint. Complete a real backend tool cycle with the browser closed. Then run two bots in separate sessions under one task; verify selective activation, user steering, a failed check followed by revision, task-wide stop, and attributed event replay. Add a third bot without special-case routing. No part of this check has been executed yet.
+
+Next design work: agree the task/session/event contract and ownership boundaries, choose the demo task/tools, then implement the multi-bot vertical slice in [Milestone 1](milestone-1.md).
+
+See the [approach comparison](approach-comparison.md) for the earlier research and alternatives. Its original OpenBot recommendation is superseded by this accepted choice.
+
+Sources: [Google SDK](https://ai.google.dev/gemini-api/docs/libraries), [CopilotKit OSS versus Intelligence](https://docs.copilotkit.ai/concepts/oss-vs-enterprise), [AG-UI](https://docs.ag-ui.com/introduction), [reference implementations](references.md).

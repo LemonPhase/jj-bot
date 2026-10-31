@@ -1,6 +1,12 @@
 # Architecture proposal
 
-Status: proposed implementation design. Product semantics in [Product specification](product-spec.md) are agreed; exact records, protocols, and runtime mappings below require team selection and implementation validation.
+Status: option B selected — custom JJ Bot application infrastructure with CopilotKit OSS and direct Google GenAI SDK execution. OpenBot and other applications are design references. Detailed implementation design remains proposed. Product semantics in [Product specification](product-spec.md) are agreed; exact records, protocols, and runtime mappings below require team selection and implementation validation.
+
+## Integration boundary
+
+CopilotKit OSS provides frontend chat/state/tool integration and a TypeScript runtime boundary speaking AG-UI to our agent backend. JJ Bot owns application records, persistence, memory policy, scheduling, tool execution, verification and task controls. CopilotKit Intelligence is not required. Our Google GenAI SDK execution loop runs on the backend and continues independently of browser connections. Protocol thread/run IDs map to JJ identities; they do not define the task model.
+
+Borrow structured handoffs, durable job claims, explicit context boundaries and attributed events from the reference applications where they fit. Implement the agreed JJ semantics rather than inheriting a reference product's channel/session assumptions.
 
 ## Deployment boundaries
 
