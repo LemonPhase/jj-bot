@@ -31,6 +31,11 @@ import {
 
 const HOST_SECRET_VAR = "JJ_CONFORMANCE_HOST_SECRET";
 const HOST_SECRET = "host-only-value";
+/**
+ * Set by Vitest in each worker before any module loads, so they also catch a
+ * driver that copies `process.env` at import time, before the canary exists.
+ */
+const RUNNER_VARS = ["VITEST", "VITEST_POOL_ID", "VITEST_WORKER_ID"];
 
 export interface ConformanceOptions {
   /** Driver-specific spec additions, such as an image or template reference. */
@@ -295,6 +300,14 @@ export function describeSandboxConformance(
         const listed = await sandbox.exec("env");
         expect(listed.exitCode).toBe(0);
         expect(listed.stdout).not.toContain(HOST_SECRET);
+        // Present in this process since before the driver was imported.
+        expect(RUNNER_VARS.some((key) => process.env[key] !== undefined)).toBe(
+          true,
+        );
+        const names = listed.stdout
+          .split("\n")
+          .map((line) => line.split("=", 1)[0]);
+        for (const key of RUNNER_VARS) expect(names, key).not.toContain(key);
         if (driver.capabilities.filesystemIsolation) {
           // An isolated driver must not leak it through process metadata either.
           const proc = await sandbox.exec(

@@ -10,7 +10,7 @@ import {
   taskSchema,
   taskViewSchema,
   z,
-} from "@jj/contracts";
+} from "@jj/contracts/legacy";
 import type { ApiBadge, JJApi } from "./client";
 import {
   type BotAppearance,

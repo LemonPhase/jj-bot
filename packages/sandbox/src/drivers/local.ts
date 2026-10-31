@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -44,10 +45,14 @@ import {
  *
  * What it does: builds each command's environment from scratch, so commands
  * do not *inherit* host variables or credentials; contains `fs` paths and
- * `cwd` to the workspace, checked on real paths so a symlink cannot lead the
- * fs API outside; keeps workspaces in separate directories namespaced by mode
- * (`task/<key>`, `bot/<key>`, `ephemeral/<key>-<random>`); and stops the
- * processes each sandbox starts on interruption and on release.
+ * `cwd` to the workspace, checked on real paths per call so a symlink cannot
+ * lead the fs API outside (best effort against a command swapping links
+ * concurrently); keeps workspaces in separate directories under a fixed root,
+ * namespaced by mode (`task/<key>`, `bot/<key>`, `ephemeral/<key>-<random>`);
+ * and stops the processes each sandbox starts on interruption and on release.
+ * Nothing here deletes a `task` or `bot` workspace: the operator clears the
+ * root. Keys that differ only by case may alias on a case-insensitive
+ * filesystem.
  *
  * What it does not do: hide anything. Commands run as the server's user on the
  * host kernel, filesystem and network. They can read every file that user can
@@ -57,13 +62,15 @@ import {
  * unisolated.
  *
  * Process cleanup limit: without cgroups the driver cannot guarantee that a
- * whole process tree is gone. Each command runs in its own process group and
- * carries a marker variable (`JJ_SANDBOX_EXEC`). On Linux the driver also
- * scans `/proc` for marked processes, which finds descendants that left the
- * group with `setsid`; a descendant that both leaves the group and clears its
- * environment escapes detection. Without `/proc` (macOS) only the process
- * groups are stopped, and an interrupted command reports `"unknown"`. Windows
- * is not supported.
+ * whole process tree is gone. Each command runs in its own session and process
+ * group and carries a marker variable (`JJ_SANDBOX_EXEC`). On Linux the driver
+ * also scans `/proc` for the command's session and for marked processes,
+ * which finds descendants that left the group or session; a descendant that
+ * both leaves the session and clears its environment escapes detection. A
+ * process the scan cannot read (such as a non-dumpable one owned by the same
+ * user) or a scan that fails makes the result `"unknown"`. Without `/proc`
+ * (macOS) only the process groups are stopped, and an interrupted command
+ * reports `"unknown"`. Windows is not supported.
  */
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -75,14 +82,26 @@ const DRAIN_MS = 250;
 const PRUNE_INTERVAL_MS = 1_000;
 const MARKER = "JJ_SANDBOX_EXEC";
 const UNSUPPORTED_PLATFORM = "The local sandbox driver does not run on Windows";
+/** Default workspace root, under the OS temporary directory. */
+const DEFAULT_ROOT_NAME = "jj-sandbox";
+/** Most `/proc` reads in flight at once during a scan. */
+const SCAN_CONCURRENCY = 32;
 
-/** Linux exposes each process's group and initial environment under /proc. */
+/** Linux exposes each process's group, session and initial environment under /proc. */
 const PROC_SCAN =
   process.platform === "linux" && existsSync("/proc/self/environ");
 
 export interface LocalDriverOptions {
-  /** Parent directory for workspaces. Default: a temporary directory. */
+  /**
+   * Parent directory for workspaces. Default: `JJ_SANDBOX_ROOT` from `env`,
+   * else `<os.tmpdir()>/jj-sandbox`. The default is fixed rather than random,
+   * so `task` and `bot` workspaces survive a server restart; the OS may still
+   * clear a temporary directory, so point it somewhere durable for that. No
+   * call deletes `task` or `bot` workspaces; the operator clears the root.
+   */
   root?: string;
+  /** Where the driver reads `JJ_SANDBOX_ROOT`. Default `process.env`. Never passed to commands. */
+  env?: Readonly<Record<string, string | undefined>>;
   shell?: string;
   /** How long a stopped command gets between SIGTERM and SIGKILL. Default 2000. */
   killGraceMs?: number;
@@ -106,7 +125,8 @@ function lexicalPath(root: string, candidate: string): string {
 /**
  * The real location of `path`: every symlink followed, including a dangling
  * final one (whose target a write would create). Missing trailing components
- * are appended unchanged, since they cannot be links yet.
+ * are appended unchanged, since they cannot be links yet. `hops` counts only
+ * symlinks followed, so a deep path of new directories is fine.
  */
 async function physicalPath(path: string, hops = 0): Promise<string> {
   if (hops > 64) throw new Error(`Too many symbolic links: ${path}`);
@@ -121,7 +141,7 @@ async function physicalPath(path: string, hops = 0): Promise<string> {
     return physicalPath(resolve(dirname(path), link), hops + 1);
   const parent = dirname(path);
   if (parent === path) return path;
-  return join(await physicalPath(parent, hops + 1), basename(path));
+  return join(await physicalPath(parent, hops), basename(path));
 }
 
 /**
@@ -152,11 +172,10 @@ function kind(mode: {
   return "other";
 }
 
-function createFs(root: string, assertLive: () => void): SandboxFs {
-  const at = (path: string, followFinal = true) => {
-    assertLive();
-    return containedPath(root, path, followFinal);
-  };
+/** The fs API, contained to `root`. The sandbox adds its lifecycle checks around it. */
+function createFs(root: string): SandboxFs {
+  const at = (path: string, followFinal = true) =>
+    containedPath(root, path, followFinal);
   return {
     async read(path) {
       return readFile(await at(path));
@@ -244,74 +263,118 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-interface ProcessInfo {
-  pid: number;
-  pgid: number;
-  marker?: string;
-}
-
-/** Live (non-zombie) processes with their group and marker. Linux only. */
-async function listProcesses(): Promise<ProcessInfo[]> {
-  const prefix = `${MARKER}=`;
-  const names = await readdir("/proc");
-  const found = await Promise.all(
-    names.map(async (name): Promise<ProcessInfo | undefined> => {
-      if (!/^\d+$/.test(name) || Number(name) === process.pid) return;
-      try {
-        const line = await readFile(`/proc/${name}/stat`, "latin1");
-        // "pid (comm) state ppid pgrp ...": comm may contain spaces and parens.
-        const [state, , pgrp] = line
-          .slice(line.lastIndexOf(")") + 2)
-          .split(" ");
-        if (state === "Z" || state === "X") return;
-        const environ = await readFile(`/proc/${name}/environ`, "latin1").catch(
-          () => "",
-        );
-        const entry = environ
-          .split("\0")
-          .find((item) => item.startsWith(prefix));
-        return {
-          pid: Number(name),
-          pgid: Number(pgrp),
-          marker: entry?.slice(prefix.length),
-        };
-      } catch {
-        return; // Exited while scanning.
-      }
-    }),
-  );
-  return found.filter((info) => info !== undefined);
-}
-
-/** What a stop aims at: process groups the driver created, plus every process carrying a matching marker. */
+/**
+ * What a stop aims at: the sessions the driver created (each command is a
+ * session and process group leader, so its group id is also its session id),
+ * plus every process carrying a matching marker.
+ */
 interface StopTarget {
   groups: ReadonlySet<number>;
+  /** `/proc` start time (clock ticks since boot) of the earliest targeted command; older processes cannot be its descendants. */
+  since: number;
   marked(marker: string): boolean;
 }
 
 interface Survivors {
   groups: number[];
   pids: number[];
+  /** A process could not be checked, or the scan failed: an empty result proves nothing. */
+  unverified: boolean;
+}
+
+type Inspection = "unrelated" | "unverified" | { group?: number };
+
+const UID = process.getuid?.();
+
+/** The process exited while it was being read. Any other error leaves it unchecked. */
+function exited(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === "ENOENT" || code === "ESRCH";
+}
+
+/** Fields of `/proc/<pid>/stat` from the third (state) on; `comm` may contain spaces and parens. */
+const statFields = (line: string) =>
+  line.slice(line.lastIndexOf(")") + 2).split(" ");
+/** Index of field 22, `starttime`, in `statFields`. */
+const STARTTIME = 19;
+
+/** `/proc` start time of a live or unreaped process, in clock ticks since boot; 0 when unknown. */
+function startTime(pid: number | undefined): number {
+  if (!PROC_SCAN || pid === undefined) return 0;
+  try {
+    const fields = statFields(readFileSync(`/proc/${pid}/stat`, "latin1"));
+    return Number(fields[STARTTIME]) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Whether one process belongs to `target`. Reads only what it needs. */
+async function inspect(pid: number, target: StopTarget): Promise<Inspection> {
+  try {
+    const fields = statFields(await readFile(`/proc/${pid}/stat`, "latin1"));
+    const [state, , pgrp, session] = fields;
+    if (state === "Z" || state === "X") return "unrelated";
+    const group = Number(pgrp);
+    if (target.groups.has(group)) return { group };
+    if (target.groups.has(Number(session))) return {};
+    // Started before the command, so it is not a descendant.
+    if (Number(fields[STARTTIME]) < target.since) return "unrelated";
+    const status = await readFile(`/proc/${pid}/status`, "latin1");
+    const uid = /^Uid:\s*(\d+)/m.exec(status)?.[1];
+    if (uid === undefined) return "unverified";
+    if (Number(uid) !== UID) return "unrelated"; // Commands run as this user.
+    // EACCES here (a non-dumpable process of this user) cannot rule it out.
+    const environ = await readFile(`/proc/${pid}/environ`, "latin1");
+    const prefix = `${MARKER}=`;
+    const entry = environ.split("\0").find((item) => item.startsWith(prefix));
+    return entry !== undefined && target.marked(entry.slice(prefix.length))
+      ? {}
+      : "unrelated";
+  } catch (error) {
+    return exited(error) ? "unrelated" : "unverified";
+  }
 }
 
 async function findSurvivors(target: StopTarget): Promise<Survivors> {
-  if (!PROC_SCAN)
-    return { groups: [...target.groups].filter(groupAlive), pids: [] };
-  const groups = new Set<number>();
-  const pids: number[] = [];
-  for (const info of await listProcesses()) {
-    const member = target.groups.has(info.pgid);
-    if (member) groups.add(info.pgid);
-    if (member || (info.marker !== undefined && target.marked(info.marker)))
-      pids.push(info.pid);
+  const groupsOnly = (): Survivors => ({
+    groups: [...target.groups].filter(groupAlive),
+    pids: [],
+    unverified: true,
+  });
+  if (!PROC_SCAN) return groupsOnly();
+  let names: string[];
+  try {
+    names = await readdir("/proc");
+  } catch {
+    return groupsOnly();
   }
-  return { groups: [...groups], pids };
+  const pids = names
+    .filter((name) => /^\d+$/.test(name))
+    .map(Number)
+    .filter((pid) => pid !== process.pid);
+  const found: Survivors = { groups: [], pids: [], unverified: false };
+  const groups = new Set<number>();
+  let next = 0;
+  const worker = async () => {
+    for (let pid = pids[next++]; pid !== undefined; pid = pids[next++]) {
+      const result = await inspect(pid, target);
+      if (result === "unverified") found.unverified = true;
+      else if (result !== "unrelated") {
+        found.pids.push(pid);
+        if (result.group !== undefined) groups.add(result.group);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: SCAN_CONCURRENCY }, worker));
+  found.groups = [...groups];
+  return found;
 }
 
 /**
  * SIGTERM, up to `graceMs` to exit, then SIGKILL for whatever is left. The
  * escalation never depends on a shell having exited. Resolves true only when a
- * `/proc` scan verified that nothing targeted survived.
+ * complete `/proc` scan verified that nothing targeted survived; never rejects.
  */
 async function stopProcesses(
   target: StopTarget,
@@ -340,8 +403,8 @@ async function stopProcesses(
     await delay(25);
     found = await findSurvivors(target);
   }
-  // Without /proc, a descendant that left the group cannot be ruled out.
-  return PROC_SCAN && empty(found);
+  // Without a complete /proc scan, a descendant that left the group cannot be ruled out.
+  return empty(found) && !found.unverified;
 }
 
 interface RunningCommand {
@@ -356,7 +419,11 @@ class LocalSandbox implements Sandbox {
   private released = false;
   private releasing?: Promise<void>;
   private commands = 0;
+  /** `/proc` start time of the first command, so release skips older processes. */
+  private firstStart?: number;
   private readonly running = new Set<RunningCommand>();
+  /** In-flight fs calls and exec setup, which release waits for before deleting the workspace. */
+  private readonly pending = new Set<Promise<unknown>>();
   /** Process groups of finished commands that left background processes behind. */
   private readonly background = new Set<number>();
   private pruneTimer?: NodeJS.Timeout;
@@ -369,11 +436,32 @@ class LocalSandbox implements Sandbox {
     private readonly ephemeral: boolean,
     private readonly killGraceMs: number,
   ) {
-    this.fs = createFs(workspaceDir, () => this.assertLive());
+    const fs = createFs(workspaceDir);
+    this.fs = {
+      read: (path) => this.guard(() => fs.read(path)),
+      write: (path, data) => this.guard(() => fs.write(path, data)),
+      remove: (path, options) => this.guard(() => fs.remove(path, options)),
+      mkdir: (path) => this.guard(() => fs.mkdir(path)),
+      stat: (path) => this.guard(() => fs.stat(path)),
+      list: (path, options) => this.guard(() => fs.list(path, options)),
+      move: (from, to) => this.guard(() => fs.move(from, to)),
+    };
   }
 
   private assertLive(): void {
     if (this.released) throw new SandboxReleasedError(this.id);
+  }
+
+  /** Runs a workspace operation that release waits for. Rejects, never throws, once released. */
+  private guard<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.released) return Promise.reject(new SandboxReleasedError(this.id));
+    const result = operation();
+    const settled: Promise<unknown> = result.then(
+      () => this.pending.delete(settled),
+      () => this.pending.delete(settled),
+    );
+    this.pending.add(settled);
+    return result;
   }
 
   /** Built from scratch every call: the host environment is never inherited. */
@@ -395,11 +483,13 @@ class LocalSandbox implements Sandbox {
   }
 
   async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
-    this.assertLive();
-    const cwd = options.cwd
-      ? await containedPath(this.workspaceDir, options.cwd, true)
-      : this.workspaceDir;
-    await mkdir(join(this.workspaceDir, ".tmp"), { recursive: true });
+    const cwd = await this.guard(async () => {
+      const cwd = options.cwd
+        ? await containedPath(this.workspaceDir, options.cwd, true)
+        : this.workspaceDir;
+      await mkdir(join(this.workspaceDir, ".tmp"), { recursive: true });
+      return cwd;
+    });
     const timeoutMs = resolveExecTimeoutMs(this.spec.limits, options.timeoutMs);
     const budget = this.spec.limits.maxOutputBytes;
     const startedAt = Date.now();
@@ -426,6 +516,9 @@ class LocalSandbox implements Sandbox {
       stdio: ["ignore", "pipe", "pipe"],
     });
     const pgid = child.pid;
+    // Read before any await, while the child is alive or at least unreaped.
+    const since = startTime(pgid);
+    this.firstStart ??= since;
 
     const chunks: Record<"stdout" | "stderr", Buffer[]> = {
       stdout: [],
@@ -469,17 +562,19 @@ class LocalSandbox implements Sandbox {
       if (closed || stopped || pgid === undefined) return;
       interruptReason = reason;
       stopped = stopProcesses(
-        { groups: new Set([pgid]), marked: (value) => value === marker },
+        { groups: new Set([pgid]), since, marked: (value) => value === marker },
         this.killGraceMs,
-      ).then((verified) => {
-        // A descendant that escaped detection may still hold the pipes open.
-        setTimeout(() => {
-          if (closed) return;
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-        }, DRAIN_MS).unref();
-        return verified;
-      });
+      )
+        .catch(() => false)
+        .then((verified) => {
+          // A descendant that escaped detection may still hold the pipes open.
+          setTimeout(() => {
+            if (closed) return;
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+          }, DRAIN_MS).unref();
+          return verified;
+        });
     };
 
     const deadline = setTimeout(() => stop("timeout"), timeoutMs);
@@ -525,28 +620,38 @@ class LocalSandbox implements Sandbox {
   }
 
   release(options: { persist?: boolean } = {}): Promise<void> {
-    this.releasing ??= (async () => {
-      this.released = true;
-      const running = [...this.running];
-      for (const command of running) command.stop("release");
-      const prefix = `${this.id}:`;
-      await Promise.all([
-        ...running.map((command) => command.done),
-        stopProcesses(
-          {
-            groups: new Set(this.background),
-            marked: (value) => value.startsWith(prefix),
-          },
-          this.killGraceMs,
-        ),
-      ]);
-      clearInterval(this.pruneTimer);
-      this.pruneTimer = undefined;
-      this.background.clear();
-      if (this.ephemeral && !options.persist)
-        await rm(this.workspaceDir, { recursive: true, force: true });
-    })();
+    this.releasing ??= this.shutdown(options).catch((error: unknown) => {
+      this.releasing = undefined; // Never cache a failure: a later call retries.
+      throw error;
+    });
     return this.releasing;
+  }
+
+  private async shutdown(options: { persist?: boolean }): Promise<void> {
+    this.released = true;
+    const running = [...this.running];
+    for (const command of running) command.stop("release");
+    const prefix = `${this.id}:`;
+    await Promise.all([
+      ...running.map((command) => command.done),
+      ...this.pending,
+      this.firstStart === undefined
+        ? undefined
+        : stopProcesses(
+            {
+              groups: new Set(this.background),
+              since: this.firstStart,
+              marked: (value) => value.startsWith(prefix),
+            },
+            this.killGraceMs,
+          ).catch(() => false),
+    ]);
+    clearInterval(this.pruneTimer);
+    this.pruneTimer = undefined;
+    this.background.clear();
+    // Only now: an fs call still in flight could otherwise recreate the directory.
+    if (this.ephemeral && !options.persist)
+      await rm(this.workspaceDir, { recursive: true, force: true });
   }
 }
 
@@ -595,14 +700,29 @@ export class LocalSandboxDriver implements SandboxDriver {
   }
 
   private root(): Promise<string> {
-    this.rootPromise ??= (async () => {
-      const base =
-        this.options.root ?? (await mkdtemp(join(tmpdir(), "jj-sandbox-")));
-      await mkdir(base, { recursive: true });
-      // Resolve symlinks once so containment checks match agent-visible paths.
-      return realpath(base);
-    })();
+    if (!this.rootPromise) {
+      const pending = this.prepareRoot();
+      this.rootPromise = pending;
+      // Never cache a failure: a later probe or acquire retries.
+      pending.catch(() => {
+        if (this.rootPromise === pending) this.rootPromise = undefined;
+      });
+    }
     return this.rootPromise;
+  }
+
+  private async prepareRoot(): Promise<string> {
+    const configured =
+      this.options.root || (this.options.env ?? process.env).JJ_SANDBOX_ROOT;
+    const base = resolve(configured || join(tmpdir(), DEFAULT_ROOT_NAME));
+    await mkdir(base, { recursive: true, mode: 0o700 });
+    // The default is a fixed name in a shared temp directory: refuse one that
+    // another user created or replaced with a symlink.
+    const info = await lstat(base);
+    if (!configured && (!info.isDirectory() || info.uid !== process.getuid?.()))
+      throw new Error(`${base} is not a directory owned by this user`);
+    // Resolve symlinks once so containment checks match agent-visible paths.
+    return realpath(base);
   }
 
   async acquire(request: AcquireRequest): Promise<Sandbox> {

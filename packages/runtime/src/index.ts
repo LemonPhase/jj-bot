@@ -1,5 +1,9 @@
 import { GoogleGenAI, type Interactions } from "@google/genai";
-import type { Bot, ExecutionSession, VerificationResult } from "@jj/contracts";
+import type {
+  Bot,
+  ExecutionSession,
+  VerificationResult,
+} from "@jj/contracts/legacy";
 
 export interface ModelConfig {
   apiKey: string;
