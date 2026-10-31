@@ -2,7 +2,7 @@
 
 JJ Bot is an agent workspace. Persistent bot personas with deliberately scoped memory work on goal-oriented tasks through independently contextualized execution sessions. Every task has a coordinator, a shared and attributed group chat, and a verification plan; messages are visible to all participants without triggering every bot. Users can steer a running task or stop it, and a task only completes when its verification evidence supports it.
 
-The backend owns execution and verification: it schedules sessions, runs the Google GenAI loop server-side, persists ordered events, and keeps task state independent of browser connections. CopilotKit/AG-UI is the chat and streaming boundary in front of it, not the source of task truth. The API and scheduler are the working surface today; the web client is still a shell that reports capability state rather than a task workspace.
+The backend owns execution and verification: it schedules sessions, runs the Google GenAI loop server-side, persists ordered events, and keeps task state independent of browser connections. CopilotKit/AG-UI is the chat and streaming boundary in front of it, not the source of task truth. The web client is a workspace over those APIs: bot chat, task chat, a live execution graph, and steering and stop controls.
 
 ## Run locally
 
@@ -21,15 +21,15 @@ Run `npm run check` for lint, tests, all-package typecheck and the web build. Ne
 
 ## Repository layout
 
-| Directory            | Responsibility                                                                   |
-| -------------------- | -------------------------------------------------------------------------------- |
-| `apps/web`           | React/Vite client, CopilotKit provider, capability and connection state          |
-| `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE, AG-UI runtime          |
-| `apps/worker`        | Optional standalone PostgreSQL worker when the API does not embed the scheduler  |
-| `packages/contracts` | Canonical Zod schemas and types; the frontend/backend boundary                   |
-| `packages/backend`   | Coordinator, delegation, verification, steering, cancellation, and scheduling    |
-| `packages/runtime`   | Direct Google GenAI execution, allowlisted tools, deterministic and model checks |
-| `packages/db`        | Transactional PGlite/PostgreSQL store with an append-only task event log         |
+| Directory            | Responsibility                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `apps/web`           | React/Vite workspace: bot and task chat, execution graph, steering and stop controls |
+| `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE, AG-UI runtime              |
+| `apps/worker`        | Optional standalone PostgreSQL worker when the API does not embed the scheduler      |
+| `packages/contracts` | Canonical Zod schemas and types; the frontend/backend boundary                       |
+| `packages/backend`   | Coordinator, delegation, verification, steering, cancellation, and scheduling        |
+| `packages/runtime`   | Direct Google GenAI execution, allowlisted tools, deterministic and model checks     |
+| `packages/db`        | Transactional PGlite/PostgreSQL store with an append-only task event log             |
 
 ## Documentation
 

@@ -21,7 +21,7 @@ The API requires a reachable database at startup. Use `docker compose up -d post
 
 | Directory            | Responsibility                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `apps/web`           | React/Vite client, CopilotKit provider, capability and connection state                                             |
+| `apps/web`           | React/Vite workspace: bot and task chat, execution graph, steering and stop controls                                |
 | `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE streaming, AG-UI run endpoint, CopilotKit runtime boundary |
 | `apps/worker`        | Optional standalone PostgreSQL worker; the API embeds the scheduler by default                                      |
 | `packages/contracts` | Canonical Zod schemas/types for bots, tasks, sessions, messages, checks and attributed events                       |
