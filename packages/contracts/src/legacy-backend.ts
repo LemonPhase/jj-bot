@@ -14,7 +14,7 @@ import {
   taskSchema,
   taskViewSchema,
   verificationResultSchema,
-} from "./index";
+} from "./legacy";
 
 export {
   botTurnCommandSchema,

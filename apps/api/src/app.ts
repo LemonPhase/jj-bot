@@ -3,7 +3,7 @@ import { HttpAgent } from "@ag-ui/client";
 import { CopilotRuntime } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import type { BackendService } from "@jj/backend";
-import { bootstrapSchema, CONTRACT_VERSION } from "@jj/contracts";
+import { bootstrapSchema, CONTRACT_VERSION } from "@jj/contracts/legacy";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";

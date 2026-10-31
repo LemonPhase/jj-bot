@@ -43,26 +43,27 @@ The `docker` driver starts sandboxes as sibling containers through the host's Do
 
 ## Runtime profiles
 
-A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), tool allow and deny lists, and budgets. Users create and edit profiles in settings; bots reference one. The profile is the single place where isolation and spending are configured. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tool policy and budgets still apply to its sessions.
+A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), the coding tools it grants, and budgets. Collaboration tools (delegate, message, complete_task) are always available to task sessions and are not part of a profile. Users create and edit profiles in settings; bots reference one. The profile is the single place where isolation and spending are configured. The API reports each profile's status from its driver: whether the driver is available, and whether it isolates the filesystem. A profile without filesystem isolation is labelled unisolated. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tool policy and budgets still apply to its sessions.
 
 ## Domain records
 
 | Record            | Responsibility                                                                                 |
 | ----------------- | ---------------------------------------------------------------------------------------------- |
-| Bot               | Identity, instructions, model choice, runtime profile, memory reference.                       |
-| RuntimeProfile    | Sandbox driver and spec, tool policy, budgets.                                                 |
+| Bot               | Identity, role, instructions, model choice, runtime profile, appearance, memory reference.     |
+| RuntimeProfile    | Sandbox driver and spec, coding tools, budgets; reports driver availability and isolation.     |
 | BotConversation   | Direct user-to-bot chat outside task execution.                                                |
-| Task              | Goal and goal version, coordinator, optional verification plan, state, final result.           |
+| Task              | Title, goal and goal version, coordinator, optional verification plan, state, final result.    |
 | TaskParticipation | Bot membership and role in a task.                                                             |
-| ExecutionSession  | Task, responsible bot, brief, goal version, sandbox and workspace reference.                   |
-| Assignment        | Requester session, assignee bot, parent assignment, brief, status and result.                  |
+| ExecutionSession  | Task, bot, parent session, role, brief, goal version, status, result, workspace reference.     |
 | SessionEntry      | One entry of a session's pi transcript, appended after each completed turn.                    |
 | Run               | One execution or resumption of a session. Separates context lifetime from execution attempts.  |
 | Message           | Attributed author, task or conversation, intent, activation list, causal reference.            |
 | TaskEvent         | Ordered durable activity. The single source for chat, the execution graph and the audit trail. |
 | VerificationCheck | Criterion, method, evidence, outcome and goal version, for tasks that carry a plan.            |
-| Artifact          | A file or output produced by a session, with its producing run.                                |
+| Artifact          | A file or spilled output produced by a session, with its producing run.                        |
 | Usage             | Tokens and cost per model call, attributed to session and run.                                 |
+
+There is no separate assignment record: a delegated assignment is an execution session (see [Coordination](#coordination)). A bot's appearance is cosmetic and never affects execution.
 
 Records are relational tables with indexed foreign keys. Every record carries an owner so multi-user support is additive. Runtime identifiers (pi sessions, sandbox ids) map to application records; they never replace a JJ Bot identity.
 
@@ -80,25 +81,32 @@ Message intents: discussion, assignment, result, steering and notification.
 
 Every task has one coordinator, initially its creator, which delegates bounded work and delivers the consolidated task result.
 
-Delegation creates a durable **assignment**: requester session, assignee bot, parent assignment, brief, status and result. Each assignment runs as its own execution session. Assignments nest, and the assignment tree is the task's execution graph.
+Delegation creates a child **execution session** for the assignee bot. Its parent is the requesting session, its brief is the assignment, and its result is the assignment's result; there is no separate assignment record. Delegated sessions can delegate in turn, and the session tree is the task's execution graph.
 
-When an assignment finishes, its result is posted as a result message that activates the requesting session. The requester resumes from its persisted transcript with the result in context, so it can react to each result as it arrives — re-delegate, correct, or follow up — rather than only after all work ends. A requester waiting on assignments holds no lease and no concurrency slot, so waiting parents cannot starve their children.
+When a child session finishes, its result is posted as a result message that activates the parent session. The parent resumes from its persisted transcript with the result in context, so it can react to each result as it arrives — re-delegate, correct, or follow up — rather than only after all work ends. A session that ends its turn is `waiting` until input arrives, and records what it waits for: the results of its open delegations, or the user. A waiting session holds no lease and no concurrency slot, so waiting parents cannot starve their children.
 
-Configurable limits cap sessions per task, delegation depth and concurrent execution; excess work queues rather than failing. Cancelling a task cancels its open assignments.
+The coordinator completes the task by calling `complete_task` with the consolidated result; ending a model turn is not completion. A coordinator that ends its turn without calling it, usually to ask the user something, is waiting for the user, and once no work is active the task is `waiting`; the user's next message continues it. A completed or failed task continues the same way. Only a cancelled task, or one being stopped, is terminal. See [task continuation](task-continuation.md).
+
+Configurable limits cap sessions per task, delegation depth and concurrent execution. Excess concurrent runs queue. A delegation that would exceed the session or depth limit is refused, and the refusal returns to the model as the tool's error so it can adapt. Cancelling a task cancels its open sessions.
 
 ## Steering and cancellation
 
 Steering is posted to the task chat and reaches the coordinator. Where the runtime allows, steering is injected into a running session at its next turn boundary rather than discarding its work. A change to the goal or its criteria increments the goal version, and work at an older version cannot complete the task.
 
-Stop marks cancellation durably, prevents new launches, propagates to active sessions and their sandboxes, and records what actually stopped. Cancellation does not undo completed external effects, and a command that could not be interrupted is reported as such.
+Stop marks cancellation durably (`cancelRequestedAt`), prevents new launches and new messages, propagates to active sessions and their sandboxes, and records what actually stopped. Cancellation does not undo completed external effects, and a command that could not be interrupted is reported as such.
 
 ## Events and streaming
 
 Persist before publishing. Each task event carries an event id, a per-task sequence allocated in the same transaction as the change it records, task id, optional bot, session and run ids, type, timestamp, causal reference and payload.
 
-Clients receive events through one streaming contract: server-sent events over the task event log, resumed from `Last-Event-ID`. Reconnecting replays from the cursor and never re-runs work.
+An event that changes a task, session, message or artifact record carries the whole record after the change. A client therefore keeps a task view current by folding events onto it with the contract's pure `applyTaskEvent`, without refetching: a view at sequence n plus events n+1 to m equals the view at m. Other events are markers (goal changed, reopened, finished) and activity. Clients ignore event types they do not know.
 
-Messages arrive whole; text is not streamed token by token. While a bot works, clients show a per-bot activity line derived from durable events — the command it is running, the file it is editing, a delegation, or that it is writing a reply — so activity survives reload and reconnect. Token streaming, if ever added, travels as ephemeral events outside the durable log. Persisted tool output is capped (64 KiB by default); larger output is stored in full as an artifact and the event keeps a truncated preview with a reference to it. Secret values are redacted before an event is written.
+Clients receive two streams:
+
+- **Task stream** (`GET /api/tasks/:taskId/stream`): server-sent events over the task event log, one frame per event with the sequence as its `id`, the event type as its `event` and the event as its `data`. It resumes after `Last-Event-ID` or `?after=`. A task view carries the cursor of the last event it reflects, so a client loads the view and streams from that cursor without gaps. Reconnecting replays from the cursor and never re-runs work. A view holds at most the latest 500 events and drops their output previews; earlier events and full previews come from `GET /api/tasks/:taskId/events?after=`.
+- **Workspace stream** (`GET /api/stream`): hints naming what changed — bots, a task, a bot conversation, profiles. Hints carry no state and are not resumable; clients refetch what they show on every hint and on every (re)connect.
+
+Messages arrive whole; text is not streamed token by token. While a bot works, clients show a per-bot activity line derived from durable events — the command it is running, the file it is editing, a delegation, or that it is writing a reply — so activity survives reload and reconnect. The derivation is a pure contract function, so clients and the server show the same line. Token streaming, if ever added, travels as ephemeral events outside the durable log. Persisted tool output is capped at 64 KiB (`JJ_OUTPUT_CAP_BYTES` can lower it, never raise it); larger output is stored in full as an artifact and the event keeps a truncated preview with a reference to it. Secret values are redacted before an event is written.
 
 ## Context and memory
 

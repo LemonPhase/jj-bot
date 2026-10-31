@@ -11,7 +11,7 @@ import type {
   Task,
   TaskMessage,
   VerificationResult,
-} from "@jj/contracts";
+} from "@jj/contracts/legacy";
 
 export const BOT_COLORS = [
   "#E05A47",
