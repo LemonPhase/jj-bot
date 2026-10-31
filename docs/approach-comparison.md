@@ -2,7 +2,7 @@
 
 Researched 31 October 2026. **Current accepted choice: B — CopilotKit OSS with our own application infrastructure and agent execution backend, using the Google GenAI SDK directly; ADK deferred.** The user selected B to control the application model while borrowing suitable ideas from existing systems. The original OpenBot-first recommendation below is retained as research history and is superseded. See [current technology direction](tech-stack.md).
 
-Method: documentation and selected source inspection, not installation, live model testing or benchmarking. Relative effort and risk are engineering judgments. No approach has passed JJ Bot's acceptance checks yet.
+Method: documentation and selected source inspection, not installation, live model testing or benchmarking. Relative effort and risk are engineering judgments. This is retained as research history; the accepted direction is recorded in [technology direction](tech-stack.md).
 
 ## Original recommendation — superseded by option B selection
 
@@ -27,7 +27,7 @@ CopilotKit supports [custom AG-UI backends](https://docs.copilotkit.ai/concepts/
 
 ## Overall comparison
 
-| Approach                                      | Reuse                                                               | Remaining work                                                                                      | Main tradeoff                                                                        | Hackathon assessment                                                                      |
+| Approach                                      | Reuse                                                               | Remaining work                                                                                      | Main tradeoff                                                                        | Assessment                                                                                |
 | --------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
 | A. Extend OpenBot + direct Google SDK backend | Bot management, chat/groups, tool gateway, queue, audit, deployment | Gemini endpoint; task/session records; routing; verification; task controls; visualization          | Substantial application to learn; Intelligence setup and existing thread assumptions | Best first candidate if infrastructure starts cleanly and agent tools matter to the demo. |
 | B. CopilotKit OSS + custom JJ backend         | Chat components/hooks, protocol plumbing, state/tool rendering      | Bot/task UI and records; storage; durable scheduling; memory; verification; controls; visualization | More backend/application work than A, but no required Intelligence service           | Best fallback if OpenBot's setup or mappings become a blocker.                            |

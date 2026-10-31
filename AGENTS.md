@@ -16,7 +16,7 @@ Consult or update Notion via the connected Notion MCP only when **claiming/updat
 
 | Page / Tracker                 | URL                                                       | When to fetch                                                                                                   |
 | ------------------------------ | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **Hackathon HQ**               | https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0 | Team roles, submission deadline, high-level tracker links                                                       |
+| **Project HQ**                 | https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0 | Team roles, ownership, high-level tracker links                                                                 |
 | **01 · Project Brief**         | https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea | Resolving product scope or milestone acceptance ambiguity                                                       |
 | **02 · Build Runbook**         | https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9 | Frontend/backend ownership split, tested model notes, integration status                                        |
 | **03 · Agent Start & Handoff** | https://app.notion.com/p/40af13214201812d9cfae40de515812d | Handoff format and multi-agent coordination workflow                                                            |
@@ -25,7 +25,7 @@ Consult or update Notion via the connected Notion MCP only when **claiming/updat
 | **Decisions database**         | https://app.notion.com/p/25525cff2ddd410ba60b243570f5487b | Checking or recording team architecture/product decisions (`collection://9db4d62f-67e0-49ee-a1c4-7b6c28472803`) |
 | **Handoffs database**          | https://app.notion.com/p/e861a4eec20440cab50b7e3346e2ea2e | Reading or leaving cross-session handoff checkpoints (`collection://9b1acbee-1972-4a36-a524-1f2335517044`)      |
 
-### Direct Task URLs (see also `docs/workstreams.md`)
+### Direct task URLs
 
 - **Task 01 (Shared — Contracts):** https://app.notion.com/p/40af13214201818c98dcdf487628d1e4
 - **Task 02 (Backend — Persistence & jobs):** https://app.notion.com/p/40af132142018135916cc426891a0d27
@@ -58,11 +58,20 @@ Notion is consolidated context for teammates and future agents, not a transcript
 ## Repository development
 
 - Option B is selected: our own application infrastructure, CopilotKit OSS/AG-UI integration, and direct Google GenAI SDK execution. No ADK or OpenBot fork.
-- Read `docs/development.md` for commands, boundaries and scaffold limitations. Start with `npm ci`, then `npm run dev`; use `npm run lint` and `npm test` as the current baseline. Run broader checks only when relevant to changed behavior.
+- Read `docs/development.md` for commands, configuration and endpoint boundaries. Start with `npm ci`, then `docker compose up -d postgres` and `npm run dev`; use `npm run lint` and `npm test` as the baseline, and the `smoke:*` scripts for live model and end-to-end behavior.
 - Shared schemas live in `packages/contracts`; coordinate changes there before implementing dependent API/UI/runtime work.
 - Keep model keys and tool execution server-side. Do not use browser-owned loops for autonomous work.
 - Keep tasks, bot personas, execution sessions and runs distinct. Visibility never implies activation. Require verification plans and evidence; a finished model turn is not a passed task.
-- Scaffold mode must remain explicit until real execution/persistence is implemented. Do not fake running agents, passing checks or successful persistence in product UI.
+- Report capability honestly: the API exposes `scaffold` versus `backend` mode and real capabilities. Never fake running agents, passing checks or successful persistence in the product UI.
+
+## Documentation policy
+
+Docs hold the invariants a future agent needs: contracts, boundaries, semantics and constraints. They are not progress logs.
+
+- Do not record status, completion dates or "what I did" narratives in `docs/`. Status, ownership and handoffs belong in Notion and PR descriptions.
+- Behavior is established by code and tests. Change a doc when the design contract changes, not when work advances.
+- `docs/contract-changelog.md` is the deliberate exception: pinned schema changes require an entry there.
+- Delete stale claims rather than layering corrections on top; history lives in git.
 
 ## Required verification loop for agent development
 

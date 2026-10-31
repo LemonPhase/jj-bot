@@ -39,7 +39,7 @@ export function App() {
           </span>
         </a>
         <div className="workspace-label">
-          HALLOWEEN HACKATHON <span>01</span>
+          AGENT WORKSPACE <span>01</span>
         </div>
         <nav aria-label="Workspace">
           {sections.map((item, index) => (

@@ -1,4 +1,7 @@
-# Optional local database. The starter UI/API do not require it yet.
+# Local PostgreSQL for the default backend mode.
+# Run with `docker compose up -d postgres`; use JJ_DATABASE_MODE=pglite to run without Docker.
+name: jj-bot
+
 services:
   postgres:
     image: postgres:17-alpine
