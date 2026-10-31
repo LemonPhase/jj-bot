@@ -1,7 +1,9 @@
 name: CI
 
 on:
+  # Pull requests run the gate on their merge result; pushes only on main.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
