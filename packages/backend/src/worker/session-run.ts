@@ -20,6 +20,7 @@ import {
 import { and, asc, count, eq, isNull } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
+import type { RunExecutor, RunOutcome } from "../ports";
 import { profileSettings } from "../records";
 import {
   changedFiles,
@@ -36,7 +37,6 @@ import {
   updateTask,
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
-import type { RunExecutor, RunOutcome } from "../ports";
 import { sessionTools, type Teammate } from "./collab-tools";
 import { finishRun } from "./outcomes";
 import { sessionPrompt } from "./prompts";
@@ -53,7 +53,7 @@ import {
   writeRun,
 } from "./run-context";
 import { closeStaleRun, runningRun } from "./runs";
-import { SandboxUnavailableError, type SandboxHold } from "./sandboxes";
+import { type SandboxHold, SandboxUnavailableError } from "./sandboxes";
 
 /** Executor calls one job may make while new input keeps arriving. */
 const MAX_CONTINUATIONS = 20;

@@ -198,9 +198,12 @@ export interface ModelCatalog {
   resolve(ref: ModelRef | null): unknown;
 }
 
-/** A driver as the engine uses it. `reapOrphans` removes leftovers of a crashed worker (docker containers). */
+/**
+ * A driver as the engine uses it. The worker calls the optional `reapOrphans`
+ * once at start (docker removes containers a crashed worker left).
+ */
 export type EngineDriver = SandboxDriver & {
-  reapOrphans?(): Promise<{ removed: string[] }>;
+  reapOrphans?: SandboxDriver["reapOrphans"];
 };
 
 export interface DriverRegistry {

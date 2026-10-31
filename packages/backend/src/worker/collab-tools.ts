@@ -5,14 +5,14 @@
 import { isFinishedStatus } from "@jj/contracts";
 import { sessions } from "@jj/db";
 import { and, count, desc, eq, inArray } from "drizzle-orm";
+import type { CollabTool, CollabToolResult } from "../ports";
 import { deliver, postMessage } from "../services/messages";
 import {
+  getSession,
   insertSession,
   lockTask,
   openChildren,
-  getSession,
 } from "../services/sessions";
-import type { CollabTool, CollabToolResult } from "../ports";
 import type { CompletionRequest } from "./outcomes";
 import type { RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";

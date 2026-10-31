@@ -16,11 +16,11 @@ import {
   runs,
   type SessionRow,
   type TaskRow,
+  type Tx,
   taskEvents,
   taskGoalVersions,
   taskParticipants,
   tasks,
-  type Tx,
 } from "@jj/db";
 import { and, asc, count, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";

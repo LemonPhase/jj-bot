@@ -17,9 +17,9 @@ import {
 import { and, asc, eq, inArray, isNull, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { emit } from "../events";
+import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
-import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */

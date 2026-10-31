@@ -11,20 +11,20 @@ import {
   fail,
   nextConversationSequence,
   type Tx,
-  tasks,
   taskParticipants,
+  tasks,
   usage,
 } from "@jj/db";
 import { and, count, eq, gt, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
+import type { ChatResponder, CollabTool, CollabToolResult } from "../ports";
 import { activeBotRows, memoryText, presenceOf } from "../services/bots";
 import { conversationHistory } from "../services/chat";
 import { continueTask, deliver, postMessage } from "../services/messages";
 import { lockTask } from "../services/sessions";
 import { createTaskTx } from "../services/tasks";
-import type { ChatResponder, CollabTool, CollabToolResult } from "../ports";
 import { chatPrompt } from "./prompts";
 import {
   fencedWrite,

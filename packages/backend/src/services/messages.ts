@@ -19,9 +19,9 @@ import {
   sessions,
   type TaskMessageRow,
   type TaskRow,
+  type Tx,
   taskGoalVersions,
   taskMessages,
-  type Tx,
 } from "@jj/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";

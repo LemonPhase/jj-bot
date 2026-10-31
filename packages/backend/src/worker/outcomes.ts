@@ -16,6 +16,7 @@ import {
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit, wakeWorkers } from "../events";
+import type { RunOutcome } from "../ports";
 import { deliver, postMessage } from "../services/messages";
 import {
   cancelOpenSessions,
@@ -26,7 +27,6 @@ import {
   updateTask,
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
-import type { RunOutcome } from "../ports";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import { closeOpenTools, closeRun } from "./runs";
 
