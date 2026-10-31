@@ -108,6 +108,24 @@ describe("tokens.css", () => {
           }
       });
 
+      it("field borders reach 3:1 on the field and every ground (WCAG 1.4.11)", () => {
+        for (const ground of [
+          "bg-surface",
+          "bg-app",
+          "bg-raised",
+          "bg-sidebar",
+        ]) {
+          const ratio = contrastRatio(
+            hex(theme, "line-field"),
+            hex(theme, ground),
+          );
+          expect(
+            ratio,
+            `--line-field on --${ground}: ${ratio.toFixed(2)}`,
+          ).toBeGreaterThanOrEqual(3);
+        }
+      });
+
       it("inverted and accent text", () => {
         const pairs: Array<[string, string]> = [
           ["btn-primary-ink", "btn-primary-bg"],

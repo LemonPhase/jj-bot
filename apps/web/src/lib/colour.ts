@@ -7,9 +7,12 @@ import type { BotBody, BotColour } from "@jj/contracts";
  */
 
 /**
- * The seven tones of a bot colour:
+ * The tones of a bot colour. The design's seven:
  * f fill (sprite body, swatch), d shade, l light highlight, t and s the 3D top
  * and side faces, v very dark (3D face plate), glow the topper glow.
+ * Plus `text`, not in the design: a same-hue tone dark enough for 4.5:1 text
+ * on the light grounds. It equals `d` where `d` already reaches that, and is a
+ * darker `d` (same hue and saturation) for amber, lime, green and teal.
  */
 export interface ColourRamp {
   f: string;
@@ -19,6 +22,7 @@ export interface ColourRamp {
   s: string;
   v: string;
   glow: string;
+  text: string;
 }
 
 export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
@@ -30,6 +34,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#D16454",
     v: "#381B16",
     glow: "rgba(255,122,102,.75)",
+    text: "#B8412F",
   },
   amber: {
     f: "#F5B544",
@@ -39,6 +44,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#C99438",
     v: "#36280F",
     glow: "rgba(245,181,68,.75)",
+    text: "#8D6118",
   },
   lime: {
     f: "#A3E635",
@@ -48,6 +54,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#86BD2B",
     v: "#24330C",
     glow: "rgba(163,230,53,.75)",
+    text: "#4F7416",
   },
   green: {
     f: "#34D399",
@@ -57,6 +64,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#2BAD7D",
     v: "#0B2E22",
     glow: "rgba(52,211,153,.75)",
+    text: "#117852",
   },
   teal: {
     f: "#2DD4BF",
@@ -66,6 +74,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#25AE9D",
     v: "#0A2F2A",
     glow: "rgba(45,212,191,.75)",
+    text: "#0D776B",
   },
   blue: {
     f: "#6AA2FF",
@@ -75,6 +84,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#5785D1",
     v: "#172438",
     glow: "rgba(106,162,255,.75)",
+    text: "#2F5FC0",
   },
   violet: {
     f: "#A78BFA",
@@ -84,6 +94,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#8972CD",
     v: "#251F37",
     glow: "rgba(167,139,250,.75)",
+    text: "#6A4BC9",
   },
   pink: {
     f: "#F472B6",
@@ -93,6 +104,7 @@ export const COLOUR_RAMPS: Readonly<Record<BotColour, Readonly<ColourRamp>>> = {
     s: "#C85D95",
     v: "#361928",
     glow: "rgba(244,114,182,.75)",
+    text: "#B23B7A",
   },
 };
 
@@ -151,13 +163,14 @@ export const TEXT_CONTRAST = 4.5;
  */
 export const LIGHT_MENTION_GROUNDS = ["#F7F7F8", "#ECECF0"] as const;
 
-const HEX_TONES = ["f", "d", "l", "t", "s", "v"] as const;
+const HEX_TONES = ["f", "d", "l", "t", "s", "v", "text"] as const;
 
 /**
  * The light-theme mention colour (brief decision 3): of the colour's ramp, the
  * lightest tone that still reaches 4.5:1 on every light mention ground. Coral,
- * blue, violet and pink land on `d`; amber, lime, green and teal fall short of
- * 4.5:1 on `d` (3.8–4.1:1) and land on `v`.
+ * blue, violet and pink land on `d`. Amber, lime, green and teal fall short on
+ * `d` (3.8–4.1:1) and land on their `text` tone, which keeps the hue instead of
+ * the near-black `v`.
  */
 function lightMentionColour(colour: BotColour): string {
   const ramp = COLOUR_RAMPS[colour];

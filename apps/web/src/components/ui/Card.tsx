@@ -53,16 +53,20 @@ export function Card({
 }
 
 export interface CardButtonProps
-  extends Omit<CardStyleOptions, "selected">,
+  extends CardStyleOptions,
     Omit<ButtonHTMLAttributes<HTMLButtonElement>, "aria-pressed"> {
-  /** Shown as `aria-pressed` and the selected look. */
-  selected?: boolean;
+  /** Emits `aria-pressed` (and the selected look unless `selected` says otherwise). */
+  pressed?: boolean;
 }
 
-/** A clickable card (graph node, expanded session card) with `aria-pressed`. */
+/**
+ * A clickable card (graph node, expanded session card). `selected` sets the
+ * look only; pass `pressed` for toggle semantics (`aria-pressed`).
+ */
 export function CardButton({
   density,
-  selected = false,
+  selected,
+  pressed,
   className,
   type = "button",
   children,
@@ -72,12 +76,11 @@ export function CardButton({
     <button
       type={type}
       className={cx(
-        "ui-card",
+        cardClass({ density, selected: selected ?? pressed }),
         "ui-card--interactive",
-        density === "compact" && "ui-card--compact",
         className,
       )}
-      aria-pressed={selected}
+      aria-pressed={pressed}
       {...rest}
     >
       {children}

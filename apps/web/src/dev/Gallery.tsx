@@ -40,6 +40,7 @@ import {
   Select,
   Spinner,
   StatusTag,
+  TabPanel,
   Tabs,
   Textarea,
   ThemeToggle,
@@ -535,16 +536,22 @@ function ControlsSection() {
             { value: "3d", label: "3D" },
           ]}
         />
-        <Tabs
-          label="View"
-          value={view}
-          onChange={setView}
-          items={[
-            { value: "progress", label: "Progress" },
-            { value: "graph", label: "Graph" },
-            { value: "office", label: "Office" },
-          ]}
-        />
+        <div className="gl__section">
+          <Tabs
+            label="View"
+            value={view}
+            onChange={setView}
+            panelId={(value) => `gallery-view-${value}`}
+            items={[
+              { value: "progress", label: "Progress" },
+              { value: "graph", label: "Graph" },
+              { value: "office", label: "Office" },
+            ]}
+          />
+          <TabPanel id={`gallery-view-${view}`} className="gl__meta">
+            {view} panel
+          </TabPanel>
+        </div>
       </div>
       <div className="gl__row gl__row--tight">
         {BOT_SHAPES.map((value) => (
@@ -804,7 +811,7 @@ function ListsSection() {
             {bots.map((bot) => (
               <ListItem
                 key={bot.name}
-                selected={selectedBot === bot.name}
+                pressed={selectedBot === bot.name}
                 onClick={() => setSelectedBot(bot.name)}
                 leading={
                   <Avatar
@@ -836,7 +843,7 @@ function ListsSection() {
               <ListItem
                 key={task.goal}
                 layout="stack"
-                selected={selectedTask === index}
+                pressed={selectedTask === index}
                 muted={task.status === "completed"}
                 onClick={() => setSelectedTask(index)}
                 title={task.goal}
@@ -912,7 +919,7 @@ function CardsSection() {
             <CardButton
               key={node.id}
               density="compact"
-              selected={selected === node.id}
+              pressed={selected === node.id}
               onClick={() => setSelected(node.id)}
             >
               <span
@@ -1014,17 +1021,20 @@ function FeedbackSection() {
         </div>
         <div className="gl__section">
           <div className="gl__row">
-            <Tooltip content="waiting on delegated work" focusable>
-              <StatusTag
-                status={{ status: "waiting", waitingFor: "delegations" }}
-              />
-            </Tooltip>
+            <StatusTag
+              status={{ status: "waiting", waitingFor: "delegations" }}
+              focusableTooltip
+            />
             <Tooltip content="Switch the office between 2D and 3D">
               <Button size="sm">Hover or focus me</Button>
             </Tooltip>
             <Tooltip content="Below the trigger" placement="bottom">
-              <IconButton label="Info" icon={<Icon name="panel" size={17} />} />
+              <Button size="sm">Below</Button>
             </Tooltip>
+            <IconButton
+              label="Profile"
+              icon={<Icon name="panel" size={17} />}
+            />
           </div>
           <div className="gl__row">
             <Button variant="primary" onClick={() => setOpen(true)}>

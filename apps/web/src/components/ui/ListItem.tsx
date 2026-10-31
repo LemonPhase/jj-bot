@@ -20,8 +20,13 @@ export interface ListItemProps
    * `stack`: the task item (title, then a meta row with status and sprites).
    */
   layout?: "row" | "stack";
-  /** Selected look (--bg-selected) and `aria-pressed`. */
+  /**
+   * Selected look (--bg-selected) only. Add the semantics that fit: `pressed`
+   * for a toggle, or `aria-current` for the item whose view is shown.
+   */
   selected?: boolean;
+  /** Emits `aria-pressed` (and the selected look unless `selected` says otherwise). */
+  pressed?: boolean;
   /** Dims the title to --ink-3, as for completed tasks. */
   muted?: boolean;
 }
@@ -31,7 +36,7 @@ export interface ListItemProps
  * --bg-hover, selected on --bg-selected.
  *
  * @example
- * <ListItem selected={bot.id === selectedId} onClick={() => select(bot.id)}
+ * <ListItem pressed={bot.id === selectedId} onClick={() => select(bot.id)}
  *   leading={<Avatar appearance={bot.appearance} name={bot.name} size={36} decorative />}
  *   title={bot.name} subtitle={<StatusTag size="sans" status={bot.presence} />} />
  */
@@ -41,7 +46,8 @@ export function ListItem({
   leading,
   trailing,
   layout = "row",
-  selected = false,
+  selected,
+  pressed,
   muted = false,
   className,
   type = "button",
@@ -50,12 +56,13 @@ export function ListItem({
   const classes = cx(
     "ui-list-item",
     layout === "stack" && "ui-list-item--stack",
+    (selected ?? pressed) && "ui-list-item--selected",
     muted && "ui-list-item--muted",
     className,
   );
   if (layout === "stack") {
     return (
-      <button type={type} className={classes} aria-pressed={selected} {...rest}>
+      <button type={type} className={classes} aria-pressed={pressed} {...rest}>
         <span className="ui-list-item__title clamp2">{title}</span>
         {(subtitle || trailing) && (
           <span className="ui-list-item__meta">
@@ -67,7 +74,7 @@ export function ListItem({
     );
   }
   return (
-    <button type={type} className={classes} aria-pressed={selected} {...rest}>
+    <button type={type} className={classes} aria-pressed={pressed} {...rest}>
       {leading}
       <span className="ui-list-item__body">
         <span className="ui-list-item__title clamp1">{title}</span>

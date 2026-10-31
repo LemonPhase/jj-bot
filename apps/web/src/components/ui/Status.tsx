@@ -5,6 +5,7 @@ import {
   type StatusTone,
 } from "../../lib/status";
 import { cx } from "./cx";
+import { Tooltip } from "./Tooltip";
 import "./ui.css";
 
 export interface StatusSquareProps {
@@ -29,6 +30,13 @@ interface StatusTagBase {
    * `sm` mono 11px (graph nodes), `sans` 12.5px (sidebar bot status lines).
    */
   size?: "sm" | "md" | "lg" | "sans";
+  /**
+   * Makes the tooltip (the "waiting for…" explanation, or `title`) reachable
+   * by keyboard by wrapping the tag in a button. Leave it off inside another
+   * interactive element such as a ListItem: there the tip shows on hover and
+   * the text is also read to assistive technology.
+   */
+  focusableTooltip?: boolean;
   className?: string;
 }
 
@@ -45,7 +53,7 @@ export interface StatusTagCustom extends StatusTagBase {
   /** A tone for words outside the status vocabulary (e.g. "live", "passed"). */
   tone: StatusTone;
   children: ReactNode;
-  /** Tooltip text. */
+  /** Tooltip text, shown with Tooltip (not the native `title`). */
   title?: string;
   status?: never;
   detail?: never;
@@ -56,21 +64,21 @@ export type StatusTagProps = StatusTagFromStatus | StatusTagCustom;
 /**
  * Status indicator (SPEC §7, brief decision 2): a 6px square plus a mono word.
  * The word is always present, so colour is never the only signal. A waiting
- * status gets its "waiting for you" / "waiting on delegated work" title.
+ * status gets its "waiting for you" / "waiting on delegated work" tooltip.
  *
  * @example <StatusTag status={task} detail={`v${task.goalVersion}`} />
  * @example <StatusTag status={session} detail={bot.name} />
  * @example <StatusTag tone="completed">live</StatusTag>
  */
 export function StatusTag(props: StatusTagProps) {
-  const { size = "md", className } = props;
+  const { size = "md", focusableTooltip = false, className } = props;
   let tone: StatusTone;
   let text: ReactNode;
-  let title: string | undefined;
+  let tip: string | undefined;
   if (props.status !== undefined) {
     const display = describeStatus(props.status);
     tone = display.tone;
-    title = display.title;
+    tip = display.title;
     text =
       props.detail !== undefined ? (
         <>
@@ -81,20 +89,34 @@ export function StatusTag(props: StatusTagProps) {
       );
   } else {
     tone = props.tone;
-    title = props.title;
+    tip = props.title;
     text = props.children;
   }
-  return (
+  const tag = (
     <span
       className={cx(
         "ui-status",
         size !== "md" && `ui-status--${size}`,
         className,
       )}
-      title={title}
     >
       <StatusSquare tone={tone} />
-      <span className="clamp1">{text}</span>
+      <span className="clamp1">
+        {text}
+        {tip && !focusableTooltip && (
+          <span className="visually-hidden"> ({tip})</span>
+        )}
+      </span>
     </span>
+  );
+  if (!tip) return tag;
+  return (
+    <Tooltip
+      content={tip}
+      focusable={focusableTooltip}
+      describe={focusableTooltip}
+    >
+      {tag}
+    </Tooltip>
   );
 }

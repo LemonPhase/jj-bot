@@ -266,7 +266,8 @@
   color: var(--status-failed-ink);
 }
 
-/* Composer-style boxes (SPEC §14.5 proposal): surface, 1px line, radius 12. */
+/* Composer-style boxes (SPEC §14.5 proposal): surface, radius 12; the border
+   uses --line-field, which reaches 3:1 (the design --line does not). */
 .ui-input,
 .ui-textarea,
 .ui-select {
@@ -274,7 +275,7 @@
   width: 100%;
   min-width: 0;
   margin: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-field);
   border-radius: var(--r-lg);
   background: var(--bg-surface);
   color: var(--ink);
@@ -298,7 +299,7 @@
 .ui-input:hover:not(:disabled),
 .ui-textarea:hover:not(:disabled),
 .ui-select:hover:not(:disabled) {
-  border-color: var(--line-chip-on);
+  border-color: var(--ink-muted);
 }
 
 .ui-input[aria-invalid="true"],
@@ -366,7 +367,7 @@
   color: var(--ink);
 }
 
-.ui-seg__item[aria-pressed="true"],
+.ui-seg__item[aria-checked="true"],
 .ui-seg__item[aria-current="page"] {
   background: var(--bg-active);
   color: var(--ink);
@@ -387,7 +388,7 @@
   font-size: var(--fs-meta);
 }
 
-.ui-seg--compact .ui-seg__item[aria-pressed="true"] {
+.ui-seg--compact .ui-seg__item[aria-checked="true"] {
   font-weight: var(--fw-regular);
 }
 
@@ -404,7 +405,7 @@
   font-size: var(--fs-mono);
 }
 
-.ui-seg--mono .ui-seg__item[aria-pressed="true"] {
+.ui-seg--mono .ui-seg__item[aria-checked="true"] {
   font-weight: var(--fw-regular);
 }
 
@@ -434,7 +435,7 @@
   color: var(--ink-2);
 }
 
-.ui-tab[aria-pressed="true"] {
+.ui-tab[aria-selected="true"] {
   border-bottom-color: var(--ink);
   color: var(--ink);
   font-weight: var(--fw-medium);
@@ -544,8 +545,7 @@
   border-color: var(--line-chip-on);
 }
 
-.ui-card--selected,
-.ui-card--interactive[aria-pressed="true"] {
+.ui-card--selected {
   border-color: var(--ink);
   background: var(--bg-selected);
 }
@@ -592,7 +592,7 @@
   background: var(--bg-hover);
 }
 
-.ui-list-item[aria-pressed="true"],
+.ui-list-item--selected,
 .ui-list-item[aria-current="page"] {
   background: var(--bg-selected);
 }
@@ -783,6 +783,18 @@
   max-width: 100%;
 }
 
+/* The focusable trigger is a real button that looks like its content. */
+button.ui-tooltip__trigger {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: help;
+}
+
 /* An inverted pixel overlay, like the speech bubbles. */
 .ui-tooltip__bubble {
   position: absolute;
@@ -800,12 +812,26 @@
   line-height: var(--lh-bubble);
   white-space: normal;
   transform: translateX(-50%);
-  pointer-events: none;
+}
+
+/* An invisible bridge over the 8px gap, so the pointer can move onto the bubble. */
+.ui-tooltip__bubble::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 8px;
 }
 
 .ui-tooltip__bubble--bottom {
   top: calc(100% + 8px);
   bottom: auto;
+}
+
+.ui-tooltip__bubble--bottom::before {
+  top: auto;
+  bottom: 100%;
 }
 
 /* ── Dialog ────────────────────────────────────────────────────────────── */
@@ -903,10 +929,11 @@
   color: var(--status-failed-ink);
 }
 
+/* Dismiss: a 24×24 target (WCAG 2.5.8). */
 .ui-error .ui-icon-btn {
-  width: 22px;
-  height: 22px;
-  margin: -1px -4px -1px 0;
+  width: 24px;
+  height: 24px;
+  margin: -2px -5px -2px 0;
 }
 
 /* ── Brand ─────────────────────────────────────────────────────────────── */

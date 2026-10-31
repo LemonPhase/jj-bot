@@ -71,7 +71,14 @@ export {
   StatusTag,
   type StatusTagProps,
 } from "./Status";
-export { type TabItem, Tabs, type TabsProps } from "./Tabs";
+export {
+  type TabItem,
+  TabPanel,
+  type TabPanelProps,
+  Tabs,
+  type TabsProps,
+  tabIdForPanel,
+} from "./Tabs";
 export { ThemeToggle } from "./ThemeToggle";
 export { Tooltip, type TooltipProps } from "./Tooltip";
 export { Wordmark, type WordmarkProps } from "./Wordmark";
