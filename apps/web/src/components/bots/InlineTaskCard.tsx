@@ -1,3 +1,4 @@
+import { taskStatusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { StatusDot } from "../common/StatusDot";
 
@@ -15,9 +16,9 @@ export function InlineTaskCard({ taskId }: { taskId: string }) {
       <div className="inline-task-info">
         <div className="inline-task-label">
           <StatusDot status={task.status} />
-          Task · {task.status}
+          Task · {taskStatusWord(task)}
         </div>
-        <div className="inline-task-title">{task.goal}</div>
+        <div className="inline-task-title">{task.title}</div>
       </div>
       <span className="row-arrow">→</span>
     </button>

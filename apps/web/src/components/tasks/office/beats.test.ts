@@ -1,5 +1,5 @@
+import type { TaskMessage } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
-import type { TaskMessageView } from "../../../api/types";
 import { mentionedBotIds, messageToBeat } from "./beats";
 
 const bots = [
@@ -12,12 +12,16 @@ const task = {
   coordinatorBotId: "bot-juno",
   participantBotIds: ["bot-juno", "bot-moss", "bot-vesper"],
 };
-const msg = (over: Partial<TaskMessageView>): TaskMessageView => ({
+const msg = (over: Partial<TaskMessage>): TaskMessage => ({
   id: "m",
-  authorId: "bot-juno",
+  taskId: "task-1",
+  sequence: 1,
   authorKind: "bot",
+  authorBotId: "bot-juno",
+  sessionId: null,
   intent: "discussion",
   text: "hello",
+  recipientBotIds: [],
   createdAt: "2026-10-31T15:00:00.000Z",
   ...over,
 });
@@ -31,11 +35,11 @@ describe("office beats", () => {
 
   it("routes user messages to mentions, else the coordinator", () => {
     expect(
-      messageToBeat(msg({ authorKind: "user", authorId: "user" }), task, bots),
+      messageToBeat(msg({ authorKind: "user", authorBotId: null }), task, bots),
     ).toMatchObject({ from: "user", to: ["bot-juno"], mode: "user" });
     expect(
       messageToBeat(
-        msg({ authorKind: "user", authorId: "user", text: "@Vesper check" }),
+        msg({ authorKind: "user", authorBotId: null, text: "@Vesper check" }),
         task,
         bots,
       ),
@@ -51,7 +55,7 @@ describe("office beats", () => {
   it("sends one-to-one discussion as a desk visit and ignores self-mentions", () => {
     expect(
       messageToBeat(
-        msg({ authorId: "bot-moss", text: "@Moss @Juno done" }),
+        msg({ authorBotId: "bot-moss", text: "@Moss @Juno done" }),
         task,
         bots,
       ),
@@ -61,7 +65,7 @@ describe("office beats", () => {
   it("posts results at the board, coordinator results to the user", () => {
     expect(
       messageToBeat(
-        msg({ authorId: "bot-vesper", intent: "result" }),
+        msg({ authorBotId: "bot-vesper", intent: "result" }),
         task,
         bots,
       ).mode,
@@ -71,10 +75,28 @@ describe("office beats", () => {
     );
   });
 
+  it("prefers the message's recipients over its @mentions", () => {
+    expect(
+      messageToBeat(
+        msg({
+          intent: "assignment",
+          text: "@Vesper take a look",
+          recipientBotIds: ["bot-moss"],
+        }),
+        task,
+        bots,
+      ),
+    ).toMatchObject({ mode: "huddle", to: ["bot-moss"] });
+  });
+
   it("announces system notifications", () => {
     expect(
       messageToBeat(
-        msg({ authorKind: "system", authorId: "sys", intent: "notification" }),
+        msg({
+          authorKind: "system",
+          authorBotId: null,
+          intent: "notification",
+        }),
         task,
         bots,
       ),

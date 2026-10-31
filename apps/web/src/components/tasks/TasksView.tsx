@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState } from "react";
+import { rootSession } from "../../lib/tasks";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ExecutionGraph } from "./ExecutionGraph";
 import { NodeInspector } from "./NodeInspector";
@@ -16,6 +17,7 @@ export function TasksView({ onNewTask }: { onNewTask: () => void }) {
   const {
     selectedTaskId,
     getTask,
+    taskViews,
     getBot,
     selectedNodeId,
     selectNode,
@@ -24,6 +26,14 @@ export function TasksView({ onNewTask }: { onNewTask: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [view, setView] = useState<GraphView>("graph");
   const task = selectedTaskId ? getTask(selectedTaskId) : undefined;
+  const taskView = selectedTaskId ? taskViews[selectedTaskId] : undefined;
+  // Default to the coordinator's session until the user picks a node.
+  const nodeId =
+    selectedNodeId ?? (taskView ? (rootSession(taskView)?.id ?? null) : null);
+  const finished =
+    task?.status === "completed" ||
+    task?.status === "failed" ||
+    task?.status === "cancelled";
   const wide = expanded || view === "office";
 
   return (
@@ -32,9 +42,13 @@ export function TasksView({ onNewTask }: { onNewTask: () => void }) {
       aria-label="Tasks"
     >
       <TaskList onNewTask={onNewTask} />
-      {task ? (
+      {task && !taskView ? (
+        <main className="chat-column empty-state">
+          <p>Loading task…</p>
+        </main>
+      ) : task && taskView ? (
         <>
-          <TaskChat task={task} />
+          <TaskChat view={taskView} />
           <aside
             className={`graph-column ${view === "office" ? "office-mode" : ""}`}
             aria-label={view === "office" ? "Task office" : "Execution graph"}
@@ -57,11 +71,11 @@ export function TasksView({ onNewTask }: { onNewTask: () => void }) {
                 </div>
               </div>
               <div className="header-actions">
-                {advanceDemoTask && (
+                {advanceDemoTask && !finished && (
                   <button
                     type="button"
                     className="action-btn"
-                    title="Demo only: advance sessions one step"
+                    title="Demo only: run the next scripted step now"
                     onClick={() => void advanceDemoTask(task.id)}
                   >
                     Demo step ↻
@@ -82,19 +96,19 @@ export function TasksView({ onNewTask }: { onNewTask: () => void }) {
               <Suspense
                 fallback={<div className="loading-state">Loading office…</div>}
               >
-                <TaskOffice key={task.id} task={task} getBot={getBot} />
+                <TaskOffice key={task.id} view={taskView} getBot={getBot} />
               </Suspense>
             ) : (
               <>
                 <ExecutionGraph
-                  task={task}
+                  view={taskView}
                   getBot={getBot}
-                  selectedNodeId={selectedNodeId}
+                  selectedNodeId={nodeId}
                   onSelectNode={selectNode}
                 />
                 <NodeInspector
-                  task={task}
-                  selectedNodeId={selectedNodeId}
+                  view={taskView}
+                  selectedNodeId={nodeId}
                   getBot={getBot}
                 />
               </>

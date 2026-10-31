@@ -1,4 +1,5 @@
-import type { BotGlyph, BotProfile } from "../../api/types";
+import type { Bot } from "@jj/contracts";
+import { type BotGlyph, colourHex, faceGlyph } from "../../lib/appearance";
 
 type AvatarSize = "sm" | "md" | "lg";
 
@@ -104,27 +105,28 @@ export function BotAvatar({
   size = "md",
   presence = false,
 }: {
-  bot: Pick<BotProfile, "color" | "glyph" | "presence">;
+  bot: Pick<Bot, "appearance" | "presence">;
   size?: AvatarSize;
-  /** Show the online/busy dot. */
+  /** Show the idle/working dot. */
   presence?: boolean;
 }) {
+  const color = colourHex(bot.appearance.colour);
   return (
     <div className="bot-avatar-wrap">
       <div
         className={`bot-avatar ${size === "md" ? "" : size}`}
         style={{
-          background: `${bot.color}18`,
-          border: `1px solid ${bot.color}38`,
+          background: `${color}18`,
+          border: `1px solid ${color}38`,
         }}
       >
         <svg width="76%" height="76%" viewBox="0 0 32 32" aria-hidden="true">
-          <Face glyph={bot.glyph} color={bot.color} />
+          <Face glyph={faceGlyph(bot.appearance.face)} color={color} />
         </svg>
       </div>
       {presence && (
         <span
-          className={`presence-dot ${bot.presence === "busy" ? "busy" : ""}`}
+          className={`presence-dot ${bot.presence === "working" ? "busy" : ""}`}
         />
       )}
     </div>

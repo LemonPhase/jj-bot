@@ -1,11 +1,15 @@
-import type { BotProfile, TaskView } from "../../api/types";
+import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
+import { colourHex } from "../../lib/appearance";
+import { statusWord } from "../../lib/status";
+import { orderedSessions, sessionOrdinal } from "../../lib/tasks";
 
 const NODE_W = 128;
 const NODE_H = 54;
-const CENTER_X = 230;
-const COORD_Y = 56;
-const SESSION_Y = 188;
-const GATE_Y = 322;
+const WIDTH = 460;
+const CENTER_X = WIDTH / 2;
+const TOP_Y = 56;
+const LAYER_H = 120;
+const NEUTRAL = "#8C8C85";
 
 interface GraphNode {
   id: string;
@@ -23,7 +27,7 @@ interface GraphEdge {
   fromY: number;
   toX: number;
   toY: number;
-  variant: "" | "active" | "verifying";
+  variant: "" | "active";
 }
 
 const statusColor = (status: string) =>
@@ -31,111 +35,112 @@ const statusColor = (status: string) =>
     ? "#10B981"
     : status === "running"
       ? "#2563EB"
-      : status === "verifying" || status === "waiting"
+      : status === "waiting"
         ? "#D97706"
         : status === "failed"
           ? "#E11D48"
-          : "#8C8C85";
+          : NEUTRAL;
 
-const edgeVariant = (status: string): GraphEdge["variant"] =>
-  status === "running" ? "active" : status === "verifying" ? "verifying" : "";
-
-/** Pure layout so it can be reused or tested without rendering. */
+/**
+ * Pure layout of the session tree: one layer per delegation depth, children
+ * ordered under their parents. Before any session exists, the coordinator is
+ * shown as a single queued node.
+ */
 export function layoutTaskGraph(
-  task: TaskView,
-  getBot: (id: string) => BotProfile | undefined,
+  view: TaskView,
+  getBot: (id: string) => Bot | undefined,
 ) {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
-  const coordinator = getBot(task.coordinatorBotId);
+  const sessions = orderedSessions(view);
+  const known = new Set(sessions.map((s) => s.id));
+  const children = new Map<string | null, ExecutionSession[]>();
+  for (const session of sessions) {
+    const parent =
+      session.parentSessionId && known.has(session.parentSessionId)
+        ? session.parentSessionId
+        : null;
+    children.set(parent, [...(children.get(parent) ?? []), session]);
+  }
 
-  nodes.push({
-    id: `coord-${task.coordinatorBotId}`,
-    x: CENTER_X,
-    y: COORD_Y,
-    title: coordinator?.name ?? "Coordinator",
-    subtitle: `Coordinator · v${task.goalVersion}`,
-    status: task.status,
-    color: coordinator?.color ?? "#8C8C85",
-  });
+  const layers: ExecutionSession[][] = [];
+  const visit = (session: ExecutionSession, depth: number) => {
+    (layers[depth] ??= []).push(session);
+    for (const child of children.get(session.id) ?? []) visit(child, depth + 1);
+  };
+  for (const root of children.get(null) ?? []) visit(root, 0);
 
-  const count = Math.max(task.sessions.length, 1);
-  const spacing = Math.min(142, 390 / count);
-  const startX = CENTER_X - ((count - 1) * spacing) / 2;
-
-  task.sessions.forEach((session, index) => {
-    const bot = getBot(session.botId);
-    const x = startX + index * spacing;
+  if (layers.length === 0) {
+    const coordinator = getBot(view.task.coordinatorBotId);
     nodes.push({
-      id: session.id,
-      x,
-      y: SESSION_Y,
-      title: session.label,
-      subtitle: `${bot?.name ?? "Bot"} · ${session.status}`,
-      status: session.status,
-      color: bot?.color ?? "#8C8C85",
+      id: `coord-${view.task.coordinatorBotId}`,
+      x: CENTER_X,
+      y: TOP_Y,
+      title: coordinator?.name ?? "Coordinator",
+      subtitle: `coordinator · ${statusWord(view.task.status)}`,
+      status: view.task.status,
+      color: coordinator ? colourHex(coordinator.appearance.colour) : NEUTRAL,
     });
-    const variant = edgeVariant(session.status);
-    edges.push(
-      {
-        key: `in-${session.id}`,
-        fromX: CENTER_X,
-        fromY: COORD_Y + NODE_H / 2,
-        toX: x,
-        toY: SESSION_Y - NODE_H / 2,
-        variant,
-      },
-      {
-        key: `out-${session.id}`,
-        fromX: x,
-        fromY: SESSION_Y + NODE_H / 2,
-        toX: CENTER_X,
-        toY: GATE_Y - NODE_H / 2,
-        variant,
-      },
-    );
+  }
+
+  const position = new Map<string, { x: number; y: number }>();
+  layers.forEach((layer, depth) => {
+    const spacing = Math.min(142, 390 / layer.length);
+    const startX = CENTER_X - ((layer.length - 1) * spacing) / 2;
+    layer.forEach((session, index) => {
+      const bot = getBot(session.botId);
+      const x = startX + index * spacing;
+      const y = TOP_Y + depth * LAYER_H;
+      position.set(session.id, { x, y });
+      nodes.push({
+        id: session.id,
+        x,
+        y,
+        title: `${sessionOrdinal(view, session.id)} · ${bot?.name ?? "Bot"}`,
+        subtitle: `${session.role} · ${statusWord(session.status)}`,
+        status: session.status,
+        color: bot ? colourHex(bot.appearance.colour) : NEUTRAL,
+      });
+      const parent = session.parentSessionId
+        ? position.get(session.parentSessionId)
+        : undefined;
+      if (parent)
+        edges.push({
+          key: `edge-${session.id}`,
+          fromX: parent.x,
+          fromY: parent.y + NODE_H / 2,
+          toX: x,
+          toY: y - NODE_H / 2,
+          variant: session.status === "running" ? "active" : "",
+        });
+    });
   });
 
-  const passed = task.checks.filter((c) => c.outcome === "passed").length;
-  const allPassed = task.checks.length > 0 && passed === task.checks.length;
-  nodes.push({
-    id: "gate",
-    x: CENTER_X,
-    y: GATE_Y,
-    title: "Verification Gate",
-    subtitle: `${passed}/${task.checks.length} checks passed`,
-    status: allPassed
-      ? "completed"
-      : task.status === "running"
-        ? "verifying"
-        : task.status,
-    color: allPassed ? "#10B981" : "#7C3AED",
-  });
-
-  return { nodes, edges };
+  const height = TOP_Y + Math.max(layers.length - 1, 0) * LAYER_H + NODE_H;
+  return { nodes, edges, height: Math.max(height + 20, 160) };
 }
 
 export function ExecutionGraph({
-  task,
+  view,
   getBot,
   selectedNodeId,
   onSelectNode,
 }: {
-  task: TaskView;
-  getBot: (id: string) => BotProfile | undefined;
+  view: TaskView;
+  getBot: (id: string) => Bot | undefined;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string) => void;
 }) {
-  const { nodes, edges } = layoutTaskGraph(task, getBot);
+  const { nodes, edges, height } = layoutTaskGraph(view, getBot);
 
   return (
     <div className="graph-canvas-wrap">
       <svg
         className="graph-svg"
-        viewBox="0 0 460 390"
+        viewBox={`0 0 ${WIDTH} ${height}`}
         preserveAspectRatio="xMidYMid meet"
         role="img"
-        aria-label={`Execution graph for ${task.goal}`}
+        aria-label={`Execution graph for ${view.task.title}`}
       >
         {edges.map((e) => {
           const midY = (e.fromY + e.toY) / 2;

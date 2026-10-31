@@ -2,14 +2,18 @@
  * Imperative Three.js scene for the task "office" view.
  *
  * Bots in a task get a desk; each desk monitor shows that bot's real session
- * status, the whiteboard shows the task's real checks and goal version, and
+ * status, the whiteboard shows the task's goal, version and sessions, and
  * task messages are acted out as "beats" (walking, facing, speech bubbles and
  * beams). The scene never invents state: statuses only come from `sync()`.
  */
+
+import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import type { BotProfile, SessionView, TaskView } from "../../../api/types";
+import { colourHex, faceGlyph } from "../../../lib/appearance";
+import { statusWord } from "../../../lib/status";
+import { orderedSessions, sessionOrdinal } from "../../../lib/tasks";
 import type { Beat } from "./beats";
 
 export interface OfficeStatus {
@@ -39,7 +43,9 @@ interface Desk {
 }
 
 interface Actor {
-  profile: BotProfile;
+  profile: Bot;
+  /** Fill colour from the bot's appearance. */
+  color: string;
   group: THREE.Group;
   headPivot: THREE.Group;
   face: THREE.Mesh;
@@ -83,14 +89,11 @@ interface Bubble {
 export const STATUS_COLORS: Record<string, string> = {
   queued: "#8c8c85",
   running: "#2563eb",
-  verifying: "#d97706",
   waiting: "#d97706",
   completed: "#10b981",
   failed: "#e11d48",
   cancelled: "#71716b",
   idle: "#b5b5ad",
-  passed: "#10b981",
-  inconclusive: "#d97706",
 };
 
 export const statusColor = (status: string | undefined): string =>
@@ -210,10 +213,13 @@ function angleLerp(a: number, b: number, t: number) {
 }
 
 /** The session that best represents a bot right now: the latest active one, else the latest. */
-function sessionFor(task: TaskView, botId: string): SessionView | undefined {
-  const mine = task.sessions.filter((s) => s.botId === botId);
+function sessionFor(
+  view: TaskView,
+  botId: string,
+): ExecutionSession | undefined {
+  const mine = orderedSessions(view).filter((s) => s.botId === botId);
   const active = mine.filter((s) =>
-    ["running", "verifying", "waiting"].includes(s.status),
+    ["queued", "running", "waiting"].includes(s.status),
   );
   return active.at(-1) ?? mine.at(-1);
 }
@@ -357,8 +363,8 @@ export class OfficeScene {
 
   /* ───────────── public API ───────────── */
 
-  /** Reconcile with the latest task + bot profiles. Safe to call on every update. */
-  sync(task: TaskView, participants: BotProfile[]) {
+  /** Reconcile with the latest task view + bots. Safe to call on every update. */
+  sync(task: TaskView, participants: Bot[]) {
     this.task = task;
     const wanted = participants.slice(0, MAX_DESKS);
     for (const [id, actor] of this.actors) {
@@ -366,8 +372,10 @@ export class OfficeScene {
     }
     for (const bot of wanted) {
       const existing = this.actors.get(bot.id);
-      if (existing) existing.profile = bot;
-      else {
+      if (existing) {
+        existing.profile = bot;
+        existing.color = colourHex(bot.appearance.colour);
+      } else {
         const desk = this.desks.find((d) => d.botId === null);
         if (desk) this.addActor(bot, desk);
       }
@@ -380,7 +388,7 @@ export class OfficeScene {
       const s = sessionFor(task, actor.profile.id);
       actor.ring.material.color.set(statusColor(s?.status));
       actor.tag.querySelector(".office-tag-status")!.textContent = s
-        ? `${s.label.split(" ")[0]} ${s.status}`
+        ? `${sessionOrdinal(task, s.id)} ${statusWord(s.status)}`
         : "no session";
       (
         actor.tag.querySelector(".office-tag-status") as HTMLElement
@@ -700,12 +708,13 @@ export class OfficeScene {
     return screen;
   }
 
-  private addActor(bot: BotProfile, desk: Desk) {
+  private addActor(bot: Bot, desk: Desk) {
     desk.botId = bot.id;
     const m = this.mats as Record<string, THREE.MeshStandardMaterial>;
     const g = new THREE.Group();
     this.scene.add(g);
-    const col = new THREE.Color(bot.color);
+    const color = colourHex(bot.appearance.colour);
+    const col = new THREE.Color(color);
     const accent = new THREE.MeshStandardMaterial({
       color: col,
       roughness: 0.45,
@@ -754,7 +763,7 @@ export class OfficeScene {
       fc.tex.needsUpdate = true;
     };
     const bright = `#${col.clone().lerp(new THREE.Color(0xffffff), 0.15).getHexString()}`;
-    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">${glyphSvg(bot.glyph, bright)}</svg>`)}`;
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">${glyphSvg(faceGlyph(bot.appearance.face), bright)}</svg>`)}`;
     const face = new THREE.Mesh(
       new THREE.PlaneGeometry(0.6, 0.45),
       new THREE.MeshBasicMaterial({ map: fc.tex, transparent: true }),
@@ -816,7 +825,7 @@ export class OfficeScene {
     tag.className = "office-tag";
     const dot = document.createElement("span");
     dot.className = "office-dot";
-    dot.style.background = bot.color;
+    dot.style.background = color;
     const name = document.createElement("span");
     name.textContent = bot.name;
     const status = document.createElement("span");
@@ -835,6 +844,7 @@ export class OfficeScene {
     g.rotation.y = yaw;
     const actor: Actor = {
       profile: bot,
+      color,
       group: g,
       headPivot,
       face,
@@ -879,20 +889,21 @@ export class OfficeScene {
 
   private drawBoard() {
     const { ctx, canvas, tex } = this.board;
-    const task = this.task;
+    const view = this.task;
+    const task = view?.task;
     ctx.fillStyle = "#fbfbf9";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (this.boardFlash > 0) {
       ctx.fillStyle = `rgba(217,119,6,${0.18 * this.boardFlash})`;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
-    if (!task) {
+    if (!view || !task) {
       tex.needsUpdate = true;
       return;
     }
     ctx.fillStyle = "#8c8c85";
     ctx.font = `600 22px ${FONT}`;
-    ctx.fillText("VERIFICATION", 44, 58);
+    ctx.fillText("SESSIONS", 44, 58);
     const chip = `goal v${task.goalVersion}`;
     ctx.font = `600 22px ${MONO}`;
     const cw = ctx.measureText(chip).width + 24;
@@ -915,27 +926,21 @@ export class OfficeScene {
     ctx.lineTo(canvas.width - 44, y - 10);
     ctx.stroke();
     y += 22;
-    if (!task.checks.length) {
+    const sessions = orderedSessions(view);
+    if (!sessions.length) {
       ctx.font = `400 26px ${FONT}`;
       ctx.fillStyle = "#8c8c85";
-      ctx.fillText("No checks defined yet", 44, y + 30);
+      ctx.fillText("No sessions yet", 44, y + 30);
     }
-    const icon: Record<string, string> = {
-      passed: "✓",
-      failed: "✕",
-      inconclusive: "?",
-    };
-    for (const k of task.checks.slice(0, 5)) {
-      ctx.fillStyle = STATUS_COLORS[k.outcome] ?? "#c9c9c0";
+    for (const session of sessions.slice(0, 5)) {
+      ctx.fillStyle = STATUS_COLORS[session.status] ?? "#c9c9c0";
       rrect(ctx, 44, y + 12, 34, 34, 8);
       ctx.fill();
-      ctx.fillStyle = "#fff";
-      ctx.font = `700 24px ${FONT}`;
-      ctx.fillText(icon[k.outcome] ?? "·", 52, y + 38);
       ctx.fillStyle = "#141413";
       ctx.font = `500 26px ${FONT}`;
+      const name = this.actors.get(session.botId)?.profile.name ?? "Bot";
       ctx.fillText(
-        wrapText(ctx, k.description, canvas.width - 160)[0] ?? "",
+        `${sessionOrdinal(view, session.id)} · ${name} · ${statusWord(session.status)}`,
         94,
         y + 38,
       );
@@ -947,7 +952,11 @@ export class OfficeScene {
     ctx.fill();
     ctx.fillStyle = "#575753";
     ctx.font = `600 22px ${MONO}`;
-    ctx.fillText(`TASK ${task.status.toUpperCase()}`, 70, canvas.height - 34);
+    ctx.fillText(
+      `TASK ${statusWord(task.status).toUpperCase()}`,
+      70,
+      canvas.height - 34,
+    );
     tex.needsUpdate = true;
   }
 
@@ -992,15 +1001,21 @@ export class OfficeScene {
       }
       const sess = sessionFor(this.task, actor.profile.id);
       const st = sess?.status ?? "idle";
-      ctx.fillStyle = actor.profile.color;
+      ctx.fillStyle = actor.color;
       ctx.fillRect(0, 0, canvas.width, 8);
       ctx.fillStyle = "#f2f2ee";
       ctx.font = `700 26px ${FONT}`;
       ctx.fillText(actor.profile.name, 20, 46);
       ctx.fillStyle = "#8c8c85";
       ctx.font = `500 18px ${MONO}`;
-      ctx.fillText(sess ? sess.label : "no session", 20, 74);
-      const active = st === "running" || st === "verifying";
+      ctx.fillText(
+        sess
+          ? `${sessionOrdinal(this.task, sess.id)} · ${sess.role}`
+          : "no session",
+        20,
+        74,
+      );
+      const active = st === "running";
       const off = active ? Math.floor(this.wallT * 3) : 0;
       for (let i = 0; i < 6; i++) {
         const r =
@@ -1014,7 +1029,11 @@ export class OfficeScene {
       rrect(ctx, 20, 182, 14, 14, 7);
       ctx.fill();
       ctx.font = `700 18px ${MONO}`;
-      ctx.fillText(st.toUpperCase(), 42, 195);
+      ctx.fillText(
+        (sess ? statusWord(sess.status) : st).toUpperCase(),
+        42,
+        195,
+      );
       tex.needsUpdate = true;
     }
   }
@@ -1250,7 +1269,7 @@ export class OfficeScene {
       this.addBeam(
         () => this.headPos(S),
         () => this.headPos(a),
-        new THREE.Color(S.profile.color).getHex(),
+        new THREE.Color(S.color).getHex(),
         dur,
       );
     }
@@ -1258,7 +1277,7 @@ export class OfficeScene {
       this.addBeam(
         () => this.headPos(S),
         () => TERM_ANCHOR.clone().setY(2.1),
-        new THREE.Color(S.profile.color).getHex(),
+        new THREE.Color(S.color).getHex(),
         dur,
       );
       this.termPulse = 1;
@@ -1267,7 +1286,7 @@ export class OfficeScene {
     this.showBubble(
       S.profile.id,
       S.profile.name,
-      S.profile.color,
+      S.color,
       beat.text,
       beat.intent,
       dur,
