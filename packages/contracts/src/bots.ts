@@ -10,13 +10,36 @@ import {
   timestampSchema,
 } from "./common";
 
-// APPEARANCE-PLACEHOLDER: replace with the Bot Studio values from the design spec.
-export const BOT_SHAPES = ["round"] as const;
-export const BOT_FACES = ["dots"] as const;
-export const BOT_TOPPERS = ["none"] as const;
-export const BOT_COLOURS = ["coral"] as const;
-export const BOT_BODIES = ["ivory"] as const;
-export const BOT_GAITS = ["hop"] as const;
+// Bot Studio appearance options (C2 · Pixel Lite design). The UI owns labels and pixel art.
+export const BOT_SHAPES = [
+  "squircle",
+  "round",
+  "block",
+  "gem",
+  "dome",
+] as const;
+export const BOT_FACES = ["dots", "visor", "screen", "mono"] as const;
+export const BOT_TOPPERS = [
+  "antenna",
+  "dish",
+  "sprout",
+  "crest",
+  "propeller",
+  "halo",
+  "none",
+] as const;
+export const BOT_COLOURS = [
+  "coral",
+  "amber",
+  "lime",
+  "green",
+  "teal",
+  "blue",
+  "violet",
+  "pink",
+] as const;
+export const BOT_BODIES = ["ivory", "graphite"] as const;
+export const BOT_GAITS = ["hop", "glide", "waddle"] as const;
 
 /** How a bot looks and moves in the office and the Bot Studio. Purely cosmetic. */
 export const botAppearanceSchema = z.object({

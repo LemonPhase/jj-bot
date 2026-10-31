@@ -41,7 +41,7 @@ Issues and their comments are consolidated context for teammates and future agen
 - Read `docs/development.md` for commands, configuration and endpoint boundaries. Start with `npm ci`, then `docker compose up -d postgres` and `npm run dev`; use `npm run lint` and `npm test` as the baseline, and the `smoke:*` scripts for live model and end-to-end behavior.
 - Shared schemas live in `packages/contracts`; coordinate changes there before implementing dependent API/UI/runtime work.
 - Keep model keys and tool execution server-side. Do not use browser-owned loops for autonomous work.
-- Agent-run code executes only through a sandbox driver. Model keys and the host environment never reach a sandbox, and a driver must refuse isolation it cannot enforce. New drivers must pass `describeSandboxConformance`.
+- Agent-run code executes only through a sandbox driver, and a driver must refuse isolation it cannot enforce. No driver passes model keys or the host environment into a sandbox, but only drivers that declare `filesystemIsolation` (such as `docker`) keep them out of reach: on `local`, commands can read the server user's files and environment. New drivers must pass `describeSandboxConformance`.
 - Keep tasks, bot personas, execution sessions and runs distinct. Visibility never implies activation. Verification is opt-in per task: when a task has a plan, a finished model turn is not a passed check, and an unverified result is never shown as verified.
 - Report capability honestly: the API exposes `scaffold` versus `backend` mode and real capabilities. Never fake running agents, passing checks or successful persistence in the product UI.
 

@@ -6,7 +6,7 @@ The accepted stack and the constraint each layer must respect. See [Architecture
 | ------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | Agent runtime | `@earendil-works/pi-coding-agent` with `pi-agent-core`                  | Reached only through `SessionExecutor`. Pin exact versions. JJ Bot owns durability and identity. |
 | Models        | `@earendil-works/pi-ai` provider registry                               | Server-side keys only. Per-bot `provider/model` choice.                                          |
-| Sandbox       | `@jj/sandbox` drivers: `local`, `docker`, `daytona`                     | Every driver passes the conformance suite and declares its capabilities.                         |
+| Sandbox       | `@jj/sandbox`: `local`, `docker` in tree; remote ones such as Daytona   | Every driver passes the conformance suite and declares its capabilities.                         |
 | API           | Hono on a long-running Node service                                     | Validates every command against the shared contracts.                                            |
 | Streaming     | Server-sent events over the task event log                              | One contract for every client. Resume from `Last-Event-ID`; replay never re-runs work.           |
 | Storage       | PostgreSQL with Drizzle; embedded PGlite for single-process development | Transactional writes. Events persisted before they are published.                                |
