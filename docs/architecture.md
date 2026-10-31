@@ -35,6 +35,8 @@ A `SandboxDriver` turns a sandbox spec into a running `Sandbox` that exposes com
 - **Workspaces have explicit lifetimes:** `ephemeral` (discarded on release), `task` (shared by a task's sessions, the default) or `bot` (persists for one bot across tasks).
 - **Conformance is the contract.** A driver is valid when it passes the shared conformance suite.
 
+The `local` driver isolates the environment only. Agent-run code shares the host kernel, filesystem and network, so it can read any file the server's user can, including a key file. It exists for development on a trusted machine, and the product labels profiles that use it as unisolated. Key isolation from agent-run code holds only for drivers that declare filesystem isolation.
+
 A task's sessions share **one sandbox and one workspace**, acquired with the coordinator's runtime profile. Bots therefore see each other's files immediately, and one runaway process affects the whole task within the profile's resource limits. Bots can also overwrite each other's edits, so the coordinator partitions work to avoid touching the same files concurrently.
 
 The `docker` driver starts sandboxes as sibling containers through the host's Docker API. When JJ Bot itself runs in a container, that API arrives as the mounted host socket, which is root-equivalent on the host. The driver therefore never passes the socket into a sandbox, never creates privileged containers and never bind-mounts host paths: workspaces are named volumes, and file access goes through the Docker API. A filtering proxy can sit in front of the socket through `DOCKER_HOST` without code changes.
@@ -96,7 +98,7 @@ Persist before publishing. Each task event carries an event id, a per-task seque
 
 Clients receive events through one streaming contract: server-sent events over the task event log, resumed from `Last-Event-ID`. Reconnecting replays from the cursor and never re-runs work.
 
-Messages arrive whole; text is not streamed token by token. While a bot works, clients show a per-bot activity line derived from durable events — the command it is running, the file it is editing, a delegation, or that it is writing a reply — so activity survives reload and reconnect. Token streaming, if ever added, travels as ephemeral events outside the durable log. Persisted tool output is capped; larger output is stored as an artifact and referenced from the event. Secret values are redacted before an event is written.
+Messages arrive whole; text is not streamed token by token. While a bot works, clients show a per-bot activity line derived from durable events — the command it is running, the file it is editing, a delegation, or that it is writing a reply — so activity survives reload and reconnect. Token streaming, if ever added, travels as ephemeral events outside the durable log. Persisted tool output is capped (64 KiB by default); larger output is stored in full as an artifact and the event keeps a truncated preview with a reference to it. Secret values are redacted before an event is written.
 
 ## Context and memory
 

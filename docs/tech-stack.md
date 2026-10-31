@@ -29,13 +29,13 @@ CopilotKit, AG-UI and the direct Google GenAI SDK are no longer part of the stac
 A working integration is defined by these observations, in order:
 
 1. A real tool cycle runs inside a sandbox with no browser attached.
-2. Agent-run code cannot read model keys or the host environment.
+2. With a filesystem-isolating driver such as `docker`, agent-run code cannot read model keys or the host environment.
 3. Two bots execute in separate sessions under one task, in parallel.
 4. A notification does not wake every bot.
 5. Steering changes subsequent execution and invalidates stale evidence.
 6. Stop prevents new launches and records what actually stopped.
 7. Event replay reconstructs activity without repeating work.
 8. A third bot routes through the same paths with no special case.
-9. A task with a verification plan cannot complete with a failed or inconclusive check.
+9. Once the `verification` capability exists, a task with a verification plan cannot complete with a failed or inconclusive check.
 
 Sources: [pi](https://github.com/earendil-works/pi), [pi coding agent on npm](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), [Daytona SDK](https://www.daytona.io/docs), [reference implementations](references.md).

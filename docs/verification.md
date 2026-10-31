@@ -2,6 +2,8 @@
 
 Verification is opt-in per task. A task without a verification plan completes when its coordinator delivers the consolidated result. A task with a plan cannot complete until every criterion passes with evidence, judged against the goal version that produced the work.
 
+Plans are accepted only while the API reports the `verification` capability. Without it, the API rejects a task or steering command that carries a plan instead of storing a plan nothing enforces.
+
 ## Always recorded
 
 Gating is optional; the audit trail is not. Whether or not a task has a plan, the event log records every tool call and its result, every command's exit code, and every artifact produced. The product must never present an unverified result as verified.

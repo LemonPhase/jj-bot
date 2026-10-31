@@ -13,7 +13,7 @@ The milestone is met only when all of these are demonstrable together, through t
 - The stack runs from the repository with one compose command and no hosted dependency besides a model provider.
 - Bots persist identity, instructions, model choice, runtime profile and scoped memory across tasks.
 - Runtime profiles are created and edited in settings and select a sandbox driver; both `local` and `docker` work.
-- Task creation records goal, coordinator and participants. A verification plan is optional.
+- Task creation records goal, coordinator and participants.
 - At least two bots do real work in separate sessions, running in parallel inside sandboxes.
 - Sessions of one task can share files through the task workspace.
 - Task messages are attributed and visible to all participants without activating every bot.
@@ -24,11 +24,11 @@ The milestone is met only when all of these are demonstrable together, through t
 - Files a session produces can be downloaded as artifacts.
 - After a server restart, in-flight work resumes or fails visibly; completed work is never silently repeated.
 - Reload or reconnect reconstructs task activity without re-running anything.
-- Agent-run code cannot read model keys or the host environment.
+- With the `docker` driver, agent-run code cannot read model keys, the host filesystem or the host environment. The `local` driver isolates only the environment, and the product labels it unisolated.
 - A third bot routes through the same paths, with no two-bot special case.
 
 ## Boundaries
 
 A configurable team size means the domain and scheduler accept any participant list. It does not promise unlimited concurrency, budget or quality.
 
-Out of scope for this milestone: multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The demo task and final visualization layout remain open.
+Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The API rejects a task that carries a verification plan rather than accepting one it cannot enforce. The demo task and final visualization layout remain open.
