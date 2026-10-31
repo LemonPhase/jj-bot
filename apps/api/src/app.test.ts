@@ -1,4 +1,4 @@
-import { bootstrapSchema } from "@jj/contracts";
+import { bootstrapSchema } from "@jj/contracts/legacy";
 import { describe, expect, it } from "vitest";
 import { createApp } from "./app";
 

@@ -7,10 +7,12 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@jj/sandbox": "*",
     "zod": "4.6.7"
   },
   "exports": {
     ".": "./src/index.ts",
-    "./backend": "./src/backend.ts"
+    "./legacy": "./src/legacy.ts",
+    "./legacy/backend": "./src/legacy-backend.ts"
   }
 }
