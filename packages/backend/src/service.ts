@@ -26,7 +26,10 @@ import {
 } from "@jj/contracts/backend";
 import type { BackendStore, StoreTx } from "@jj/db";
 import {
+  type BotRouter,
+  type BotTurnDecision,
   builtinTools,
+  fallbackBotTurn,
   type RuntimeTool,
   type SessionExecutor,
 } from "@jj/runtime";
@@ -43,10 +46,20 @@ export class BackendError extends Error {
 }
 const now = () => new Date().toISOString();
 const terminal = new Set(["completed", "failed", "cancelled"]);
+const DEFAULT_TURN_PLAN = [
+  {
+    id: "request",
+    description:
+      "Address the user request accurately, with supporting evidence and any remaining limitations.",
+    method: "Independent rubric review",
+    expectedEvidence: "Supporting context/tool results and reviewer assessment",
+  },
+];
 
 export interface BackendServiceOptions {
   store: BackendStore;
   executor: SessionExecutor;
+  router?: BotRouter;
   workerId?: string;
   leaseMs?: number;
   concurrency?: number;
@@ -58,6 +71,7 @@ export interface BackendServiceOptions {
 export class BackendService {
   readonly store: BackendStore;
   private readonly executor: SessionExecutor;
+  private readonly router: BotRouter;
   private readonly workerId: string;
   private readonly leaseMs: number;
   private readonly concurrency: number;
@@ -72,6 +86,9 @@ export class BackendService {
   constructor(options: BackendServiceOptions) {
     this.store = options.store;
     this.executor = options.executor;
+    this.router = options.router ?? {
+      decide: async (input) => fallbackBotTurn(input.text),
+    };
     this.workerId = options.workerId ?? randomUUID();
     this.leaseMs = Math.max(300, options.leaseMs ?? 30_000);
     this.concurrency = Math.max(1, options.concurrency ?? 4);
@@ -154,6 +171,16 @@ export class BackendService {
       );
     });
   }
+  private async nextConversationSequence(tx: StoreTx, botId: string) {
+    const messages = await tx.list<ConversationMessage>("conversations");
+    return (
+      messages.reduce(
+        (max, message) =>
+          message.botId === botId ? Math.max(max, message.sequence ?? 0) : max,
+        0,
+      ) + 1
+    );
+  }
   async recordConversation(input: {
     botId: string;
     role: "user" | "assistant";
@@ -163,7 +190,13 @@ export class BackendService {
     const { botId } = input;
     return this.store.transaction(async (tx) => {
       await this.requireBot(tx, botId);
-      const message = { ...input, id: randomUUID(), botId, createdAt: now() };
+      const message = {
+        ...input,
+        id: randomUUID(),
+        botId,
+        createdAt: now(),
+        sequence: await this.nextConversationSequence(tx, botId),
+      };
       await tx.put("conversations", message.id, message);
       return message;
     });
@@ -173,8 +206,102 @@ export class BackendService {
       await this.requireBot(tx, botId);
       return (await tx.list<ConversationMessage>("conversations"))
         .filter((message) => message.botId === botId)
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        .sort(
+          (a, b) =>
+            (a.sequence ?? 0) - (b.sequence ?? 0) ||
+            a.createdAt.localeCompare(b.createdAt),
+        );
     });
+  }
+
+  /**
+   * Route a direct message to a bot. Conversation stays in the bot chat; work
+   * becomes a task, and a follow-up is forwarded to an active task rather than
+   * duplicating it.
+   */
+  async botTurn(
+    botId: string,
+    text: string,
+  ): Promise<{ kind: "reply" | "task" | "routed"; task?: TaskRecord }> {
+    const input = text.trim();
+    if (!input)
+      throw new BackendError(400, "EMPTY_MESSAGE", "Message must contain text");
+    const bot = await this.getBot(botId);
+    const [memory, conversation, tasks] = await Promise.all([
+      this.getMemory(botId),
+      this.listConversation(botId),
+      this.listTasks(),
+    ]);
+    const active = tasks
+      .filter(
+        (task) =>
+          task.participantBotIds.includes(botId) && !terminal.has(task.status),
+      )
+      .sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""))
+      .slice(0, 8);
+    let decision: BotTurnDecision;
+    try {
+      decision = await this.router.decide({
+        bot,
+        memory: memory.text,
+        messages: conversation.map((message) => ({
+          role: message.role,
+          text: message.text,
+        })),
+        tasks: active.map((task) => ({
+          id: task.id,
+          goal: task.goal,
+          status: task.status,
+          goalVersion: task.goalVersion,
+          result: task.result,
+        })),
+        text: input,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch {
+      decision = fallbackBotTurn(input);
+    }
+    if (decision.kind === "reply" && decision.reply?.trim()) {
+      await this.recordConversation({ botId, role: "user", text: input });
+      await this.recordConversation({
+        botId,
+        role: "assistant",
+        text: decision.reply.trim(),
+      });
+      return { kind: "reply" };
+    }
+    if (decision.kind === "existing_task") {
+      const target = active.find((task) => task.id === decision.taskId);
+      if (target) {
+        await this.postMessage(target.id, {
+          authorKind: "user",
+          authorId: "user",
+          text: input,
+          intent: "assignment",
+          activateBotIds: [botId],
+        });
+        await this.recordConversation({
+          botId,
+          role: "user",
+          text: input,
+          taskId: target.id,
+        });
+        return { kind: "routed", task: await this.getTask(target.id) };
+      }
+    }
+    const task = await this.createTask({
+      goal: input,
+      coordinatorBotId: botId,
+      participantBotIds: [botId],
+      verificationPlan: DEFAULT_TURN_PLAN,
+    });
+    await this.recordConversation({
+      botId,
+      role: "user",
+      text: input,
+      taskId: task.id,
+    });
+    return { kind: "task", task };
   }
 
   async createTask(input: CreateTaskInput): Promise<TaskRecord> {
@@ -925,6 +1052,10 @@ export class BackendService {
             text: result.summary,
             taskId: task.id,
             createdAt: now(),
+            sequence: await this.nextConversationSequence(
+              tx,
+              currentTask.coordinatorBotId,
+            ),
           };
           await tx.put("conversations", conversation.id, conversation);
         } else await this.maybeSynthesize(tx, currentTask);

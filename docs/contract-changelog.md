@@ -32,6 +32,24 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a Decision in Notion
 rather than landing it and announcing it afterwards.
 
+## 0.4.0 — 2026-10-31 — Bot turn routing
+
+**Changed by:** backend · **Compatibility:** additive
+
+- `botTurnCommandSchema` (`BotTurnCommand`): `text`, 1–20000 characters.
+- `botTurnResultSchema` (`BotTurnResult`): `kind` (`reply` | `task` | `routed`) plus the affected `task` when one exists. A direct message is no longer assumed to start a task.
+- `ConversationMessage` records gain an optional monotonic `sequence` so same-millisecond messages keep their order.
+
+| Method | Path                 | Body                   |
+| ------ | -------------------- | ---------------------- |
+| `POST` | `/api/bots/:id/turn` | `botTurnCommandSchema` |
+
+**Action required (frontend):** send bot-chat messages to `/api/bots/:id/turn` instead of
+`/api/bots/:id/messages`, then refetch the conversation; a follow-up may attach to an existing
+task rather than creating one. `/api/bots/:id/messages` remains available for explicit task
+creation.
+**Action required (backend):** none beyond this release.
+
 ## 0.3.0 — 2026-10-31 — Bot creation command and backend orchestration boundary
 
 **Changed by:** frontend (task 05) & backend (tasks 02, 03, 04, 07) · **Compatibility:** additive

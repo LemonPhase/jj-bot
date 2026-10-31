@@ -50,7 +50,7 @@ Implicit reopening is removed. `spawnSession`, `postMessage` with `activateBotId
 
 The task view exposes the version history so a client can draw the timeline and mark earlier checks as superseded. Existing events already carry enough attribution (`goalVersion` on session start and checks); the version boundaries come from the history itself.
 
-## Proposed contract delta (target `0.4.0`)
+## Proposed contract delta (target `0.5.0`)
 
 Compatibility: additive schemas, one breaking behavior change (implicit reopen removed). Under 0.x conventions that is a minor bump; if the changelog's literal "major for breaking" rule is preferred, call it `1.0.0` instead. Either way, frontend and backend must agree before landing.
 

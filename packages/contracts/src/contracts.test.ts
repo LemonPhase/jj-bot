@@ -75,8 +75,8 @@ describe("JJ domain boundaries", () => {
         .success,
     ).toBe(true);
   });
-  it("validates 0.3.0 command and taskView schemas", () => {
-    expect(CONTRACT_VERSION).toBe("0.3.0");
+  it("validates 0.4.0 command and taskView schemas", () => {
+    expect(CONTRACT_VERSION).toBe("0.4.0");
     expect(
       createTaskCommandSchema.safeParse({
         goal: "Compare sources",

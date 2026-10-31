@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CONTRACT_VERSION = "0.3.0";
+export const CONTRACT_VERSION = "0.4.0";
 const id = z.string().min(1);
 export const verificationCriterionSchema = z.object({
   id,
@@ -198,6 +198,14 @@ export const postTaskMessageCommandSchema = taskMessageSchema
       .default("discussion"),
     activateBotIds: z.array(id).default([]),
   });
+export const botTurnCommandSchema = z.object({
+  text: z.string().min(1).max(20000),
+});
+// A bot turn either answers directly, starts a task, or routes to an active one.
+export const botTurnResultSchema = z.object({
+  kind: z.enum(["reply", "task", "routed"]),
+  task: taskSchema.optional(),
+});
 export const steerTaskCommandSchema = z.object({
   taskId: id.optional(),
   text: z.string().min(1),
@@ -246,6 +254,8 @@ export type VerificationResult = z.infer<typeof verificationResultSchema>;
 export type CheckDefinition = z.infer<typeof checkDefinitionSchema>;
 export type CreateBotCommand = z.infer<typeof createBotCommandSchema>;
 export type CreateTaskCommand = z.input<typeof createTaskCommandSchema>;
+export type BotTurnCommand = z.infer<typeof botTurnCommandSchema>;
+export type BotTurnResult = z.infer<typeof botTurnResultSchema>;
 export type PostTaskMessageCommand = z.input<
   typeof postTaskMessageCommandSchema
 >;

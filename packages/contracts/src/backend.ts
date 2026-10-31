@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   botSchema,
+  botTurnCommandSchema,
   type CheckDefinition,
   checkDefinitionSchema,
   createBotCommandSchema,
@@ -16,6 +17,7 @@ import {
 } from "./index";
 
 export {
+  botTurnCommandSchema,
   type CheckDefinition,
   checkDefinitionSchema,
   createBotCommandSchema,
@@ -88,6 +90,8 @@ export type ConversationMessage = {
   text: string;
   createdAt: string;
   taskId?: string;
+  /** Monotonic per-bot order; optional for records written before it existed. */
+  sequence?: number;
 };
 export type CheckRecord = z.infer<typeof verificationResultSchema> & {
   id: string;

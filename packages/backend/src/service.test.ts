@@ -1,6 +1,7 @@
 import type { BackendStore } from "@jj/db";
 import { openStore } from "@jj/db";
 import {
+  type BotRouter,
   type ExecutorInput,
   type ExecutorResult,
   GeminiSessionExecutor,
@@ -42,6 +43,7 @@ async function setup(
     concurrency?: number;
     maxSessions?: number;
     maxDepth?: number;
+    router?: BotRouter;
   } = {},
 ) {
   const store = await openStore({ mode: "pglite", path: "memory://" });
@@ -582,5 +584,76 @@ describe("durable task coordination", () => {
         checks: [{ id: "missing", kind: "contains", value: "x" }],
       }),
     ).rejects.toMatchObject({ code: "INVALID_CHECK" });
+  });
+  it("answers conversation without creating a task", async () => {
+    const { service, bots } = await setup(undefined, {
+      router: {
+        decide: async () => ({
+          kind: "reply",
+          reply: "Hello! What should we work on?",
+        }),
+      },
+    });
+    const result = await service.botTurn(bots[0]!.id, "hello");
+    expect(result.kind).toBe("reply");
+    expect(await service.listTasks()).toHaveLength(0);
+    const thread = await service.listConversation(bots[0]!.id);
+    expect(thread.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+    ]);
+    expect(thread.at(-1)?.text).toContain("What should we work on");
+  });
+  it("creates a task for work requests", async () => {
+    const { service, bots } = await setup(undefined, {
+      router: { decide: async () => ({ kind: "new_task" }) },
+    });
+    const result = await service.botTurn(
+      bots[0]!.id,
+      "Research the pricing page",
+    );
+    expect(result.kind).toBe("task");
+    const tasks = await service.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.goal).toBe("Research the pricing page");
+    const thread = await service.listConversation(bots[0]!.id);
+    expect(thread[0]?.taskId).toBe(tasks[0]?.id);
+  });
+  it("routes a follow-up to an active task instead of duplicating it", async () => {
+    const { service, bots } = await setup(undefined, {
+      router: {
+        decide: async (input) => ({
+          kind: "existing_task",
+          taskId: input.tasks[0]?.id,
+        }),
+      },
+    });
+    const task = await service.createTask({
+      ...inputFor(bots),
+      participantBotIds: [bots[0]!.id],
+      autoStart: false,
+    });
+    const result = await service.botTurn(
+      bots[0]!.id,
+      "Also cover the enterprise tier",
+    );
+    expect(result.kind).toBe("routed");
+    expect(result.task?.id).toBe(task.id);
+    expect(await service.listTasks()).toHaveLength(1);
+    const snapshot = await service.snapshot(task.id);
+    expect(
+      snapshot.messages.some((message) => message.text.includes("enterprise")),
+    ).toBe(true);
+    expect(snapshot.sessions).toHaveLength(1);
+  });
+  it("starts a new task when the router names an unknown task", async () => {
+    const { service, bots } = await setup(undefined, {
+      router: {
+        decide: async () => ({ kind: "existing_task", taskId: "missing" }),
+      },
+    });
+    const result = await service.botTurn(bots[0]!.id, "Write the summary");
+    expect(result.kind).toBe("task");
+    expect(await service.listTasks()).toHaveLength(1);
   });
 });
