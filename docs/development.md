@@ -65,7 +65,10 @@ npm run typecheck
 npm run smoke:model   # live Gemini round trip; needs .env
 npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
+npm run smoke:runtime # live pi tool cycle in a local sandbox; JJ_SMOKE_MODEL (default openai/gpt-6-luna) and its key
 ```
+
+Model provider calls honour `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` (either case; lowercase wins) once the process calls `configureOutboundProxy` from `@jj/runtime`, as the server and `smoke:runtime` do at startup. Node's built-in `fetch`, which the provider SDKs use, ignores those variables on its own. A proxy's TLS certificate authority goes in `NODE_EXTRA_CA_CERTS`, which Node reads at startup.
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it builds the sandbox base image, then runs lint, typecheck, tests and the web build, the same checks as `npm run verify`, and every step must pass. Each check runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
 
