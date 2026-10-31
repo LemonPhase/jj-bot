@@ -12,14 +12,14 @@ The fallback is **CopilotKit's open-source TypeScript runtime and React tooling 
 
 ## Separate the layers
 
-| Layer | Responsibility | JJ Bot direction |
-| --- | --- | --- |
-| Google GenAI SDK | Gemini API access, streaming and model/tool interaction | Selected; exact model/API access still needs testing. |
-| JJ execution runtime | Scheduling, contexts, tools, verification, steering and cancellation | Implement/adapt our semantics regardless of UI choice. |
-| AG-UI | Agent/frontend event protocol | Suitable boundary; does not schedule agents. |
-| CopilotKit OSS SDK/runtime | Chat/state/tool UI integration and runtime handling | Supports a custom AG-UI backend without ADK. |
-| CopilotKit Intelligence | Saved streams, realtime continuity and other services | Required by stock OpenBot's documented setup; optional for a new app using the OSS TypeScript runtime. |
-| OpenBot | Application template combining profiles, channels, groups, tools and infrastructure | Design reference; not selected as our application base. |
+| Layer                      | Responsibility                                                                      | JJ Bot direction                                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Google GenAI SDK           | Gemini API access, streaming and model/tool interaction                             | Selected; exact model/API access still needs testing.                                                  |
+| JJ execution runtime       | Scheduling, contexts, tools, verification, steering and cancellation                | Implement/adapt our semantics regardless of UI choice.                                                 |
+| AG-UI                      | Agent/frontend event protocol                                                       | Suitable boundary; does not schedule agents.                                                           |
+| CopilotKit OSS SDK/runtime | Chat/state/tool UI integration and runtime handling                                 | Supports a custom AG-UI backend without ADK.                                                           |
+| CopilotKit Intelligence    | Saved streams, realtime continuity and other services                               | Required by stock OpenBot's documented setup; optional for a new app using the OSS TypeScript runtime. |
+| OpenBot                    | Application template combining profiles, channels, groups, tools and infrastructure | Design reference; not selected as our application base.                                                |
 
 Google recommends [`@google/genai`](https://ai.google.dev/gemini-api/docs/libraries). Its [function-calling guide](https://ai.google.dev/gemini-api/docs/function-calling) documents model/tool interaction. The SDK does not itself supply our application-owned task lifecycle or verification policy.
 
@@ -27,13 +27,13 @@ CopilotKit supports [custom AG-UI backends](https://docs.copilotkit.ai/concepts/
 
 ## Overall comparison
 
-| Approach | Reuse | Remaining work | Main tradeoff | Hackathon assessment |
-| --- | --- | --- | --- | --- |
-| A. Extend OpenBot + direct Google SDK backend | Bot management, chat/groups, tool gateway, queue, audit, deployment | Gemini endpoint; task/session records; routing; verification; task controls; visualization | Substantial application to learn; Intelligence setup and existing thread assumptions | Best first candidate if infrastructure starts cleanly and agent tools matter to the demo. |
-| B. CopilotKit OSS + custom JJ backend | Chat components/hooks, protocol plumbing, state/tool rendering | Bot/task UI and records; storage; durable scheduling; memory; verification; controls; visualization | More backend/application work than A, but no required Intelligence service | Best fallback if OpenBot's setup or mappings become a blocker. |
-| C. Custom React/Hono + direct Google SDK | General-purpose libraries | Essentially all product and execution infrastructure | Maximum control, maximum implementation responsibility | Third choice while a suitable template exists. |
-| D. Fork OpenMausBot | Messaging app, bots/groups, durable hierarchical assignments | Direct Gemini engine; JJ task model; verification/visualization mapping | Existing CLI/provider execution assumptions differ from our SDK choice | Strong assignment-design reference; less attractive base for this integration. |
-| E. Fork Rakazo | Persistent-bot app, tools, workers, deployment | Direct SDK runtime integration; shared task layer; verification/visualization | Broad product and Pi runtime abstractions to adapt | Complete product reference, not the simplest route to our milestone. |
+| Approach                                      | Reuse                                                               | Remaining work                                                                                      | Main tradeoff                                                                        | Hackathon assessment                                                                      |
+| --------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| A. Extend OpenBot + direct Google SDK backend | Bot management, chat/groups, tool gateway, queue, audit, deployment | Gemini endpoint; task/session records; routing; verification; task controls; visualization          | Substantial application to learn; Intelligence setup and existing thread assumptions | Best first candidate if infrastructure starts cleanly and agent tools matter to the demo. |
+| B. CopilotKit OSS + custom JJ backend         | Chat components/hooks, protocol plumbing, state/tool rendering      | Bot/task UI and records; storage; durable scheduling; memory; verification; controls; visualization | More backend/application work than A, but no required Intelligence service           | Best fallback if OpenBot's setup or mappings become a blocker.                            |
+| C. Custom React/Hono + direct Google SDK      | General-purpose libraries                                           | Essentially all product and execution infrastructure                                                | Maximum control, maximum implementation responsibility                               | Third choice while a suitable template exists.                                            |
+| D. Fork OpenMausBot                           | Messaging app, bots/groups, durable hierarchical assignments        | Direct Gemini engine; JJ task model; verification/visualization mapping                             | Existing CLI/provider execution assumptions differ from our SDK choice               | Strong assignment-design reference; less attractive base for this integration.            |
+| E. Fork Rakazo                                | Persistent-bot app, tools, workers, deployment                      | Direct SDK runtime integration; shared task layer; verification/visualization                       | Broad product and Pi runtime abstractions to adapt                                   | Complete product reference, not the simplest route to our milestone.                      |
 
 None eliminates the verification and task-control work. Multi-bot chat, handoffs or audit records alone do not satisfy our contract.
 
@@ -51,15 +51,15 @@ Inspected revision: [`743649efc3f21d7bf0badbe6af2bcd5daedd97ce`](https://github.
 
 ### Concrete differences to address
 
-| Our requirement | Inspected behavior | Adaptation |
-| --- | --- | --- |
-| Task owns goal, coordinator, many bots and multiple sessions | Groups own conversations; responsibilities include success criteria but link one agent/channel/thread | Add a JJ Task linked to the group, with participation and execution-session records. |
-| Visibility separate from activation | Recipient/mentions select bots; absent either, every group bot answers | Coordinator-directed steering and informational messages that do not automatically launch replies. |
-| Multiple sessions per bot/task | Group thread is per bot/channel; delegated work can mint scratch threads | Register every session under the task with an independent context, including multiple sessions for the same bot. |
-| Configurable execution concurrency | Group sweep runs selected bot replies sequentially | Preserve chat ordering; schedule independent sessions through a bounded worker path. Sequential group chat alone is not parallel execution. |
-| Mandatory verification loops | Success-criteria/expected-output fields exist | Add check plans, evidence, attempts and pass/fail/inconclusive records; gate completion. Criteria text is not proof. |
-| Task-wide steering and stop | Runtime abort/stop primitives exist | Persist cancellation, prevent queued launches, propagate to descendants, acknowledge outcomes and version changed goals. |
-| Task collaboration visualization | Group attribution and audit events provide inputs | Add task/bot/session/run and causal IDs, then project actual durable events. |
+| Our requirement                                              | Inspected behavior                                                                                    | Adaptation                                                                                                                                  |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task owns goal, coordinator, many bots and multiple sessions | Groups own conversations; responsibilities include success criteria but link one agent/channel/thread | Add a JJ Task linked to the group, with participation and execution-session records.                                                        |
+| Visibility separate from activation                          | Recipient/mentions select bots; absent either, every group bot answers                                | Coordinator-directed steering and informational messages that do not automatically launch replies.                                          |
+| Multiple sessions per bot/task                               | Group thread is per bot/channel; delegated work can mint scratch threads                              | Register every session under the task with an independent context, including multiple sessions for the same bot.                            |
+| Configurable execution concurrency                           | Group sweep runs selected bot replies sequentially                                                    | Preserve chat ordering; schedule independent sessions through a bounded worker path. Sequential group chat alone is not parallel execution. |
+| Mandatory verification loops                                 | Success-criteria/expected-output fields exist                                                         | Add check plans, evidence, attempts and pass/fail/inconclusive records; gate completion. Criteria text is not proof.                        |
+| Task-wide steering and stop                                  | Runtime abort/stop primitives exist                                                                   | Persist cancellation, prevent queued launches, propagate to descendants, acknowledge outcomes and version changed goals.                    |
+| Task collaboration visualization                             | Group attribution and audit events provide inputs                                                     | Add task/bot/session/run and causal IDs, then project actual durable events.                                                                |
 
 Sources: [group routing/sweep, lines 1187–1261](https://github.com/CopilotKit/OpenBot/blob/743649efc3f21d7bf0badbe6af2bcd5daedd97ce/server/src/channels/group.ts#L1187), [responsibility schema](https://github.com/CopilotKit/OpenBot/blob/743649efc3f21d7bf0badbe6af2bcd5daedd97ce/server/src/db/schema/responsibilities.ts), [runtime cancellation](https://github.com/CopilotKit/OpenBot/blob/743649efc3f21d7bf0badbe6af2bcd5daedd97ce/toolkit/src/copilotkit/agents.ts).
 
@@ -117,4 +117,4 @@ The following spike is proposed, not executed:
 
 Choose A if contained extensions preserve our semantics and tool boundaries. Choose B if Intelligence setup or invasive changes dominate. Choose C only if protocol/UI integration is itself the demonstrated obstacle. No precise delivery estimate is justified before this check.
 
-The repository remains documentation-only. Option B and the direct Google SDK are now selected; the OpenBot gate above is historical. The next integration check targets CopilotKit OSS and our own backend, as described in [technology direction](tech-stack.md). Implementation should follow the agreed [product specification](product-spec.md), [verification contract](verification.md) and [milestone](milestone-1.md).
+The repository now has a runnable option B scaffold; see [development setup](development.md) for current implementation and verification limits. Option B and the direct Google SDK are now selected; the OpenBot gate above is historical. The next integration check targets CopilotKit OSS and our own backend, as described in [technology direction](tech-stack.md). Implementation should follow the agreed [product specification](product-spec.md), [verification contract](verification.md) and [milestone](milestone-1.md).

@@ -2,7 +2,19 @@
 
 A team project for Track 1: Frontier Agents with Gemini at Halloween At Imperial: Gemini Edition.
 
-**Status: documentation only.** No application code, dependencies, or runnable services have been added. Direct Google GenAI SDK integration is selected for the hackathon; Google ADK is deferred. Option B is selected: CopilotKit OSS with our own application infrastructure and agent execution backend. OpenBot, OpenMausBot and Rakazo remain design references.
+**Status: runnable scaffold.** Option B is selected: our own application infrastructure with CopilotKit OSS/AG-UI and direct Google GenAI SDK integration. The starter UI, API and idle worker run locally; autonomous execution and persistence are not implemented yet.
+
+## Run locally
+
+Use Node.js 24 and npm:
+
+```sh
+npm ci
+cp .env.example .env
+npm run dev
+```
+
+Open http://127.0.0.1:5173. No model key/database is required for scaffold mode. Run `npm run check` for lint, tests, typecheck and web build. See [development setup](docs/development.md), [contribution standard](CONTRIBUTING.md), and [workstreams](docs/workstreams.md).
 
 Repository: [LemonPhase/jj-bot](https://github.com/LemonPhase/jj-bot).
 

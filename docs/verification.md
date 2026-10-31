@@ -18,13 +18,13 @@ Retries must have a configured stopping rule. On budget exhaustion, repeated non
 
 ## Match checks to the work
 
-| Work | Appropriate evidence |
-| --- | --- |
-| Code changes | Relevant tests, compiler/build result, or observed runtime behavior tied to an artifact/commit. |
-| Research | Claims compared with cited source passages, including unresolved contradictions. |
-| File/data transformation | Schema validation, input/output counts, integrity checks, and output artifact. |
-| Browser operation | Observed resulting state and operation record, rather than the fact that a click was dispatched. |
-| Qualitative writing/planning | Explicit rubric and attributed review, with uncertainty preserved. |
+| Work                         | Appropriate evidence                                                                             |
+| ---------------------------- | ------------------------------------------------------------------------------------------------ |
+| Code changes                 | Relevant tests, compiler/build result, or observed runtime behavior tied to an artifact/commit.  |
+| Research                     | Claims compared with cited source passages, including unresolved contradictions.                 |
+| File/data transformation     | Schema validation, input/output counts, integrity checks, and output artifact.                   |
+| Browser operation            | Observed resulting state and operation record, rather than the fact that a click was dispatched. |
+| Qualitative writing/planning | Explicit rubric and attributed review, with uncertainty preserved.                               |
 
 A separate reviewer bot is useful for some work but not mandatory for every check. Tests and observable effects can be stronger evidence than another model agreeing.
 

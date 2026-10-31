@@ -1,0 +1,16 @@
+{
+  "name": "@jj/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@jj/contracts": "*",
+    "@google/genai": "2.32.0"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

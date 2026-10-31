@@ -8,12 +8,12 @@ JJ Bot is an autonomous personal-agent system, described by the team as an open 
 
 ## Core concepts
 
-| Concept | Meaning |
-| --- | --- |
-| Bot | Persistent persona with memory and its own conversations. Orchestrates tasks, communicates with other bots, and starts execution sessions. |
-| Task | A particular problem, its main goal, verification criteria, shared group chat, participating bots, execution sessions, and results. |
+| Concept           | Meaning                                                                                                                                     |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bot               | Persistent persona with memory and its own conversations. Orchestrates tasks, communicates with other bots, and starts execution sessions.  |
+| Task              | A particular problem, its main goal, verification criteria, shared group chat, participating bots, execution sessions, and results.         |
 | Execution session | An independently contextualized agent execution environment doing part of the work for a task. Can involve delegated subagents/subsessions. |
-| Coordinator | One bot responsible for reconciling contributions and consolidating the task result. Initially the task creator; coordination can transfer. |
+| Coordinator       | One bot responsible for reconciling contributions and consolidating the task result. Initially the task creator; coordination can transfer. |
 
 Bots and tasks have a many-to-many relationship. A bot may create or contribute to many tasks; several bots may work on one task. A task is not synonymous with a provider conversation or a single model run. It persists across the sessions used to solve the problem. The task/process and session/thread analogy is conceptual, not a requirement to use operating-system processes or threads.
 

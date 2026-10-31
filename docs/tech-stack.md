@@ -1,6 +1,6 @@
 # Technology direction
 
-Status: option B selected by the user on 31 October 2026. Documentation only; no application code, dependencies or integration tests yet.
+Status: option B selected by the user on 31 October 2026. Runnable scaffold now present; see [development setup](development.md) for pinned packages, verified checks and limitations. Live-agent integration is not yet implemented.
 
 ## Accepted direction
 
@@ -12,18 +12,18 @@ We are not forking OpenBot. Borrow and adapt its structured handoffs, leased wor
 
 ## Implementation baseline
 
-| Layer | Direction | Status |
-| --- | --- | --- |
-| Application | Custom JJ Bot infrastructure + CopilotKit OSS | Selected |
-| Models | Direct official Google GenAI SDK behind a provider adapter | Selected; exact model/API access untested |
-| Agent/frontend boundary | AG-UI with JJ task/session attribution | Selected direction; exact event/version mapping to validate |
-| Frontend | React + TypeScript + Vite and CopilotKit components/hooks | Proposed baseline |
-| API | Hono on a long-running TypeScript service | Proposed baseline |
-| Storage | Application-owned PostgreSQL + Drizzle | Proposed baseline |
-| Execution | Backend-owned Google SDK session/tool loop, persistent jobs and configurable concurrency | Required behavior; exact implementation open |
-| Live updates | Durable task events, HTTP commands and event streaming/replay | Required behavior; transport details open |
-| Visualization | Actual session activity projected into task views | Required; graph/timeline layout open |
-| Deployment | Backend runs locally or on a server, independent of browser lifecycle | Accepted product requirement; demo topology open |
+| Layer                   | Direction                                                                                | Status                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Application             | Custom JJ Bot infrastructure + CopilotKit OSS                                            | Selected                                                    |
+| Models                  | Direct official Google GenAI SDK behind a provider adapter                               | Selected; exact model/API access untested                   |
+| Agent/frontend boundary | AG-UI with JJ task/session attribution                                                   | Selected direction; exact event/version mapping to validate |
+| Frontend                | React + TypeScript + Vite and CopilotKit components/hooks                                | Scaffolded                                                  |
+| API                     | Hono on a long-running TypeScript service                                                | Scaffolded                                                  |
+| Storage                 | Application-owned PostgreSQL + Drizzle                                                   | Scaffolded                                                  |
+| Execution               | Backend-owned Google SDK session/tool loop, persistent jobs and configurable concurrency | Required behavior; exact implementation open                |
+| Live updates            | Durable task events, HTTP commands and event streaming/replay                            | Required behavior; transport details open                   |
+| Visualization           | Actual session activity projected into task views                                        | Required; graph/timeline layout open                        |
+| Deployment              | Backend runs locally or on a server, independent of browser lifecycle                    | Accepted product requirement; demo topology open            |
 
 CopilotKit Intelligence is not a required dependency for this architecture. Initially plan application-owned persistence and memory. Adding an optional service later requires a concrete need and an explicit decision.
 
@@ -31,7 +31,7 @@ Keep bot, task, execution-session and run identities application-owned. An AG-UI
 
 ## First integration check
 
-Connect CopilotKit OSS to our direct-Gemini execution endpoint. Complete a real backend tool cycle with the browser closed. Then run two bots in separate sessions under one task; verify selective activation, user steering, a failed check followed by revision, task-wide stop, and attributed event replay. Add a third bot without special-case routing. No part of this check has been executed yet.
+Connect CopilotKit OSS to our direct-Gemini execution endpoint. Complete a real backend tool cycle with the browser closed. Then run two bots in separate sessions under one task; verify selective activation, user steering, a failed check followed by revision, task-wide stop, and attributed event replay. Add a third bot without special-case routing. Scaffold startup, API discovery, contract checks and frontend build are verified; the live-agent parts of this check have not been executed.
 
 Next design work: agree the task/session/event contract and ownership boundaries, choose the demo task/tools, then implement the multi-bot vertical slice in [Milestone 1](milestone-1.md).
 

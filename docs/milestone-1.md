@@ -35,7 +35,7 @@ Single-bot execution alone does not meet the milestone. The exact demo task, per
 
 ## Smallest useful runtime spike
 
-Before committing to a framework, prove that the chosen Gemini model can execute a tool, that two independently contextualized workers can report to a coordinator, that verification can loop on failure, and that stopping prevents further work. This is future implementation work; this repository currently contains documentation only.
+Before committing to a framework, prove that the chosen Gemini model can execute a tool, that two independently contextualized workers can report to a coordinator, that verification can loop on failure, and that stopping prevents further work. This is future implementation work; the repository now contains a runnable scaffold, but no live execution loop or durable task store.
 
 ## Boundaries
 

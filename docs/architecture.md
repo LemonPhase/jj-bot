@@ -20,18 +20,18 @@ For a single-machine demo the API and worker may share one long-running process,
 
 ## Proposed domain records
 
-| Record | Key responsibility |
-| --- | --- |
-| Bot | Persistent identity, instructions, memory references, runtime defaults. |
-| BotConversation | Ordinary user-to-bot or bot-to-bot conversation outside task execution. |
-| Task | Goal and goal version, coordinator, verification plan, state, final result. |
-| TaskParticipation | Many-to-many bot/task membership and role. |
-| ExecutionSession | Task ID, responsible bot, parent session if applicable, brief, context/checkpoint reference, verification contract. |
-| Run / Attempt | A particular execution/resume/retry within a session. Distinguishes context lifetime from execution attempts. |
-| Message | Attributed author, task or conversation, recipients, intent, causal reference. |
-| TaskEvent | Ordered durable operational activity used by chat and visualization. |
-| VerificationCheck | Criterion, method, evidence, result, attempt, and goal version checked. |
-| Artifact | Output reference and producing session/run. |
+| Record            | Key responsibility                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Bot               | Persistent identity, instructions, memory references, runtime defaults.                                             |
+| BotConversation   | Ordinary user-to-bot or bot-to-bot conversation outside task execution.                                             |
+| Task              | Goal and goal version, coordinator, verification plan, state, final result.                                         |
+| TaskParticipation | Many-to-many bot/task membership and role.                                                                          |
+| ExecutionSession  | Task ID, responsible bot, parent session if applicable, brief, context/checkpoint reference, verification contract. |
+| Run / Attempt     | A particular execution/resume/retry within a session. Distinguishes context lifetime from execution attempts.       |
+| Message           | Attributed author, task or conversation, recipients, intent, causal reference.                                      |
+| TaskEvent         | Ordered durable operational activity used by chat and visualization.                                                |
+| VerificationCheck | Criterion, method, evidence, result, attempt, and goal version checked.                                             |
+| Artifact          | Output reference and producing session/run.                                                                         |
 
 These are conceptual entities, not a committed database schema. Every framework session/thread/run identifier maps to an application-owned record; it must not replace JJ Bot's task identity.
 
