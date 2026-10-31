@@ -5,18 +5,24 @@ import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { Composer } from "../common/Composer";
 import { StatusDot } from "../common/StatusDot";
+import { TypingIndicator } from "../common/TypingIndicator";
 
 const STOPPABLE = new Set<TaskView["status"]>(["queued", "running", "waiting"]);
 
 export function TaskChat({ task }: { task: TaskView }) {
-  const { getBot, jumpToBot, postTaskMessage, stopTask } = useWorkspace();
+  const { getBot, jumpToBot, postTaskMessage, stopTask, pendingTaskSends } =
+    useWorkspace();
   const [steering, setSteering] = useState(false);
+  const pending = pendingTaskSends[task.id];
+  const coordinator = getBot(task.coordinatorBotId);
+  const busy =
+    Boolean(pending) || task.status === "running" || task.status === "queued";
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [task.messages.length, task.id]);
+  }, [task.messages.length, task.id, pending, busy]);
 
   return (
     <main className="chat-column">
@@ -66,7 +72,7 @@ export function TaskChat({ task }: { task: TaskView }) {
       </div>
 
       <div className="messages-scroll" ref={scrollRef}>
-        {task.messages.length === 0 && (
+        {task.messages.length === 0 && !pending && (
           <div className="msg-row system">
             <div className="system-pill">
               No messages yet · updates from the bots will appear here
@@ -102,6 +108,36 @@ export function TaskChat({ task }: { task: TaskView }) {
             </div>
           );
         })}
+        {pending && (
+          <div
+            className={`msg-row user pending ${pending.steering ? "steering-msg" : ""}`}
+          >
+            <div className="msg-content-wrap">
+              <div className="msg-sender">
+                <span>You</span>
+                {pending.steering && (
+                  <span className="intent-tag steering">steering</span>
+                )}
+                <span>Sending…</span>
+              </div>
+              <div className="msg-bubble">{pending.text}</div>
+            </div>
+          </div>
+        )}
+        {busy && (
+          <TypingIndicator
+            avatar={
+              coordinator ? (
+                <BotAvatar bot={coordinator} size="sm" />
+              ) : undefined
+            }
+            label={
+              pending
+                ? "Sending to the team…"
+                : `${coordinator?.name ?? "The coordinator"} is working…`
+            }
+          />
+        )}
       </div>
 
       <Composer
@@ -111,6 +147,7 @@ export function TaskChat({ task }: { task: TaskView }) {
             ? "Steer task goal & notify active sessions..."
             : "Message task group..."
         }
+        disabled={Boolean(pending)}
         leading={
           <button
             type="button"

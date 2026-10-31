@@ -63,6 +63,12 @@ export interface DirectMessage {
   taskId?: string;
 }
 
+/** A task-chat message that has been submitted but not yet acknowledged. */
+export interface PendingTaskSend {
+  text: string;
+  steering: boolean;
+}
+
 export type TaskStatus = Task["status"];
 export type SessionStatus = ExecutionSession["status"];
 export type CheckOutcome = VerificationResult["outcome"];
