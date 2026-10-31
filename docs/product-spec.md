@@ -30,6 +30,8 @@ Bots and tasks have a many-to-many relationship. A bot may create or contribute 
 
 Bot memories and full conversation histories are not implicitly merged. Availability of the task transcript does not require injecting the full transcript into every model call.
 
+A direct message is routed before work starts. The bot may answer it conversationally, turn it into a new task, or forward it to an active task it already participates in. Greetings, thanks and status questions must not create tasks; only requests for new execution create work, and a follow-up should extend the existing task rather than duplicate it.
+
 ## User control
 
 The user can open the task group chat and send steering messages. The coordinator updates the plan and informs affected execution sessions. Stop task cancels active execution sessions. Cancellation does not undo already completed external effects. Exact interruption timing, acknowledgement, and tool cancellation behavior remain implementation details.

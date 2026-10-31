@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BackendError, type BackendService } from "@jj/backend";
 import { z } from "@jj/contracts";
 import {
+  botTurnCommandSchema,
   createBotSchema,
   createTaskSchema,
   postMessageSchema,
@@ -88,6 +89,10 @@ export function backendRoutes(service: BackendService) {
       taskId: task.id,
     });
     return c.json({ task }, 202);
+  });
+  routes.post("/bots/:id/turn", async (c) => {
+    const { text } = botTurnCommandSchema.parse(await c.req.json());
+    return c.json(await service.botTurn(c.req.param("id"), text));
   });
   routes.get("/tasks", async (c) =>
     c.json({ tasks: await service.listTasks() }),

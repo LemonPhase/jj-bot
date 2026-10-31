@@ -213,9 +213,9 @@ export function createLiveApi(bootstrap: Bootstrap): JJApi {
     listDirectMessages,
 
     async sendDirectMessage(botId, text) {
-      // The backend turns each direct message into a task coordinated by this bot;
-      // the reply is written back to the conversation when that task completes.
-      await request(`/bots/${botId}/messages`, {
+      // The backend routes this turn: conversation is answered in the thread,
+      // work becomes a task, and follow-ups attach to an active task.
+      await request(`/bots/${botId}/turn`, {
         method: "POST",
         body: { text },
       });

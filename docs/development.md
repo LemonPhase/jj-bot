@@ -70,7 +70,7 @@ Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to
 
 - `GET /health`: process health, not database or model readiness.
 - `GET /api/bootstrap`: reported `mode` (`backend` or `scaffold`), contract version, capabilities, bots and tasks.
-- Bots: `GET/POST /api/bots`, `GET /api/bots/:id`, `GET/PUT /api/bots/:id/memory`, `GET/POST /api/bots/:id/messages`.
+- Bots: `GET/POST /api/bots`, `GET /api/bots/:id`, `GET/PUT /api/bots/:id/memory`, `GET/POST /api/bots/:id/messages`, `POST /api/bots/:id/turn` (routes a message to a conversational reply, a new task, or an active task).
 - Tasks: `GET/POST /api/tasks`, `GET /api/tasks/:id`, `GET /api/tasks/:id/view`, `POST /api/tasks/:id/messages`, `/sessions`, `/steer`, `/stop`, `/cancel`, `/participants`, `/coordinator`, `GET /api/tasks/:id/events?after=`, `GET /api/tasks/:id/stream` (SSE with `Last-Event-ID`).
 - `/api/copilotkit/*`: OSS AG-UI runtime route; `GET /api/copilotkit/info` discovers agent `jj`.
 - `POST /api/agent`: AG-UI run that reuses a durable task and replays its events. Emits `RUN_STARTED`, `CUSTOM jj.task`, streamed task events, `TEXT_MESSAGE_*` and `RUN_FINISHED`/`RUN_ERROR`. Closing the browser connection does not cancel the task. With no service configured, it returns `SCAFFOLD_NOT_IMPLEMENTED`.

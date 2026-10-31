@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
 import { BackendService } from "@jj/backend";
 import { openStore } from "@jj/db";
-import { GeminiSessionExecutor } from "@jj/runtime";
+import { GeminiBotRouter, GeminiSessionExecutor } from "@jj/runtime";
 import { createApp } from "./app";
 
 const port = Number(process.env.API_PORT ?? 3001);
@@ -26,6 +26,7 @@ const model = process.env.GEMINI_MODEL?.trim() ?? "";
 const service = new BackendService({
   store,
   executor: new GeminiSessionExecutor({ apiKey, model }),
+  router: new GeminiBotRouter({ apiKey, model }),
   concurrency: Number(process.env.JJ_CONCURRENCY ?? 3),
 });
 if (process.env.JJ_EMBED_WORKER !== "false") service.start();
