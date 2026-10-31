@@ -40,7 +40,7 @@ Run `npm run check` for lint, tests, all-package typecheck and the web build. Ne
 
 ## Documentation
 
-Docs describe stable design, contracts and constraints — not progress. Implementation behavior is established by code and tests; status, ownership and handoffs live in the team Notion workspace.
+Docs describe stable design, contracts and constraints — not progress. Implementation behavior is established by code and tests; status, ownership and handoffs live in GitHub Issues.
 
 - [Product specification](docs/product-spec.md): bots, tasks, sessions, coordination and runtime profiles.
 - [Architecture](docs/architecture.md): components, execution, the sandbox boundary, coordination, records and events.
@@ -52,8 +52,8 @@ Docs describe stable design, contracts and constraints — not progress. Impleme
 - [Contract changelog](docs/contract-changelog.md): schema changes and required coordination.
 - [Reference implementations](docs/references.md): Rakazo, OpenMausBot and OpenBot.
 
-## Team coordination
+## Work tracking
 
-Ownership, task status and handoffs are tracked in the team Notion workspace: [project home](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0), [Project Brief](https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea), [Build Runbook](https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9). See [AGENTS.md](AGENTS.md) for the full context map and when to consult it.
+Work is tracked in [GitHub Issues](https://github.com/LemonPhase/jj-bot/issues), grouped into milestones by phase. Start at the [MVP epic](https://github.com/LemonPhase/jj-bot/issues/46), and see [docs/workstreams.md](docs/workstreams.md) for how to pick up an issue.
 
 No license has been selected; source availability and distribution terms remain a team decision.

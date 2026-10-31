@@ -63,7 +63,7 @@ npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
 ```
 
-CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the Notion coordination policy.
+CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
 
 Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to [the contract changelog](contract-changelog.md).
 

@@ -1,6 +1,6 @@
 # JJ Bot · Product specification
 
-The behavioral contract. Code and tests establish current implementation; team decisions live in the Project Brief.
+The behavioral contract. Code and tests establish current implementation; open product decisions are tracked as `decision` issues.
 
 ## Purpose
 
@@ -57,8 +57,3 @@ Multi-bot execution is the core of the product, not an extension. The design sup
 - Qualitative review rubrics and per-task escalation policy.
 - The final visualization layout.
 - Multi-user identity, roles and shared-resource permissions.
-
-## Context
-
-- [Project Brief](https://app.notion.com/p/40af1321420181d29d55cfb6d70b6eea)
-- [Build Runbook](https://app.notion.com/p/40af132142018125ac46e0b80cda7ea9)

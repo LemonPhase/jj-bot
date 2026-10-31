@@ -2,9 +2,9 @@
 
 ## Start with shared context
 
-Read [AGENTS.md](AGENTS.md) and the local docs (`docs/development.md`, `docs/product-spec.md`, `docs/architecture.md`) first. When claiming a tracked team task, coordinating cross-lane changes, or handing off work, use the Notion context map in [AGENTS.md](AGENTS.md) to check or update the relevant task or handoff in the [team Notion workspace](https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0).
+Read [AGENTS.md](AGENTS.md) and the local docs (`docs/development.md`, `docs/product-spec.md`, `docs/architecture.md`) first. Claim work, coordinate cross-lane changes and hand off through [GitHub Issues](https://github.com/LemonPhase/jj-bot/issues), as described in [AGENTS.md](AGENTS.md) and [docs/workstreams.md](docs/workstreams.md).
 
-When working on a tracked task, record an accountable human owner plus any agent/session. Agree shared contracts and coordinate overlapping files before implementation. Use a focused branch (`codex/…` for agent branches) and keep unrelated changes separate.
+When working on an issue, record an accountable human owner plus any agent/session. Agree shared contracts and coordinate overlapping files before implementation. Use a focused branch (`codex/…` for agent branches) and keep unrelated changes separate.
 
 ## Required development verification loop
 
@@ -19,13 +19,13 @@ Use checks appropriate to the change: typecheck/lint/build for integration error
 
 Record **passed**, **failed** and **inconclusive/not run** distinctly. Keep command, observed result, evidence/artifact and limitations. Never present mocks as live model execution, an unrun test as passing, or a missing key as a successful integration. Recheck integrated output separately from worker results. If steering changes acceptance criteria, update the goal/check version and reject stale completion evidence.
 
-Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, semantics and constraints; put status, evidence and handoffs in Notion and the PR. Record schema changes in `docs/contract-changelog.md`, and delete stale claims instead of layering corrections.
+Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, semantics and constraints; put status, evidence and handoffs in the issue and the PR. Record schema changes in `docs/contract-changelog.md`, and delete stale claims instead of layering corrections.
 
 ## Before review or handoff
 
 1. Run `npm run lint` and `npm test` as the baseline; use `npm run check` for the full gate and the `smoke:*` scripts for live model and end-to-end paths. Add targeted acceptance checks when needed; explain checks that could not run.
 2. Review the diff for credentials, generated files, unrelated changes and misleading readiness claims.
 3. In the PR/task, state the problem, resulting behavior, checks/evidence and material limitations.
-4. Update the existing Notion task and relevant runbook/handoff with commit links, result, blocker and exact next action. Mark Done only when its acceptance check passes. Keep Notion curated; do not paste conversation transcripts.
+4. Close the issue through the PR only when its acceptance criteria pass. If you stop before then, comment on the issue with commit links, results, blockers and the exact next action. Keep issues curated; do not paste conversation transcripts.
 
-No API keys belong in code, Notion or browser bundles. The API is a local development service, not a public deployment; authentication and external-action controls must be implemented before exposing agent capabilities.
+No API keys belong in code, issues or browser bundles. The API is a local development service, not a public deployment; authentication and external-action controls must be implemented before exposing agent capabilities.
