@@ -1,6 +1,6 @@
 # JJ Bot · Product specification
 
-Status: agreed initial product design, consolidated on 31 October 2026. Implementation details explicitly marked proposed remain open. Read the live Notion Project Brief for later team decisions.
+Status: agreed product design. This document is the behavioral contract; code and tests establish current implementation. Later team decisions live in the Project Brief.
 
 ## Purpose
 
@@ -48,11 +48,10 @@ Every task and execution session includes a verification loop; see [Verification
 
 ## Still open
 
-- The first concrete demo task, target persona, allowed tools, and sample inputs.
-- Frontend/backend framework selection and model/runtime integration.
-- Exact task/session storage and event contracts.
-- Verification retry budgets, escalation rules, and qualitative review rubrics.
-- Authentication, tool permissions, shared-resource isolation, and deployment details.
+- The first concrete demo task, target persona, broader tool catalogue, and sample inputs.
+- The frontend task workspace: chat, session activity, and steering controls.
+- Qualitative review rubrics and per-task escalation policy; retry budgets are implemented.
+- Real user identity, tool permissions, shared-resource isolation, and deployment details.
 - License and public distribution policy.
 
 ## Context
