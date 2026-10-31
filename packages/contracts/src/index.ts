@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CONTRACT_VERSION = "0.1.0";
+export const CONTRACT_VERSION = "0.3.0";
 const id = z.string().min(1);
 export const verificationCriterionSchema = z.object({
   id,
@@ -32,6 +32,11 @@ export const taskSchema = z
       "failed",
       "cancelled",
     ]),
+    result: z.string().optional(),
+    cancelReason: z.string().optional(),
+    cancelledAt: z.iso.datetime().optional(),
+    createdAt: z.iso.datetime().optional(),
+    updatedAt: z.iso.datetime().optional(),
   })
   .superRefine((task, context) => {
     if (!task.participantBotIds.includes(task.coordinatorBotId)) {
@@ -68,9 +73,17 @@ export const executionSessionSchema = z.object({
     "failed",
     "cancelled",
   ]),
+  kind: z.enum(["work", "synthesis"]).optional(),
+  result: z.string().optional(),
+  error: z.string().optional(),
+  runId: id.optional(),
+  attempts: z.number().int().nonnegative().optional(),
+  createdAt: z.iso.datetime().optional(),
+  updatedAt: z.iso.datetime().optional(),
 });
 export const taskMessageSchema = z.object({
   id,
+  createdAt: z.iso.datetime().optional(),
   taskId: id,
   authorId: id,
   authorKind: z.enum(["user", "bot", "system"]),
@@ -99,6 +112,10 @@ export const taskEventSchema = z.object({
     "message.posted",
     "session.started",
     "session.finished",
+    "model.started",
+    "model.finished",
+    "verification.started",
+    "session.revising",
     "tool.started",
     "tool.finished",
     "verification.recorded",
@@ -126,14 +143,96 @@ export const verificationResultSchema = z
       });
     }
   });
+export const checkDefinitionSchema = z.object({
+  id,
+  kind: z.enum(["contains", "regex", "json", "model"]),
+  value: z.string().optional(),
+  description: z.string().optional(),
+});
+export const createTaskCommandSchema = z
+  .object(taskSchema.shape)
+  .omit({
+    id: true,
+    goalVersion: true,
+    status: true,
+    result: true,
+    cancelReason: true,
+    cancelledAt: true,
+    createdAt: true,
+    updatedAt: true,
+  })
+  .extend({
+    checks: z.array(checkDefinitionSchema).optional(),
+    autoStart: z.boolean().default(true),
+  })
+  .superRefine((task, context) => {
+    if (!task.participantBotIds.includes(task.coordinatorBotId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["coordinatorBotId"],
+        message: "The coordinator must participate in the task.",
+      });
+    }
+    if (
+      new Set(task.participantBotIds).size !== task.participantBotIds.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["participantBotIds"],
+        message: "Task participants must be unique.",
+      });
+    }
+  });
+export const createBotCommandSchema = z.object({
+  name: z.string().min(1),
+  instructions: z.string().min(1),
+});
+export const postTaskMessageCommandSchema = taskMessageSchema
+  .omit({ id: true, taskId: true })
+  .extend({
+    taskId: id.optional(),
+    authorId: id.default("user"),
+    authorKind: z.enum(["user", "bot", "system"]).default("user"),
+    intent: z
+      .enum(["discussion", "assignment", "result", "steering", "notification"])
+      .default("discussion"),
+    activateBotIds: z.array(id).default([]),
+  });
+export const steerTaskCommandSchema = z.object({
+  taskId: id.optional(),
+  text: z.string().min(1),
+  authorId: id.default("user"),
+  observedGoalVersion: z.number().int().positive(),
+  replacementGoal: z.string().min(1).optional(),
+  goal: z.string().min(1).optional(),
+  verificationPlan: taskSchema.shape.verificationPlan.optional(),
+  checks: z.array(checkDefinitionSchema).optional(),
+});
+export const stopTaskCommandSchema = z.object({
+  taskId: id.optional(),
+  reason: z.string().min(1).optional(),
+  authorId: id.optional(),
+  requestedBy: id.optional(),
+});
+export const taskViewSchema = z.object({
+  task: taskSchema,
+  bots: z.array(botSchema).default([]),
+  participants: z.array(botSchema).default([]),
+  sessions: z.array(executionSessionSchema),
+  messages: z.array(taskMessageSchema),
+  checks: z.array(verificationResultSchema).default([]),
+  verificationResults: z.array(verificationResultSchema).default([]),
+  events: z.array(taskEventSchema),
+  replayCursor: z.number().int().nonnegative(),
+});
 export const bootstrapSchema = z.object({
-  mode: z.literal("scaffold"),
+  mode: z.enum(["scaffold", "backend"]),
   contractVersion: z.string(),
   modelConfigured: z.boolean(),
   capabilities: z.object({
-    agentExecution: z.literal(false),
-    persistence: z.literal(false),
-    taskStreaming: z.literal(false),
+    agentExecution: z.boolean(),
+    persistence: z.boolean(),
+    taskStreaming: z.boolean(),
   }),
   bots: z.array(botSchema),
   tasks: z.array(taskSchema),
@@ -144,4 +243,16 @@ export type ExecutionSession = z.infer<typeof executionSessionSchema>;
 export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type TaskEvent = z.infer<typeof taskEventSchema>;
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
+export type CheckDefinition = z.infer<typeof checkDefinitionSchema>;
+export type CreateBotCommand = z.infer<typeof createBotCommandSchema>;
+export type CreateTaskCommand = z.input<typeof createTaskCommandSchema>;
+export type PostTaskMessageCommand = z.input<
+  typeof postTaskMessageCommandSchema
+>;
+export type SteerTaskCommand = z.input<typeof steerTaskCommandSchema>;
+export type StopTaskCommand = z.input<typeof stopTaskCommandSchema>;
+export type TaskView = z.infer<typeof taskViewSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;
+
+// Keep API validation on the same schema implementation as the shared contracts.
+export { z } from "zod";

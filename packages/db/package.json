@@ -8,7 +8,9 @@
   },
   "dependencies": {
     "drizzle-orm": "0.45.4",
-    "pg": "8.23.1"
+    "pg": "8.23.1",
+    "@electric-sql/pglite": "0.5.14",
+    "@jj/contracts": "*"
   },
   "devDependencies": {
     "@types/pg": "8.23.1"
