@@ -1,5 +1,5 @@
 import { taskViewSchema } from "@jj/contracts";
-import { jobs } from "@jj/db";
+import { jobs, sessionEntries } from "@jj/db";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type Brain, said } from "./testing/fake-executor";
@@ -383,13 +383,16 @@ describe("orchestration", () => {
         recipientBotIds: [team.byName[ada]],
       }),
     );
-    const parentInputs = executor.inputs
-      .filter(
-        (input) =>
-          input.sessionId ===
-          view.sessions.find((s) => s.parentSessionId === null)?.id,
-      )
-      .flatMap((input) => input.inputs);
+    // The report reached the coordinator as a run input or as injected steering.
+    const rootId = view.sessions.find((s) => s.parentSessionId === null)?.id;
+    const parentInputs = (
+      await db.database.db
+        .select()
+        .from(sessionEntries)
+        .where(eq(sessionEntries.sessionId, rootId as string))
+    ).flatMap((row) =>
+      row.entry.role === "user" ? [String(row.entry.text)] : [],
+    );
     expect(
       parentInputs.some((text) =>
         text.startsWith(`Failure from ${lost} (session ${failedWorker?.id}):`),

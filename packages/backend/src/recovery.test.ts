@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claim, runs } from "@jj/db";
+import { claim, jobs, runs } from "@jj/db";
 import { LocalSandboxDriver } from "@jj/sandbox";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
 import type { EngineDriver } from "./ports";
@@ -304,5 +304,41 @@ describe("recovery", () => {
     await engine.engine.worker.stop();
     await engine.engine.worker.start();
     expect(reaped).toBe(2);
+  });
+
+  it("stops a run that lost its lease without writing anything more", async () => {
+    const engine = await worker({ config: { leaseMs: 600 } });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    engine.executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "stolen" } }] }
+        : { text: "must not be written" },
+    );
+    const { task } = await engine.engine.tasks.create({
+      goal: "Lose the lease",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await engine.executor.gate("stolen").reached;
+    // Another worker takes the job over, as after a missed heartbeat.
+    const stolen = await db.database.db.transaction(async (tx) => {
+      await tx
+        .update(jobs)
+        .set({ leaseUntil: sql`now() - interval '1 second'` })
+        .where(and(eq(jobs.taskId, task.id), eq(jobs.status, "running")));
+      return claim(tx, "thief", 5, 60_000);
+    });
+    expect(stolen.jobs.map((job) => job.taskId)).toContain(task.id);
+    const before = (await engine.engine.tasks.events(task.id)).cursor;
+    await until(() => engine.engine.worker.activeJobs === 0, {
+      what: "the run to stop",
+    });
+    const after = await engine.engine.tasks.events(task.id, { after: before });
+    expect(after.events).toEqual([]);
+    const [run] = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id));
+    expect(run?.status).toBe("running");
   });
 });
