@@ -54,7 +54,8 @@ Database: `docker compose up -d postgres` starts PostgreSQL 17 under the compose
 ## Checks
 
 ```sh
-npm run check         # lint + tests + all-package typecheck + web build
+npm run verify        # the CI gate: lint + all-package typecheck + tests + web build
+npm run check         # alias for verify
 npm run format        # format and safe lint/import fixes
 npm run test
 npm run typecheck
@@ -63,7 +64,14 @@ npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
 ```
 
-CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it runs lint, typecheck, tests and the web build, the same steps as `npm run verify`, and every step must pass. Each check runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
+
+Some tests need external services and skip when those services are missing. CI provides both, so in CI these tests run instead of skipping:
+
+- PostgreSQL: tests gated on `JJ_TEST_DATABASE_URL`, such as the adapter integration test in `packages/db/src/store.test.ts`. CI starts a PostgreSQL 17 service container and exports the variable to the test step. Locally, point it at a disposable database, never the development one: `docker run -d --rm -p 55432:5432 -e POSTGRES_USER=jj -e POSTGRES_PASSWORD=jj -e POSTGRES_DB=jj_test postgres:17-alpine`, then `JJ_TEST_DATABASE_URL=postgresql://jj:jj@127.0.0.1:55432/jj_test npm run verify`.
+- Docker: sandbox driver tests that skip when no Docker daemon is reachable. The CI job runs on the runner VM with its Docker daemon, not inside a job container, and it fails if `docker version` cannot reach the daemon.
+
+The root `vitest.config.ts` sets a 20 s per-test timeout, because PGlite-backed suites are slow on loaded machines. It also excludes `.claude/` agent worktrees, so a run from the main checkout matches CI. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
 
 Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to [the contract changelog](contract-changelog.md).
 

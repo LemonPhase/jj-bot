@@ -23,7 +23,7 @@ Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, seman
 
 ## Before review or handoff
 
-1. Run `npm run lint` and `npm test` as the baseline; use `npm run check` for the full gate and the `smoke:*` scripts for live model and end-to-end paths. Add targeted acceptance checks when needed; explain checks that could not run.
+1. Run `npm run lint` and `npm test` as the baseline; use `npm run verify` (alias `npm run check`) for the full gate CI runs, and the `smoke:*` scripts for live model and end-to-end paths. Add targeted acceptance checks when needed; explain checks that could not run.
 2. Review the diff for credentials, generated files, unrelated changes and misleading readiness claims.
 3. In the PR/task, state the problem, resulting behavior, checks/evidence and material limitations.
 4. Close the issue through the PR only when its acceptance criteria pass. If you stop before then, comment on the issue with commit links, results, blockers and the exact next action. Keep issues curated; do not paste conversation transcripts.
