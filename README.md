@@ -39,6 +39,7 @@ Docs describe stable design, contracts and constraints — not progress. Impleme
 - [Architecture](docs/architecture.md): boundaries, records, event flow and context rules.
 - [Verification](docs/verification.md): checks, evidence, revision and completion rules.
 - [Milestone 1](docs/milestone-1.md): the multi-bot vertical slice and its acceptance criteria.
+- [Task continuation](docs/task-continuation.md): goal versioning and extending a completed task.
 - [Technology stack](docs/tech-stack.md): accepted stack, layer constraints and sources.
 - [Development setup](docs/development.md): commands, configuration and endpoint boundaries.
 - [Contract changelog](docs/contract-changelog.md): schema changes and required coordination.

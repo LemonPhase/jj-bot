@@ -34,6 +34,8 @@ Bot memories and full conversation histories are not implicitly merged. Availabi
 
 The user can open the task group chat and send steering messages. The coordinator updates the plan and informs affected execution sessions. Stop task cancels active execution sessions. Cancellation does not undo already completed external effects. Exact interruption timing, acknowledgement, and tool cancellation behavior remain implementation details.
 
+A finished task can be continued. Continuing work under unchanged criteria keeps the goal version; changing the goal or its acceptance criteria starts a new version and supersedes earlier evidence. See [task continuation and goal versioning](task-continuation.md).
+
 ## Visualization
 
 From a task, the user can inspect participating bots, which sessions they have dedicated to it, what contributions they sent, and execution progress. Show actual operational events, tool activity, results, and verification evidence. Do not claim to expose private model reasoning.
