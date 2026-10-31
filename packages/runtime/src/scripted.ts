@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   type AssistantMessage,
   createFauxCore,
@@ -6,24 +6,32 @@ import {
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
-  getCurrentSystemPrompt,
   getCurrentTools,
   type JsonObject,
   type Message,
   type Model,
   type Provider,
   type SimpleStreamOptions,
+  type Tool,
   type ToolCall,
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
-import { parseActiveTasks, parseRoster, type RosterEntry } from "./prompt";
 
 /**
  * The scripted test model: a keyless, deterministic stand-in for a real model
  * so tests, CI end-to-end runs and demos exercise the whole engine. It reads
- * the conversation (role from the tools it is offered, roster and active tasks
- * from the system prompt, earlier tool calls and results) and answers by rule.
+ * the conversation and answers by rule. The system prompt is free-form and
+ * ignored; everything it needs comes from the tools it is offered:
+ *
+ * - its role: `create_task`/`send_to_task` → chat, `complete_task` →
+ *   coordinator, otherwise worker;
+ * - who it can delegate to: the enum of `delegate.parameters.properties.bot`
+ *   (the engine leaves `delegate` out when there is nobody);
+ * - the active tasks in chat: the enum of `send_to_task`'s `taskId`, with
+ *   titles in its description (for example "task_7: Penguin report");
+ * - the bots a chat can include: the item enum of `create_task`'s `participants`.
+ *
  * It is always labelled "Scripted test model" and never poses as a real model.
  */
 export const SCRIPTED_PROVIDER_ID = "scripted";
@@ -115,22 +123,70 @@ const slug = (name: string) =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "") || "bot";
 
-/** The workspace file a worker writes for its piece. */
+/** The workspace file the scripted coordinator asks a bot to write. */
 export const scriptedNotesFile = (botName: string) =>
   `notes-${slug(botName)}.md`;
 
+/** A worker writes the notes file its brief names, else one named after the brief. */
+const notesFileFor = (brief: string) =>
+  /\bnotes-[a-z0-9-]+\.md\b/.exec(brief)?.[0] ??
+  `notes-${createHash("sha256").update(brief).digest("hex").slice(0, 8)}.md`;
+
+interface JsonSchema {
+  enum?: unknown[];
+  const?: unknown;
+  anyOf?: JsonSchema[];
+  oneOf?: JsonSchema[];
+  items?: JsonSchema;
+  properties?: Record<string, JsonSchema>;
+  description?: string;
+}
+
+/** String choices of a schema: an `enum`, or `anyOf`/`oneOf` of `const`s. */
+function choices(schema: JsonSchema | undefined): string[] {
+  if (!schema) return [];
+  if (Array.isArray(schema.enum))
+    return schema.enum.filter(
+      (value): value is string => typeof value === "string",
+    );
+  const variants = schema.anyOf ?? schema.oneOf ?? [];
+  return variants
+    .map((variant) => variant.const)
+    .filter((value): value is string => typeof value === "string");
+}
+
+const parameter = (tool: Tool | undefined, name: string) =>
+  (tool?.parameters as JsonSchema | undefined)?.properties?.[name];
+
+/** The title that follows a task id in a description: "task_7: Penguin report". */
+function titleOf(description: string, id: string, ids: string[]): string {
+  const start = description.indexOf(id);
+  if (start < 0) return "";
+  let rest = description.slice(start + id.length);
+  const ends = ["\n", ";", ...ids.filter((other) => other !== id)]
+    .map((marker) => rest.indexOf(marker))
+    .filter((index) => index >= 0);
+  if (ends.length > 0) rest = rest.slice(0, Math.min(...ends));
+  return rest.replace(/^[\s:=\-–—("']+/, "").replace(/[\s)"'.,]+$/, "");
+}
+
 interface Conversation {
   messages: Message[];
-  prompt: string;
-  tools: Set<string>;
-  roster: RosterEntry[];
-  self: RosterEntry | undefined;
+  tools: Map<string, Tool>;
+  /** Bots `delegate` offers. */
+  delegates: string[];
+  /** Bots `create_task` can include. */
+  bots: string[];
+  /** Active tasks `send_to_task` offers. */
+  activeTasks: { id: string; title: string }[];
   calls: { call: ToolCall; result: ToolResultMessage | undefined }[];
 }
 
 function readConversation(all: Message[]): Conversation {
   const messages = all.filter((message) => message.role !== "system");
-  const roster = parseRoster(getCurrentSystemPrompt(all));
+  const tools = new Map(getCurrentTools(all).map((tool) => [tool.name, tool]));
+  const taskId = parameter(tools.get("send_to_task"), "taskId");
+  const taskIds = choices(taskId);
   const results = new Map<string, ToolResultMessage>();
   for (const message of messages)
     if (message.role === "toolResult") results.set(message.toolCallId, message);
@@ -142,10 +198,13 @@ function readConversation(all: Message[]): Conversation {
           calls.push({ call: block, result: results.get(block.id) });
   return {
     messages,
-    prompt: getCurrentSystemPrompt(all),
-    tools: new Set(getCurrentTools(all).map((tool) => tool.name)),
-    roster,
-    self: roster.find((entry) => entry.self),
+    tools,
+    delegates: choices(parameter(tools.get("delegate"), "bot")),
+    bots: choices(parameter(tools.get("create_task"), "participants")?.items),
+    activeTasks: taskIds.map((id) => ({
+      id,
+      title: titleOf(taskId?.description ?? "", id, taskIds),
+    })),
     calls,
   };
 }
@@ -201,15 +260,15 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
 
   const delegations = calls.filter(({ call }) => call.name === "delegate");
   if (delegations.length === 0) {
-    const others = conversation.roster.filter((entry) => !entry.self);
+    const others = conversation.delegates;
     if (others.length > 0 && tools.has("delegate"))
       return {
-        text: `Splitting the work between ${others.map((entry) => entry.name).join(" and ")}.`,
-        calls: others.map((entry, index) => ({
+        text: `Splitting the work between ${others.join(" and ")}.`,
+        calls: others.map((name, index) => ({
           name: "delegate",
           args: {
-            bot: entry.name,
-            brief: `Part ${index + 1} of ${others.length} of "${clip(goal, 300)}": write a short note about your part to ${scriptedNotesFile(entry.name)} in the workspace, check the workspace with one shell command, and report back.`,
+            bot: name,
+            brief: `Part ${index + 1} of ${others.length} of "${clip(goal, 300)}": write a short note about your part to ${scriptedNotesFile(name)} in the workspace, check the workspace with one shell command, and report back.`,
           },
         })),
       };
@@ -284,9 +343,8 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
 
 function workerTurn(conversation: Conversation): ScriptedTurn {
   const { messages, tools, calls } = conversation;
-  const name = conversation.self?.name ?? "worker";
-  const file = scriptedNotesFile(name);
   const brief = userTexts(messages)[0] ?? "my assignment";
+  const file = notesFileFor(brief);
   const wrote = calls.find(
     ({ call }) =>
       (call.name === "write" && call.arguments.path === file) ||
@@ -298,7 +356,7 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
   const last = messages.at(-1);
 
   if (!wrote) {
-    const content = `# ${name}\n\nMy piece of the work:\n\n${brief}\n`;
+    const content = `# Notes\n\nMy piece of the work:\n\n${brief}\n`;
     if (tools.has("write"))
       return { calls: [{ name: "write", args: { path: file, content } }] };
     if (tools.has("bash"))
@@ -307,7 +365,7 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
           {
             name: "bash",
             args: {
-              command: `printf '%s\\n' ${shellQuote(`# ${name}`)} '' ${shellQuote(brief)} > ${file}`,
+              command: `printf '%s\\n' '# Notes' '' ${shellQuote(brief)} > ${file}`,
             },
           },
         ],
@@ -349,7 +407,7 @@ const WORK =
 const STATUS = /\b(status|progress|how('s| is) it going|any news)\b/i;
 
 function chatTurn(conversation: Conversation): ScriptedTurn {
-  const { messages, tools, prompt } = conversation;
+  const { messages, tools, activeTasks: active } = conversation;
   const trailing = trailingResults(conversation);
   const first = trailing[0];
   if (first) {
@@ -362,15 +420,13 @@ function chatTurn(conversation: Conversation): ScriptedTurn {
 
   const last = messages.at(-1);
   const text = last?.role === "user" ? textOf(last.content) : "";
-  const self = conversation.self?.name;
   const isWork = WORK.test(text);
   if (!isWork && GREETING.test(text))
     return {
-      text: `Hello! ${self ? `I'm ${self}. ` : ""}Tell me what you'd like done and I'll start a task for it.`,
+      text: "Hello! Tell me what you'd like done and I'll start a task for it.",
     };
   if (!isWork && THANKS.test(text)) return { text: "You're welcome!" };
 
-  const active = parseActiveTasks(prompt);
   const lower = text.toLowerCase();
   const target =
     active.find(
@@ -387,9 +443,9 @@ function chatTurn(conversation: Conversation): ScriptedTurn {
     };
 
   if (isWork && tools.has("create_task")) {
-    const participants = conversation.roster
-      .filter((entry) => !entry.self && mentions(text, entry.name))
-      .map((entry) => entry.name);
+    const participants = conversation.bots.filter((name) =>
+      mentions(text, name),
+    );
     return {
       calls: [{ name: "create_task", args: { goal: text, participants } }],
     };

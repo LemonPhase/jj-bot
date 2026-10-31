@@ -43,10 +43,14 @@ const redact = (text: string) =>
 async function main(): Promise<boolean> {
   const root = await mkdtemp(join(tmpdir(), "jj-smoke-runtime-"));
   const driver = new LocalSandboxDriver({ root });
+  const spec = driver.validateSpec({
+    driver: "local",
+    network: { mode: "open" },
+  });
   const sandbox = await driver.acquire({
     sessionId: "smoke",
     taskId: "smoke",
-    spec: driver.validateSpec({ driver: "local", network: { mode: "open" } }),
+    spec,
     workspaceKey: "smoke",
   });
   const events: ExecutorEvent[] = [];
@@ -63,6 +67,7 @@ async function main(): Promise<boolean> {
       ],
       model: ref,
       sandbox,
+      sandboxLimits: spec.limits,
       codingTools: ["bash", "read", "write"],
       collaborationTools: [],
       budgets: { maxTurns: 6, deadline: new Date(Date.now() + 120_000) },

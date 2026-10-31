@@ -6,12 +6,13 @@ export * from "./chat";
 export * from "./executor";
 export * from "./legacy/index";
 export * from "./models";
-export * from "./prompt";
 export * from "./scripted";
 export {
   capToolOutput,
   createSandboxTools,
+  isSandboxReleased,
   type OutputPolicy,
+  type SandboxToolOptions,
   type SpillOutput,
   type ToolCallDetails,
   workspacePath,

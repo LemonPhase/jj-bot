@@ -5,7 +5,7 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import type { ModelRef, ToolName, Usage } from "@jj/contracts";
-import type { Interrupted, Sandbox } from "@jj/sandbox";
+import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
 
 /**
  * One persisted transcript entry: a pi message, stored as JSON in
@@ -120,6 +120,11 @@ export interface RunInput {
   /** The bot's model; null uses the registry default. */
   model: ModelRef | null;
   sandbox: Sandbox;
+  /**
+   * The profile's sandbox limits. A model-chosen bash timeout is clamped to
+   * `execTimeoutMs` with `resolveExecTimeoutMs` (drivers apply the same rule).
+   */
+  sandboxLimits: Pick<SandboxLimits, "execTimeoutMs">;
   /** Coding tools the profile grants. */
   codingTools: readonly ToolName[];
   collaborationTools: readonly CollabTool[];
@@ -131,7 +136,11 @@ export interface RunInput {
 
 export type RunOutcome =
   | { kind: "ended"; finalText: string }
-  | { kind: "aborted" }
+  /**
+   * The signal was aborted, or the sandbox was released under the run
+   * (`reason: "sandbox_released"`): what was in flight was stopped.
+   */
+  | { kind: "aborted"; reason?: "sandbox_released" }
   | { kind: "budget"; finalText: string }
   | { kind: "error"; error: string };
 

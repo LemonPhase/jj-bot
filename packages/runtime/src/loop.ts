@@ -24,6 +24,7 @@ import {
 import type { ResolvedModel } from "./models";
 import {
   finalizeResult,
+  isSandboxReleased,
   type OutputPolicy,
   type ToolCallDetails,
 } from "./tools";
@@ -357,6 +358,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       : "";
   if (spec.signal.aborted) return { kind: "aborted" };
   if (deadlineHit || budgetHit) return { kind: "budget", finalText };
+  if (isSandboxReleased(loopError))
+    return { kind: "aborted", reason: "sandbox_released" };
   if (loopError !== undefined)
     return {
       kind: "error",

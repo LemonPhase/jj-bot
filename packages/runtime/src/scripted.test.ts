@@ -3,7 +3,6 @@ import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
 import { ModelRegistry } from "./models";
-import { formatRoster, type RosterEntry } from "./prompt";
 import { SCRIPTED_MODEL_REF, scriptedNotesFile } from "./scripted";
 import { budgets, localSandbox, recordingHooks } from "./test-support";
 import type { CollabTool, ExecutorEvent, PiMessage, RunOutcome } from "./types";
@@ -16,13 +15,9 @@ afterEach(async () => {
   await workspace.cleanup();
 });
 
-const team: RosterEntry[] = [
-  { name: "Ada", role: "coordinator" },
-  { name: "Bob", role: "researcher" },
-  { name: "Cy", role: "writer" },
-];
+// Free-form prompts: the scripted model reads the roster from tool schemas.
 const promptFor = (name: string) =>
-  `You are ${name}.\n\n${formatRoster(team.map((entry) => ({ ...entry, self: entry.name === name })))}`;
+  `You are ${name}. Work with your team and keep the user informed.`;
 
 /** A minimal stand-in for the engine: one transcript per session, stubbed collaboration tools. */
 function harness() {
@@ -38,7 +33,13 @@ function harness() {
     {
       name: "delegate",
       description: "Give a participant a bounded piece of the work.",
-      parameters: Type.Object({ bot: Type.String(), brief: Type.String() }),
+      parameters: Type.Object({
+        bot: Type.Enum(["Bob", "Cy"], {
+          description:
+            "Participant to delegate to: Bob (researcher), Cy (writer).",
+        }),
+        brief: Type.String(),
+      }),
       summarize: (args) => String(args.bot),
       execute: async (args) => {
         delegations.push({ bot: String(args.bot), brief: String(args.brief) });
@@ -71,6 +72,7 @@ function harness() {
       inputs,
       model: null,
       sandbox: workspace.sandbox,
+      sandboxLimits: workspace.limits,
       codingTools: [...CODING_TOOLS],
       collaborationTools: collab,
       budgets: budgets(),
@@ -111,7 +113,7 @@ describe("scripted test model", () => {
       const note = (
         await workspace.sandbox.fs.read(scriptedNotesFile(bot))
       ).toString();
-      expect(note).toContain(`# ${bot}`);
+      expect(note).toContain(brief);
     }
 
     // The coordinator reacts to the first result before the second arrives.
@@ -156,13 +158,13 @@ describe("scripted test model", () => {
     const outcome = await executor.run({
       sessionId: "solo",
       runId: "run-1",
-      systemPrompt: formatRoster([
-        { name: "Solo", role: "coordinator", self: true },
-      ]),
+      // No delegate tool: nobody to delegate to.
+      systemPrompt: "You are Solo, working alone.",
       transcript: [],
       inputs: ["Tidy the workspace."],
       model: SCRIPTED_MODEL_REF,
       sandbox: workspace.sandbox,
+      sandboxLimits: workspace.limits,
       codingTools: ["write", "bash"],
       collaborationTools: [
         {
@@ -180,7 +182,10 @@ describe("scripted test model", () => {
       hooks: recorded.hooks,
     });
     expect(outcome).toEqual({ kind: "ended", finalText: "Done." });
-    expect(completions[0]).toContain("I wrote notes-solo.md");
-    expect(await workspace.sandbox.fs.stat("notes-solo.md")).toBeDefined();
+    const file = /I wrote (notes-[a-f0-9]{8}\.md)/.exec(
+      completions[0] ?? "",
+    )?.[1];
+    expect(file).toBeDefined();
+    expect(await workspace.sandbox.fs.stat(file ?? "")).toBeDefined();
   });
 });

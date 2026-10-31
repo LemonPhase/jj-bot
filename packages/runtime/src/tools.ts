@@ -13,7 +13,14 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import type { ToolName } from "@jj/contracts";
-import type { Interrupted, Sandbox, SandboxStat } from "@jj/sandbox";
+import {
+  type Interrupted,
+  resolveExecTimeoutMs,
+  type Sandbox,
+  type SandboxLimits,
+  SandboxReleasedError,
+  type SandboxStat,
+} from "@jj/sandbox";
 
 /**
  * Coding tools bound to a `Sandbox`. Every file access goes through
@@ -36,6 +43,33 @@ export interface ToolCallDetails {
   /** Where the full output was spilled, when it was. */
   artifactId?: string;
 }
+
+export interface SandboxToolOptions {
+  /** The profile's limits: a model-chosen bash timeout is clamped to `execTimeoutMs`. */
+  limits: Pick<SandboxLimits, "execTimeoutMs">;
+  /** Called when the sandbox turns out to be released under the run; the run stops. */
+  onReleased(): void;
+}
+
+/** True for `SandboxReleasedError`, also from another copy of the sandbox package. */
+export const isSandboxReleased = (error: unknown): boolean =>
+  error instanceof SandboxReleasedError ||
+  (error instanceof Error && error.name === "SandboxReleasedError");
+
+/** Reports a released sandbox before the error becomes the tool's result. */
+async function guarded<T>(
+  options: SandboxToolOptions,
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (isSandboxReleased(error)) options.onReleased();
+    throw error;
+  }
+}
+
+const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
 /** Stores output over the cap. Returns the artifact id. */
 export type SpillOutput = (text: string, label: string) => Promise<string>;
@@ -212,20 +246,24 @@ const absoluteEntry = (directory: string, entryPath: string) =>
 
 const IGNORED_DIRECTORIES = new Set(["node_modules", ".git"]);
 
-function bashTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
+function bashTool(
+  sandbox: Sandbox,
+  policy: OutputPolicy,
+  options: SandboxToolOptions,
+): AgentTool {
+  const limitMs = resolveExecTimeoutMs(options.limits);
   const parameters = Type.Object({
     command: Type.String({ description: "Shell command to run" }),
     timeout: Type.Optional(
       Type.Number({
-        description:
-          "Timeout in seconds. It can only shorten the sandbox's own limit.",
+        description: `Timeout in seconds. At most ${seconds(limitMs)}, the sandbox's limit.`,
       }),
     ),
   });
   return {
     name: "bash",
     label: "bash",
-    description: `Run a shell command (sh -c) in the task workspace ${sandbox.workspaceDir}, which is the working directory of every command. Returns combined stdout and stderr. Output over ${Math.floor(policy.capBytes / 1024)} KiB is truncated to its head and tail. Each call starts a fresh shell; files persist, shell state does not.`,
+    description: `Run a shell command (sh -c) in the task workspace ${sandbox.workspaceDir}, which is the working directory of every command. Returns combined stdout and stderr. Output over ${Math.floor(policy.capBytes / 1024)} KiB is truncated to its head and tail. Each call starts a fresh shell; files persist, shell state does not. Commands time out after ${seconds(limitMs)}.`,
     parameters,
     async execute(_toolCallId, params, signal) {
       const { command, timeout } = params as {
@@ -252,15 +290,20 @@ function bashTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
           { exitCode: null, interrupted: "yes", interruptReason: "abort" },
         );
       const chunks: Buffer[] = [];
-      const result = await sandbox.exec(command, {
-        ...(signal ? { signal } : {}),
-        ...(timeout !== undefined
-          ? { timeoutMs: Math.round(timeout * 1000) }
-          : {}),
-        onData: (chunk) => {
-          chunks.push(chunk);
-        },
-      });
+      const timeoutMs = resolveExecTimeoutMs(
+        options.limits,
+        timeout === undefined ? undefined : timeout * 1000,
+      );
+      const result = await guarded(options, () =>
+        sandbox.exec(command, {
+          ...(signal ? { signal } : {}),
+          timeoutMs,
+          onData: (chunk) => {
+            chunks.push(chunk);
+          },
+        }),
+      );
+      if (result.interruptReason === "release") options.onReleased();
       const streamed = Buffer.concat(chunks).toString("utf8");
       let output =
         streamed.length > 0
@@ -275,7 +318,7 @@ function bashTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
       if (result.interrupted !== "no") {
         const why =
           result.interruptReason === "timeout"
-            ? "Command timed out."
+            ? `Command timed out after ${seconds(timeoutMs)}.`
             : result.interruptReason === "release"
               ? "Command stopped: the sandbox was released."
               : "Command stopped: the run was cancelled.";
@@ -313,7 +356,11 @@ function bashTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
 const GREP_DEFAULT_LIMIT = 100;
 const GREP_MAX_LINE = 500;
 
-function grepTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
+function grepTool(
+  sandbox: Sandbox,
+  policy: OutputPolicy,
+  options: SandboxToolOptions,
+): AgentTool {
   const parameters = Type.Object({
     pattern: Type.String({
       description:
@@ -364,7 +411,7 @@ function grepTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
         limit?: number;
       };
       const target = workspacePath(sandbox, args.path);
-      const info = await statOrThrow(sandbox, target);
+      const info = await guarded(options, () => statOrThrow(sandbox, target));
       const isDirectory = info.kind === "directory";
       const context = Math.max(0, Math.floor(args.context ?? 0));
       const limit = Math.max(1, Math.floor(args.limit ?? GREP_DEFAULT_LIMIT));
@@ -387,10 +434,13 @@ function grepTool(sandbox: Sandbox, policy: OutputPolicy): AgentTool {
       ];
       const join = (parts: string[]) => parts.filter(Boolean).join(" ");
       const command = `if command -v rg >/dev/null 2>&1; then ${join(rg)}; else ${join(grep)}; fi`;
-      const result = await sandbox.exec(command, {
-        ...(isDirectory ? { cwd: target } : {}),
-        ...(signal ? { signal } : {}),
-      });
+      const result = await guarded(options, () =>
+        sandbox.exec(command, {
+          ...(isDirectory ? { cwd: target } : {}),
+          ...(signal ? { signal } : {}),
+        }),
+      );
+      if (result.interruptReason === "release") options.onReleased();
       const extra = {
         exitCode: result.exitCode,
         interrupted: result.interrupted,
@@ -491,17 +541,15 @@ function contained(
   tool: AgentTool,
   sandbox: Sandbox,
   policy: OutputPolicy,
+  options: SandboxToolOptions,
 ): AgentTool {
   return {
     ...tool,
     async execute(toolCallId, params, signal, onUpdate) {
       const args = { ...(params as Record<string, unknown>) };
       args.path = workspacePath(sandbox, args.path);
-      const result = await tool.execute(
-        toolCallId,
-        args as never,
-        signal,
-        onUpdate,
+      const result = await guarded(options, () =>
+        tool.execute(toolCallId, args as never, signal, onUpdate),
       );
       return finalizeResult(
         result,
@@ -618,16 +666,17 @@ export function createSandboxTools(
   sandbox: Sandbox,
   names: readonly ToolName[],
   policy: OutputPolicy,
+  options: SandboxToolOptions,
 ): AgentTool[] {
   const pi = piTools(sandbox);
   const build: Record<ToolName, () => AgentTool> = {
-    bash: () => bashTool(sandbox, policy),
-    grep: () => grepTool(sandbox, policy),
-    read: () => contained(pi.read, sandbox, policy),
-    edit: () => contained(pi.edit, sandbox, policy),
-    write: () => contained(pi.write, sandbox, policy),
-    ls: () => contained(pi.ls, sandbox, policy),
-    find: () => contained(pi.find, sandbox, policy),
+    bash: () => bashTool(sandbox, policy, options),
+    grep: () => grepTool(sandbox, policy, options),
+    read: () => contained(pi.read, sandbox, policy, options),
+    edit: () => contained(pi.edit, sandbox, policy, options),
+    write: () => contained(pi.write, sandbox, policy, options),
+    ls: () => contained(pi.ls, sandbox, policy, options),
+    find: () => contained(pi.find, sandbox, policy, options),
   };
   return [...new Set(names)].map((name) => build[name]());
 }

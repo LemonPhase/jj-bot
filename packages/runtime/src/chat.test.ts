@@ -2,12 +2,15 @@ import { fauxProvider, Type } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { ChatReplyError, ChatResponder } from "./chat";
 import { ModelRegistry } from "./models";
-import { formatActiveTasks, formatRoster } from "./prompt";
 import { SCRIPTED_MODEL_REF } from "./scripted";
 import { callTool, say } from "./test-support";
 import type { CollabTool } from "./types";
 
-function chatTools() {
+/**
+ * Chat tools as the engine declares them: bot names and active task ids are
+ * schema enums. `send_to_task` is offered only when a task is active.
+ */
+function chatTools(active: { id: string; title: string }[] = []) {
   const created: { goal: string; participants: string[] }[] = [];
   const forwarded: { taskId: string; text: string }[] = [];
   const tools: CollabTool[] = [
@@ -17,7 +20,10 @@ function chatTools() {
       parameters: Type.Object({
         goal: Type.String(),
         title: Type.Optional(Type.String()),
-        participants: Type.Array(Type.String()),
+        participants: Type.Array(Type.Enum(["Ada", "Bob", "Cy"]), {
+          description:
+            "Bots to include: Ada (assistant), Bob (researcher), Cy (writer).",
+        }),
       }),
       execute: async (args) => {
         created.push({
@@ -27,10 +33,20 @@ function chatTools() {
         return { text: `Created task task_${created.length}.` };
       },
     },
-    {
+  ];
+  if (active.length > 0)
+    tools.push({
       name: "send_to_task",
       description: "Forward a message to an active task.",
-      parameters: Type.Object({ taskId: Type.String(), text: Type.String() }),
+      parameters: Type.Object({
+        taskId: Type.Enum(
+          active.map((task) => task.id),
+          {
+            description: `Active task: ${active.map((task) => `${task.id}: ${task.title}`).join("; ")}`,
+          },
+        ),
+        text: Type.String(),
+      }),
       execute: async (args) => {
         forwarded.push({
           taskId: String(args.taskId),
@@ -38,24 +54,18 @@ function chatTools() {
         });
         return { text: `Sent to ${String(args.taskId)}.` };
       },
-    },
-  ];
+    });
   return { tools, created, forwarded };
 }
-
-const roster = formatRoster([
-  { name: "Ada", role: "assistant", self: true },
-  { name: "Bob", role: "researcher" },
-  { name: "Cy", role: "writer" },
-]);
 
 describe("ChatResponder with the scripted model", () => {
   const responder = new ChatResponder({
     models: new ModelRegistry({ env: {}, enableScripted: true }),
   });
-  const reply = (text: string, tools: CollabTool[], extra = "") =>
+  const reply = (text: string, tools: CollabTool[]) =>
     responder.reply({
-      systemPrompt: `You are Ada.\n\n${roster}\n\n${extra}`,
+      // Free-form: the scripted model reads bots and tasks from tool schemas.
+      systemPrompt: "You are Ada, a friendly assistant.",
       history: [
         { role: "user", text: "Hi" },
         { role: "assistant", text: "Hello!" },
@@ -68,9 +78,7 @@ describe("ChatResponder with the scripted model", () => {
 
   it("answers greetings and thanks without creating a task", async () => {
     const { tools, created, forwarded } = chatTools();
-    expect((await reply("Hello there!", tools)).text).toMatch(
-      /^Hello! I'm Ada\./,
-    );
+    expect((await reply("Hello there!", tools)).text).toMatch(/^Hello!/);
     expect((await reply("Thanks a lot!", tools)).text).toBe("You're welcome!");
     expect((await reply("What's your status?", tools)).text).toBe(
       "I have no active tasks right now.",
@@ -99,14 +107,16 @@ describe("ChatResponder with the scripted model", () => {
   });
 
   it("forwards a follow-up about an active task instead of creating another", async () => {
-    const { tools, created, forwarded } = chatTools();
-    const active = formatActiveTasks([
+    const { tools, created, forwarded } = chatTools([
       { id: "task_7", title: "Penguin report" },
+      { id: "task_9", title: "Landing page" },
     ]);
+    expect((await reply("Any progress?", tools)).text).toBe(
+      "I'm working on: Penguin report; Landing page.",
+    );
     const answer = await reply(
       "For the penguin report, please add a section on diet.",
       tools,
-      active,
     );
     expect(created).toEqual([]);
     expect(forwarded).toEqual([
@@ -118,6 +128,12 @@ describe("ChatResponder with the scripted model", () => {
     expect(answer.text).toBe(
       "I've passed that on to the task. Sent to task_7.",
     );
+    // A request about neither task starts a new one.
+    await reply("Please draft a launch email with Cy.", tools);
+    expect(created).toEqual([
+      { goal: "Please draft a launch email with Cy.", participants: ["Cy"] },
+    ]);
+    expect(forwarded).toHaveLength(1);
   });
 });
 

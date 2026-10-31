@@ -49,6 +49,7 @@ function input(
     inputs: ["Do the work."],
     model: "faux/faux-1",
     sandbox: workspace.sandbox,
+    sandboxLimits: workspace.limits,
     codingTools: [...CODING_TOOLS],
     collaborationTools: [],
     budgets: budgets(),
@@ -574,5 +575,73 @@ describe("PiSessionExecutor", () => {
       "OPENAI_API_KEY",
     );
     expect(recorded.entries).toHaveLength(0);
+  });
+
+  it("clamps a model-chosen bash timeout to the profile limit", async () => {
+    const strict = await localSandbox("strict-limits", { execTimeoutMs: 300 });
+    try {
+      const recorded = recordingHooks();
+      faux.setResponses([
+        callTool("bash", { command: "sleep 5", timeout: 600 }),
+        say("ok"),
+      ]);
+      const startedAt = Date.now();
+      const outcome = await new PiSessionExecutor({ models: registry }).run(
+        input({
+          hooks: recorded.hooks,
+          sandbox: strict.sandbox,
+          sandboxLimits: strict.limits,
+        }),
+      );
+      expect(outcome.kind).toBe("ended");
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      const [sleep] = finished(recorded.events, "bash");
+      expect(sleep?.ok).toBe(false);
+      expect(sleep?.interrupted).not.toBe("no");
+      expect(sleep?.output).toContain("Command timed out after 0.3 s.");
+    } finally {
+      await strict.cleanup();
+    }
+  });
+
+  it("ends the run as aborted when the sandbox is released mid-command", async () => {
+    const recorded = recordingHooks();
+    const hooks = {
+      ...recorded.hooks,
+      onEvent: (event: ExecutorEvent) => {
+        recorded.hooks.onEvent(event);
+        if (event.type === "tool.started")
+          setTimeout(() => void workspace.sandbox.release(), 200);
+      },
+    };
+    faux.setResponses([
+      callTool("bash", { command: "sleep 30" }),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks }),
+    );
+    expect(outcome).toEqual({ kind: "aborted", reason: "sandbox_released" });
+    const [sleep] = finished(recorded.events, "bash");
+    expect(sleep?.ok).toBe(false);
+    expect(sleep?.interrupted).not.toBe("no");
+    expect(faux.getPendingResponseCount()).toBe(1);
+  });
+
+  it("ends the run as aborted when a tool meets an already released sandbox", async () => {
+    await workspace.sandbox.release();
+    const recorded = recordingHooks();
+    faux.setResponses([
+      callTool("write", { path: "late.txt", content: "x" }),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: recorded.hooks }),
+    );
+    expect(outcome).toEqual({ kind: "aborted", reason: "sandbox_released" });
+    const [write] = finished(recorded.events, "write");
+    expect(write?.ok).toBe(false);
+    expect(write?.output).toContain("released");
+    expect(faux.getPendingResponseCount()).toBe(1);
   });
 });

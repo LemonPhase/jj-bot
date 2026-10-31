@@ -14,18 +14,30 @@ import {
 import { LocalSandboxDriver, type Sandbox } from "@jj/sandbox";
 import type { ExecutorEvent, PiMessage, RunHooks } from "./types";
 
-/** A `local` sandbox in a fresh temporary root, plus its cleanup. */
-export async function localSandbox(key = "task-1") {
+/**
+ * A `local` sandbox under its own temporary root (never the shared default
+ * root), its spec limits, and a cleanup that removes the root.
+ */
+export async function localSandbox(
+  key = "task-1",
+  limits: { execTimeoutMs?: number } = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "jj-runtime-test-"));
   const driver = new LocalSandboxDriver({ root });
+  const spec = driver.validateSpec({
+    driver: "local",
+    network: { mode: "open" },
+    limits,
+  });
   const sandbox = await driver.acquire({
     sessionId: "session-1",
     taskId: key,
-    spec: driver.validateSpec({ driver: "local", network: { mode: "open" } }),
+    spec,
     workspaceKey: key,
   });
   return {
     sandbox,
+    limits: spec.limits,
     cleanup: async () => {
       await sandbox.release();
       await rm(root, { recursive: true, force: true });

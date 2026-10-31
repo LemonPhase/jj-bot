@@ -6,7 +6,7 @@ The pi agent runtime (`@earendil-works/pi-coding-agent`, `pi-agent-core`, `pi-ai
 - `PiSessionExecutor.run(input)` runs one execution session on pi's low-level agent loop over a transcript the engine owns: no pi session files, settings, context files or extensions are loaded.
 - `ChatResponder.reply(input)` answers a direct message with the bot's model and the engine's chat tools, at most six model calls, no sandbox.
 - `repairTranscript` answers tool calls left without a result by a crash as interrupted with an unknown outcome; nothing is re-run. `serializeEntry` and `parseTranscript` store and load entries (`TRANSCRIPT_FORMAT`), refusing shapes they do not recognise.
-- The scripted test model (`scripted/team`, "Scripted test model") is registered only with `enableScripted`. It is rule-based on the conversation and reads rosters and active tasks in the formats of `formatRoster` and `formatActiveTasks`, which the engine uses to build prompts.
+- The scripted test model (`scripted/team`, "Scripted test model") is registered only with `enableScripted`. It is rule-based on the conversation and ignores the free-form system prompt; it reads everything from the tools it is offered. Its role: `create_task`/`send_to_task` mean chat, `complete_task` means coordinator, anything else worker. Whom it delegates to: the enum of `delegate`'s `bot` (the engine omits `delegate` when there is nobody). Active tasks: the enum of `send_to_task`'s `taskId`, with titles in its description as `id: title`. Bots a chat task can include: the item enum of `create_task`'s `participants`. A worker writes the notes file its brief names.
 
 ## Tools and the sandbox
 
@@ -17,8 +17,10 @@ Every coding tool acts through the run's `Sandbox`. `read`, `edit`, `write`, `ls
 - Persistence: `onTurnComplete(entries)` receives the run's inputs and injected steering before the model call that sees them, an assistant message that calls tools before those tools run, and each turn's results when it completes. System messages are never persisted; the prompt is rebuilt every run. Aborted or failed model responses are not persisted.
 - Steering: `drainInbox()` is polled before the first model call and at every turn boundary; texts are injected as user messages through pi's steering hook.
 - Budgets: `maxTurns` counts model calls in the run; the deadline aborts what is in flight. Either ends the run with `budget` when the model still wanted to continue.
-- Abort: the signal cancels the model call and the running sandbox command; the command reports `interrupted` and the outcome is `aborted`.
+- Abort: the signal cancels the model call and the running sandbox command; the command reports `interrupted` and the outcome is `aborted`. A sandbox released under the run (`SandboxReleasedError`, or a command interrupted with reason `release`) stops it the same way, with `reason: "sandbox_released"`.
+- Timeouts: a model-chosen bash timeout is clamped to the profile's `sandboxLimits.execTimeoutMs` with `resolveExecTimeoutMs`.
 - A collaboration tool returning `endRun` (complete_task) ends the run after its tool batch.
+- No context compaction: a session's transcript grows until the run stops at `maxTurns` or the deadline, or the model's context window is exceeded (an `error` outcome). Compacting would need a persisted compaction entry; it is out of scope for the MVP.
 
 Tests use pi's faux provider, the scripted model and the `local` sandbox driver; none call a live model. `npm run smoke:runtime` runs one live tool cycle with `JJ_SMOKE_MODEL` (default `openai/gpt-6-luna`).
 

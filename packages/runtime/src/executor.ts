@@ -59,8 +59,14 @@ export class PiSessionExecutor implements RunExecutor {
       spill: (text, label) => hooks.spillOutput(text, label),
     };
     let endRequested = false;
+    // A sandbox released under the run (stop, idle release) stops it like an abort.
+    const released = new AbortController();
+    const signal = AbortSignal.any([input.signal, released.signal]);
     const tools = [
-      ...createSandboxTools(input.sandbox, input.codingTools, policy),
+      ...createSandboxTools(input.sandbox, input.codingTools, policy, {
+        limits: input.sandboxLimits,
+        onReleased: () => released.abort(new Error("sandbox released")),
+      }),
       ...input.collaborationTools.map((tool) =>
         collabAgentTool(tool, policy, () => {
           endRequested = true;
@@ -92,7 +98,7 @@ export class PiSessionExecutor implements RunExecutor {
       }
     }
 
-    return runLoop({
+    const outcome = await runLoop({
       resolved,
       streamFn: this.models.streamFn,
       sessionId: input.sessionId,
@@ -104,7 +110,7 @@ export class PiSessionExecutor implements RunExecutor {
       inputs,
       maxTurns: Math.max(1, Math.floor(input.budgets.maxTurns)),
       deadline: input.budgets.deadline,
-      signal: input.signal,
+      signal,
       endRequested: () => endRequested,
       getSteering: drain,
       persist: async (entries) => {
@@ -114,5 +120,8 @@ export class PiSessionExecutor implements RunExecutor {
         await hooks.onEvent(event);
       },
     });
+    if (released.signal.aborted && !input.signal.aborted)
+      return { kind: "aborted", reason: "sandbox_released" };
+    return outcome;
   }
 }
