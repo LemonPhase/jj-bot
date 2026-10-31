@@ -35,10 +35,7 @@ export function BotList({ onNewBot }: { onNewBot: () => void }) {
       </div>
       <div className="list-scroll">
         {filtered.map((bot) => {
-          // Preview the last real message, not demo/system notices.
-          const last = (conversations[bot.id] ?? [])
-            .filter((m) => m.role !== "system")
-            .at(-1);
+          const last = conversations[bot.id]?.messages.at(-1);
           return (
             <button
               key={bot.id}

@@ -1,63 +1,172 @@
 /**
  * The single seam between the UI and the backend.
  *
- * Every component talks to the backend only through this interface (via
- * `useApi()`). `resolveApi()` picks the live backend when `/api/bootstrap`
- * reports `mode: "backend"`, and falls back to the in-memory demo otherwise.
+ * Every component talks to the backend only through `JJApi` (via `useApi()`),
+ * and every value crossing it is a `@jj/contracts` type: the contract types are
+ * the view models. `resolveApi()` picks the live backend when `/api/bootstrap`
+ * answers `mode: "backend"` with a compatible contract, and the in-memory demo
+ * otherwise. Both implementations fold task events with `applyTaskEvent`, so
+ * the screens run the same code against either.
  */
 import type {
-  BotPatch,
-  BotProfile,
-  DirectMessage,
-  NewBotInput,
-  NewTaskInput,
-  TaskMessageInput,
+  ApiErrorCode,
+  Bootstrap,
+  Bot,
+  BotMemory,
+  Capabilities,
+  ConversationMessage,
+  ConversationView,
+  CreateBotCommand,
+  CreateRuntimeProfileCommand,
+  CreateTaskCommand,
+  ModelsView,
+  PostTaskMessageCommand,
+  RuntimeProfile,
+  SandboxDriverInfo,
+  SendBotMessageCommand,
+  StopTaskCommand,
+  Task,
+  TaskMessage,
+  TaskSummary,
   TaskView,
-} from "./types";
+  UpdateBotCommand,
+  UpdateBotMemoryCommand,
+  UpdateRuntimeProfileCommand,
+  WorkspaceHint,
+} from "@jj/contracts";
 
+export type ApiMode = "demo" | "live";
+
+/** The sidebar mode chip. `Live` is shown only when `mode` is `live`. */
 export interface ApiBadge {
-  label: string;
+  label: "Demo data" | "Live" | "No model configured" | "Scripted model";
   tone: "demo" | "live" | "warning";
+  /** Why the chip says what it says; shown as its tooltip. */
   title: string;
 }
 
+/** Errors the client raises itself, next to the contract's server codes. */
+export type ClientErrorCode = "NETWORK_ERROR" | "INVALID_RESPONSE";
+
+/**
+ * Every failed call rejects with this. Server failures carry the contract
+ * error envelope (`{ error: { code, message, details } }`) unchanged; show
+ * `message` verbatim.
+ */
+export class ApiError extends Error {
+  override readonly name = "ApiError";
+  constructor(
+    readonly code: ApiErrorCode | ClientErrorCode,
+    message: string,
+    readonly details?: unknown,
+    /** HTTP status, when a response arrived. */
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
+
+export const isApiError = (value: unknown): value is ApiError =>
+  value instanceof ApiError;
+
+export type Unsubscribe = () => void;
+
+/** Connection state of a stream subscription, for the "live" indicators. */
+export type StreamState = "connecting" | "open" | "reconnecting" | "closed";
+
+export interface StreamOptions {
+  onState?: (state: StreamState) => void;
+  /** A failed snapshot load or a malformed frame. The subscription keeps trying. */
+  onError?: (error: ApiError) => void;
+}
+
+export interface HintOptions extends StreamOptions {
+  /**
+   * The workspace stream (re)connected. It is not resumable, so refetch
+   * whatever is on screen. Not called for the first connection.
+   */
+  onResync?: () => void;
+}
+
 export interface JJApi {
-  readonly mode: "demo" | "live";
-  /** Shown in the top bar so it is always clear what the UI is talking to. */
+  readonly mode: ApiMode;
   readonly badge: ApiBadge;
-  readonly capabilities: {
-    /** Whether a bot's name and instructions can be edited after creation. */
-    editBotIdentity: boolean;
-  };
+  /** From bootstrap. Offer only what is reported here. */
+  readonly capabilities: Capabilities;
+  readonly contractVersion: string;
+
+  /** `GET /api/bootstrap`. */
+  bootstrap(): Promise<Bootstrap>;
+  /** `GET /api/stream`: what to refetch. One shared connection per client. */
+  subscribeHints(
+    onHint: (hint: WorkspaceHint) => void,
+    options?: HintOptions,
+  ): Unsubscribe;
 
   // Bots
-  listBots(): Promise<BotProfile[]>;
-  createBot(input: NewBotInput): Promise<BotProfile>;
-  updateBot(botId: string, patch: BotPatch): Promise<BotProfile>;
+  listBots(): Promise<Bot[]>;
+  getBot(botId: string): Promise<Bot>;
+  createBot(command: CreateBotCommand): Promise<Bot>;
+  updateBot(botId: string, command: UpdateBotCommand): Promise<Bot>;
+  /** Rejects with `CONFLICT` while the bot has active tasks. */
+  archiveBot(botId: string): Promise<void>;
+  getMemory(botId: string): Promise<BotMemory>;
+  putMemory(botId: string, command: UpdateBotMemoryCommand): Promise<BotMemory>;
 
-  // 1:1 bot chat
-  listDirectMessages(botId: string): Promise<DirectMessage[]>;
-  /** Returns the full, updated conversation. */
-  sendDirectMessage(botId: string, text: string): Promise<DirectMessage[]>;
-  /** Pushes conversation updates (e.g. a bot reply). Returns an unsubscribe function. */
-  subscribeToConversation(
+  // Direct chat
+  getConversation(botId: string): Promise<ConversationView>;
+  /** Resolves with the stored user message; the reply arrives asynchronously. */
+  sendBotMessage(
     botId: string,
-    onUpdate: (messages: DirectMessage[]) => void,
-  ): () => void;
+    command: SendBotMessageCommand,
+  ): Promise<ConversationMessage>;
+  /** The conversation now, then again after every `conversation.changed` hint for this bot. */
+  subscribeConversation(
+    botId: string,
+    onView: (view: ConversationView) => void,
+    options?: StreamOptions,
+  ): Unsubscribe;
+
+  // Runtime profiles, drivers and models
+  listProfiles(): Promise<RuntimeProfile[]>;
+  getProfile(profileId: string): Promise<RuntimeProfile>;
+  createProfile(command: CreateRuntimeProfileCommand): Promise<RuntimeProfile>;
+  updateProfile(
+    profileId: string,
+    command: UpdateRuntimeProfileCommand,
+  ): Promise<RuntimeProfile>;
+  /** Rejects with `PROFILE_IN_USE` while a bot references the profile. */
+  deleteProfile(profileId: string): Promise<void>;
+  listDrivers(): Promise<SandboxDriverInfo[]>;
+  getModels(): Promise<ModelsView>;
 
   // Tasks
-  listTasks(): Promise<TaskView[]>;
-  /** Pushes the full task list when tasks are created or change elsewhere. */
-  subscribeToTasks(onUpdate: (tasks: TaskView[]) => void): () => void;
-  createTask(input: NewTaskInput): Promise<TaskView>;
-  postTaskMessage(taskId: string, input: TaskMessageInput): Promise<TaskView>;
-  stopTask(taskId: string): Promise<TaskView>;
-  /** Live updates for one task (group chat, sessions, checks). */
-  subscribeToTask(
+  listTasks(): Promise<TaskSummary[]>;
+  createTask(command: CreateTaskCommand): Promise<Task>;
+  getTask(taskId: string): Promise<TaskView>;
+  /**
+   * Every user message steers the coordinator. Pass `goal` with the
+   * `observedGoalVersion` on screen to replace the goal; a stale version
+   * rejects with `STALE_GOAL_VERSION`.
+   */
+  postTaskMessage(
     taskId: string,
-    onUpdate: (task: TaskView) => void,
-  ): () => void;
+    command: PostTaskMessageCommand,
+  ): Promise<TaskMessage>;
+  stopTask(taskId: string, command?: StopTaskCommand): Promise<Task>;
+  /**
+   * The task snapshot, then every task event folded onto it with
+   * `applyTaskEvent`. Resumes from the last sequence on reconnect, never
+   * delivers an event twice, and ignores event types it does not know.
+   */
+  subscribeTask(
+    taskId: string,
+    onView: (view: TaskView) => void,
+    options?: StreamOptions,
+  ): Unsubscribe;
+  /** Where an artifact's content downloads from. */
+  artifactUrl(taskId: string, artifactId: string): string;
 
-  /** Demo only: advance a task's sessions one step to preview graph states. */
-  advanceDemoTask?(taskId: string): Promise<TaskView>;
+  /** Demo only: run the next scripted step of a demo task now. */
+  advanceDemoTask?(taskId: string): Promise<void>;
 }

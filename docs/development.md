@@ -45,7 +45,7 @@ Internal packages export TypeScript source. API/worker run with `tsx`; `build` t
 | `JJ_EMBED_WORKER`  | `true` (default) runs the scheduler inside the API; `false` requires the separate worker.   |
 | `JJ_CONCURRENCY`   | Concurrent execution sessions and claimed jobs, default `3`.                                |
 | `JJ_POSTGRES_PORT` | Host port for the compose PostgreSQL service, default `5433`.                               |
-| `API_TOKEN`        | Optional bearer token required on `/api/*` when set.                                        |
+| `API_TOKEN`        | Optional bearer token on `/api/*`. The web app reads it from `?token=` into localStorage.   |
 | `GEMINI_API_KEY`   | Server-only Google GenAI key. Never expose it to the browser.                               |
 | `GEMINI_MODEL`     | Exact model id used for sessions; validate access before relying on it.                     |
 
@@ -90,6 +90,5 @@ Task execution is owned by the backend scheduler, not by an HTTP request or an o
 
 - AG-UI client/core are pinned to 1.0.2 to match CopilotKit 1.83.0. Mixing that pinned client with a direct 1.0.3 client produced incompatible private class types; do not bypass this with casts.
 - The dependency audit is not clean. Review reachability and patched upstream releases before external deployment; do not apply blanket breaking overrides or claim a clean audit.
-- The CopilotKit provider produces large rendering-related chunks and the main bundle exceeds 2 MB before gzip. Isolate or lazy-load imports instead of suppressing the size warning.
 - PostgreSQL mode serializes application writes through a single lock row: correctness over throughput. Partitioned locks or indexed repositories can follow when load justifies them.
 - Job leases prevent duplicate execution by competing workers, but they do not make external tool effects exactly-once. Reconcile ambiguous effects before retrying after a crash.

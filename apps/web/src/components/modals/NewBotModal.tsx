@@ -14,7 +14,7 @@ export function NewBotModal({ onClose }: { onClose: () => void }) {
       submitLabel="Create"
       onClose={onClose}
       onSubmit={() => {
-        if (!name.trim() || !role.trim() || !instructions.trim()) return;
+        if (!name.trim()) return;
         void createBot({
           name: name.trim(),
           role: role.trim(),
@@ -45,7 +45,6 @@ export function NewBotModal({ onClose }: { onClose: () => void }) {
           id="new-bot-role"
           className="form-input"
           placeholder="e.g. Security Reviewer"
-          required
           value={role}
           onChange={(event) => setRole(event.target.value)}
         />
@@ -58,7 +57,6 @@ export function NewBotModal({ onClose }: { onClose: () => void }) {
           id="new-bot-instructions"
           className="field-textarea"
           placeholder="System persona and boundaries..."
-          required
           value={instructions}
           onChange={(event) => setInstructions(event.target.value)}
         />

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { taskStatusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { StatusDot } from "../common/StatusDot";
@@ -7,7 +8,11 @@ export function TaskList({ onNewTask }: { onNewTask: () => void }) {
   const { tasks, selectedTaskId, selectTask, getBot } = useWorkspace();
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
-  const filtered = tasks.filter((task) => task.goal.toLowerCase().includes(q));
+  const filtered = tasks.filter(
+    (task) =>
+      task.title.toLowerCase().includes(q) ||
+      task.goal.toLowerCase().includes(q),
+  );
 
   return (
     <aside className="sidebar-list">
@@ -41,13 +46,13 @@ export function TaskList({ onNewTask }: { onNewTask: () => void }) {
             <StatusDot status={task.status} />
             <div className="item-body">
               <div className="item-top">
-                <span className="item-title">{task.goal}</span>
+                <span className="item-title">{task.title}</span>
                 <span className="item-time">v{task.goalVersion}</span>
               </div>
               <div className="item-top item-bottom">
                 <span className="item-subtitle">
-                  {task.status} · {task.sessions.length}{" "}
-                  {task.sessions.length === 1 ? "session" : "sessions"}
+                  {taskStatusWord(task)} · {task.sessionCount}{" "}
+                  {task.sessionCount === 1 ? "session" : "sessions"}
                 </span>
                 <div className="avatar-stack">
                   {task.participantBotIds.map((botId) => {

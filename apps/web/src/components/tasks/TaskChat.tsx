@@ -1,28 +1,30 @@
+import type { TaskView } from "@jj/contracts";
 import { useEffect, useRef, useState } from "react";
-import type { TaskView } from "../../api/types";
+import { colourHex } from "../../lib/appearance";
 import { formatMessageTime } from "../../lib/format";
+import { acceptsMessages, isStoppable, taskStatusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { Composer } from "../common/Composer";
 import { StatusDot } from "../common/StatusDot";
 import { TypingIndicator } from "../common/TypingIndicator";
 
-const STOPPABLE = new Set<TaskView["status"]>(["queued", "running", "waiting"]);
-
-export function TaskChat({ task }: { task: TaskView }) {
+export function TaskChat({ view }: { view: TaskView }) {
   const { getBot, jumpToBot, postTaskMessage, stopTask, pendingTaskSends } =
     useWorkspace();
-  const [steering, setSteering] = useState(false);
+  const { task, messages } = view;
+  const [changingGoal, setChangingGoal] = useState(false);
   const pending = pendingTaskSends[task.id];
   const coordinator = getBot(task.coordinatorBotId);
-  const busy =
-    Boolean(pending) || task.status === "running" || task.status === "queued";
+  const working = task.status === "running" || task.status === "queued";
+  const busy = Boolean(pending) || (working && !task.cancelRequestedAt);
+  const open = acceptsMessages(task);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [task.messages.length, task.id, pending, busy]);
+  }, [messages.length, task.id, pending, busy]);
 
   return (
     <main className="chat-column">
@@ -30,16 +32,18 @@ export function TaskChat({ task }: { task: TaskView }) {
         <div className="pane-header-left">
           <div className="pane-title-group">
             <div className="pane-title">
-              <span className="pane-title-text">{task.goal}</span>
+              <span className="pane-title-text" title={task.goal}>
+                {task.title}
+              </span>
               <span className="status-pill">
                 <StatusDot status={task.status} />
-                {task.status} · v{task.goalVersion}
+                {taskStatusWord(task)} · v{task.goalVersion}
               </span>
             </div>
           </div>
         </div>
         <div className="header-actions">
-          {STOPPABLE.has(task.status) && (
+          {isStoppable(task) && (
             <button
               type="button"
               className="action-btn danger"
@@ -63,7 +67,7 @@ export function TaskChat({ task }: { task: TaskView }) {
               className={`bot-chip ${isCoordinator ? "coordinator" : ""}`}
               onClick={() => jumpToBot(botId)}
             >
-              <StatusDot color={bot.color} />
+              <StatusDot color={colourHex(bot.appearance.colour)} />
               <span>{bot.name}</span>
               {isCoordinator && <span className="chip-note">coord</span>}
             </button>
@@ -72,14 +76,14 @@ export function TaskChat({ task }: { task: TaskView }) {
       </div>
 
       <div className="messages-scroll" ref={scrollRef}>
-        {task.messages.length === 0 && !pending && (
+        {messages.length === 0 && !pending && (
           <div className="msg-row system">
             <div className="system-pill">
               No messages yet · updates from the bots will appear here
             </div>
           </div>
         )}
-        {task.messages.map((m) => {
+        {messages.map((m) => {
           if (m.authorKind === "system") {
             return (
               <div key={m.id} className="msg-row system">
@@ -88,7 +92,7 @@ export function TaskChat({ task }: { task: TaskView }) {
             );
           }
           const isUser = m.authorKind === "user";
-          const bot = isUser ? undefined : getBot(m.authorId);
+          const bot = m.authorBotId ? getBot(m.authorBotId) : undefined;
           return (
             <div
               key={m.id}
@@ -97,7 +101,7 @@ export function TaskChat({ task }: { task: TaskView }) {
               {bot && <BotAvatar bot={bot} size="sm" />}
               <div className="msg-content-wrap">
                 <div className="msg-sender">
-                  <span>{isUser ? "You" : (bot?.name ?? m.authorId)}</span>
+                  <span>{isUser ? "You" : (bot?.name ?? "Bot")}</span>
                   {m.intent !== "discussion" && (
                     <span className={`intent-tag ${m.intent}`}>{m.intent}</span>
                   )}
@@ -108,15 +112,20 @@ export function TaskChat({ task }: { task: TaskView }) {
             </div>
           );
         })}
+        {task.cancelRequestedAt && task.status !== "cancelled" && (
+          <div className="msg-row system">
+            <div className="system-pill">Stopping…</div>
+          </div>
+        )}
         {pending && (
           <div
-            className={`msg-row user pending ${pending.steering ? "steering-msg" : ""}`}
+            className={`msg-row user pending ${pending.changesGoal ? "steering-msg" : ""}`}
           >
             <div className="msg-content-wrap">
               <div className="msg-sender">
                 <span>You</span>
-                {pending.steering && (
-                  <span className="intent-tag steering">steering</span>
+                {pending.changesGoal && (
+                  <span className="intent-tag steering">new goal</span>
                 )}
                 <span>Sending…</span>
               </div>
@@ -133,7 +142,7 @@ export function TaskChat({ task }: { task: TaskView }) {
             }
             label={
               pending
-                ? "Sending to the team…"
+                ? "Sending to the coordinator…"
                 : `${coordinator?.name ?? "The coordinator"} is working…`
             }
           />
@@ -143,24 +152,28 @@ export function TaskChat({ task }: { task: TaskView }) {
       <Composer
         key={task.id}
         placeholder={
-          steering
-            ? "Steer task goal & notify active sessions..."
-            : "Message task group..."
+          !open
+            ? "This task was stopped"
+            : changingGoal
+              ? "Replace the task goal..."
+              : "Message the coordinator..."
         }
-        disabled={Boolean(pending)}
+        disabled={Boolean(pending) || !open}
         leading={
           <button
             type="button"
-            className={`mode-chip ${steering ? "steer-active" : ""}`}
-            aria-pressed={steering}
-            onClick={() => setSteering((on) => !on)}
+            className={`mode-chip ${changingGoal ? "steer-active" : ""}`}
+            aria-pressed={changingGoal}
+            title="Send this message as the task's new goal"
+            disabled={!open}
+            onClick={() => setChangingGoal((on) => !on)}
           >
-            Steer
+            New goal
           </button>
         }
         onSend={(text) => {
-          void postTaskMessage(task.id, text, steering);
-          setSteering(false);
+          void postTaskMessage(task.id, text, changingGoal);
+          setChangingGoal(false);
         }}
       />
     </main>

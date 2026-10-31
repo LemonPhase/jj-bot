@@ -1,4 +1,4 @@
-import type { BotProfile, TaskMessageView, TaskView } from "../../../api/types";
+import type { Bot, Task, TaskMessage } from "@jj/contracts";
 
 /**
  * How the office acts out one task message.
@@ -7,7 +7,7 @@ import type { BotProfile, TaskMessageView, TaskView } from "../../../api/types";
  * - `announce`  a system notification: toast, whiteboard flash, participants ping.
  * - `huddle`    speaker and recipients meet at the table (assignments, group talk).
  * - `visit`     speaker walks over to a single recipient's desk.
- * - `board`     speaker posts a result at the verification whiteboard.
+ * - `board`     speaker posts a result at the whiteboard.
  * - `terminal`  the coordinator reports a result back to the user.
  * - `broadcast` speaker talks from where they are, with no recipient.
  */
@@ -26,7 +26,7 @@ export interface Beat {
   from: string;
   /** Bot ids being addressed (never includes the speaker). */
   to: string[];
-  intent: TaskMessageView["intent"];
+  intent: TaskMessage["intent"];
   text: string;
   mode: BeatMode;
 }
@@ -34,7 +34,7 @@ export interface Beat {
 /** Resolve `@Name` mentions against the task's participating bots. */
 export function mentionedBotIds(
   text: string,
-  participants: Pick<BotProfile, "id" | "name">[],
+  participants: Pick<Bot, "id" | "name">[],
 ): string[] {
   const ids: string[] = [];
   for (const match of text.matchAll(/@([\w-]+)/g)) {
@@ -50,9 +50,9 @@ export function mentionedBotIds(
  * decides choreography; it never invents statuses, results or replies.
  */
 export function messageToBeat(
-  message: TaskMessageView,
-  task: Pick<TaskView, "coordinatorBotId" | "participantBotIds">,
-  participants: Pick<BotProfile, "id" | "name">[],
+  message: TaskMessage,
+  task: Pick<Task, "coordinatorBotId" | "participantBotIds">,
+  participants: Pick<Bot, "id" | "name">[],
 ): Beat {
   const base = {
     messageId: message.id,
@@ -62,7 +62,13 @@ export function messageToBeat(
   const inTask = participants.filter((b) =>
     task.participantBotIds.includes(b.id),
   );
-  const mentions = mentionedBotIds(message.text, inTask);
+  // Addressed bots: the message's recipients, else its @mentions.
+  const recipients = message.recipientBotIds.filter((id) =>
+    inTask.some((b) => b.id === id),
+  );
+  const mentions = recipients.length
+    ? recipients
+    : mentionedBotIds(message.text, inTask);
 
   if (message.authorKind === "system") {
     return { ...base, from: "system", to: [], mode: "announce" };
@@ -77,7 +83,7 @@ export function messageToBeat(
     return { ...base, from: "user", to, mode: "user" };
   }
 
-  const from = message.authorId;
+  const from = message.authorBotId ?? "system";
   let to = mentions.filter((id) => id !== from);
   const isCoordinator = from === task.coordinatorBotId;
 
