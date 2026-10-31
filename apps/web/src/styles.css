@@ -716,6 +716,100 @@ h2 {
   color: #3f6340;
 }
 
+/* Creation forms (task 05) */
+.add-button {
+  background: var(--ink);
+  color: #edf4df;
+  border: 0;
+  border-radius: 4px;
+  padding: 12px 17px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.add-button:hover {
+  background: #2c4b43;
+}
+.link-button {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
+.create-form {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 20px 22px;
+  background: #faf9f2;
+}
+.create-form h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.create-form input[type="text"],
+.create-form input:not([type]),
+.create-form select,
+.create-form textarea {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 9px 11px;
+  width: 100%;
+}
+.create-form textarea {
+  resize: vertical;
+  line-height: 1.7;
+}
+.create-form input:focus-visible,
+.create-form select:focus-visible,
+.create-form textarea:focus-visible {
+  outline: 3px solid #91ac4c;
+  outline-offset: 2px;
+}
+.participants {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 11px 13px;
+  margin: 4px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  background: #fffef9;
+}
+.participants label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.form-note {
+  margin: 10px 0 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #6c6244;
+  background: #f3f0e4;
+  border: 1px dashed #d6cdae;
+  border-radius: 5px;
+  padding: 10px 13px;
+}
+.draft-row {
+  background: #fdf7f7;
+  border-radius: 5px;
+}
+.roster h3 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
 @media (min-width: 1500px) {
   .content {
     padding-top: 65px;

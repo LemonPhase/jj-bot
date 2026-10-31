@@ -1,4 +1,6 @@
 import type {
+  CreateBotCommand,
+  CreateTaskCommand,
   PostTaskMessageCommand,
   SteerTaskCommand,
   StopTaskCommand,
@@ -7,6 +9,8 @@ import type {
 // Command endpoints the backend (tasks 02/04) will implement. They do not exist yet, so every
 // send below fails with a real error that the UI shows. We deliberately do not simulate success.
 export const commandRoutes = {
+  bots: "/api/bots",
+  tasks: "/api/tasks",
   message: (taskId: string) => `/api/tasks/${taskId}/messages`,
   steer: (taskId: string) => `/api/tasks/${taskId}/steer`,
   stop: (taskId: string) => `/api/tasks/${taskId}/stop`,
@@ -47,3 +51,9 @@ export const steerTask = (command: SteerTaskCommand) =>
 
 export const stopTask = (command: StopTaskCommand) =>
   send(commandRoutes.stop(command.taskId), command);
+
+export const createBot = (command: CreateBotCommand) =>
+  send(commandRoutes.bots, command);
+
+export const createTask = (command: CreateTaskCommand) =>
+  send(commandRoutes.tasks, command);

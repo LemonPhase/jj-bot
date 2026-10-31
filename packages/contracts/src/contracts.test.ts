@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createBotCommandSchema,
   createTaskCommandSchema,
   postTaskMessageCommandSchema,
   steerTaskCommandSchema,
@@ -92,6 +93,18 @@ describe("frontend command boundary", () => {
         ...command,
         coordinatorBotId: "outsider",
       }).success,
+    ).toBe(false);
+  });
+  it("requires a bot to have both a name and instructions", () => {
+    expect(
+      createBotCommandSchema.safeParse({
+        name: "Ember",
+        instructions: "Summarise",
+      }).success,
+    ).toBe(true);
+    expect(
+      createBotCommandSchema.safeParse({ name: "Ember", instructions: "" })
+        .success,
     ).toBe(false);
   });
   it("separates posting a message from steering the goal", () => {

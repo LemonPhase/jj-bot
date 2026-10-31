@@ -1,15 +1,17 @@
+import type { Bot, TaskView } from "@jj/contracts";
 import { type Bootstrap, bootstrapSchema } from "@jj/contracts";
 import { useEffect, useState } from "react";
 import { FIXTURE_NOTICE, fixtureTaskViews } from "./fixtures";
+import { NewBotForm } from "./NewBotForm";
+import { NewTaskForm } from "./NewTaskForm";
 import { TaskChat } from "./TaskChat";
 
 const sections = ["Overview", "Bots", "Tasks", "Runtime"] as const;
 type Section = (typeof sections)[number];
 const notion = "https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0";
 
-const taskCount = (botId: string) =>
-  fixtureTaskViews.filter((view) => view.task.participantBotIds.includes(botId))
-    .length;
+const countTasks = (views: TaskView[], botId: string) =>
+  views.filter((view) => view.task.participantBotIds.includes(botId)).length;
 
 export function App() {
   const [section, setSection] = useState<Section>("Overview");
@@ -19,6 +21,11 @@ export function App() {
   const [selectedTaskId, setSelectedTaskId] = useState(
     fixtureTaskViews[0].task.id,
   );
+  // Bots and tasks the API refused. They live in this tab only and are labeled as such.
+  const [draftBots, setDraftBots] = useState<Bot[]>([]);
+  const [draftViews, setDraftViews] = useState<TaskView[]>([]);
+  const bots = [...fixtureTaskViews[0].participants, ...draftBots];
+  const views = [...fixtureTaskViews, ...draftViews];
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
@@ -265,36 +272,52 @@ export function App() {
                   : FIXTURE_NOTICE}
               </p>
               <ul className="roster">
-                {fixtureTaskViews[0].participants.map((bot) => (
-                  <li key={bot.id}>
-                    <span className="roster-mark" aria-hidden="true">
-                      {bot.name.slice(0, 1)}
-                    </span>
-                    <div>
-                      <h3>{bot.name}</h3>
-                      <p>{bot.instructions}</p>
-                      <span className="activation">
-                        In {taskCount(bot.id)}{" "}
-                        {taskCount(bot.id) === 1 ? "task" : "tasks"} · no memory
-                        persisted yet
+                {bots.map((bot) => {
+                  const count = countTasks(views, bot.id);
+                  const draft = bot.id.startsWith("draft-");
+                  return (
+                    <li
+                      key={bot.id}
+                      className={draft ? "draft-row" : undefined}
+                    >
+                      <span className="roster-mark" aria-hidden="true">
+                        {bot.name.slice(0, 1)}
                       </span>
-                    </div>
-                  </li>
-                ))}
+                      <div>
+                        <h3>
+                          {bot.name}
+                          {draft ? (
+                            <span className="intent intent-unsent">
+                              not persisted
+                            </span>
+                          ) : null}
+                        </h3>
+                        <p>{bot.instructions}</p>
+                        <span className="activation">
+                          {draft
+                            ? "This tab only · gone on reload until the API accepts it"
+                            : `In ${count} ${count === 1 ? "task" : "tasks"} · no memory persisted yet`}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
-              <a
-                className="context-button"
-                href={notion}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Bot creation is task 05 in Notion ↗
-              </a>
+              <NewBotForm
+                onDraft={(bot) => setDraftBots((current) => [...current, bot])}
+              />
             </section>
           ) : (
             <section className="task-workspace" aria-label="Tasks">
+              <NewTaskForm
+                bots={bots}
+                onDraft={(view) => {
+                  setDraftViews((current) => [...current, view]);
+                  setSelectedTaskId(view.task.id);
+                }}
+              />
               <nav className="task-switcher" aria-label="Select a task">
-                {fixtureTaskViews.map((view) => (
+                {views.map((view) => (
                   <button
                     key={view.task.id}
                     type="button"
@@ -317,9 +340,8 @@ export function App() {
               </nav>
               <TaskChat
                 view={
-                  fixtureTaskViews.find(
-                    (view) => view.task.id === selectedTaskId,
-                  ) ?? fixtureTaskViews[0]
+                  views.find((view) => view.task.id === selectedTaskId) ??
+                  fixtureTaskViews[0]
                 }
               />
             </section>

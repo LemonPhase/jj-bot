@@ -32,6 +32,28 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a Decision in Notion
 rather than landing it and announcing it afterwards.
 
+## 0.3.0 — 2026-10-31 — Bot creation command
+
+**Changed by:** frontend (task 05) · **Compatibility:** additive
+
+- `createBotCommandSchema`: `name`, `instructions`, both required and non-empty.
+
+Completes the create half of task 05's acceptance check. The Bots screen now has an
+"Add a bot" form and the Tasks screen a "New task" form; both validate against the shared
+schemas before sending, so the UI rejects exactly what the backend will.
+
+| Method | Path         | Body                      |
+| ------ | ------------ | ------------------------- |
+| `POST` | `/api/bots`  | `createBotCommandSchema`  |
+| `POST` | `/api/tasks` | `createTaskCommandSchema` |
+
+The task form collects a verification criterion up front, because `createTaskCommandSchema`
+refuses an empty plan — verification is defined at creation, not bolted on after.
+
+**Action required (frontend):** none.
+**Action required (backend):** implement the two create endpoints. Both currently 404; the UI
+shows the error and keeps the created item in the browser tab only, labeled "not persisted".
+
 ## 0.2.0 — 2026-10-31 — Frontend command boundary and task read model
 
 **Changed by:** frontend (task 05) · **Compatibility:** additive
@@ -55,11 +77,11 @@ Nothing existing changed shape. New exports from `@jj/contracts`:
 **Endpoints the frontend already calls** (they 404 today; the UI shows the error rather than
 simulating success):
 
-| Method | Path | Body |
-| --- | --- | --- |
+| Method | Path                          | Body                           |
+| ------ | ----------------------------- | ------------------------------ |
 | `POST` | `/api/tasks/:taskId/messages` | `postTaskMessageCommandSchema` |
-| `POST` | `/api/tasks/:taskId/steer` | `steerTaskCommandSchema` |
-| `POST` | `/api/tasks/:taskId/stop` | `stopTaskCommandSchema` |
+| `POST` | `/api/tasks/:taskId/steer`    | `steerTaskCommandSchema`       |
+| `POST` | `/api/tasks/:taskId/stop`     | `stopTaskCommandSchema`        |
 
 A read endpoint returning `taskViewSchema` is still needed; path not yet agreed. Proposal:
 `GET /api/tasks/:taskId/view`. Say if you would rather shape it differently — it is unimplemented

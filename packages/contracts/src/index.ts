@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CONTRACT_VERSION = "0.2.0";
+export const CONTRACT_VERSION = "0.3.0";
 const id = z.string().min(1);
 export const verificationCriterionSchema = z.object({
   id,
@@ -144,6 +144,10 @@ export const createTaskCommandSchema = z
       });
     }
   });
+export const createBotCommandSchema = z.object({
+  name: z.string().min(1),
+  instructions: z.string().min(1),
+});
 export const postTaskMessageCommandSchema = z.object({
   taskId: id,
   text: z.string().min(1),
@@ -192,6 +196,7 @@ export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type TaskEvent = z.infer<typeof taskEventSchema>;
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;
+export type CreateBotCommand = z.infer<typeof createBotCommandSchema>;
 export type CreateTaskCommand = z.infer<typeof createTaskCommandSchema>;
 export type PostTaskMessageCommand = z.infer<
   typeof postTaskMessageCommandSchema
