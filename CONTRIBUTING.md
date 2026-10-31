@@ -15,7 +15,7 @@ For substantive product work, define verification **before implementation** at t
 
 Follow **implement → verify → inspect failures → revise → reverify**. Stop only when the acceptance checks pass with evidence, or report the unresolved failure/blocker and next action. A model saying “done,” a clean compile, or one worker's local success does not establish integrated task success.
 
-Use checks appropriate to the change: typecheck/lint/build for integration errors; meaningful tests for domain/runtime behavior; real API/browser observations for user flows; cited source comparisons for factual work; and explicit rubrics for qualitative output. Do not add tests that merely mirror implementation. Run relevant checks, then repeat or broaden only for new changes, failures or unresolved risk.
+Use checks appropriate to the change: typecheck/lint/build for integration errors; meaningful tests for domain/runtime behavior; the shared conformance suite for any sandbox driver; real API/browser observations for user flows; cited source comparisons for factual work; and explicit rubrics for qualitative output. Do not add tests that merely mirror implementation. Run relevant checks, then repeat or broaden only for new changes, failures or unresolved risk.
 
 Record **passed**, **failed** and **inconclusive/not run** distinctly. Keep command, observed result, evidence/artifact and limitations. Never present mocks as live model execution, an unrun test as passing, or a missing key as a successful integration. Recheck integrated output separately from worker results. If steering changes acceptance criteria, update the goal/check version and reject stale completion evidence.
 

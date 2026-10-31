@@ -1,62 +1,62 @@
 # JJ Bot · Product specification
 
-Status: agreed product design. This document is the behavioral contract; code and tests establish current implementation. Later team decisions live in the Project Brief.
+The behavioral contract. Code and tests establish current implementation; team decisions live in the Project Brief.
 
 ## Purpose
 
-JJ Bot is an autonomous personal-agent system, described by the team as an open alternative to Grok Bot. A frontend connects to a backend on a user's machine or a server. Users interact with persistent bots, delegate work, and inspect collaboration through a task group chat and execution visualization.
+JJ Bot is an open, self-hostable multi-bot agent workspace, an open alternative to Grok's bot. It runs on a user's machine or a server. Users work with persistent bots, hand them goals, and watch several bots collaborate on real work through a shared task chat and a live execution view.
 
 ## Core concepts
 
-| Concept           | Meaning                                                                                                                                     |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bot               | Persistent persona with memory and its own conversations. Orchestrates tasks, communicates with other bots, and starts execution sessions.  |
-| Task              | A particular problem, its main goal, verification criteria, shared group chat, participating bots, execution sessions, and results.         |
-| Execution session | An independently contextualized agent execution environment doing part of the work for a task. Can involve delegated subagents/subsessions. |
-| Coordinator       | One bot responsible for reconciling contributions and consolidating the task result. Initially the task creator; coordination can transfer. |
+| Concept           | Meaning                                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bot               | Persistent persona with instructions, a model choice, a runtime profile, memory and its own conversations.                                      |
+| Task              | A problem with a goal, a coordinator, participating bots, a shared group chat, execution sessions and results. A verification plan is optional. |
+| Execution session | An independently contextualized agent run doing part of a task's work, with real tools inside a sandbox. Sessions can delegate further.         |
+| Coordinator       | The bot responsible for delegating work and consolidating the task result. Initially the task creator; coordination can transfer.               |
+| Runtime profile   | The user's settings for how a bot executes: sandbox driver, resources, network access, tools and budgets.                                       |
 
-Bots and tasks have a many-to-many relationship. A bot may create or contribute to many tasks; several bots may work on one task. A task is not synonymous with a provider conversation or a single model run. It persists across the sessions used to solve the problem. The task/process and session/thread analogy is conceptual, not a requirement to use operating-system processes or threads.
+Bots and tasks are many-to-many. A bot can work on many tasks and a task can involve many bots. A task persists across all the sessions used to solve it; it is not one provider conversation or one model run.
 
 ## Task chat and execution
 
-1. A user asks a bot to perform work.
-2. The bot can create a task when needed, with its goal and verification criteria.
-3. The creating bot initially coordinates the task and brings in participating bots.
-4. Participating bots may launch execution sessions within the agreed scope.
-5. Task messages are visible to all bots participating in that task. Visibility does not automatically trigger a turn in every bot.
-6. Bots can communicate directly to align context and directions.
-7. Sessions receive explicit briefs and selected context, and return results with verification evidence.
-8. The coordinator reconciles contributions and verifies the integrated result.
+1. A user asks a bot to do something.
+2. The bot answers directly, starts a task, or forwards the request to an active task it already participates in. Greetings, thanks and status questions never create tasks, and a follow-up extends the existing task rather than duplicating it.
+3. The creating bot coordinates the task and brings in participating bots.
+4. The coordinator delegates bounded work; each piece runs as its own execution session with a brief and selected context.
+5. Sessions do real work — running commands, reading and writing files — inside the sandbox their bot's runtime profile selects. Sessions of one task can share a workspace.
+6. Task messages are visible to every participating bot. Visibility does not trigger a turn in every bot.
+7. Bots can message each other directly to align work.
+8. Results return to the coordinator, which consolidates them into the task result.
 
-Bot memories and full conversation histories are not implicitly merged. Availability of the task transcript does not require injecting the full transcript into every model call.
-
-A direct message is routed before work starts. The bot may answer it conversationally, turn it into a new task, or forward it to an active task it already participates in. Greetings, thanks and status questions must not create tasks; only requests for new execution create work, and a follow-up should extend the existing task rather than duplicate it.
+Bot memories and private conversation histories are never implicitly merged. Access to the task transcript does not mean injecting the whole transcript into every model call.
 
 ## User control
 
-The user can open the task group chat and send steering messages. The coordinator updates the plan and informs affected execution sessions. Stop task cancels active execution sessions. Cancellation does not undo already completed external effects. Exact interruption timing, acknowledgement, and tool cancellation behavior remain implementation details.
+The user can open any task's group chat and steer it. Steering reaches the coordinator and changes subsequent execution. Stop cancels active sessions and prevents new launches; it does not undo external effects that already happened.
 
-A finished task can be continued. Continuing work under unchanged criteria keeps the goal version; changing the goal or its acceptance criteria starts a new version and supersedes earlier evidence. See [task continuation and goal versioning](task-continuation.md).
+A finished task can be continued. Continuing under unchanged criteria keeps the goal version; changing the goal or its criteria starts a new version and supersedes earlier evidence. See [task continuation](task-continuation.md).
+
+Users configure models and runtime profiles in settings, and choose per bot which ones it uses.
+
+## Verification
+
+A task may carry a verification plan. With a plan, it cannot complete until every criterion passes with evidence. Without one, it completes when the coordinator delivers the consolidated result. Tool activity and artifacts are recorded either way. See [Verification](verification.md).
 
 ## Visualization
 
-From a task, the user can inspect participating bots, which sessions they have dedicated to it, what contributions they sent, and execution progress. Show actual operational events, tool activity, results, and verification evidence. Do not claim to expose private model reasoning.
+From a task, the user can see the participating bots, the sessions each dedicated to it, what they said to each other, the commands and file changes they made, results, and any verification evidence. Show actual operational events. Never claim to expose private model reasoning.
 
-The precise visual layout is open. A graph and timeline are implementation candidates, not agreed requirements.
+## Scale
 
-## Scale and milestone scope
-
-Multi-bot execution and visualization belong in the first milestone. At least two bots must do real work in separate sessions. The design must support an arbitrary configurable bot count, without hard-coded two-bot logic. Provider limits and compute impose practical concurrency limits; additional work may be queued. Effectiveness at large team sizes is not guaranteed.
-
-Every task and execution session includes a verification loop; see [Verification](verification.md).
+Multi-bot execution is the core of the product, not an extension. The design supports an arbitrary configurable bot count with no hard-coded two-bot logic. Provider limits, budgets and compute cap practical concurrency; additional work queues. Effectiveness at large team sizes is not guaranteed.
 
 ## Still open
 
-- The first concrete demo task, target persona, broader tool catalogue, and sample inputs.
+- Product name and license.
 - Qualitative review rubrics and per-task escalation policy.
 - The final visualization layout.
-- Real user identity, tool permissions, shared-resource isolation, and deployment details.
-- License and public distribution policy.
+- Multi-user identity, roles and shared-resource permissions.
 
 ## Context
 

@@ -6,9 +6,10 @@ Most product, architecture, contract, and setup context is already in this repos
 
 - `docs/development.md` — commands, workspace layout, environment variables, endpoint boundaries
 - `docs/product-spec.md` & `docs/milestone-1.md` — bot/task/session model, steering, cancellation, and milestone acceptance criteria
-- `docs/architecture.md` & `docs/tech-stack.md` — Option B stack (CopilotKit OSS/AG-UI + Hono + direct `@google/genai` SDK + PostgreSQL/Drizzle)
-- `docs/verification.md` & `CONTRIBUTING.md` — task and session verification loop requirements
+- `docs/architecture.md` & `docs/tech-stack.md` — pi agent runtime, pluggable sandbox drivers, Hono, PostgreSQL/Drizzle and the native task event stream
+- `docs/verification.md` — opt-in task verification in the product; `CONTRIBUTING.md` — the verification loop for development work
 - `packages/contracts` — canonical Zod schemas and types shared across `apps/*` and `packages/*`
+- `packages/sandbox` — the sandbox driver contract and the conformance suite every driver must pass
 
 ## Notion context map (fetch only when needed)
 
@@ -57,11 +58,12 @@ Notion is consolidated context for teammates and future agents, not a transcript
 
 ## Repository development
 
-- Option B is selected: our own application infrastructure, CopilotKit OSS/AG-UI integration, and direct Google GenAI SDK execution. No ADK or OpenBot fork.
+- Execution sessions run on the pi agent runtime (`@earendil-works/pi-coding-agent`) with tools inside a pluggable sandbox. CopilotKit, AG-UI and the direct Google GenAI SDK are no longer the direction; do not build new work on them. No ADK, LangGraph or OpenBot fork.
 - Read `docs/development.md` for commands, configuration and endpoint boundaries. Start with `npm ci`, then `docker compose up -d postgres` and `npm run dev`; use `npm run lint` and `npm test` as the baseline, and the `smoke:*` scripts for live model and end-to-end behavior.
 - Shared schemas live in `packages/contracts`; coordinate changes there before implementing dependent API/UI/runtime work.
 - Keep model keys and tool execution server-side. Do not use browser-owned loops for autonomous work.
-- Keep tasks, bot personas, execution sessions and runs distinct. Visibility never implies activation. Require verification plans and evidence; a finished model turn is not a passed task.
+- Agent-run code executes only through a sandbox driver. Model keys and the host environment never reach a sandbox, and a driver must refuse isolation it cannot enforce. New drivers must pass `describeSandboxConformance`.
+- Keep tasks, bot personas, execution sessions and runs distinct. Visibility never implies activation. Verification is opt-in per task: when a task has a plan, a finished model turn is not a passed check, and an unverified result is never shown as verified.
 - Report capability honestly: the API exposes `scaffold` versus `backend` mode and real capabilities. Never fake running agents, passing checks or successful persistence in the product UI.
 
 ## Documentation policy

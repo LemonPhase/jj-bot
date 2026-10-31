@@ -22,11 +22,12 @@ The API requires a reachable database at startup. Use `docker compose up -d post
 | Directory            | Responsibility                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `apps/web`           | React/Vite workspace: bot and task chat, execution graph, steering and stop controls                                |
-| `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE streaming, AG-UI run endpoint, CopilotKit runtime boundary |
+| `apps/api`           | Hono service: bootstrap/health, bot and task routes, task event streaming (SSE), legacy AG-UI and CopilotKit routes |
 | `apps/worker`        | Optional standalone PostgreSQL worker; the API embeds the scheduler by default                                      |
 | `packages/contracts` | Canonical Zod schemas/types for bots, tasks, sessions, messages, checks and attributed events                       |
 | `packages/backend`   | BackendService: coordinator, delegation, verification, steering, cancellation, leases and job scheduling            |
-| `packages/runtime`   | GeminiSessionExecutor over the Google GenAI SDK, allowlisted tools, deterministic and model checks                  |
+| `packages/runtime`   | Session execution behind `SessionExecutor`; the current `GeminiSessionExecutor` uses the Google GenAI SDK           |
+| `packages/sandbox`   | Sandbox driver contract, the `local` driver and the shared driver conformance suite                                 |
 | `packages/db`        | Transactional PGlite/PostgreSQL store, idempotent schema, append-only task event log                                |
 
 Internal packages export TypeScript source. API/worker run with `tsx`; `build` typechecks all packages and produces the web bundle.
@@ -62,7 +63,7 @@ npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
 ```
 
-CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine and the HTTP surface. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the Notion coordination policy.
+CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the Notion coordination policy.
 
 Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to [the contract changelog](contract-changelog.md).
 
@@ -75,7 +76,7 @@ Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to
 - `/api/copilotkit/*`: OSS AG-UI runtime route; `GET /api/copilotkit/info` discovers agent `jj`.
 - `POST /api/agent`: AG-UI run that reuses a durable task and replays its events. Emits `RUN_STARTED`, `CUSTOM jj.task`, streamed task events, `TEXT_MESSAGE_*` and `RUN_FINISHED`/`RUN_ERROR`. Closing the browser connection does not cancel the task. With no service configured, it returns `SCAFFOLD_NOT_IMPLEMENTED`.
 
-Task execution is owned by the backend scheduler, not by an HTTP request or an open stream. CopilotKit's runtime is integration plumbing; it is not the durable task store. Keep development services on loopback: the only access control is the optional shared bearer token, and there is no per-user identity.
+Task execution is owned by the backend scheduler, not by an HTTP request or an open stream. The AG-UI and CopilotKit routes are not part of the supported contract; build new clients on `GET /api/tasks/:id/stream`. Keep development services on loopback: the only access control is the optional shared bearer token, and there is no per-user identity.
 
 ## Constraints
 

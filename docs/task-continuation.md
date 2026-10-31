@@ -12,7 +12,7 @@ Every goal version records the goal and the criteria it is judged against:
 | ------------------ | --------------------------------------------------------------- |
 | `version`          | Positive integer, starts at 1, increments on scope change       |
 | `goal`             | The goal text in force for this version                         |
-| `verificationPlan` | Acceptance criteria in force for this version                   |
+| `verificationPlan` | Acceptance criteria in force for this version, if any           |
 | `checks`           | Executable check definitions for this version, if any           |
 | `reason`           | Why the version was created (`created`, `steered`, `continued`) |
 | `authorId`         | Who or what caused it                                           |
@@ -50,9 +50,9 @@ Implicit reopening is removed. `spawnSession`, `postMessage` with `activateBotId
 
 The task view exposes the version history so a client can draw the timeline and mark earlier checks as superseded. Existing events already carry enough attribution (`goalVersion` on session start and checks); the version boundaries come from the history itself.
 
-## Proposed contract delta (target `0.5.0`)
+## Proposed contract delta
 
-Compatibility: additive schemas, one breaking behavior change (implicit reopen removed). Under 0.x conventions that is a minor bump; if the changelog's literal "major for breaking" rule is preferred, call it `1.0.0` instead. Either way, frontend and backend must agree before landing.
+Target the next unreleased contract version. Compatibility: additive schemas plus one breaking behavior change (implicit reopen removed), so frontend and backend must agree before landing.
 
 | Area             | Change                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------- |
