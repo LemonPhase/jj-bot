@@ -1,4 +1,3 @@
-import { CopilotKit } from "@copilotkit/react-core/v2";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
@@ -14,18 +13,11 @@ const root = createRoot(rootElement);
 void resolveApi().then((api) =>
   root.render(
     <StrictMode>
-      <CopilotKit
-        runtimeUrl="/api/copilotkit"
-        agent="jj"
-        showDevConsole={false}
-        enableInspector={false}
-      >
-        <ApiProvider api={api}>
-          <WorkspaceProvider>
-            <App />
-          </WorkspaceProvider>
-        </ApiProvider>
-      </CopilotKit>
+      <ApiProvider api={api}>
+        <WorkspaceProvider>
+          <App />
+        </WorkspaceProvider>
+      </ApiProvider>
     </StrictMode>,
   ),
 );

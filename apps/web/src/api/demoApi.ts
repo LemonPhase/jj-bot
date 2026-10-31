@@ -1,242 +1,859 @@
 /**
- * In-memory placeholder for the backend. It keeps the UI fully clickable while
- * the real API is built, but never pretends a bot replied or a session ran:
- * user actions are stored locally and answered with explicit system notices.
+ * In-memory `JJApi` for running the UI without a backend, always under the
+ * "Demo data" badge. It is deterministic (ids are counters, time comes from
+ * `now`) and it speaks the contract: commands are validated with the contract
+ * schemas, records are contract shapes, and task progress is a stream of
+ * contract `TaskEvent`s folded with `applyTaskEvent` and delivered through the
+ * same `followTask` code the live client uses. Nothing it shows ran on a model
+ * or in a sandbox, and every scripted text says so.
  */
-import type { JJApi } from "./client";
-import { demoBots, demoConversations, demoTasks } from "./fixtures";
 import {
-  BOT_COLORS,
-  BOT_GLYPHS,
-  type BotProfile,
-  type DirectMessage,
-  type TaskMessageView,
+  applyTaskEvent,
+  type Bot,
+  type BotMemory,
+  CONTRACT_VERSION,
+  type ConversationMessage,
+  type ConversationView,
+  createBotCommandSchema,
+  createRuntimeProfileCommandSchema,
+  createTaskCommandSchema,
+  defaultAppearanceFor,
+  emptyUsage,
+  isFinishedStatus,
+  postTaskMessageCommandSchema,
+  type RuntimeProfile,
+  type SandboxSpec,
+  sandboxSpecSchema,
+  sendBotMessageCommandSchema,
+  stopTaskCommandSchema,
+  type Task,
+  type TaskEvent,
+  type TaskEventOf,
+  type TaskEventType,
+  type TaskSummary,
   type TaskView,
-} from "./types";
+  updateBotCommandSchema,
+  updateBotMemoryCommandSchema,
+  updateRuntimeProfileCommandSchema,
+  type WorkspaceHint,
+  z,
+} from "@jj/contracts";
+import {
+  type ApiBadge,
+  ApiError,
+  type HintOptions,
+  type JJApi,
+} from "./client";
+import {
+  type Ago,
+  DEMO_BOTS,
+  DEMO_CAPABILITIES,
+  DEMO_CONVERSATIONS,
+  DEMO_DRIVERS,
+  DEMO_MODELS,
+  DEMO_TASKS,
+  demoProfiles,
+} from "./demoFixtures";
+import {
+  askScript,
+  continueScript,
+  type EventRef,
+  type IdKind,
+  requestCancel,
+  type ScriptHost,
+  type Step,
+  teamScript,
+  userMessage,
+} from "./demoScript";
+import {
+  followConversation,
+  followTask,
+  type OpenTaskEvents,
+  type TaskEventHandlers,
+} from "./follow";
 
-const NOT_CONNECTED = "Demo mode · not sent, the backend isn't connected yet";
+export interface DemoApiOptions {
+  /** The demo clock. Defaults to the system clock. */
+  now?: () => Date;
+  /** Advance running demo tasks on a timer. Off: only `advanceDemoTask` moves them. */
+  autoplay?: boolean;
+  /** Delay between scripted task steps. */
+  stepMs?: number;
+  /** Delay before a direct-chat reply arrives. */
+  replyMs?: number;
+  /** Why the demo is running instead of the live API, for the badge tooltip. */
+  reason?: string;
+}
 
-export function createDemoApi(): JJApi {
-  let seq = 0;
-  const uid = (prefix: string) => `${prefix}-${Date.now()}-${++seq}`;
-  const now = () => new Date().toISOString();
-  const clone = <T>(value: T): T => structuredClone(value);
+export const demoBadge = (reason?: string): ApiBadge => ({
+  label: "Demo data",
+  tone: "demo",
+  title: `Demo data: bots, tasks and replies are simulated in this browser and nothing runs on a model.${reason ? ` ${reason}` : ""}`,
+});
 
-  const bots: BotProfile[] = demoBots();
-  const conversations: Record<string, DirectMessage[]> = demoConversations();
-  let tasks: TaskView[] = demoTasks();
-  const listeners = new Map<string, Set<(task: TaskView) => void>>();
+interface BotRecord {
+  bot: Omit<Bot, "presence" | "activeTaskIds">;
+  memory: BotMemory;
+  archived: boolean;
+}
 
-  const getBot = (botId: string) => {
-    const bot = bots.find((b) => b.id === botId);
-    if (!bot) throw new Error(`Unknown bot ${botId}`);
-    return bot;
-  };
-  const getTask = (taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task) throw new Error(`Unknown task ${taskId}`);
-    return task;
-  };
-  const systemMessage = (text: string): TaskMessageView => ({
-    id: uid("tm"),
-    authorId: "system",
-    authorKind: "system",
-    intent: "notification",
-    text,
-    createdAt: now(),
+interface TaskState {
+  view: TaskView;
+  /** Every event with its full payload (snapshots drop tool output previews). */
+  log: TaskEvent[];
+  steps: Step[];
+  autoplay: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  listeners: Set<TaskEventHandlers>;
+  host: ScriptHost;
+}
+
+const clone = <Value>(value: Value): Value => structuredClone(value);
+
+function validate<Schema extends z.ZodType>(
+  schema: Schema,
+  value: unknown,
+): z.output<Schema> {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  throw new ApiError(
+    "VALIDATION_FAILED",
+    z.prettifyError(parsed.error),
+    parsed.error.issues,
+    400,
+  );
+}
+
+const notFound = (what: string, id: string) =>
+  new ApiError("NOT_FOUND", `No ${what} with id ${id}.`, undefined, 404);
+
+/** A task title from its goal: the first line, cut at a word near 60 characters. */
+export function titleFromGoal(goal: string): string {
+  const line = goal.trim().split(/\r?\n/)[0] ?? goal;
+  if (line.length <= 60) return line;
+  const cut = line.slice(0, 60);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > 30 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** Snapshot events drop `tool.finished` output previews, as the live API does. */
+const withoutOutputs = (events: TaskEvent[]): TaskEvent[] =>
+  events.map((event) => {
+    if (event.type !== "tool.finished" || event.payload.output === undefined)
+      return event;
+    const { output: _output, ...payload } = event.payload;
+    return { ...event, payload };
   });
-  const publish = (task: TaskView) => {
-    task.updatedAt = now();
-    for (const listener of listeners.get(task.id) ?? []) listener(clone(task));
-    return clone(task);
+
+const isGreetingOrQuestion = (text: string) =>
+  /^\s*(hi|hello|hey|yo|thanks|thank you|good (morning|afternoon|evening))\b/i.test(
+    text,
+  ) || text.trim().endsWith("?");
+
+export function createDemoApi(options: DemoApiOptions = {}): JJApi {
+  const clock = options.now ?? (() => new Date());
+  const autoplay = options.autoplay ?? true;
+  const stepMs = options.stepMs ?? 1600;
+  const replyMs = options.replyMs ?? 900;
+  const startedAt = clock().getTime();
+  const ago: Ago = (minutes) =>
+    new Date(startedAt - minutes * 60_000).toISOString();
+
+  /** While seeding, time runs on this virtual clock in the past. */
+  let seedClock: number | null = null;
+  const now = () => {
+    if (seedClock === null) return clock().toISOString();
+    seedClock += 700;
+    return new Date(seedClock).toISOString();
   };
+
+  const hintListeners = new Set<{
+    onHint: (hint: WorkspaceHint) => void;
+    options: HintOptions;
+  }>();
+  const notify = (hint: WorkspaceHint) => {
+    for (const listener of [...hintListeners]) listener.onHint(clone(hint));
+  };
+
+  // ── Bots, memory, conversations ──────────────────────────────────────────
+  const bots = new Map<string, BotRecord>();
+  const conversations = new Map<string, ConversationView>();
+  let botCounter = 0;
+  for (const seed of DEMO_BOTS) {
+    const created = ago(60 * 24 * 3);
+    bots.set(seed.id, {
+      bot: {
+        id: seed.id,
+        name: seed.name,
+        role: seed.role,
+        instructions: seed.instructions,
+        model: null,
+        runtimeProfileId: seed.runtimeProfileId,
+        appearance: seed.appearance,
+        createdAt: created,
+        updatedAt: created,
+      },
+      memory: { botId: seed.id, text: seed.memory, updatedAt: created },
+      archived: false,
+    });
+  }
+  for (const seed of DEMO_CONVERSATIONS)
+    conversations.set(seed.botId, {
+      botId: seed.botId,
+      replying: false,
+      lastReplyError: null,
+      messages: seed.messages.map((message, index) => ({
+        id: `${seed.botId}-c${index + 1}`,
+        botId: seed.botId,
+        sequence: index + 1,
+        role: message.role,
+        text: message.text,
+        taskId: message.taskId ?? null,
+        createdAt: ago(message.minutesAgo),
+      })),
+    });
+
+  const profiles = new Map<string, RuntimeProfile>(
+    demoProfiles(ago).map((profile) => [profile.id, profile]),
+  );
+  let profileCounter = 0;
+
+  // ── Tasks ────────────────────────────────────────────────────────────────
+  const tasks = new Map<string, TaskState>();
+  let taskCounter = 103;
+
+  const getState = (taskId: string) => {
+    const state = tasks.get(taskId);
+    if (!state) throw notFound("task", taskId);
+    return state;
+  };
+
+  const derive = (record: BotRecord): Bot => {
+    const active: string[] = [];
+    let working = false;
+    for (const { view } of tasks.values()) {
+      if (!view.task.participantBotIds.includes(record.bot.id)) continue;
+      if (!isFinishedStatus(view.task.status)) active.push(view.task.id);
+      if (
+        view.sessions.some(
+          (s) =>
+            s.botId === record.bot.id &&
+            (s.status === "queued" || s.status === "running"),
+        )
+      )
+        working = true;
+    }
+    return clone({
+      ...record.bot,
+      presence: working ? "working" : "idle",
+      activeTaskIds: active,
+    });
+  };
+  const botState = () =>
+    JSON.stringify(
+      [...bots.values()].map((record) => {
+        const bot = derive(record);
+        return [bot.id, bot.presence, bot.activeTaskIds];
+      }),
+    );
+
+  const summarize = ({ view }: TaskState): TaskSummary => ({
+    ...clone(view.task),
+    activeSessionCount: view.sessions.filter(
+      (s) => s.status === "queued" || s.status === "running",
+    ).length,
+    sessionCount: view.sessions.length,
+    usage: clone(view.usage.total),
+  });
+
+  const createTaskState = (task: Task, autoplayTask: boolean): TaskState => {
+    const counters: Record<IdKind, number> = {
+      session: 0,
+      message: 0,
+      run: 0,
+      tool: 0,
+      artifact: 0,
+    };
+    const prefixes: Record<IdKind, string> = {
+      session: "s",
+      message: "m",
+      run: "r",
+      tool: "t",
+      artifact: "a",
+    };
+    const state: TaskState = {
+      view: {
+        task,
+        sessions: [],
+        messages: [],
+        artifacts: [],
+        usage: { total: emptyUsage(), bySession: {} },
+        events: [],
+        firstSequence: 1,
+        hasEarlier: false,
+        cursor: 0,
+      },
+      log: [],
+      steps: [],
+      autoplay: autoplayTask,
+      listeners: new Set(),
+      host: {
+        taskId: task.id,
+        view: () => state.view,
+        now,
+        nextId: (kind) => `${task.id}-${prefixes[kind]}${++counters[kind]}`,
+        emit: <Type extends TaskEventType>(
+          type: Type,
+          payload: TaskEventOf<Type>["payload"],
+          ref: EventRef = {},
+        ) => {
+          const sequence = state.view.cursor + 1;
+          const event = {
+            id: `${task.id}-e${sequence}`,
+            taskId: task.id,
+            sequence,
+            occurredAt: now(),
+            botId: ref.botId ?? null,
+            sessionId: ref.sessionId ?? null,
+            runId: ref.runId ?? null,
+            causedBy: ref.causedBy ?? null,
+            type,
+            payload,
+          } as TaskEventOf<Type>;
+          state.log.push(event);
+          state.view = applyTaskEvent(state.view, event);
+          for (const listener of [...state.listeners])
+            listener.onEvent(clone(event));
+          return event;
+        },
+        botName: (botId) => bots.get(botId)?.bot.name ?? "a teammate",
+        runs: new Map(),
+        storeArtifact: (artifactId, content) =>
+          artifactContent.set(artifactId, content),
+      },
+    };
+    tasks.set(task.id, state);
+    return state;
+  };
+  const artifactContent = new Map<string, string>();
+
+  /** Runs one step of a task's script, then tells the workspace what changed. */
+  const step = (state: TaskState) => {
+    const next = state.steps.shift();
+    if (!next) return false;
+    const before = botState();
+    next();
+    notify({ type: "tasks.changed", taskId: state.view.task.id });
+    if (botState() !== before) notify({ type: "bots.changed" });
+    return true;
+  };
+
+  const schedule = (state: TaskState) => {
+    clearTimeout(state.timer);
+    state.timer = undefined;
+    if (!state.autoplay || !autoplay || state.steps.length === 0) return;
+    state.timer = setTimeout(() => {
+      state.timer = undefined;
+      step(state);
+      schedule(state);
+    }, stepMs);
+  };
+
+  const newTask = (input: {
+    id: string;
+    goal: string;
+    coordinatorBotId: string;
+    participantBotIds: string[];
+    title?: string;
+  }): TaskState => {
+    const createdAt = now();
+    const task: Task = {
+      id: input.id,
+      title: input.title ?? titleFromGoal(input.goal),
+      goal: input.goal,
+      goalVersion: 1,
+      coordinatorBotId: input.coordinatorBotId,
+      participantBotIds: input.participantBotIds,
+      status: "queued",
+      result: null,
+      error: null,
+      cancelReason: null,
+      cancelRequestedAt: null,
+      createdAt,
+      updatedAt: createdAt,
+      finishedAt: null,
+    };
+    const state = createTaskState(task, true);
+    state.host.emit("task.created", { task });
+    return state;
+  };
+
+  // Seeded tasks are played through their scripts on a clock in the past.
+  for (const seed of DEMO_TASKS) {
+    seedClock = startedAt - seed.startedMinutesAgo * 60_000;
+    const state = newTask(seed);
+    state.autoplay = seed.autoplay;
+    state.steps =
+      seed.script === "ask" ? askScript(state.host) : teamScript(state.host);
+    const count =
+      seed.playedSteps === "all" ? state.steps.length : seed.playedSteps;
+    for (let index = 0; index < count; index += 1) {
+      seedClock += 20_000;
+      state.steps.shift()?.();
+    }
+  }
+  seedClock = null;
+  for (const state of tasks.values()) schedule(state);
+
+  const createTask = (command: unknown): Task => {
+    const parsed = validate(createTaskCommandSchema, command);
+    if (parsed.verificationPlan)
+      throw new ApiError(
+        "VERIFICATION_UNAVAILABLE",
+        "Verification plans are not available: this server does not enforce them.",
+        undefined,
+        409,
+      );
+    for (const botId of parsed.participantBotIds) {
+      const record = bots.get(botId);
+      if (!record || record.archived)
+        throw new ApiError(
+          "VALIDATION_FAILED",
+          `No bot with id ${botId}.`,
+          undefined,
+          400,
+        );
+    }
+    const before = botState();
+    const state = newTask({ ...parsed, id: `task-${++taskCounter}` });
+    state.steps = teamScript(state.host);
+    notify({ type: "tasks.changed", taskId: state.view.task.id });
+    if (botState() !== before) notify({ type: "bots.changed" });
+    schedule(state);
+    return clone(state.view.task);
+  };
+
+  // ── Direct chat ──────────────────────────────────────────────────────────
+  const appendMessage = (
+    botId: string,
+    message: Omit<
+      ConversationMessage,
+      "id" | "botId" | "sequence" | "createdAt"
+    >,
+  ): ConversationMessage => {
+    const view = conversations.get(botId) ?? {
+      botId,
+      messages: [],
+      replying: false,
+      lastReplyError: null,
+    };
+    conversations.set(botId, view);
+    const sequence = view.messages.length + 1;
+    const stored: ConversationMessage = {
+      ...message,
+      id: `${botId}-c${sequence}`,
+      botId,
+      sequence,
+      createdAt: now(),
+    };
+    view.messages.push(stored);
+    return stored;
+  };
+
+  const reply = (botId: string, text: string) => {
+    const view = conversations.get(botId);
+    const record = bots.get(botId);
+    if (!view || !record) return;
+    view.replying = false;
+    if (isGreetingOrQuestion(text)) {
+      appendMessage(botId, {
+        role: "assistant",
+        text: `Hi! This is a scripted demo reply from ${record.bot.name}: no model is connected, so I can't really answer. Ask me to do something and I'll start a demo task.`,
+        taskId: null,
+      });
+    } else {
+      const teammates = [...bots.values()]
+        .filter((other) => !other.archived && other.bot.id !== botId)
+        .slice(0, 2)
+        .map((other) => other.bot.id);
+      const task = createTask({
+        goal: text,
+        coordinatorBotId: botId,
+        participantBotIds: [botId, ...teammates],
+      });
+      appendMessage(botId, {
+        role: "assistant",
+        text: "I've started a demo task for this. Its progress is simulated: no model or sandbox runs in demo mode.",
+        taskId: task.id,
+      });
+    }
+    notify({ type: "conversation.changed", botId });
+  };
+
+  // ── Profiles ─────────────────────────────────────────────────────────────
+  const assertSupported = (spec: SandboxSpec) => {
+    const driver = DEMO_DRIVERS.find((d) => d.id === spec.driver);
+    if (!driver)
+      throw new ApiError(
+        "PROFILE_UNSUPPORTED",
+        `There is no sandbox driver "${spec.driver}".`,
+        undefined,
+        422,
+      );
+    if (!driver.capabilities.networkModes.includes(spec.network.mode))
+      throw new ApiError(
+        "PROFILE_UNSUPPORTED",
+        `The ${driver.label} driver cannot enforce network mode "${spec.network.mode}".`,
+        undefined,
+        422,
+      );
+    const wantsLimits = Object.values(spec.resources).some(
+      (v) => v !== undefined,
+    );
+    if (wantsLimits && !driver.capabilities.resourceLimits)
+      throw new ApiError(
+        "PROFILE_UNSUPPORTED",
+        `The ${driver.label} driver cannot enforce resource limits.`,
+        undefined,
+        422,
+      );
+  };
+  const profileStatus = (spec: SandboxSpec): RuntimeProfile["status"] => {
+    const driver = DEMO_DRIVERS.find((d) => d.id === spec.driver);
+    return {
+      driverAvailable: driver?.available ?? false,
+      isolated: driver?.capabilities.filesystemIsolation ?? false,
+      detail: driver?.detail,
+    };
+  };
+  const makeDefault = (profileId: string) => {
+    for (const profile of profiles.values())
+      profile.isDefault = profile.id === profileId;
+  };
+  const getProfileRecord = (profileId: string) => {
+    const profile = profiles.get(profileId);
+    if (!profile) throw notFound("runtime profile", profileId);
+    return profile;
+  };
+  const getBotRecord = (botId: string) => {
+    const record = bots.get(botId);
+    if (!record) throw notFound("bot", botId);
+    return record;
+  };
+  const checkBotRefs = (fields: { runtimeProfileId?: string | null }) => {
+    if (fields.runtimeProfileId && !profiles.has(fields.runtimeProfileId))
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `No runtime profile with id ${fields.runtimeProfileId}.`,
+        undefined,
+        400,
+      );
+  };
+
+  // ── Task events for followTask ───────────────────────────────────────────
+  const openTaskEvents: OpenTaskEvents = (taskId, after, handlers) => {
+    const state = tasks.get(taskId);
+    if (!state) {
+      handlers.onError(false);
+      return () => {};
+    }
+    handlers.onOpen();
+    for (const event of state.log)
+      if (event.sequence > after) handlers.onEvent(clone(event));
+    state.listeners.add(handlers);
+    return () => state.listeners.delete(handlers);
+  };
+
+  const getTask = async (taskId: string): Promise<TaskView> => {
+    const { view } = getState(taskId);
+    return clone({ ...view, events: withoutOutputs(view.events) });
+  };
+  const getConversation = async (botId: string) => {
+    getBotRecord(botId);
+    return clone(
+      conversations.get(botId) ?? {
+        botId,
+        messages: [],
+        replying: false,
+        lastReplyError: null,
+      },
+    );
+  };
+  const subscribeHints: JJApi["subscribeHints"] = (
+    onHint,
+    hintOptions = {},
+  ) => {
+    const listener = { onHint, options: hintOptions };
+    hintListeners.add(listener);
+    hintOptions.onState?.("open");
+    return () => {
+      hintListeners.delete(listener);
+    };
+  };
+
+  const activeBots = () =>
+    [...bots.values()].filter((record) => !record.archived).map(derive);
 
   return {
     mode: "demo",
-    badge: {
-      label: "Demo data",
-      tone: "demo",
-      title:
-        "The API backend isn't reachable, so the UI is running on local demo data. Nothing is sent to bots.",
-    },
-    capabilities: { editBotIdentity: true },
+    badge: demoBadge(options.reason),
+    capabilities: clone(DEMO_CAPABILITIES),
+    contractVersion: CONTRACT_VERSION,
 
-    async listBots() {
-      return clone(bots);
-    },
+    bootstrap: async () => ({
+      mode: "scaffold",
+      contractVersion: CONTRACT_VERSION,
+      capabilities: clone(DEMO_CAPABILITIES),
+      defaultModel: DEMO_MODELS.defaultModel,
+      bots: activeBots(),
+      tasks: [...tasks.values()]
+        .map(summarize)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+      profiles: clone([...profiles.values()]),
+    }),
+    subscribeHints,
 
-    async createBot(input) {
-      const bot: BotProfile = {
-        id: uid("bot"),
-        name: input.name,
-        role: input.role,
-        instructions: input.instructions,
-        color: BOT_COLORS[bots.length % BOT_COLORS.length] ?? BOT_COLORS[0],
-        glyph: BOT_GLYPHS[bots.length % BOT_GLYPHS.length] ?? BOT_GLYPHS[0],
-        presence: "online",
-        memory: "",
-      };
-      bots.push(bot);
-      conversations[bot.id] = [];
-      return clone(bot);
-    },
-
-    async updateBot(botId, patch) {
-      const bot = getBot(botId);
-      Object.assign(bot, patch);
-      return clone(bot);
-    },
-
-    async listDirectMessages(botId) {
-      return clone(conversations[botId] ?? []);
-    },
-
-    async sendDirectMessage(botId, text) {
-      getBot(botId);
-      const thread = conversations[botId] ?? [];
-      conversations[botId] = thread;
-      thread.push(
-        { id: uid("m"), botId, role: "user", text, createdAt: now() },
-        {
-          id: uid("m"),
-          botId,
-          role: "system",
-          text: NOT_CONNECTED,
-          createdAt: now(),
+    listBots: async () => activeBots(),
+    getBot: async (botId) => derive(getBotRecord(botId)),
+    createBot: async (command) => {
+      const parsed = validate(createBotCommandSchema, command);
+      checkBotRefs(parsed);
+      const id = `bot-new-${++botCounter}`;
+      const createdAt = now();
+      const record: BotRecord = {
+        bot: {
+          id,
+          name: parsed.name,
+          role: parsed.role ?? "",
+          instructions: parsed.instructions ?? "",
+          model: parsed.model ?? null,
+          runtimeProfileId: parsed.runtimeProfileId ?? null,
+          appearance: parsed.appearance ?? defaultAppearanceFor(parsed.name),
+          createdAt,
+          updatedAt: createdAt,
         },
-      );
-      return clone(thread);
-    },
-
-    subscribeToConversation() {
-      return () => {};
-    },
-
-    subscribeToTasks() {
-      return () => {};
-    },
-
-    async listTasks() {
-      return clone(tasks);
-    },
-
-    async createTask(input) {
-      const [coordinatorBotId] = input.participantBotIds;
-      if (!coordinatorBotId) throw new Error("A task needs at least one bot");
-      const names = input.participantBotIds.map((id) => getBot(id).name);
-      const task: TaskView = {
-        id: uid("task"),
-        goal: input.goal,
-        goalVersion: 1,
-        status: "queued",
-        coordinatorBotId,
-        participantBotIds: [...input.participantBotIds],
-        updatedAt: now(),
-        sessions: input.participantBotIds.map((botId, index) => ({
-          id: uid("sess"),
-          botId,
-          label: `s-${index + 1} · ${index === 0 ? "Coordinate" : "Work"}`,
-          status: "queued",
-          brief: `${index === 0 ? "Coordinate" : "Execute"} work for: ${input.goal}`,
-          tools: [],
-          evidence: "Not started",
-        })),
-        checks: [
-          {
-            id: uid("chk"),
-            description: input.verificationCriterion,
-            outcome: "inconclusive",
-            evidence: "Not run yet",
-          },
-        ],
-        messages: [
-          systemMessage(
-            `Task created with ${names.join(", ")} · ${NOT_CONNECTED}`,
-          ),
-        ],
+        memory: { botId: id, text: "", updatedAt: createdAt },
+        archived: false,
       };
-      tasks = [task, ...tasks];
-      return clone(task);
-    },
-
-    async postTaskMessage(taskId, { text, steering }) {
-      const task = getTask(taskId);
-      task.messages.push({
-        id: uid("tm"),
-        authorId: "user",
-        authorKind: "user",
-        intent: steering ? "steering" : "discussion",
-        text,
-        createdAt: now(),
+      bots.set(id, record);
+      conversations.set(id, {
+        botId: id,
+        messages: [],
+        replying: false,
+        lastReplyError: null,
       });
-      if (steering) {
-        task.goalVersion += 1;
-        for (const check of task.checks) {
-          check.outcome = "inconclusive";
-          check.evidence = `Stale after steering to v${task.goalVersion}`;
-        }
-        task.messages.push(
-          systemMessage(
-            `Goal steered to v${task.goalVersion} · ${NOT_CONNECTED}`,
-          ),
-        );
-      } else {
-        task.messages.push(systemMessage(NOT_CONNECTED));
-      }
-      return publish(task);
+      notify({ type: "bots.changed", botId: id });
+      return derive(record);
     },
-
-    async stopTask(taskId) {
-      const task = getTask(taskId);
-      task.status = "cancelled";
-      for (const session of task.sessions) {
-        if (session.status !== "completed") session.status = "cancelled";
-      }
-      task.messages.push(
-        systemMessage("Task stopped by user · Active sessions cancelled"),
+    updateBot: async (botId, command) => {
+      const record = getBotRecord(botId);
+      const parsed = validate(updateBotCommandSchema, command);
+      checkBotRefs(parsed);
+      const changes = Object.fromEntries(
+        Object.entries(parsed).filter(([, value]) => value !== undefined),
       );
-      return publish(task);
+      record.bot = { ...record.bot, ...changes, updatedAt: now() };
+      notify({ type: "bots.changed", botId });
+      return derive(record);
+    },
+    archiveBot: async (botId) => {
+      const record = getBotRecord(botId);
+      const bot = derive(record);
+      if (bot.activeTaskIds.length)
+        throw new ApiError(
+          "CONFLICT",
+          `${bot.name} is still in ${bot.activeTaskIds.length} active task(s). Stop or finish them first.`,
+          { activeTaskIds: bot.activeTaskIds },
+          409,
+        );
+      record.archived = true;
+      notify({ type: "bots.changed", botId });
+    },
+    getMemory: async (botId) => clone(getBotRecord(botId).memory),
+    putMemory: async (botId, command) => {
+      const record = getBotRecord(botId);
+      const { text } = validate(updateBotMemoryCommandSchema, command);
+      record.memory = { botId, text, updatedAt: now() };
+      return clone(record.memory);
     },
 
-    subscribeToTask(taskId, onUpdate) {
-      const set = listeners.get(taskId) ?? new Set();
-      set.add(onUpdate);
-      listeners.set(taskId, set);
-      return () => {
-        set.delete(onUpdate);
+    getConversation,
+    sendBotMessage: async (botId, command) => {
+      const record = getBotRecord(botId);
+      if (record.archived) throw notFound("bot", botId);
+      const { text } = validate(sendBotMessageCommandSchema, command);
+      const message = appendMessage(botId, {
+        role: "user",
+        text,
+        taskId: null,
+      });
+      const view = conversations.get(botId);
+      if (view) view.replying = true;
+      notify({ type: "conversation.changed", botId });
+      setTimeout(() => reply(botId, text), replyMs);
+      return clone(message);
+    },
+    subscribeConversation: (botId, onView, streamOptions) =>
+      followConversation(
+        botId,
+        getConversation,
+        subscribeHints,
+        onView,
+        streamOptions,
+      ),
+
+    listProfiles: async () => clone([...profiles.values()]),
+    getProfile: async (profileId) => clone(getProfileRecord(profileId)),
+    createProfile: async (command) => {
+      const parsed = validate(createRuntimeProfileCommandSchema, command);
+      assertSupported(parsed.sandbox);
+      const createdAt = now();
+      const profile: RuntimeProfile = {
+        id: `profile-new-${++profileCounter}`,
+        name: parsed.name,
+        description: parsed.description ?? "",
+        sandbox: parsed.sandbox,
+        tools: parsed.tools ?? [
+          "bash",
+          "read",
+          "edit",
+          "write",
+          "grep",
+          "find",
+          "ls",
+        ],
+        budgets: parsed.budgets ?? { maxTurnsPerRun: 60, maxRunMinutes: 30 },
+        isDefault: false,
+        status: profileStatus(parsed.sandbox),
+        createdAt,
+        updatedAt: createdAt,
       };
+      profiles.set(profile.id, profile);
+      if (parsed.isDefault) makeDefault(profile.id);
+      notify({ type: "profiles.changed" });
+      return clone(profile);
     },
+    updateProfile: async (profileId, command) => {
+      const stored = getProfileRecord(profileId);
+      const patch = validate(updateRuntimeProfileCommandSchema, command);
+      // Deep-merge as the server does; tools, network, env and driverConfig are replaced whole.
+      const sandbox = validate(sandboxSpecSchema, {
+        ...stored.sandbox,
+        ...patch.sandbox,
+        resources: { ...stored.sandbox.resources, ...patch.sandbox?.resources },
+        limits: { ...stored.sandbox.limits, ...patch.sandbox?.limits },
+      });
+      assertSupported(sandbox);
+      const next: RuntimeProfile = {
+        ...stored,
+        name: patch.name ?? stored.name,
+        description: patch.description ?? stored.description,
+        tools: patch.tools ?? stored.tools,
+        budgets: { ...stored.budgets, ...patch.budgets },
+        sandbox,
+        status: profileStatus(sandbox),
+        updatedAt: now(),
+      };
+      profiles.set(profileId, next);
+      if (patch.isDefault) makeDefault(profileId);
+      notify({ type: "profiles.changed" });
+      return clone(next);
+    },
+    deleteProfile: async (profileId) => {
+      const profile = getProfileRecord(profileId);
+      const users = [...bots.values()].filter(
+        (record) =>
+          !record.archived &&
+          (record.bot.runtimeProfileId === profileId ||
+            (profile.isDefault && record.bot.runtimeProfileId === null)),
+      );
+      if (users.length)
+        throw new ApiError(
+          "PROFILE_IN_USE",
+          `${profile.name} is used by ${users.map((u) => u.bot.name).join(", ")}.`,
+          { botIds: users.map((u) => u.bot.id) },
+          409,
+        );
+      profiles.delete(profileId);
+      notify({ type: "profiles.changed" });
+    },
+    listDrivers: async () => clone([...DEMO_DRIVERS]),
+    getModels: async () => clone(DEMO_MODELS),
 
-    async advanceDemoTask(taskId) {
-      const task = getTask(taskId);
-      const queued = task.sessions.find((s) => s.status === "queued");
-      const running = task.sessions.find((s) => s.status === "running");
-      const verifying = task.sessions.find((s) => s.status === "verifying");
-      if (queued) {
-        queued.status = "running";
-        queued.evidence = "Demo step · running";
-        task.status = "running";
-      } else if (running) {
-        running.status = "verifying";
-        running.evidence = "Demo step · verifying";
-      } else if (verifying) {
-        verifying.status = "completed";
-        verifying.evidence = "Demo step · completed";
-        if (task.sessions.every((s) => s.status === "completed")) {
-          task.status = "completed";
-          for (const check of task.checks) {
-            check.outcome = "passed";
-            check.evidence = `Demo step · marked passed on v${task.goalVersion}`;
-          }
-        }
-      } else {
-        task.status = "running";
-        task.sessions.forEach((session, index) => {
-          session.status =
-            index === 0 ? "completed" : index === 1 ? "running" : "verifying";
-        });
-      }
-      return publish(task);
+    listTasks: async () =>
+      [...tasks.values()]
+        .map(summarize)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+    createTask: async (command) => createTask(command),
+    getTask,
+    postTaskMessage: async (taskId, command) => {
+      const state = getState(taskId);
+      const parsed = validate(postTaskMessageCommandSchema, command);
+      const { task } = state.view;
+      if (task.status === "cancelled" || task.cancelRequestedAt)
+        throw new ApiError(
+          "TASK_TERMINAL",
+          "This task was stopped and can't take new messages.",
+          undefined,
+          409,
+        );
+      if (parsed.verificationPlan)
+        throw new ApiError(
+          "VERIFICATION_UNAVAILABLE",
+          "Verification plans are not available: this server does not enforce them.",
+          undefined,
+          409,
+        );
+      if (
+        parsed.goal !== undefined &&
+        parsed.observedGoalVersion !== task.goalVersion
+      )
+        throw new ApiError(
+          "STALE_GOAL_VERSION",
+          `The goal changed to version ${task.goalVersion} since you looked at it.`,
+          { goalVersion: task.goalVersion },
+          409,
+        );
+      const before = botState();
+      const { message, reopened } = userMessage(state.host, parsed);
+      if (reopened) state.steps.push(...continueScript(state.host));
+      notify({ type: "tasks.changed", taskId });
+      if (botState() !== before) notify({ type: "bots.changed" });
+      schedule(state);
+      return clone(message);
+    },
+    stopTask: async (taskId, command = {}) => {
+      const state = getState(taskId);
+      const { reason } = validate(stopTaskCommandSchema, command);
+      const { task } = state.view;
+      if (isFinishedStatus(task.status) || task.cancelRequestedAt)
+        throw new ApiError(
+          "TASK_TERMINAL",
+          "This task has already finished or is stopping.",
+          undefined,
+          409,
+        );
+      state.steps = [requestCancel(state.host, reason ?? null)];
+      state.autoplay = true;
+      notify({ type: "tasks.changed", taskId });
+      schedule(state);
+      return clone(state.view.task);
+    },
+    subscribeTask: (taskId, onView, streamOptions) =>
+      followTask(taskId, getTask, openTaskEvents, onView, {
+        retryMs: 500,
+        ...streamOptions,
+      }),
+    artifactUrl: (_taskId, artifactId) =>
+      `data:text/markdown;charset=utf-8,${encodeURIComponent(
+        artifactContent.get(artifactId) ??
+          "Demo data: this artifact has no content.",
+      )}`,
+
+    advanceDemoTask: async (taskId) => {
+      const state = getState(taskId);
+      step(state);
+      schedule(state);
     },
   };
 }

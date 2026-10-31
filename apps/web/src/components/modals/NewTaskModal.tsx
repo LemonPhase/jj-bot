@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { colourHex } from "../../lib/appearance";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { Modal } from "../common/Modal";
 import { StatusDot } from "../common/StatusDot";
@@ -12,7 +13,6 @@ export function NewTaskModal({
 }) {
   const { bots, createTask } = useWorkspace();
   const [goal, setGoal] = useState("");
-  const [criterion, setCriterion] = useState("");
   const [selected, setSelected] = useState<string[]>(initialBotIds);
 
   const toggle = (botId: string) =>
@@ -30,12 +30,8 @@ export function NewTaskModal({
       submitLabel="Start Task"
       onClose={onClose}
       onSubmit={() => {
-        if (!goal.trim() || !criterion.trim() || selected.length === 0) return;
-        void createTask({
-          goal: goal.trim(),
-          participantBotIds: selected,
-          verificationCriterion: criterion.trim(),
-        });
+        if (!goal.trim() || selected.length === 0) return;
+        void createTask({ goal: goal.trim(), participantBotIds: selected });
         onClose();
       }}
     >
@@ -66,26 +62,13 @@ export function NewTaskModal({
                 aria-pressed={index >= 0}
                 onClick={() => toggle(bot.id)}
               >
-                <StatusDot color={bot.color} />
+                <StatusDot color={colourHex(bot.appearance.colour)} />
                 <span>{bot.name}</span>
                 {index === 0 && <span className="chip-note">coord</span>}
               </button>
             );
           })}
         </div>
-      </div>
-      <div className="form-group">
-        <label className="field-label" htmlFor="new-task-check">
-          Verification criterion
-        </label>
-        <input
-          id="new-task-check"
-          className="form-input"
-          placeholder="e.g. Unit tests pass & latency < 50ms"
-          required
-          value={criterion}
-          onChange={(event) => setCriterion(event.target.value)}
-        />
       </div>
     </Modal>
   );

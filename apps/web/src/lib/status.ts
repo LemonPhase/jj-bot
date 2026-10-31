@@ -1,4 +1,10 @@
-import type { BotPresence, TaskStatus, WaitingFor } from "@jj/contracts";
+import type {
+  BotPresence,
+  ExecutionSession,
+  Task,
+  TaskStatus,
+  WaitingFor,
+} from "@jj/contracts";
 
 /**
  * Status presentation shared by every screen: one vocabulary (a mono word next
@@ -26,7 +32,7 @@ export type StatusTone =
   | "completed"
   | "failed";
 
-/** Every word the status vocabulary can show. */
+/** Every word the status vocabulary can show. "idle" is for bot presence only. */
 export type StatusWord =
   | "queued"
   | "working"
@@ -99,6 +105,11 @@ export function statusWord(input: StatusInput): StatusWord {
   return isStopping(subject) ? "stopping" : WORD_BY_STATUS[subject.status];
 }
 
+/** A task the user asked to stop reads "stopping" until it is cancelled. */
+export const taskStatusWord = (
+  task: Pick<Task, "status" | "cancelRequestedAt">,
+): StatusWord => statusWord(task);
+
 const TONE_BY_WORD: Record<StatusWord, StatusTone> = {
   queued: "idle",
   working: "running",
@@ -115,10 +126,26 @@ export function statusTone(input: StatusInput): StatusTone {
   return TONE_BY_WORD[statusWord(input)];
 }
 
+/** The brief's colour names for the status squares. */
+export type StatusColour = "grey" | "blue" | "green" | "red";
+
+const COLOUR_BY_TONE: Record<StatusTone, StatusColour> = {
+  idle: "grey",
+  running: "blue",
+  // No 1.0 status maps to verifying; kept for completeness.
+  verifying: "grey",
+  completed: "green",
+  failed: "red",
+};
+
+/** The colour name of a word's square: grey, blue, green or red. */
+export const statusColour = (word: StatusWord): StatusColour =>
+  COLOUR_BY_TONE[TONE_BY_WORD[word]];
+
 /**
- * Extra context for words that need it, for a tooltip or `title`. Only
- * "waiting" has one: a session waiting on its delegations, or (sessions waiting
- * for the user, and waiting tasks) the user.
+ * Extra context for words that need it, for a tooltip. Only "waiting" has one:
+ * a session waiting on its delegations, or (sessions waiting for the user, and
+ * waiting tasks) the user.
  */
 export function statusTitle(input: StatusInput): string | undefined {
   const subject = subjectOf(input);
@@ -127,6 +154,16 @@ export function statusTitle(input: StatusInput): string | undefined {
     ? "waiting on delegated work"
     : "waiting for you";
 }
+
+/** Tooltip for a waiting session: what it is waiting on. */
+export const waitingTooltip = (
+  session: Pick<ExecutionSession, "status" | "waitingFor">,
+): string | undefined => {
+  if (session.status !== "waiting") return undefined;
+  if (session.waitingFor === "user") return "waiting for you";
+  if (session.waitingFor === "delegations") return "waiting on delegated work";
+  return "waiting";
+};
 
 export interface StatusDisplay {
   word: StatusWord;
@@ -150,3 +187,17 @@ export function describeStatus(input: StatusInput): StatusDisplay {
 export function moodAnimates(mood: Mood): boolean {
   return mood === "working";
 }
+
+/** Stop is offered until the task finishes or a stop was requested. */
+export const isStoppable = (
+  task: Pick<Task, "status" | "cancelRequestedAt">,
+): boolean =>
+  (task.status === "queued" ||
+    task.status === "running" ||
+    task.status === "waiting") &&
+  !task.cancelRequestedAt;
+
+/** The API answers TASK_TERMINAL for a cancelled or stopping task. */
+export const acceptsMessages = (
+  task: Pick<Task, "status" | "cancelRequestedAt">,
+): boolean => task.status !== "cancelled" && !task.cancelRequestedAt;

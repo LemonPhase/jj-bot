@@ -1,27 +1,36 @@
-import { useState } from "react";
-import { useApi } from "../../api/ApiContext";
-import { BOT_COLORS, BOT_GLYPHS, type BotProfile } from "../../api/types";
+import { BOT_COLOURS, BOT_FACES, type Bot } from "@jj/contracts";
+import { useEffect, useState } from "react";
+import { colourHex } from "../../lib/appearance";
+import { taskStatusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { StatusDot } from "../common/StatusDot";
 
 /** Bot settings. Mount with `key={bot.id}` so drafts reset per bot. */
-export function BotInspector({ bot }: { bot: BotProfile }) {
-  const { tasks, updateBot, jumpToTask } = useWorkspace();
-  const canEditIdentity = useApi().capabilities.editBotIdentity;
-  const readOnlyTitle = canEditIdentity
-    ? undefined
-    : "Editing name and instructions isn't supported by the backend yet";
+export function BotInspector({ bot }: { bot: Bot }) {
+  const { tasks, updateBot, jumpToTask, memories, loadMemory, saveMemory } =
+    useWorkspace();
   const [name, setName] = useState(bot.name);
   const [instructions, setInstructions] = useState(bot.instructions);
-  const [memory, setMemory] = useState(bot.memory);
+  const stored = memories[bot.id];
+  const [memory, setMemory] = useState<string | null>(stored?.text ?? null);
   const assigned = tasks.filter((t) => t.participantBotIds.includes(bot.id));
+
+  // Once per bot: `loadMemory` is recreated on every workspace change.
+  useEffect(() => {
+    void loadMemory(bot.id);
+  }, [bot.id]);
+  useEffect(() => {
+    if (stored && memory === null) setMemory(stored.text);
+  }, [stored, memory]);
 
   const commitName = () => {
     const trimmed = name.trim();
     if (!trimmed) setName(bot.name);
     else if (trimmed !== bot.name) void updateBot(bot.id, { name: trimmed });
   };
+  const setAppearance = (patch: Partial<Bot["appearance"]>) =>
+    void updateBot(bot.id, { appearance: { ...bot.appearance, ...patch } });
 
   return (
     <aside className="inspector-column" aria-label="Bot settings">
@@ -31,8 +40,6 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
           type="text"
           className="profile-name-input"
           value={name}
-          readOnly={!canEditIdentity}
-          title={readOnlyTitle}
           aria-label="Bot name"
           onChange={(event) => setName(event.target.value)}
           onBlur={commitName}
@@ -42,28 +49,28 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
         />
         <div className="profile-role">{bot.role}</div>
         <div className="swatch-row">
-          {BOT_COLORS.map((color) => (
+          {BOT_COLOURS.map((colour) => (
             <button
-              key={color}
+              key={colour}
               type="button"
-              className={`color-swatch ${bot.color === color ? "active" : ""}`}
-              style={{ background: color }}
-              aria-label={`Colour ${color}`}
-              aria-pressed={bot.color === color}
-              onClick={() => void updateBot(bot.id, { color })}
+              className={`color-swatch ${bot.appearance.colour === colour ? "active" : ""}`}
+              style={{ background: colourHex(colour) }}
+              aria-label={`Colour ${colour}`}
+              aria-pressed={bot.appearance.colour === colour}
+              onClick={() => setAppearance({ colour })}
             />
           ))}
         </div>
         <div className="glyph-picker">
-          {BOT_GLYPHS.map((glyph) => (
+          {BOT_FACES.map((face) => (
             <button
-              key={glyph}
+              key={face}
               type="button"
-              className={`glyph-btn ${bot.glyph === glyph ? "active" : ""}`}
-              aria-pressed={bot.glyph === glyph}
-              onClick={() => void updateBot(bot.id, { glyph })}
+              className={`glyph-btn ${bot.appearance.face === face ? "active" : ""}`}
+              aria-pressed={bot.appearance.face === face}
+              onClick={() => setAppearance({ face })}
             >
-              {glyph}
+              {face}
             </button>
           ))}
         </div>
@@ -77,8 +84,6 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
           id={`instructions-${bot.id}`}
           className="field-textarea"
           value={instructions}
-          readOnly={!canEditIdentity}
-          title={readOnlyTitle}
           onChange={(event) => setInstructions(event.target.value)}
           onBlur={() => {
             if (instructions !== bot.instructions)
@@ -89,16 +94,18 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
 
       <div className="inspector-section">
         <label className="field-label" htmlFor={`memory-${bot.id}`}>
-          Scoped memory
+          Memory
         </label>
         <textarea
           id={`memory-${bot.id}`}
           className="field-textarea"
-          value={memory}
-          placeholder="Nothing remembered yet."
+          value={memory ?? ""}
+          disabled={memory === null}
+          placeholder={memory === null ? "Loading…" : "Nothing remembered yet."}
           onChange={(event) => setMemory(event.target.value)}
           onBlur={() => {
-            if (memory !== bot.memory) void updateBot(bot.id, { memory });
+            if (memory !== null && memory !== (stored?.text ?? ""))
+              void saveMemory(bot.id, memory);
           }}
         />
       </div>
@@ -115,7 +122,8 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
             >
               <span className="mini-task-main">
                 <StatusDot status={task.status} />
-                <span className="mini-task-title">{task.goal}</span>
+                <span className="mini-task-title">{task.title}</span>
+                <span className="mono-muted">{taskStatusWord(task)}</span>
               </span>
               <span className="row-arrow">→</span>
             </button>

@@ -1,63 +1,442 @@
-import { describe, expect, it } from "vitest";
-import { createDemoApi } from "./demoApi";
+import {
+  applyTaskEvent,
+  bootstrapSchema,
+  botMemorySchema,
+  botSchema,
+  conversationViewSchema,
+  modelsViewSchema,
+  runtimeProfileSchema,
+  sandboxDriverInfoSchema,
+  type TaskEvent,
+  type TaskView,
+  taskEventSchema,
+  taskSummarySchema,
+  taskViewSchema,
+  type WorkspaceHint,
+} from "@jj/contracts";
+import { describe, expect, it, vi } from "vitest";
+import { taskStatusWord } from "../lib/status";
+import { ApiError, type JJApi } from "./client";
+import { createDemoApi, titleFromGoal } from "./demoApi";
+import { DEMO_TASKS } from "./demoFixtures";
 
-describe("demo API placeholder", () => {
-  it("never fabricates a bot reply to a direct message", async () => {
-    const api = createDemoApi();
-    const thread = await api.sendDirectMessage("bot-kite", "Hello");
-    const added = thread.slice(-2);
-    expect(added.map((m) => m.role)).toEqual(["user", "system"]);
+const NOW = new Date("2026-10-31T12:00:00.000Z");
+const demo = (options: Parameters<typeof createDemoApi>[0] = {}) =>
+  createDemoApi({ now: () => NOW, autoplay: false, replyMs: 0, ...options });
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const withoutOutputs = (view: TaskView): TaskView => ({
+  ...view,
+  events: view.events.map((event) => {
+    if (event.type !== "tool.finished") return event;
+    const { output: _output, ...payload } = event.payload;
+    return { ...event, payload };
+  }),
+});
+
+/** Follows a task the way the UI does and drives it to the end of its script. */
+async function runToEnd(api: JJApi, taskId: string) {
+  const views: TaskView[] = [];
+  const unsubscribe = api.subscribeTask(taskId, (view) => views.push(view));
+  await flush();
+  const finished = () =>
+    ["completed", "failed", "cancelled"].includes(
+      views.at(-1)?.task.status ?? "",
+    );
+  for (let step = 0; step < 60 && !finished(); step += 1)
+    await api.advanceDemoTask?.(taskId);
+  unsubscribe();
+  const final = views.at(-1);
+  if (!final) throw new Error("no view");
+  return { views, final };
+}
+
+const expectValidEvents = (events: TaskEvent[]) => {
+  for (const event of events) taskEventSchema.parse(event);
+  const sequences = events.map((e) => e.sequence);
+  expect(sequences).toEqual(sequences.map((_, index) => index + 1));
+};
+
+const rejects = async (promise: Promise<unknown>, code: string) => {
+  const error = await promise.then(
+    () => null,
+    (reason: unknown) => reason,
+  );
+  expect(error).toBeInstanceOf(ApiError);
+  expect((error as ApiError).code).toBe(code);
+};
+
+describe("demo API", () => {
+  it("is labelled demo data and reports no real capabilities", async () => {
+    const api = demo();
+    expect(api.mode).toBe("demo");
+    expect(api.badge.label).toBe("Demo data");
+    expect(api.capabilities).toMatchObject({
+      agentExecution: false,
+      streaming: false,
+      persistence: false,
+      verification: false,
+    });
+    expect((await api.bootstrap()).mode).toBe("scaffold");
+    const models = await api.getModels();
     expect(
-      thread.some((m) => m.role === "assistant" && m.text === "Hello"),
+      models.providers.every((p) => p.id === "demo" && !p.configured),
+    ).toBe(true);
+  });
+
+  it("serves only contract-valid fixtures", async () => {
+    const api = demo();
+    const boot = bootstrapSchema.parse(await api.bootstrap());
+    expect(boot.bots.length).toBeGreaterThanOrEqual(4);
+    for (const bot of await api.listBots()) {
+      botSchema.parse(bot);
+      botMemorySchema.parse(await api.getMemory(bot.id));
+      conversationViewSchema.parse(await api.getConversation(bot.id));
+    }
+    const profiles = await api.listProfiles();
+    for (const profile of profiles) runtimeProfileSchema.parse(profile);
+    expect(profiles.map((p) => [p.sandbox.driver, p.status.isolated])).toEqual([
+      ["docker", true],
+      ["local", false],
+    ]);
+    for (const driver of await api.listDrivers())
+      sandboxDriverInfoSchema.parse(driver);
+    modelsViewSchema.parse(await api.getModels());
+    const summaries = await api.listTasks();
+    expect(summaries.map((t) => t.id).sort()).toEqual(
+      DEMO_TASKS.map((t) => t.id).sort(),
+    );
+    for (const summary of summaries) {
+      taskSummarySchema.parse(summary);
+      const view = taskViewSchema.parse(await api.getTask(summary.id));
+      expectValidEvents(view.events);
+    }
+  });
+
+  it("is deterministic for a given clock", async () => {
+    const [a, b] = [demo(), demo()];
+    expect(await a.bootstrap()).toEqual(await b.bootstrap());
+    expect(await a.getTask("task-101")).toEqual(await b.getTask("task-101"));
+  });
+
+  it("seeds a running, a completed and a waiting task", async () => {
+    const api = demo();
+    const [running, completed, waiting] = await Promise.all(
+      ["task-101", "task-102", "task-103"].map((id) => api.getTask(id)),
+    );
+    expect(running?.task.status).toBe("running");
+    expect(completed?.task.status).toBe("completed");
+    expect(waiting?.task.status).toBe("waiting");
+    expect(waiting?.sessions[0]?.waitingFor).toBe("user");
+    // Snapshot events drop tool output previews, like the live API.
+    expect(
+      completed?.events.some(
+        (e) => e.type === "tool.finished" && e.payload.output !== undefined,
+      ),
     ).toBe(false);
   });
 
-  it("creates queued tasks with the first participant as coordinator", async () => {
-    const api = createDemoApi();
-    const task = await api.createTask({
-      goal: "Ship the workspace UI",
-      participantBotIds: ["bot-moss", "bot-vesper"],
-      verificationCriterion: "Browser check passes",
-    });
-    expect(task.coordinatorBotId).toBe("bot-moss");
-    expect(task.status).toBe("queued");
-    expect(task.sessions.every((s) => s.status === "queued")).toBe(true);
-    expect(task.checks[0]?.outcome).toBe("inconclusive");
-    expect((await api.listTasks())[0]?.id).toBe(task.id);
-  });
+  it("runs the demo task to a valid completed view through applyTaskEvent", async () => {
+    const api = demo();
+    const { views, final } = await runToEnd(api, "task-101");
+    expect(views.length).toBeGreaterThan(5);
+    taskViewSchema.parse(final);
+    expectValidEvents(final.events);
+    expect(final.task.status).toBe("completed");
+    expect(final.task.result).toMatch(/demo data/i);
+    expect(final.events.at(-1)?.type).toBe("task.finished");
 
-  it("steering bumps the goal version and marks checks stale", async () => {
-    const api = createDemoApi();
-    const task = await api.postTaskMessage("task-101", {
-      text: "Keep the schema",
-      steering: true,
-      observedGoalVersion: 2,
-    });
-    expect(task.goalVersion).toBe(3);
-    expect(task.checks.every((c) => c.outcome === "inconclusive")).toBe(true);
-  });
-
-  it("stopping cancels unfinished sessions and notifies subscribers", async () => {
-    const api = createDemoApi();
-    const seen: string[] = [];
-    const unsubscribe = api.subscribeToTask("task-101", (t) =>
-      seen.push(t.status),
+    const coordinator = final.sessions.find((s) => s.role === "coordinator");
+    const workers = final.sessions.filter((s) => s.role === "worker");
+    expect(workers.map((w) => w.botId)).toEqual(["bot-moss", "bot-vesper"]);
+    expect(workers.every((w) => w.parentSessionId === coordinator?.id)).toBe(
+      true,
     );
-    const task = await api.stopTask("task-101");
-    unsubscribe();
-    expect(task.status).toBe("cancelled");
-    expect(task.sessions.map((s) => s.status)).toEqual([
-      "completed",
-      "cancelled",
-      "cancelled",
+    expect(
+      final.sessions.every(
+        (s) => s.status === "completed" && s.activity === null,
+      ),
+    ).toBe(true);
+    const tools = final.events.flatMap((e) =>
+      e.type === "tool.started" ? [e.payload.tool] : [],
+    );
+    expect(tools).toEqual(
+      expect.arrayContaining(["delegate", "bash", "write", "complete_task"]),
+    );
+    expect(final.messages.map((m) => m.intent)).toEqual([
+      "assignment",
+      "assignment",
+      "result",
+      "result",
+      "result",
     ]);
-    expect(seen).toEqual(["cancelled"]);
+    expect(final.artifacts).toHaveLength(1);
+    expect(final.usage.total.modelCalls).toBeGreaterThan(0);
+
+    // The client's fold equals the server's view: snapshot n + events n+1..m = view m.
+    expect(withoutOutputs(final)).toEqual(await api.getTask("task-101"));
+    expect(api.artifactUrl("task-101", final.artifacts[0]?.id ?? "")).toMatch(
+      /^data:text\/markdown/,
+    );
   });
 
-  it("returns copies so callers cannot mutate stored state", async () => {
-    const api = createDemoApi();
-    const [bot] = await api.listBots();
-    if (bot) bot.name = "Mutated";
-    expect((await api.listBots())[0]?.name).toBe("Juno");
+  it("intermediate views show live activity lines", async () => {
+    const api = demo();
+    const { views } = await runToEnd(api, "task-101");
+    const lines = views.flatMap((v) =>
+      v.sessions.flatMap((s) => (s.activity ? [s.activity.text] : [])),
+    );
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        "Thinking…",
+        "Running `npm test`",
+        "Waiting on delegated work",
+      ]),
+    );
+  });
+
+  it.each([
+    [["bot-kite"], 0],
+    [["bot-kite", "bot-moss"], 1],
+    [["bot-kite", "bot-moss", "bot-vesper", "bot-juno"], 2],
+  ])(
+    "completes a new task with participants %j",
+    async (participants, workers) => {
+      const api = demo();
+      const task = await api.createTask({
+        goal: "Write release notes for the 1.0 contracts",
+        coordinatorBotId: "bot-kite",
+        participantBotIds: participants,
+      });
+      expect(task.status).toBe("queued");
+      expect(task.title).toBe("Write release notes for the 1.0 contracts");
+      const { final } = await runToEnd(api, task.id);
+      taskViewSchema.parse(final);
+      expectValidEvents(final.events);
+      expect(final.task.status).toBe("completed");
+      expect(final.sessions.filter((s) => s.role === "worker")).toHaveLength(
+        workers,
+      );
+    },
+  );
+
+  it("continues a waiting task when the user answers", async () => {
+    const api = demo();
+    const message = await api.postTaskMessage("task-103", {
+      text: "Keep a fallback.",
+    });
+    expect(message).toMatchObject({ authorKind: "user", intent: "steering" });
+    const view = await api.getTask("task-103");
+    expect(view.task.status).toBe("running");
+    expect(view.events.map((e) => e.type)).toEqual(
+      expect.arrayContaining(["task.reopened", "steering.received"]),
+    );
+    const { final } = await runToEnd(api, "task-103");
+    expect(final.task.status).toBe("completed");
+    expectValidEvents(final.events);
+  });
+
+  it("changes the goal only against the observed version", async () => {
+    const api = demo();
+    await rejects(
+      api.postTaskMessage("task-101", {
+        text: "New goal",
+        goal: "New goal",
+        observedGoalVersion: 7,
+      }),
+      "STALE_GOAL_VERSION",
+    );
+    await api.postTaskMessage("task-101", {
+      text: "Also cover the hint stream",
+      goal: "Check the task and hint streams",
+      observedGoalVersion: 1,
+    });
+    const { task, events } = await api.getTask("task-101");
+    expect(task).toMatchObject({
+      goal: "Check the task and hint streams",
+      goalVersion: 2,
+    });
+    expect(events.some((e) => e.type === "task.goal_changed")).toBe(true);
+  });
+
+  it("stops a task: stopping first, then cancelled", async () => {
+    const api = demo();
+    const stopping = await api.stopTask("task-101", { reason: "  " });
+    expect(stopping.cancelReason).toBeNull();
+    expect(taskStatusWord(stopping)).toBe("stopping");
+    await rejects(
+      api.postTaskMessage("task-101", { text: "hello" }),
+      "TASK_TERMINAL",
+    );
+    await api.advanceDemoTask?.("task-101");
+    const view = taskViewSchema.parse(await api.getTask("task-101"));
+    expect(view.task.status).toBe("cancelled");
+    expect(
+      view.sessions.every((s) => ["cancelled", "completed"].includes(s.status)),
+    ).toBe(true);
+    expect(view.events.map((e) => e.type)).toEqual(
+      expect.arrayContaining([
+        "cancellation.requested",
+        "cancellation.completed",
+        "task.finished",
+      ]),
+    );
+    expectValidEvents(view.events);
+    await rejects(api.stopTask("task-101"), "TASK_TERMINAL");
+  });
+
+  it("replies to a greeting without starting a task", async () => {
+    const api = demo();
+    const hints: WorkspaceHint[] = [];
+    api.subscribeHints((hint) => hints.push(hint));
+    const sent = await api.sendBotMessage("bot-kite", { text: "Hello Kite" });
+    expect(sent.role).toBe("user");
+    expect((await api.getConversation("bot-kite")).replying).toBe(true);
+    await flush();
+    const view = conversationViewSchema.parse(
+      await api.getConversation("bot-kite"),
+    );
+    expect(view.replying).toBe(false);
+    expect(view.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      taskId: null,
+    });
+    expect(view.messages.at(-1)?.text).toMatch(/demo/);
+    expect(hints).toEqual([
+      { type: "conversation.changed", botId: "bot-kite" },
+      { type: "conversation.changed", botId: "bot-kite" },
+    ]);
+  });
+
+  it("starts a task from a work request in direct chat", async () => {
+    const api = demo();
+    const views: unknown[] = [];
+    const unsubscribe = api.subscribeConversation("bot-moss", (view) =>
+      views.push(view),
+    );
+    await api.sendBotMessage("bot-moss", {
+      text: "Add a retry to the hint stream",
+    });
+    await flush();
+    unsubscribe();
+    const view = await api.getConversation("bot-moss");
+    const reply = view.messages.at(-1);
+    expect(reply?.taskId).toBeTruthy();
+    const task = (await api.listTasks()).find((t) => t.id === reply?.taskId);
+    expect(task).toMatchObject({
+      coordinatorBotId: "bot-moss",
+      status: "queued",
+    });
+    expect(task?.participantBotIds[0]).toBe("bot-moss");
+    // The subscriber saw the reply land (superseded refetches are dropped).
+    expect(views.at(-1)).toEqual(view);
+  });
+
+  it("rejects what the server would reject", async () => {
+    const api = demo();
+    await rejects(api.createBot({ name: "  " }), "VALIDATION_FAILED");
+    await rejects(
+      api.createTask({
+        goal: "Check it",
+        coordinatorBotId: "bot-kite",
+        verificationPlan: [
+          { id: "c", description: "d", method: "m", expectedEvidence: "e" },
+        ],
+      }),
+      "VERIFICATION_UNAVAILABLE",
+    );
+    await rejects(api.archiveBot("bot-juno"), "CONFLICT");
+    await rejects(api.deleteProfile("profile-docker"), "PROFILE_IN_USE");
+    await rejects(
+      api.createProfile({
+        name: "Offline local",
+        sandbox: { driver: "local", network: { mode: "none" } },
+      }),
+      "PROFILE_UNSUPPORTED",
+    );
+    await rejects(api.getTask("task-999"), "NOT_FOUND");
+  });
+
+  it("creates, edits and archives bots with contract defaults", async () => {
+    const api = demo();
+    const bot = botSchema.parse(await api.createBot({ name: "Nova" }));
+    expect(bot).toMatchObject({
+      role: "",
+      instructions: "",
+      model: null,
+      presence: "idle",
+    });
+    const renamed = await api.updateBot(bot.id, { role: "Security review" });
+    expect(renamed.role).toBe("Security review");
+    expect(
+      (await api.putMemory(bot.id, { text: "Prefers short answers" })).text,
+    ).toBe("Prefers short answers");
+    await api.archiveBot(bot.id);
+    expect((await api.listBots()).some((b) => b.id === bot.id)).toBe(false);
+  });
+
+  it("manages runtime profiles", async () => {
+    const api = demo();
+    const profile = await api.createProfile({
+      name: "Docker online",
+      sandbox: { driver: "docker", network: { mode: "open" } },
+    });
+    runtimeProfileSchema.parse(profile);
+    expect(profile.status.isolated).toBe(true);
+    const updated = await api.updateProfile(profile.id, {
+      sandbox: { resources: { cpus: 1 } },
+      isDefault: true,
+    });
+    expect(updated.sandbox).toMatchObject({
+      network: { mode: "open" },
+      resources: { cpus: 1 },
+    });
+    expect(
+      (await api.listProfiles()).filter((p) => p.isDefault).map((p) => p.id),
+    ).toEqual([profile.id]);
+    await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
+  });
+
+  it("advances on a timer when autoplay is on", async () => {
+    const api = demo({ autoplay: true, stepMs: 2 });
+    const statuses: string[] = [];
+    const unsubscribe = api.subscribeTask("task-101", (view) =>
+      statuses.push(view.task.status),
+    );
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe("completed"), {
+      timeout: 3000,
+    });
+    unsubscribe();
+  });
+
+  it("delivers the same view to a late subscriber as to one that followed along", async () => {
+    const api = demo();
+    const early: TaskView[] = [];
+    const stop = api.subscribeTask("task-101", (view) => early.push(view));
+    await flush();
+    for (let i = 0; i < 4; i += 1) await api.advanceDemoTask?.("task-101");
+    const late: TaskView[] = [];
+    const stopLate = api.subscribeTask("task-101", (view) => late.push(view));
+    await flush();
+    await api.advanceDemoTask?.("task-101");
+    stop();
+    stopLate();
+    expect(withoutOutputs(late.at(-1) as TaskView)).toEqual(
+      withoutOutputs(early.at(-1) as TaskView),
+    );
+    // Folding is idempotent: replaying an applied event changes nothing.
+    const last = early.at(-1) as TaskView;
+    const replayed = last.events.at(-1);
+    if (replayed) expect(applyTaskEvent(last, replayed)).toBe(last);
+  });
+
+  it("derives task titles from goals", () => {
+    expect(titleFromGoal("Short goal")).toBe("Short goal");
+    expect(titleFromGoal("First line\nsecond line")).toBe("First line");
+    const long = titleFromGoal(
+      "Check that the task stream resumes after a reconnect without gaps or duplicates",
+    );
+    expect(long.length).toBeLessThanOrEqual(61);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
