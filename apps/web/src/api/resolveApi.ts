@@ -1,16 +1,19 @@
 import type { JJApi } from "./client";
 import { createDemoApi } from "./demoApi";
-import { createLiveApi, fetchBootstrap } from "./liveApi";
+import { createLiveApi, probeBackend } from "./liveApi";
+import { readApiToken } from "./token";
 
 /**
- * Live backend when `/api/bootstrap` reports `mode: "backend"`; demo data
- * otherwise. Add `?demo` to the URL to force demo data.
+ * The live backend when `/api/bootstrap` answers `mode: "backend"` with a
+ * compatible contract; demo data otherwise, with the reason in the badge
+ * tooltip. Add `?demo` to the URL to force demo data.
  */
 export async function resolveApi(): Promise<JJApi> {
+  const token = readApiToken();
   if (new URLSearchParams(window.location.search).has("demo"))
-    return createDemoApi();
-  const bootstrap = await fetchBootstrap();
-  return bootstrap?.mode === "backend"
-    ? createLiveApi(bootstrap)
-    : createDemoApi();
+    return createDemoApi({ reason: "Opened with ?demo." });
+  const probe = await probeBackend({ token });
+  return probe.ok
+    ? createLiveApi({ bootstrap: probe.bootstrap, models: probe.models, token })
+    : createDemoApi({ reason: probe.reason });
 }

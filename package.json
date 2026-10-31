@@ -21,7 +21,8 @@
     "check": "npm run verify",
     "smoke:model": "node --import tsx --env-file=.env scripts/smoke.ts model",
     "smoke:tool": "node --import tsx --env-file=.env scripts/smoke.ts tool",
-    "smoke:backend": "node --import tsx --env-file=.env scripts/backend-smoke.ts"
+    "smoke:backend": "node --import tsx --env-file=.env scripts/backend-smoke.ts",
+    "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",

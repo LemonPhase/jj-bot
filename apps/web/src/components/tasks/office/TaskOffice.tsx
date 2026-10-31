@@ -1,5 +1,9 @@
+import type { Bot, TaskMessage, TaskView } from "@jj/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { BotProfile, TaskView } from "../../../api/types";
+import { useApi } from "../../../api/ApiContext";
+import { statusWord } from "../../../lib/status";
+import { sessionLine, sessionOrdinal } from "../../../lib/tasks";
+import { useWorkspace } from "../../../state/WorkspaceContext";
 import { StatusDot } from "../../common/StatusDot";
 import { messageToBeat } from "./beats";
 import "./office.css";
@@ -17,12 +21,20 @@ const currentTheme = (): "light" | "dark" =>
  * fresh scene. New task messages are acted out live as they stream in.
  */
 export function TaskOffice({
-  task,
+  view,
   getBot,
 }: {
-  task: TaskView;
-  getBot: (id: string) => BotProfile | undefined;
+  view: TaskView;
+  getBot: (id: string) => Bot | undefined;
 }) {
+  const api = useApi();
+  const { taskStreamState } = useWorkspace();
+  const { task, messages } = view;
+  // "Live" only for a real, connected event stream; never for demo data.
+  const live =
+    api.mode === "live" &&
+    api.capabilities.streaming &&
+    taskStreamState === "open";
   const hostRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<OfficeScene | null>(null);
   const seenRef = useRef<Set<string> | null>(null);
@@ -39,7 +51,7 @@ export function TaskOffice({
     () =>
       task.participantBotIds
         .map((id) => getBot(id))
-        .filter((b): b is BotProfile => !!b),
+        .filter((b): b is Bot => !!b),
     [task.participantBotIds, getBot],
   );
   const hidden = Math.max(0, participants.length - MAX_DESKS);
@@ -69,28 +81,27 @@ export function TaskOffice({
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
-    scene.sync(task, participants);
-    const toBeat = (m: TaskView["messages"][number]) =>
-      messageToBeat(m, task, participants);
+    scene.sync(view, participants);
+    const toBeat = (m: TaskMessage) => messageToBeat(m, task, participants);
 
     if (!seenRef.current) {
-      seenRef.current = new Set(task.messages.map((m) => m.id));
-      scene.replay(task.messages.slice(-INTRO_MESSAGES).map(toBeat));
+      seenRef.current = new Set(messages.map((m) => m.id));
+      scene.replay(messages.slice(-INTRO_MESSAGES).map(toBeat));
       return;
     }
     const seen = seenRef.current;
-    const fresh = task.messages.filter((m) => !seen.has(m.id));
+    const fresh = messages.filter((m) => !seen.has(m.id));
     for (const m of fresh) seen.add(m.id);
     scene.enqueue(fresh.map(toBeat));
-  }, [task, participants]);
+  }, [view, task, messages, participants]);
 
   const replayAll = () =>
     sceneRef.current?.replay(
-      task.messages.map((m) => messageToBeat(m, task, participants)),
+      messages.map((m) => messageToBeat(m, task, participants)),
     );
   const picked = pickedBotId ? getBot(pickedBotId) : undefined;
   const pickedSession = pickedBotId
-    ? task.sessions.filter((s) => s.botId === pickedBotId).at(-1)
+    ? view.sessions.filter((s) => s.botId === pickedBotId).at(-1)
     : undefined;
 
   return (
@@ -103,11 +114,21 @@ export function TaskOffice({
             className="office-chip"
             title="Animation only: desks, rings and the board always show current task state"
           >
-            Replaying transcript · statuses are live
+            Replaying transcript · statuses are current
           </span>
         ) : (
-          <span className="office-chip">
-            <span className="office-live" /> Live
+          <span
+            className="office-chip"
+            title={
+              live
+                ? "Connected to the task's event stream"
+                : api.mode === "demo"
+                  ? "Demo data: the task is simulated"
+                  : "Not connected to the task's event stream"
+            }
+          >
+            {live && <span className="office-live" />}
+            {live ? "Live" : api.mode === "demo" ? "Demo data" : "Not live"}
             {status.pending > 0 ? ` · ${status.pending} queued` : ""}
           </span>
         )}
@@ -135,15 +156,14 @@ export function TaskOffice({
               <div className="office-card-row">
                 <StatusDot status={pickedSession.status} />
                 <span className="mono-muted">
-                  {pickedSession.label} · {pickedSession.status}
+                  {sessionOrdinal(view, pickedSession.id)} ·{" "}
+                  {statusWord(pickedSession.status)}
                 </span>
               </div>
               <div className="office-card-text">{pickedSession.brief}</div>
-              {pickedSession.evidence && (
-                <div className="office-card-text">
-                  <strong>Evidence:</strong> {pickedSession.evidence}
-                </div>
-              )}
+              <div className="office-card-text">
+                <strong>Now:</strong> {sessionLine(pickedSession)}
+              </div>
             </>
           ) : (
             <div className="office-card-text">No session in this task yet.</div>
@@ -156,7 +176,7 @@ export function TaskOffice({
           type="button"
           className="office-btn"
           title="Replay the whole transcript"
-          disabled={!task.messages.length}
+          disabled={!messages.length}
           onClick={replayAll}
         >
           ⟲ Replay

@@ -1,15 +1,17 @@
 import { existsSync } from "node:fs";
 import {
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { describeSandboxConformance } from "./conformance";
 import {
   type AcquireRequest,
@@ -19,11 +21,24 @@ import {
 } from "./contract";
 import { LocalSandboxDriver } from "./drivers/local";
 
+// A fresh root per run, removed afterwards, so runs neither share nor leave workspaces.
+let conformanceRoot: string | undefined;
 describeSandboxConformance(
   "local",
-  () => new LocalSandboxDriver({ killGraceMs: 500 }),
+  async () => {
+    conformanceRoot = await mkdtemp(join(tmpdir(), "jj-local-conformance-"));
+    return new LocalSandboxDriver({
+      root: conformanceRoot,
+      env: {},
+      killGraceMs: 500,
+    });
+  },
   { hostWorkspacePath: (sandbox) => sandbox.workspaceDir },
 );
+afterAll(async () => {
+  if (conformanceRoot)
+    await rm(conformanceRoot, { recursive: true, force: true });
+});
 
 const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
 
@@ -35,7 +50,7 @@ describe("local driver", () => {
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "jj-local-test-"));
     outside = await mkdtemp(join(tmpdir(), "jj-local-outside-"));
-    driver = new LocalSandboxDriver({ root, killGraceMs: 300 });
+    driver = new LocalSandboxDriver({ root, env: {}, killGraceMs: 300 });
   });
 
   afterAll(async () => {
@@ -137,6 +152,26 @@ describe("local driver", () => {
     20_000,
   );
 
+  it.runIf(process.platform === "linux" && existsSync("/bin/bash"))(
+    "on Linux, also stops descendants that left the group but not the session",
+    async () => {
+      const sandbox = await driver.acquire(
+        request({ workspace: "ephemeral" }, "linux-session"),
+      );
+      const file = join(outside, "stop-session");
+      // Job control gives the background job its own group; env -i drops the marker.
+      await sandbox.fs.write(
+        "job.sh",
+        `set -m\nenv -i /bin/sh -c 'trap "" TERM; while :; do echo x >> ${file}; sleep 0.1; done' >/dev/null 2>&1 &\nsleep 30\n`,
+      );
+      const result = await sandbox.exec("bash job.sh", { timeoutMs: 800 });
+      expect(result.interrupted).toBe("yes");
+      await expectStopped([file]);
+      await sandbox.release();
+    },
+    20_000,
+  );
+
   it("marks a command running at release as interrupted by release", async () => {
     const sandbox = await driver.acquire(
       request({ workspace: "ephemeral" }, "release-running"),
@@ -160,6 +195,89 @@ describe("local driver", () => {
     });
     expect(result.stdout.trim().startsWith(`${sandbox.id}:`)).toBe(true);
     await sandbox.release();
+  });
+
+  it("creates more than 64 new nested directories", async () => {
+    const sandbox = await driver.acquire(
+      request({ workspace: "ephemeral" }, "deep"),
+    );
+    const deep = Array.from({ length: 80 }, (_, i) => `d${i}`).join("/");
+    await sandbox.fs.mkdir(`made/${deep}`);
+    expect((await sandbox.fs.stat(`made/${deep}`))?.kind).toBe("directory");
+    await sandbox.fs.write(`written/${deep}/file.txt`, "deep");
+    expect(
+      (await sandbox.fs.read(`written/${deep}/file.txt`)).toString("utf8"),
+    ).toBe("deep");
+    await sandbox.exec("ln -s loop-a loop-b && ln -s loop-b loop-a");
+    await expect(sandbox.fs.write("loop-a/file.txt", "x")).rejects.toThrow();
+    await sandbox.release();
+  });
+
+  it("waits for fs calls in flight before discarding an ephemeral workspace", async () => {
+    const deep = Array.from({ length: 40 }, (_, i) => `r${i}`).join("/");
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const sandbox = await driver.acquire(
+        request({ workspace: "ephemeral" }, "racing"),
+      );
+      const write = sandbox.fs.write(`${deep}/late.txt`, "late");
+      const setup = sandbox.exec("true").catch((error: unknown) => error);
+      await sandbox.release();
+      await write;
+      await setup;
+      expect(existsSync(sandbox.workspaceDir)).toBe(false);
+    }
+  });
+
+  it("takes its root from the option, then JJ_SANDBOX_ROOT", async () => {
+    const real = await realpath(root);
+    const fromEnv = new LocalSandboxDriver({
+      env: { JJ_SANDBOX_ROOT: join(root, "from-env") },
+    });
+    const explicit = new LocalSandboxDriver({
+      root: join(root, "explicit"),
+      env: { JJ_SANDBOX_ROOT: join(root, "from-env") },
+    });
+    for (const [instance, expected] of [
+      [fromEnv, "from-env"],
+      [explicit, "explicit"],
+    ] as const) {
+      const sandbox = await instance.acquire(
+        request({ workspace: "task" }, "k"),
+      );
+      expect(sandbox.workspaceDir).toBe(join(real, expected, "task", "k"));
+      await sandbox.release();
+    }
+  });
+
+  it("defaults to a fixed root, so task workspaces survive a restart", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "jj-local-default-"));
+    vi.stubEnv("TMPDIR", temp);
+    try {
+      const first = new LocalSandboxDriver({ env: {} });
+      const before = await first.acquire(
+        request({ workspace: "task" }, "kept"),
+      );
+      expect(before.workspaceDir).toBe(
+        join(await realpath(temp), "jj-sandbox", "task", "kept"),
+      );
+      await before.fs.write("state.txt", "kept");
+      await before.release();
+      // A new driver instance stands in for a restarted server.
+      const after = await new LocalSandboxDriver({ env: {} }).acquire(
+        request({ workspace: "task" }, "kept"),
+      );
+      expect((await after.fs.read("state.txt")).toString("utf8")).toBe("kept");
+      await after.release();
+      // The default path is shared: one replaced by a symlink is refused.
+      await rm(join(temp, "jj-sandbox"), { recursive: true });
+      await mkdir(join(temp, "elsewhere"));
+      await symlink(join(temp, "elsewhere"), join(temp, "jj-sandbox"));
+      const planted = await new LocalSandboxDriver({ env: {} }).probe();
+      expect(planted.ok).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(temp, { recursive: true, force: true });
+    }
   });
 
   it("writes through the fs API land inside the workspace only", async () => {

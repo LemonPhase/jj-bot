@@ -39,14 +39,14 @@ A task acquires **one sandbox for all its sessions**. The worker's task sandbox 
 
 A workspace is identified by its mode and its key. Task execution uses two modes:
 
-- `task` (the default): files persist, across restarts too, until the task is deleted.
+- `task` (the default): files persist across releases and restarts. No API deletes a task workspace, so deleting a task leaves its files; the operator clears the driver's storage (for `local`, its root directory).
 - `ephemeral`: the workspace is discarded when the task's sandbox is released. Its sessions cannot resume after a restart; they fail visibly.
 
 The contract also defines `bot`, a workspace that persists for one bot across tasks. Task execution never uses it, because it would expose the coordinator's files from earlier tasks to every participant.
 
-The `local` driver runs commands directly on the host, as the server's user. It does not pass the server's environment into commands, but it hides nothing from them: they can read every file that user can, including `.env` and key files, and the server's own environment through `/proc`. Model keys are out of reach of agent-run code only on drivers that declare filesystem isolation. `local` exists for development on a trusted machine, and the product labels profiles that use it as unisolated. Without cgroups it cannot guarantee that a stopped command's process tree is gone, so it reports `unknown` whenever it cannot verify that.
+The `local` driver runs commands directly on the host, as the server's user. It does not pass the server's environment into commands, but it hides nothing from them: they can read every file that user can, including `.env` and key files, and the server's own environment through `/proc`. Model keys are out of reach of agent-run code only on drivers that declare filesystem isolation. `local` exists for development on a trusted machine, and the product labels profiles that use it as unisolated. Its process cleanup is best effort without cgroups: it stops each command's process group and, on Linux, the processes in its session or carrying its marker variable, and reports `yes` only when a `/proc` scan finds none left. A descendant that both leaves the session and clears its environment escapes detection, so a `yes` from `local` is not a guarantee.
 
-The `docker` driver starts sandboxes as sibling containers through the host's Docker API. When JJ Bot itself runs in a container, that API arrives as the mounted host socket, which is root-equivalent on the host. The driver therefore never passes the socket into a sandbox, never creates privileged containers and never bind-mounts host paths: workspaces are named volumes, and file access goes through the Docker API. A filtering proxy can sit in front of the socket through `DOCKER_HOST` without code changes.
+The `docker` driver starts sandboxes as sibling containers through the host's Docker API. When JJ Bot itself runs in a container, that API arrives as the mounted host socket, which is root-equivalent on the host. The driver therefore never passes the socket into a sandbox, never creates privileged containers and never bind-mounts host paths: workspaces are named volumes, and file access goes through the Docker API. A filtering proxy can sit in front of the socket through `DOCKER_HOST` without code changes; plain-HTTP `tcp://` is refused for a host that is not loopback unless the operator opts in. Containers left running by a crashed worker are removed at worker start (`reapOrphans`); workspace volumes are kept.
 
 ## Runtime profiles
 

@@ -45,7 +45,8 @@ Internal packages export TypeScript source. API/worker run with `tsx`; `build` t
 | `JJ_EMBED_WORKER`  | `true` (default) runs the scheduler inside the API; `false` requires the separate worker.   |
 | `JJ_CONCURRENCY`   | Concurrent execution sessions and claimed jobs, default `3`.                                |
 | `JJ_POSTGRES_PORT` | Host port for the compose PostgreSQL service, default `5433`.                               |
-| `API_TOKEN`        | Optional bearer token required on `/api/*` when set.                                        |
+| `JJ_SANDBOX_ROOT`  | `local` sandbox workspace root, default `<os.tmpdir()>/jj-sandbox`; the operator clears it. |
+| `API_TOKEN`        | Optional bearer token on `/api/*`. The web app reads it from `?token=` into localStorage.   |
 | `GEMINI_API_KEY`   | Server-only Google GenAI key. Never expose it to the browser.                               |
 | `GEMINI_MODEL`     | Exact model id used for sessions; validate access before relying on it.                     |
 
@@ -66,14 +67,14 @@ npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
 ```
 
-CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it runs lint, typecheck, tests and the web build, the same steps as `npm run verify`, and every step must pass. Each check runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it builds the sandbox base image, then runs lint, typecheck, tests and the web build, the same checks as `npm run verify`, and every step must pass. Each check runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
 
 Some tests need external services and skip when those services are missing. CI provides both, so in CI these tests run instead of skipping:
 
 - PostgreSQL: tests gated on `JJ_TEST_DATABASE_URL`, such as the concurrency tests in `packages/db`. Each of those suites creates and drops its own database, so the user needs the `CREATEDB` privilege. CI starts a PostgreSQL 17 service container and exports the variable to the test step. Locally, point it at a disposable database, never the development one: `docker run -d --rm -p 55432:5432 -e POSTGRES_USER=jj -e POSTGRES_PASSWORD=jj -e POSTGRES_DB=jj_test postgres:17-alpine`, then `JJ_TEST_DATABASE_URL=postgresql://jj:jj@127.0.0.1:55432/jj_test npm run verify`.
-- Docker: sandbox driver tests that skip when no Docker daemon is reachable. The CI job runs on the runner VM with its Docker daemon, not inside a job container, and it fails if `docker version` cannot reach the daemon.
+- Docker: sandbox driver tests that skip when no Docker daemon is reachable. The CI job runs on the runner VM with its Docker daemon, not inside a job container, and it fails if `docker version` cannot reach the daemon. CI builds the sandbox base image with `npm run sandbox:image` and points the tests at it with `JJ_SANDBOX_TEST_IMAGE=jj-sandbox:base-1`; locally they use that image when it is built and `node:22-bookworm-slim` otherwise.
 
-The root `vitest.config.ts` sets 20 s per-test and per-hook timeouts, because PGlite-backed suites are slow on loaded machines. It also excludes `.claude/` agent worktrees, so a run from the main checkout matches CI. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
+The root `vitest.config.ts` sets 20 s per-test and per-hook timeouts, because PGlite-backed suites are slow on loaded machines. It also excludes `.claude/` agent worktrees, so a run from the main checkout matches CI. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver, and against `docker` where a daemon is reachable. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
 
 Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to [the contract changelog](contract-changelog.md).
 
@@ -92,7 +93,6 @@ Task execution is owned by the backend scheduler, not by an HTTP request or an o
 
 - AG-UI client/core are pinned to 1.0.2 to match CopilotKit 1.83.0. Mixing that pinned client with a direct 1.0.3 client produced incompatible private class types; do not bypass this with casts.
 - The dependency audit is not clean. Review reachability and patched upstream releases before external deployment; do not apply blanket breaking overrides or claim a clean audit.
-- The CopilotKit provider produces large rendering-related chunks and the main bundle exceeds 2 MB before gzip. Isolate or lazy-load imports instead of suppressing the size warning.
 - PGlite is single-process. Its data directory is locked to the process that opens it, and a second process is refused. A separate worker, or more than one API process, requires PostgreSQL.
 - Writes serialize per task and per bot (sequence allocation row-locks that task or bot), never globally. Job claims use `FOR UPDATE SKIP LOCKED`, and at most one run per session and one chat reply per bot is ever active.
 - Pooled PostgreSQL connections set `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s), so a statement stuck waiting on a lock, or a transaction left open, fails instead of hanging.
