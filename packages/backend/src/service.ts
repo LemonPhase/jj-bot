@@ -4,7 +4,7 @@ import {
   type TaskEvent,
   type TaskMessage,
   taskSchema,
-} from "@jj/contracts";
+} from "@jj/contracts/legacy";
 import {
   type CheckDefinition,
   type CheckRecord,
@@ -23,7 +23,7 @@ import {
   spawnSessionSchema,
   steerTaskSchema,
   type TaskRecord,
-} from "@jj/contracts/backend";
+} from "@jj/contracts/legacy/backend";
 import type { BackendStore, StoreTx } from "@jj/db";
 import {
   type BotRouter,

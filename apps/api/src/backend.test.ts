@@ -4,8 +4,8 @@ import {
   type Task,
   type TaskEvent,
   taskViewSchema,
-} from "@jj/contracts";
-import type { SessionRecord, TaskRecord } from "@jj/contracts/backend";
+} from "@jj/contracts/legacy";
+import type { SessionRecord, TaskRecord } from "@jj/contracts/legacy/backend";
 import { type BackendStore, openStore } from "@jj/db";
 import {
   type ExecutorInput,

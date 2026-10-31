@@ -1,4 +1,4 @@
-import { taskViewSchema } from "@jj/contracts";
+import { taskViewSchema } from "@jj/contracts/legacy";
 import { describe, expect, it } from "vitest";
 import { toBotProfile, toTaskView } from "./liveMapping";
 
