@@ -40,6 +40,7 @@ Notion is consolidated context for teammates and future agents, not a transcript
 - Option B is selected: our own application infrastructure, CopilotKit OSS/AG-UI integration, and direct Google GenAI SDK execution. No ADK or OpenBot fork.
 - Read `docs/development.md` for commands, boundaries and scaffold limitations. Start with `npm ci`, then `npm run dev`; use `npm run lint` and `npm test` as the current baseline. Run broader checks only when relevant to changed behavior.
 - Shared schemas live in `packages/contracts`; coordinate changes there before implementing dependent API/UI/runtime work.
+  Record every contract change in [docs/contract-changelog.md](docs/contract-changelog.md) in the same change that edits the schemas, and bump `CONTRACT_VERSION`. Frontend and backend are built by different people and agents; an unrecorded contract change silently breaks the other side.
 - Keep model keys and tool execution server-side. Do not use browser-owned loops for autonomous work.
 - Keep tasks, bot personas, execution sessions and runs distinct. Visibility never implies activation. Require verification plans and evidence; a finished model turn is not a passed task.
 - Scaffold mode must remain explicit until real execution/persistence is implemented. Do not fake running agents, passing checks or successful persistence in product UI.

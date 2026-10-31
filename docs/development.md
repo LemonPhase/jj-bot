@@ -25,6 +25,10 @@ Open http://127.0.0.1:5173. API: http://127.0.0.1:3001. The worker starts in idl
 | `packages/runtime`   | Direct Google SDK factory and SessionExecutor interface; no execution loop yet                             |
 | `packages/db`        | PostgreSQL/Drizzle client factory; no schema/migrations yet                                                |
 
+Frontend (`apps/web`) and backend (`apps/api`, `apps/worker`, `packages/db`, `packages/runtime`) are
+owned by different people. `packages/contracts` is the boundary between them: record every change to it
+in [contract-changelog.md](contract-changelog.md) and bump `CONTRACT_VERSION`.
+
 Internal packages export TypeScript source. API/worker run with `tsx`; the initial `build` typechecks all packages and produces the web bundle. Production service bundling, authentication and deployment are follow-up work, not completed by this scaffold.
 
 ## Configuration

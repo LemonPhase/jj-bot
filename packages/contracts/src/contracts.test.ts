@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  createTaskCommandSchema,
+  postTaskMessageCommandSchema,
+  steerTaskCommandSchema,
   taskMessageSchema,
   taskSchema,
+  taskViewSchema,
   verificationResultSchema,
 } from "./index";
 
@@ -67,5 +71,69 @@ describe("JJ domain boundaries", () => {
       verificationResultSchema.safeParse({ ...result, outcome: "inconclusive" })
         .success,
     ).toBe(true);
+  });
+});
+
+describe("frontend command boundary", () => {
+  it("requires a verification plan and a participating coordinator to create a task", () => {
+    const command = {
+      goal: "Compare sources",
+      coordinatorBotId: "a",
+      participantBotIds: ["a", "b"],
+      verificationPlan: [criterion],
+    };
+    expect(createTaskCommandSchema.safeParse(command).success).toBe(true);
+    expect(
+      createTaskCommandSchema.safeParse({ ...command, verificationPlan: [] })
+        .success,
+    ).toBe(false);
+    expect(
+      createTaskCommandSchema.safeParse({
+        ...command,
+        coordinatorBotId: "outsider",
+      }).success,
+    ).toBe(false);
+  });
+  it("separates posting a message from steering the goal", () => {
+    expect(
+      postTaskMessageCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "For reference",
+        activateBotIds: [],
+      }).success,
+    ).toBe(true);
+    // Steering carries the version the user saw, so stale steering can be rejected.
+    expect(
+      steerTaskCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "Prioritise the primary source",
+        observedGoalVersion: 1,
+      }).success,
+    ).toBe(true);
+    expect(
+      steerTaskCommandSchema.safeParse({
+        taskId: "task-1",
+        text: "Prioritise the primary source",
+      }).success,
+    ).toBe(false);
+  });
+  it("carries a replay cursor so a reload can resume the same event stream", () => {
+    const view = {
+      task,
+      participants: [
+        { id: "a", name: "Atlas", instructions: "Coordinate" },
+        { id: "b", name: "Beacon", instructions: "Research" },
+        { id: "c", name: "Cinder", instructions: "Check" },
+      ],
+      messages: [],
+      sessions: [],
+      verificationResults: [],
+      events: [],
+      replayCursor: 0,
+    };
+    expect(taskViewSchema.safeParse(view).success).toBe(true);
+    expect(
+      taskViewSchema.safeParse({ ...view, replayCursor: -1 }).success,
+    ).toBe(false);
   });
 });

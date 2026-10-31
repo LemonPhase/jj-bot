@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const CONTRACT_VERSION = "0.1.0";
+export const CONTRACT_VERSION = "0.2.0";
 const id = z.string().min(1);
 export const verificationCriterionSchema = z.object({
   id,
@@ -126,6 +126,53 @@ export const verificationResultSchema = z
       });
     }
   });
+// Commands the frontend sends. Each is a separate authority: posting a message is not
+// permission to execute, and only steering may advance the goal version.
+export const createTaskCommandSchema = z
+  .object({
+    goal: z.string().min(1),
+    coordinatorBotId: id,
+    participantBotIds: z.array(id).min(1),
+    verificationPlan: verificationPlanSchema,
+  })
+  .superRefine((command, context) => {
+    if (!command.participantBotIds.includes(command.coordinatorBotId)) {
+      context.addIssue({
+        code: "custom",
+        path: ["coordinatorBotId"],
+        message: "The coordinator must participate in the task.",
+      });
+    }
+  });
+export const postTaskMessageCommandSchema = z.object({
+  taskId: id,
+  text: z.string().min(1),
+  // Explicit: an empty list shares the message without activating any bot.
+  activateBotIds: z.array(id),
+});
+export const steerTaskCommandSchema = z.object({
+  taskId: id,
+  text: z.string().min(1),
+  // The goal version the user was looking at, so the backend can reject stale steering.
+  observedGoalVersion: z.number().int().positive(),
+  // Present only when the user is replacing the goal, which bumps the goal version.
+  replacementGoal: z.string().min(1).optional(),
+});
+export const stopTaskCommandSchema = z.object({
+  taskId: id,
+  reason: z.string().min(1),
+});
+// One read model behind both the task chat and the collaboration view, so they cannot disagree.
+export const taskViewSchema = z.object({
+  task: taskSchema,
+  participants: z.array(botSchema),
+  messages: z.array(taskMessageSchema),
+  sessions: z.array(executionSessionSchema),
+  verificationResults: z.array(verificationResultSchema),
+  events: z.array(taskEventSchema),
+  // Highest event sequence included here; resume a stream from it after a reload.
+  replayCursor: z.number().int().nonnegative(),
+});
 export const bootstrapSchema = z.object({
   mode: z.literal("scaffold"),
   contractVersion: z.string(),
@@ -145,3 +192,10 @@ export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type TaskEvent = z.infer<typeof taskEventSchema>;
 export type VerificationResult = z.infer<typeof verificationResultSchema>;
 export type Bootstrap = z.infer<typeof bootstrapSchema>;
+export type CreateTaskCommand = z.infer<typeof createTaskCommandSchema>;
+export type PostTaskMessageCommand = z.infer<
+  typeof postTaskMessageCommandSchema
+>;
+export type SteerTaskCommand = z.infer<typeof steerTaskCommandSchema>;
+export type StopTaskCommand = z.infer<typeof stopTaskCommandSchema>;
+export type TaskView = z.infer<typeof taskViewSchema>;

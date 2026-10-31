@@ -427,6 +427,295 @@ h2 {
   margin: 0;
   text-align: right;
 }
+/* Bot roster (task 05) */
+.roster-panel {
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 27px 30px;
+}
+.roster {
+  list-style: none;
+  margin: 22px 0;
+  padding: 0;
+}
+.roster > li {
+  display: flex;
+  gap: 16px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+.roster-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  height: 34px;
+  background: var(--accent);
+  color: var(--ink);
+  border-radius: 5px;
+  font-weight: 700;
+  font-size: 14px;
+}
+.roster h3 {
+  margin: 0 0 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.roster p {
+  margin: 0 0 7px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+/* Task workspace and group chat (task 05) */
+.task-workspace {
+  display: grid;
+  gap: 18px;
+}
+.task-switcher {
+  display: grid;
+  gap: 9px;
+}
+.task-tab {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  text-align: left;
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 13px 15px;
+  font-size: 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.task-tab:hover {
+  border-color: #b9c7ad;
+}
+.task-tab.active {
+  border-color: var(--ink);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.task-status {
+  flex: 0 0 auto;
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background: #e7edda;
+  color: #4a6047;
+}
+.status-running {
+  background: #dce9f3;
+  color: #2f5872;
+}
+.status-failed,
+.status-cancelled {
+  background: #f4dcdc;
+  color: #7b3636;
+}
+.task-chat {
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 27px 30px;
+}
+.task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+}
+.task-head h2 {
+  margin: 7px 0;
+  max-width: 54ch;
+}
+.task-meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.stop-control {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  max-width: 32ch;
+  text-align: right;
+}
+.stop-button {
+  flex: 0 0 auto;
+  background: #fffef9;
+  color: #7b3636;
+  border: 1px solid #e0c3c3;
+  border-radius: 4px;
+  padding: 10px 15px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.stop-button:hover:not(:disabled) {
+  background: #fbf2f2;
+}
+.stop-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.fixture-flag,
+.stale-flag {
+  margin: 18px 0 0;
+  padding: 10px 13px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.6;
+  background: #f3f0e4;
+  color: #6c6244;
+  border: 1px dashed #d6cdae;
+}
+.stale-flag {
+  background: #f6f1e2;
+  color: #7a6322;
+  border-style: solid;
+  border-color: #e3d4a4;
+}
+
+/* Transcript */
+.transcript {
+  list-style: none;
+  margin: 22px 0;
+  padding: 0;
+  display: grid;
+  gap: 14px;
+}
+.message {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+  background: #fffef9;
+}
+.message.kind-user {
+  background: #f7f9f0;
+  border-color: #dfe6d2;
+}
+.message.unsent {
+  border-style: dashed;
+  border-color: #e0c3c3;
+  background: #fdf7f7;
+}
+.message-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+.message-head strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+.message p {
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 1.75;
+}
+.intent {
+  font-size: 8px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: #eceee6;
+  color: #5c6659;
+}
+.intent-assignment {
+  background: #e4ecda;
+  color: #4a6047;
+}
+.intent-steering {
+  background: #e8e2f3;
+  color: #58457b;
+}
+.intent-result {
+  background: #dce9f3;
+  color: #2f5872;
+}
+.intent-unsent {
+  background: #f4dcdc;
+  color: #7b3636;
+}
+.activation {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Composer */
+.composer {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex-wrap: wrap;
+}
+.composer select,
+.composer textarea {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: #fffef9;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 9px 11px;
+}
+.composer select {
+  flex: 1 1 320px;
+}
+.composer textarea {
+  resize: vertical;
+  line-height: 1.7;
+}
+.composer select:focus-visible,
+.composer textarea:focus-visible {
+  outline: 3px solid #91ac4c;
+  outline-offset: 2px;
+}
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.composer-actions button {
+  background: var(--ink);
+  color: #edf4df;
+  border: 0;
+  border-radius: 4px;
+  padding: 12px 17px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.composer-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.command-error,
+.command-ok {
+  font-size: 11px;
+  line-height: 1.6;
+}
+.command-error {
+  color: #7b3636;
+}
+.command-ok {
+  color: #3f6340;
+}
+
 @media (min-width: 1500px) {
   .content {
     padding-top: 65px;
@@ -540,6 +829,22 @@ h2 {
   }
   .badge {
     font-size: 7px;
+  }
+  .task-chat,
+  .roster-panel {
+    padding: 20px 18px;
+  }
+  .task-head {
+    flex-direction: column;
+  }
+  .stop-control {
+    max-width: none;
+    justify-items: stretch;
+    text-align: left;
+    width: 100%;
+  }
+  .composer select {
+    flex-basis: 100%;
   }
 }
 @media (prefers-reduced-motion: reduce) {

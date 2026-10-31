@@ -1,15 +1,24 @@
 import { type Bootstrap, bootstrapSchema } from "@jj/contracts";
 import { useEffect, useState } from "react";
+import { FIXTURE_NOTICE, fixtureTaskViews } from "./fixtures";
+import { TaskChat } from "./TaskChat";
 
 const sections = ["Overview", "Bots", "Tasks", "Runtime"] as const;
 type Section = (typeof sections)[number];
 const notion = "https://app.notion.com/p/44ef1321420182e4acb781ba075ad9b0";
+
+const taskCount = (botId: string) =>
+  fixtureTaskViews.filter((view) => view.task.participantBotIds.includes(botId))
+    .length;
 
 export function App() {
   const [section, setSection] = useState<Section>("Overview");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [selectedTaskId, setSelectedTaskId] = useState(
+    fixtureTaskViews[0].task.id,
+  );
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
@@ -244,29 +253,75 @@ export function App() {
               </dl>
               <p>No model calls or background tasks run in this scaffold.</p>
             </section>
-          ) : (
-            <section className="foundation empty">
-              <span className="empty-symbol" aria-hidden="true">
-                {section === "Bots" ? "◎" : "⌘"}
-              </span>
-              <h2>
-                {section === "Bots"
-                  ? "No bots configured yet."
-                  : "No tasks created yet."}
-              </h2>
-              <p>
-                {section === "Bots"
-                  ? "Bot creation and persistence are a dedicated follow-up workstream."
-                  : "Task creation, group chat, and execution sessions will connect here."}
+          ) : section === "Bots" ? (
+            <section className="roster-panel" aria-label="Bots">
+              <div className="panel-heading">
+                <h2>Three bots, shared across tasks.</h2>
+                <span className="badge">FIXTURE</span>
+              </div>
+              <p className="fixture-flag" role="note">
+                {bootstrap && bootstrap.bots.length === 0
+                  ? `${FIXTURE_NOTICE}. The API reports no persisted bots.`
+                  : FIXTURE_NOTICE}
               </p>
+              <ul className="roster">
+                {fixtureTaskViews[0].participants.map((bot) => (
+                  <li key={bot.id}>
+                    <span className="roster-mark" aria-hidden="true">
+                      {bot.name.slice(0, 1)}
+                    </span>
+                    <div>
+                      <h3>{bot.name}</h3>
+                      <p>{bot.instructions}</p>
+                      <span className="activation">
+                        In {taskCount(bot.id)}{" "}
+                        {taskCount(bot.id) === 1 ? "task" : "tasks"} · no memory
+                        persisted yet
+                      </span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
               <a
                 className="context-button"
                 href={notion}
                 target="_blank"
                 rel="noreferrer"
               >
-                Choose a workstream in Notion ↗
+                Bot creation is task 05 in Notion ↗
               </a>
+            </section>
+          ) : (
+            <section className="task-workspace" aria-label="Tasks">
+              <nav className="task-switcher" aria-label="Select a task">
+                {fixtureTaskViews.map((view) => (
+                  <button
+                    key={view.task.id}
+                    type="button"
+                    className={
+                      view.task.id === selectedTaskId
+                        ? "task-tab active"
+                        : "task-tab"
+                    }
+                    aria-current={
+                      view.task.id === selectedTaskId ? "true" : undefined
+                    }
+                    onClick={() => setSelectedTaskId(view.task.id)}
+                  >
+                    <span className={`task-status status-${view.task.status}`}>
+                      {view.task.status}
+                    </span>
+                    {view.task.goal}
+                  </button>
+                ))}
+              </nav>
+              <TaskChat
+                view={
+                  fixtureTaskViews.find(
+                    (view) => view.task.id === selectedTaskId,
+                  ) ?? fixtureTaskViews[0]
+                }
+              />
             </section>
           )}
           <footer className="page-footer">
