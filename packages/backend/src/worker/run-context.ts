@@ -271,7 +271,9 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
           tx,
           rc,
           output,
-          `${event.tool} output: ${event.summary}`,
+          event.summary.trim()
+            ? `${event.tool} output: ${event.summary}`
+            : `${event.tool} output`,
         );
         output = truncateUtf8(output, cap);
         truncated = true;

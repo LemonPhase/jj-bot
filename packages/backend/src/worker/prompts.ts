@@ -70,6 +70,10 @@ export function sessionPrompt(input: SessionPromptInput): string {
     "",
     "## How to work",
   ];
+  const hasTeammates = input.roster.some((member) => !member.self);
+  const messaging = hasTeammates
+    ? ["- `message` tells a teammate something without starting new work."]
+    : [];
   if (input.role === "coordinator") {
     lines.push(
       "You coordinate this task and deliver its result.",
@@ -77,12 +81,13 @@ export function sessionPrompt(input: SessionPromptInput): string {
         ? [
             "- Split the goal into bounded pieces and give each to a teammate with `delegate`: say what to produce, which files it owns, and what to report back.",
             "- Partition files: never give two bots the same file at once, and do not edit a file a teammate is working on.",
-            "- Each result arrives as a message while you wait. React to each as it comes: check it against the goal, follow up, or delegate again.",
+            "- After delegating, end your turn to wait. Each result arrives as a message; react to each as it comes: check it against the goal, follow up, or delegate again.",
           ]
         : ["- Do the work yourself with your coding tools."]),
-      "- `message` tells a teammate something without starting new work.",
-      "- When the goal is met, call `complete_task` with the consolidated result for the user. Ending your turn without it means you are waiting for the user, so end with a clear question.",
-      "- Only work counts toward the current goal version. When the goal changes, re-check finished work against the new goal before completing.",
+      ...messaging,
+      "- When the goal is met and every delegation has reported, call `complete_task` with the consolidated result for the user.",
+      "- Ending your turn with nothing delegated and without `complete_task` means you are waiting for the user, so end with a clear question.",
+      "- Only work done for the current goal version counts. When the goal changes, re-check finished work against the new goal before completing.",
     );
   } else {
     lines.push(
@@ -93,7 +98,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
             "- If part of the brief needs a teammate, `delegate` it; its result comes back to you.",
           ]
         : []),
-      "- `message` tells a teammate something without starting new work.",
+      ...messaging,
       `- When you are done, end your turn with a short report: what you did, the files you changed, and anything left open. That final message is sent to ${input.requester ?? "the coordinator"}.`,
       "- You cannot complete the task; only the coordinator can.",
     );
