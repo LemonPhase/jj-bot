@@ -1,0 +1,32 @@
+/* Pixel sprites and pixel icons (SPEC §0, §8). Identical in both themes. */
+.ui-sprite {
+  display: block;
+  flex: none;
+  shape-rendering: crispEdges;
+  image-rendering: pixelated;
+}
+
+/* Working mood: SPEC `bob`, 50% translateY(-2px), 1.1s steps(2, end). */
+.ui-sprite--bob {
+  animation: ui-bob var(--anim-bob);
+}
+
+@keyframes ui-bob {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-sprite--bob {
+    animation: none;
+  }
+}
+
+/* Progress-list sprites sit on a ground tile so they mask the rail. */
+.ui-sprite-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  background: var(--bg-app);
+}
