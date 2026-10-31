@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONTRACT_VERSION,
+  createTaskCommandSchema,
+  postTaskMessageCommandSchema,
+  steerTaskCommandSchema,
+  stopTaskCommandSchema,
   taskMessageSchema,
   taskSchema,
+  taskViewSchema,
   verificationResultSchema,
 } from "./index";
 
@@ -66,6 +72,45 @@ describe("JJ domain boundaries", () => {
     expect(
       verificationResultSchema.safeParse({ ...result, outcome: "inconclusive" })
         .success,
+    ).toBe(true);
+  });
+  it("validates 0.2.0 command and taskView schemas", () => {
+    expect(CONTRACT_VERSION).toBe("0.2.0");
+    expect(
+      createTaskCommandSchema.safeParse({
+        goal: "Compare sources",
+        coordinatorBotId: "a",
+        participantBotIds: ["a", "b"],
+        verificationPlan: [criterion],
+      }).success,
+    ).toBe(true);
+    expect(
+      postTaskMessageCommandSchema.parse({
+        text: "Shared note",
+      }).activateBotIds,
+    ).toEqual([]);
+    expect(
+      steerTaskCommandSchema.safeParse({
+        text: "Focus on primary sources",
+        observedGoalVersion: 1,
+      }).success,
+    ).toBe(true);
+    expect(
+      stopTaskCommandSchema.safeParse({
+        reason: "User requested stop",
+      }).success,
+    ).toBe(true);
+    expect(
+      taskViewSchema.safeParse({
+        task,
+        bots: [{ id: "a", name: "Alpha", instructions: "Lead" }],
+        participants: [{ id: "a", name: "Alpha", instructions: "Lead" }],
+        sessions: [],
+        messages: [],
+        checks: [],
+        events: [],
+        replayCursor: 0,
+      }).success,
     ).toBe(true);
   });
 });

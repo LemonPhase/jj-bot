@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: jj_local
       POSTGRES_DB: jj_bot
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${JJ_POSTGRES_PORT:-5433}:5432"
     volumes:
       - jj_postgres:/var/lib/postgresql/data
     healthcheck:

@@ -15,6 +15,9 @@
     "@copilotkit/runtime": "1.83.0",
     "@ag-ui/client": "1.0.2",
     "@ag-ui/core": "1.0.2",
-    "hono": "4.13.14"
+    "hono": "4.13.14",
+    "@jj/backend": "*",
+    "@jj/db": "*",
+    "zod": "4.6.7"
   }
 }
