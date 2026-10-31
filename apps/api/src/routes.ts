@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BackendError, type BackendService } from "@jj/backend";
-import { z } from "@jj/contracts";
+import { z } from "@jj/contracts/legacy";
 import {
   botTurnCommandSchema,
   createBotSchema,
@@ -9,7 +9,7 @@ import {
   spawnSessionSchema,
   steerTaskSchema,
   stopTaskSchema,
-} from "@jj/contracts/backend";
+} from "@jj/contracts/legacy/backend";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 

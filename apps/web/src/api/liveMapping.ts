@@ -7,7 +7,7 @@ import type {
   TaskView as ContractTaskView,
   ExecutionSession,
   TaskEvent,
-} from "@jj/contracts";
+} from "@jj/contracts/legacy";
 import {
   BOT_COLORS,
   BOT_GLYPHS,

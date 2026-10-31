@@ -1,4 +1,4 @@
-import type { Bot, ExecutionSession } from "@jj/contracts";
+import type { Bot, ExecutionSession } from "@jj/contracts/legacy";
 import { describe, expect, it, vi } from "vitest";
 import {
   GeminiSessionExecutor,

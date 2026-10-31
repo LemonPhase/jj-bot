@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
-import type { TaskEvent } from "@jj/contracts";
+import type { TaskEvent } from "@jj/contracts/legacy";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
