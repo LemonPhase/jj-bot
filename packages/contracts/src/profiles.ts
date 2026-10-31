@@ -1,5 +1,6 @@
 import {
   type DriverCapabilities,
+  networkModeSchema,
   sandboxLimitsSchema,
   sandboxSpecSchema,
 } from "@jj/sandbox/contract";
@@ -14,7 +15,9 @@ import {
 
 // The sandbox spec is owned by the driver contract; it is re-exported, never redefined.
 export {
+  type NetworkMode,
   type NetworkPolicy,
+  networkModeSchema,
   networkPolicySchema,
   type ResourceLimits,
   resourceLimitsSchema,
@@ -154,7 +157,8 @@ export const updateRuntimeProfileCommandSchema =
   );
 
 export const driverCapabilitiesSchema = z.object({
-  networkPolicy: z.boolean(),
+  /** Network modes the driver can enforce; a spec asking for another mode is refused. */
+  networkModes: z.array(networkModeSchema),
   resourceLimits: z.boolean(),
   filesystemIsolation: z.boolean(),
   exposePort: z.boolean(),
