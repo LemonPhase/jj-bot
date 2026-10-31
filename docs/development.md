@@ -45,6 +45,7 @@ Internal packages export TypeScript source. API/worker run with `tsx`; `build` t
 | `JJ_EMBED_WORKER`  | `true` (default) runs the scheduler inside the API; `false` requires the separate worker.   |
 | `JJ_CONCURRENCY`   | Concurrent execution sessions and claimed jobs, default `3`.                                |
 | `JJ_POSTGRES_PORT` | Host port for the compose PostgreSQL service, default `5433`.                               |
+| `JJ_SANDBOX_ROOT`  | `local` sandbox workspace root, default `<os.tmpdir()>/jj-sandbox`; the operator clears it. |
 | `API_TOKEN`        | Optional bearer token required on `/api/*` when set.                                        |
 | `GEMINI_API_KEY`   | Server-only Google GenAI key. Never expose it to the browser.                               |
 | `GEMINI_MODEL`     | Exact model id used for sessions; validate access before relying on it.                     |
