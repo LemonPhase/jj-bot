@@ -247,4 +247,59 @@ describe("deterministic verification", () => {
         .outcome,
     ).toBe("passed");
   });
+  it("separates verification calls from the work step budget", async () => {
+    const criteria = Array.from({ length: 10 }, (_, index) => ({
+      id: `criterion-${index}`,
+      description: "A criterion",
+      method: "review",
+      expectedEvidence: "Evidence",
+    }));
+    const executor = new GeminiSessionExecutor({
+      apiKey: "test",
+      model: "test-model",
+      client: {
+        create: async () => ({
+          status: "completed",
+          output_text: "candidate",
+          steps: [],
+        }),
+      },
+    });
+    const result = await executor.execute({
+      session: { ...session, verificationPlan: criteria },
+      bot,
+      context: "",
+      signal: new AbortController().signal,
+      emit: async () => {},
+      checks: [],
+    });
+    expect(result.checks).toHaveLength(10);
+    expect(
+      result.checks.every((check) => check.outcome === "inconclusive"),
+    ).toBe(true);
+  }, 20_000);
+  it("retries transient provider failures", async () => {
+    let calls = 0;
+    const executor = new GeminiSessionExecutor({
+      apiKey: "test",
+      model: "test-model",
+      client: {
+        create: async () => {
+          calls += 1;
+          if (calls === 1) throw new Error("503 Service Unavailable");
+          return { status: "completed", output_text: "done", steps: [] };
+        },
+      },
+    });
+    const result = await executor.execute({
+      session,
+      bot,
+      context: "",
+      signal: new AbortController().signal,
+      emit: async () => {},
+      checks: [{ id: "answer", kind: "contains", value: "done" }],
+    });
+    expect(calls).toBe(2);
+    expect(result.summary).toBe("done");
+  }, 20_000);
 });

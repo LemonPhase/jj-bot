@@ -6,6 +6,7 @@ import {
   taskSchema,
 } from "@jj/contracts";
 import {
+  type CheckDefinition,
   type CheckRecord,
   type ConversationMessage,
   type CreateBotInput,
@@ -92,6 +93,34 @@ export class BackendService {
     task.updatedAt = now();
     await tx.put("tasks", task.id, task);
   }
+  private assertPlan(
+    plan: TaskRecord["verificationPlan"],
+    checks: CheckDefinition[] | undefined,
+  ) {
+    if (plan.length < 1 || plan.length > 32)
+      throw new BackendError(
+        400,
+        "INVALID_VERIFICATION_PLAN",
+        "A task requires between 1 and 32 verification criteria",
+      );
+    const ids = new Set<string>();
+    for (const criterion of plan) {
+      if (ids.has(criterion.id))
+        throw new BackendError(
+          400,
+          "INVALID_VERIFICATION_PLAN",
+          "Verification criteria must have unique ids",
+        );
+      ids.add(criterion.id);
+    }
+    for (const check of checks ?? [])
+      if (!ids.has(check.id))
+        throw new BackendError(
+          400,
+          "INVALID_CHECK",
+          "Every check must reference a verification criterion",
+        );
+  }
 
   async createBot(input: CreateBotInput): Promise<Bot> {
     const bot = { ...createBotSchema.parse(input), id: randomUUID() };
@@ -150,6 +179,7 @@ export class BackendService {
 
   async createTask(input: CreateTaskInput): Promise<TaskRecord> {
     const parsed = createTaskSchema.parse(input);
+    this.assertPlan(parsed.verificationPlan, parsed.checks);
     return this.store.transaction(async (tx) => {
       for (const botId of parsed.participantBotIds)
         await this.requireBot(tx, botId);
@@ -211,11 +241,11 @@ export class BackendService {
           .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "")),
         checks,
         verificationResults: checks,
+        events: await tx.events(id),
       };
     });
-    const events = await this.store.events(id);
-    const replayCursor = events.at(-1)?.sequence ?? 0;
-    return { ...snapshot, events, replayCursor };
+    const replayCursor = snapshot.events.at(-1)?.sequence ?? 0;
+    return { ...snapshot, replayCursor };
   }
   getTaskView(id: string) {
     return this.snapshot(id);
@@ -249,7 +279,11 @@ export class BackendService {
     const taskSessions = (await tx.list<SessionRecord>("sessions")).filter(
       (item) => item.taskId === task.id,
     );
-    if (taskSessions.length >= this.maxSessions)
+    // Superseded sessions must not permanently consume the budget.
+    const liveSessions = taskSessions.filter(
+      (item) => item.status !== "cancelled",
+    );
+    if (liveSessions.length >= this.maxSessions)
       throw new BackendError(
         409,
         "SESSION_BUDGET",
@@ -297,6 +331,7 @@ export class BackendService {
     input: SpawnSessionInput,
   ): Promise<SessionRecord> {
     const parsed = spawnSessionSchema.parse(input);
+    this.assertPlan(parsed.verificationPlan, parsed.checks);
     return this.store.transaction(async (tx) => {
       const task = await this.requireTask(tx, taskId);
       if (task.status === "cancelled")
@@ -426,9 +461,17 @@ export class BackendService {
       task.goalVersion += 1;
       const nextGoal = parsed.replacementGoal ?? parsed.goal;
       if (nextGoal) task.goal = nextGoal;
-      if (parsed.verificationPlan)
-        task.verificationPlan = parsed.verificationPlan;
-      if (parsed.checks) task.checks = parsed.checks;
+      const nextPlan = parsed.verificationPlan ?? task.verificationPlan;
+      const nextChecks =
+        parsed.checks ??
+        (parsed.verificationPlan
+          ? task.checks?.filter((check) =>
+              nextPlan.some((criterion) => criterion.id === check.id),
+            )
+          : task.checks);
+      this.assertPlan(nextPlan, nextChecks);
+      task.verificationPlan = nextPlan;
+      task.checks = nextChecks;
       task.status = "running";
       task.result = undefined;
       await this.cancelJobs(tx, task.id, "Superseded by user steering");
@@ -699,6 +742,7 @@ export class BackendService {
     const controller = new AbortController();
     this.active.set(key, controller);
     let heartbeatBusy = false;
+    let heartbeatFailures = 0;
     const heartbeat = setInterval(
       () => {
         if (heartbeatBusy) return;
@@ -712,7 +756,14 @@ export class BackendService {
             job.leaseUntil = Date.now() + this.leaseMs;
             await tx.put("jobs", job.id, job);
           })
-          .catch(() => controller.abort())
+          .then(() => {
+            heartbeatFailures = 0;
+          })
+          .catch(() => {
+            // A transient store error must not discard a running session immediately.
+            heartbeatFailures += 1;
+            if (heartbeatFailures >= 2) controller.abort();
+          })
           .finally(() => {
             heartbeatBusy = false;
           });
@@ -972,30 +1023,59 @@ export class BackendService {
   async tick(): Promise<number> {
     if (this.stopped || this.ticking) return 0;
     this.ticking = true;
+    let started = 0;
     try {
-      const jobs: Promise<unknown>[] = [];
-      const available = Math.max(0, this.concurrency - this.active.size);
-      for (let index = 0; index < available; index += 1) {
-        const claim = await this.claim();
-        if (!claim) break;
-        const promise = this.executeClaim(claim);
-        this.pending.add(promise);
-        void promise.finally(() => this.pending.delete(promise));
-        jobs.push(promise);
+      const running = new Set<Promise<void>>();
+      const start = (
+        claim: NonNullable<Awaited<ReturnType<BackendService["claim"]>>>,
+      ) => {
+        started += 1;
+        const run = (async () => {
+          try {
+            await this.executeClaim(claim);
+          } catch (error) {
+            // Never let one failing execution abort the scheduler or crash the process.
+            console.error(
+              "Task execution failed",
+              error instanceof Error ? error.message : error,
+            );
+          }
+        })();
+        running.add(run);
+        this.pending.add(run);
+        void run.then(() => {
+          running.delete(run);
+          this.pending.delete(run);
+        });
+      };
+      for (;;) {
+        // Refill freed slots instead of waiting for the whole batch to finish.
+        while (!this.stopped && running.size < this.concurrency) {
+          const claim = await this.claim();
+          if (!claim) break;
+          start(claim);
+        }
+        if (!running.size) break;
+        await Promise.race(running);
       }
-      await Promise.all(jobs);
-      return jobs.length;
+      return started;
     } finally {
       this.ticking = false;
     }
+  }
+  private reportTickError(error: unknown) {
+    console.error(
+      "Scheduler tick failed",
+      error instanceof Error ? error.message : error,
+    );
   }
   start(intervalMs = 250) {
     if (this.timer) return;
     this.stopped = false;
     this.timer = setInterval(() => {
-      void this.tick().catch(() => {});
+      void this.tick().catch((error) => this.reportTickError(error));
     }, intervalMs);
-    void this.tick().catch(() => {});
+    void this.tick().catch((error) => this.reportTickError(error));
   }
   async stop() {
     this.stopped = true;

@@ -20,6 +20,7 @@ export interface StoreTx {
   appendEvent(
     input: Omit<TaskEvent, "id" | "sequence" | "occurredAt">,
   ): Promise<TaskEvent>;
+  events(taskId: string, after?: number): Promise<TaskEvent[]>;
 }
 
 export interface BackendStore {
@@ -119,6 +120,15 @@ function makeTx(query: Query, readOnly: boolean) {
         [event.taskId, event.sequence, JSON.stringify(event)],
       );
       return event;
+    },
+    async events(taskId, after = 0) {
+      check();
+      validateCursor(after);
+      const result = await query<{ value: TaskEvent }>(
+        "SELECT value FROM jj_events WHERE task_id = $1 AND sequence > $2 ORDER BY sequence",
+        [taskId, after],
+      );
+      return result.rows.map((row) => row.value);
     },
   };
   return {
