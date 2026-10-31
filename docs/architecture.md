@@ -16,7 +16,7 @@ A self-hosted install embeds the worker in the API process. A server deployment 
 
 ## Execution model
 
-Each execution session runs one pi agent (`@earendil-works/pi-coding-agent`) inside the worker. Its tools — bash, read, edit, write and search — are bound to a sandbox through pi's pluggable tool operations, so the loop stays in the worker while every command and file access happens in the sandbox. Model credentials and provider calls therefore never enter agent-run code.
+Each execution session runs one pi agent (`@earendil-works/pi-coding-agent`) inside the worker. Its tools — bash, read, edit, write and search — are bound to a sandbox, so the loop stays in the worker while every command and file access happens in the sandbox. read, edit, write, ls and find use pi's pluggable tool operations; bash and grep are JJ tools over the sandbox's command execution, because pi's versions pass the host environment, write host temp files or spawn host binaries. Model credentials and provider calls therefore never enter agent-run code.
 
 pi supplies the agent loop, the coding tools, context compaction, mid-run steering and the multi-provider model registry. JJ Bot supplies identity, durability, scheduling, collaboration and the event log. pi is reached only through the `SessionExecutor` interface, so the runtime can be upgraded or replaced without touching orchestration.
 
