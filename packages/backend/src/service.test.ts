@@ -509,4 +509,78 @@ describe("durable task coordination", () => {
     ).rejects.toThrow("goalVersion");
     expect((await service.getTask(task.id)).goalVersion).toBe(1);
   });
+  it("reuses a freed slot instead of waiting for the whole batch", async () => {
+    const gates = [deferred(), deferred(), deferred()];
+    let calls = 0;
+    const { service, bots } = await setup(
+      async (input) => {
+        const index = calls;
+        calls += 1;
+        await gates[index]?.promise;
+        return passed(input);
+      },
+      { concurrency: 2 },
+    );
+    const task = await service.createTask({
+      ...inputFor(bots),
+      participantBotIds: [bots[0]!.id, bots[1]!.id],
+    });
+    const running = service.tick();
+    await until(() => calls === 2);
+    await service.spawnSession(task.id, {
+      botId: bots[0]!.id,
+      brief: "Extra work",
+      verificationPlan: plan,
+    });
+    gates[0]!.resolve();
+    await until(() => calls === 3);
+    gates[1]!.resolve();
+    gates[2]!.resolve();
+    await running;
+    await drain(service);
+    expect((await service.snapshot(task.id)).task.status).toBe("completed");
+  }, 20_000);
+  it("keeps steering available after superseded sessions", async () => {
+    const { service, bots } = await setup(undefined, { maxSessions: 6 });
+    const task = await service.createTask({
+      ...inputFor(bots),
+      participantBotIds: [bots[0]!.id, bots[1]!.id],
+      autoStart: false,
+    });
+    for (let index = 0; index < 5; index += 1)
+      await service.steer(task.id, { text: `change ${index}` });
+    const snapshot = await service.snapshot(task.id);
+    expect(
+      snapshot.sessions.filter((session) => session.status !== "cancelled"),
+    ).toHaveLength(2);
+    expect(snapshot.sessions.length).toBeGreaterThan(6);
+  }, 20_000);
+  it("rejects invalid verification plans before execution", async () => {
+    const { service, bots } = await setup();
+    const tooMany = Array.from({ length: 33 }, (_, index) => ({
+      id: `criterion-${index}`,
+      description: "A criterion",
+      method: "review",
+      expectedEvidence: "Evidence",
+    }));
+    await expect(
+      service.createTask({
+        ...inputFor(bots),
+        verificationPlan: tooMany,
+        checks: [],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_VERIFICATION_PLAN" });
+    await expect(
+      service.createTask({
+        ...inputFor(bots),
+        verificationPlan: [plan[0]!, plan[0]!],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_VERIFICATION_PLAN" });
+    await expect(
+      service.createTask({
+        ...inputFor(bots),
+        checks: [{ id: "missing", kind: "contains", value: "x" }],
+      }),
+    ).rejects.toMatchObject({ code: "INVALID_CHECK" });
+  });
 });

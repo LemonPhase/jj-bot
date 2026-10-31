@@ -26,4 +26,12 @@ describe("scaffold readiness", () => {
     expect(body).toContain("SCAFFOLD_NOT_IMPLEMENTED");
     expect(body).not.toContain("RUN_FINISHED");
   });
+  it("rejects oversized request bodies", async () => {
+    const response = await app.request("/api/bots", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x".repeat(1024 * 1024 + 1) }),
+    });
+    expect(response.status).toBe(413);
+  });
 });

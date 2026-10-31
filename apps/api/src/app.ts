@@ -1,9 +1,11 @@
+import { timingSafeEqual } from "node:crypto";
 import { HttpAgent } from "@ag-ui/client";
 import { CopilotRuntime } from "@copilotkit/runtime/v2";
 import { createCopilotHonoHandler } from "@copilotkit/runtime/v2/hono";
 import type { BackendService } from "@jj/backend";
 import { bootstrapSchema, CONTRACT_VERSION } from "@jj/contracts";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { backendRoutes, createAgentTask } from "./routes";
 
@@ -16,12 +18,25 @@ export interface AppConfig {
 export function createApp(config: AppConfig) {
   const app = new Hono();
   const service = config.service;
-  if (config.apiToken)
+  if (config.apiToken) {
+    const expected = Buffer.from(`Bearer ${config.apiToken}`);
     app.use("/api/*", async (c, next) => {
-      if (c.req.header("Authorization") !== `Bearer ${config.apiToken}`)
+      const provided = Buffer.from(c.req.header("Authorization") ?? "");
+      if (
+        provided.length !== expected.length ||
+        !timingSafeEqual(provided, expected)
+      )
         return c.json({ error: "UNAUTHORIZED" }, 401);
       await next();
     });
+  }
+  app.use(
+    "/api/*",
+    bodyLimit({
+      maxSize: 1024 * 1024,
+      onError: (c) => c.json({ error: "PAYLOAD_TOO_LARGE" }, 413),
+    }),
+  );
   const runtime = new CopilotRuntime({
     agents: {
       jj: new HttpAgent({
