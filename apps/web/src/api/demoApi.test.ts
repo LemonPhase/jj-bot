@@ -31,6 +31,7 @@ describe("demo API placeholder", () => {
     const task = await api.postTaskMessage("task-101", {
       text: "Keep the schema",
       steering: true,
+      observedGoalVersion: 2,
     });
     expect(task.goalVersion).toBe(3);
     expect(task.checks.every((c) => c.outcome === "inconclusive")).toBe(true);

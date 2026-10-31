@@ -53,6 +53,13 @@ export function createDemoApi(): JJApi {
 
   return {
     mode: "demo",
+    badge: {
+      label: "Demo data",
+      tone: "demo",
+      title:
+        "The API backend isn't reachable, so the UI is running on local demo data. Nothing is sent to bots.",
+    },
+    capabilities: { editBotIdentity: true },
 
     async listBots() {
       return clone(bots);
@@ -99,6 +106,14 @@ export function createDemoApi(): JJApi {
         },
       );
       return clone(thread);
+    },
+
+    subscribeToConversation() {
+      return () => {};
+    },
+
+    subscribeToTasks() {
+      return () => {};
     },
 
     async listTasks() {

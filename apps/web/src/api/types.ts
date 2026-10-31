@@ -124,4 +124,6 @@ export interface TaskMessageInput {
   text: string;
   /** Steering bumps the goal version and refreshes verification. */
   steering: boolean;
+  /** Goal version the user was looking at; the backend rejects stale steering. */
+  observedGoalVersion: number;
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useApi } from "../../api/ApiContext";
 import { BOT_COLORS, BOT_GLYPHS, type BotProfile } from "../../api/types";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
@@ -7,6 +8,10 @@ import { StatusDot } from "../common/StatusDot";
 /** Bot settings. Mount with `key={bot.id}` so drafts reset per bot. */
 export function BotInspector({ bot }: { bot: BotProfile }) {
   const { tasks, updateBot, jumpToTask } = useWorkspace();
+  const canEditIdentity = useApi().capabilities.editBotIdentity;
+  const readOnlyTitle = canEditIdentity
+    ? undefined
+    : "Editing name and instructions isn't supported by the backend yet";
   const [name, setName] = useState(bot.name);
   const [instructions, setInstructions] = useState(bot.instructions);
   const [memory, setMemory] = useState(bot.memory);
@@ -26,6 +31,8 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
           type="text"
           className="profile-name-input"
           value={name}
+          readOnly={!canEditIdentity}
+          title={readOnlyTitle}
           aria-label="Bot name"
           onChange={(event) => setName(event.target.value)}
           onBlur={commitName}
@@ -70,6 +77,8 @@ export function BotInspector({ bot }: { bot: BotProfile }) {
           id={`instructions-${bot.id}`}
           className="field-textarea"
           value={instructions}
+          readOnly={!canEditIdentity}
+          title={readOnlyTitle}
           onChange={(event) => setInstructions(event.target.value)}
           onBlur={() => {
             if (instructions !== bot.instructions)

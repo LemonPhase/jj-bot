@@ -1257,6 +1257,27 @@ button {
   cursor: help;
 }
 
+.mode-badge.live {
+  color: var(--status-completed);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.mode-badge.warning {
+  color: var(--status-failed);
+  background: rgba(225, 29, 72, 0.1);
+}
+
+.profile-name-input:read-only,
+.field-textarea:read-only {
+  cursor: default;
+}
+
+.profile-name-input:read-only:hover,
+.profile-name-input:read-only:focus {
+  border-color: transparent;
+  background: transparent;
+}
+
 .error-banner {
   position: fixed;
   left: 50%;

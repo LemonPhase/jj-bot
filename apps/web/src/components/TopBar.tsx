@@ -37,14 +37,12 @@ export function TopBar({ onToggleTheme }: { onToggleTheme: () => void }) {
       </nav>
 
       <div className="topbar-right">
-        {api.mode === "demo" && (
-          <span
-            className="mode-badge"
-            title="The UI is running on local demo data. Nothing is sent to bots yet."
-          >
-            Demo data
-          </span>
-        )}
+        <span
+          className={`mode-badge ${api.badge.tone}`}
+          title={api.badge.title}
+        >
+          {api.badge.label}
+        </span>
         <button
           type="button"
           className="icon-btn"

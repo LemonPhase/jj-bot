@@ -66,6 +66,13 @@ export function TaskChat({ task }: { task: TaskView }) {
       </div>
 
       <div className="messages-scroll" ref={scrollRef}>
+        {task.messages.length === 0 && (
+          <div className="msg-row system">
+            <div className="system-pill">
+              No messages yet · updates from the bots will appear here
+            </div>
+          </div>
+        )}
         {task.messages.map((m) => {
           if (m.authorKind === "system") {
             return (

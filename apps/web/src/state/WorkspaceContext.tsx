@@ -122,6 +122,42 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return api.subscribeToTask(selectedTaskId, upsertTask);
   }, [api, selectedTaskId, upsertTask]);
 
+  // Bot replies arrive asynchronously (when the task behind a message finishes).
+  useEffect(() => {
+    if (!selectedBotId) return;
+    return api.subscribeToConversation(selectedBotId, (thread) =>
+      setConversations((current) => ({ ...current, [selectedBotId]: thread })),
+    );
+  }, [api, selectedBotId]);
+
+  // Tasks created elsewhere (e.g. from a bot chat) appear in the list.
+  useEffect(
+    () =>
+      api.subscribeToTasks((next) =>
+        setTasks((current) => {
+          // Keep the open task's streamed copy if it is newer than the polled one.
+          const byId = new Map(current.map((t) => [t.id, t]));
+          return next.map((t) => {
+            const existing = byId.get(t.id);
+            return existing && existing.updatedAt > t.updatedAt ? existing : t;
+          });
+        }),
+      ),
+    [api],
+  );
+
+  // Pick something to show once data arrives (e.g. the first task created via chat).
+  useEffect(() => {
+    if (!selectedBotId && bots[0]) setSelectedBotId(bots[0].id);
+  }, [bots, selectedBotId]);
+  useEffect(() => {
+    const first = tasks[0];
+    if (!selectedTaskId && first) {
+      setSelectedTaskId(first.id);
+      setSelectedNodeId(first.sessions[0]?.id ?? "gate");
+    }
+  }, [tasks, selectedTaskId]);
+
   const run = useCallback(async (action: () => Promise<void>) => {
     try {
       setError(null);
@@ -183,6 +219,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         run(async () => {
           const thread = await api.sendDirectMessage(botId, text);
           setConversations((current) => ({ ...current, [botId]: thread }));
+          // A direct message may have started a task; refresh so its card resolves.
+          if (
+            thread.some(
+              (m) => m.taskId && !tasks.some((t) => t.id === m.taskId),
+            )
+          )
+            setTasks(await api.listTasks());
         }),
       createTask: (input) =>
         run(async () => {
@@ -194,7 +237,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }),
       postTaskMessage: (taskId, text, steering) =>
         run(async () => {
-          upsertTask(await api.postTaskMessage(taskId, { text, steering }));
+          const observedGoalVersion =
+            tasks.find((t) => t.id === taskId)?.goalVersion ?? 1;
+          upsertTask(
+            await api.postTaskMessage(taskId, {
+              text,
+              steering,
+              observedGoalVersion,
+            }),
+          );
         }),
       stopTask: (taskId) =>
         run(async () => {

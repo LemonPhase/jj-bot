@@ -46,7 +46,8 @@ export function TaskList({ onNewTask }: { onNewTask: () => void }) {
               </div>
               <div className="item-top item-bottom">
                 <span className="item-subtitle">
-                  {task.status} · {task.sessions.length} sessions
+                  {task.status} · {task.sessions.length}{" "}
+                  {task.sessions.length === 1 ? "session" : "sessions"}
                 </span>
                 <div className="avatar-stack">
                   {task.participantBotIds.map((botId) => {
