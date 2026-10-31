@@ -9,6 +9,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@jj/runtime": "*"
+    "@jj/runtime": "*",
+    "@jj/backend": "*",
+    "@jj/db": "*"
   }
 }
