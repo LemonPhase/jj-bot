@@ -6,10 +6,8 @@ import {
   taskSummarySchema,
   type WorkspaceHint,
 } from "@jj/contracts";
-import { LocalSandboxDriver } from "@jj/sandbox";
 import { assertSpecSupported, sandboxSpecSchema } from "@jj/sandbox/contract";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createDriverRegistry } from "./drivers";
 import { DomainError } from "./errors";
 import type { EngineDriver } from "./ports";
 import { FakeModels } from "./testing/fakes";

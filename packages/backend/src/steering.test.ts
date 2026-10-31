@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
 import { DomainError } from "./errors";
-import { type Brain, said } from "./testing/fake-executor";
+import { said } from "./testing/fake-executor";
 import {
   countingDriver,
   OPEN_TIMEOUT,

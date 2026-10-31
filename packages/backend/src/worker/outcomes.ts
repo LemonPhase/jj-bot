@@ -8,12 +8,10 @@ import {
   complete,
   enqueue,
   type SessionRow,
-  sessionEntries,
-  sessionInbox,
   type TaskRow,
   type Tx,
 } from "@jj/db";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import type { RunOutcome } from "../ports";
@@ -28,7 +26,12 @@ import {
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
-import { closeOpenTools, closeRun } from "./runs";
+import {
+  closeOpenTools,
+  closeRun,
+  hasContinuingInput,
+  lastAssistantText,
+} from "./runs";
 
 export interface CompletionRequest {
   result: string;
@@ -316,33 +319,6 @@ async function handOff(rc: RunContext) {
   });
 }
 
-/** The text of the transcript's last entry when it is a final assistant message. */
-async function lastAssistantText(tx: Tx, sessionId: string) {
-  const [row] = await tx
-    .select({ entry: sessionEntries.entry })
-    .from(sessionEntries)
-    .where(eq(sessionEntries.sessionId, sessionId))
-    .orderBy(desc(sessionEntries.seq))
-    .limit(1);
-  return row ? assistantText(row.entry) : undefined;
-}
-
-/** A pi assistant message's text blocks, joined; undefined for any other entry. */
-export function assistantText(entry: unknown): string | undefined {
-  if (!entry || typeof entry !== "object") return undefined;
-  const message = entry as { role?: unknown; content?: unknown };
-  if (message.role !== "assistant") return undefined;
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return undefined;
-  return message.content
-    .flatMap((block: { type?: unknown; text?: unknown }) =>
-      block?.type === "text" && typeof block.text === "string"
-        ? [block.text]
-        : [],
-    )
-    .join("");
-}
-
 /** A run that had nothing to do: the session goes back to where it was, and nothing is posted. */
 async function restorePrevious(tx: Tx, rc: RunContext, session: SessionRow) {
   const { ctx } = rc.deps;
@@ -451,19 +427,4 @@ export async function finishRun(
     await complete(tx, rc.job.lease);
     return "done";
   });
-}
-
-async function hasContinuingInput(tx: Tx, sessionId: string) {
-  const [row] = await tx
-    .select({ id: sessionInbox.id })
-    .from(sessionInbox)
-    .where(
-      and(
-        eq(sessionInbox.sessionId, sessionId),
-        isNull(sessionInbox.deliveredAt),
-        inArray(sessionInbox.kind, ["brief", "result", "steering"]),
-      ),
-    )
-    .limit(1);
-  return row !== undefined;
 }

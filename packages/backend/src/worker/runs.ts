@@ -1,15 +1,18 @@
-// Run rows: closing a run, and reporting what a run left in flight. A command
-// that was running when a run ended abnormally is reported as interrupted with
-// an unknown outcome; it is never re-run.
+// Run rows and what a run reads at its end: closing a run, reporting what it
+// left in flight (a command running when a run ended abnormally is reported as
+// interrupted with an unknown outcome and never re-run), the transcript's last
+// text and input that continues a run.
 import {
   type RunRow,
   type RunStatus,
   runs,
   type SessionRow,
+  sessionEntries,
+  sessionInbox,
   type Tx,
   taskEvents,
 } from "@jj/db";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit } from "../events";
 
@@ -114,4 +117,47 @@ export async function closeStaleRun(
   const attribution = { botId: session.botId, sessionId: session.id };
   await closeOpenTools(tx, run, attribution, note);
   await closeRun(tx, ctx, run, status, attribution, note);
+}
+
+/** The text of the transcript's last entry when it is a final assistant message. */
+export async function lastAssistantText(tx: Tx, sessionId: string) {
+  const [row] = await tx
+    .select({ entry: sessionEntries.entry })
+    .from(sessionEntries)
+    .where(eq(sessionEntries.sessionId, sessionId))
+    .orderBy(desc(sessionEntries.seq))
+    .limit(1);
+  return row ? assistantText(row.entry) : undefined;
+}
+
+/** A pi assistant message's text blocks, joined; undefined for any other entry. */
+export function assistantText(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const message = entry as { role?: unknown; content?: unknown };
+  if (message.role !== "assistant") return undefined;
+  if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return undefined;
+  return message.content
+    .flatMap((block: { type?: unknown; text?: unknown }) =>
+      block?.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("");
+}
+
+/** Undelivered input that continues a run (results, briefs, steering). */
+export async function hasContinuingInput(tx: Tx, sessionId: string) {
+  const [row] = await tx
+    .select({ id: sessionInbox.id })
+    .from(sessionInbox)
+    .where(
+      and(
+        eq(sessionInbox.sessionId, sessionId),
+        isNull(sessionInbox.deliveredAt),
+        inArray(sessionInbox.kind, ["brief", "result", "steering"]),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
 }
