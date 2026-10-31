@@ -6,7 +6,7 @@ JJ Bot is an open, self-hostable multi-bot agent workspace — an open alternati
 
 - **Bots** are persistent personas with their own instructions, model, runtime profile and memory.
 - **Tasks** are the shared problem container: a goal, a coordinator, participating bots, a group chat, execution sessions and results. Messages are visible to every participant without waking every bot.
-- **Execution sessions** run on the [pi](https://github.com/earendil-works/pi) agent runtime. Their tools execute inside the sandbox chosen by the bot's runtime profile — `local`, `docker` or `daytona`, with other providers behind the same driver contract. Model keys never enter a sandbox.
+- **Execution sessions** run on the [pi](https://github.com/earendil-works/pi) agent runtime. Their tools execute inside the sandbox chosen by the bot's runtime profile: the in-tree `local` or `docker` driver, or a remote provider such as Daytona behind the same driver contract. Model keys are never passed into a sandbox, but only an isolating driver such as `docker` keeps them out of reach: `local` commands can read the server user's files and environment.
 - **Every change is an event** in an append-only per-task log. Chat, the execution graph and the audit trail are projections of it, and reconnecting replays it without re-running work.
 - **Verification is opt-in per task.** A task with a verification plan cannot complete until its checks pass. Tool calls, exit codes and artifacts are recorded either way.
 

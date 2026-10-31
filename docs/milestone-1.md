@@ -24,7 +24,7 @@ The milestone is met only when all of these are demonstrable together, through t
 - Files a session produces can be downloaded as artifacts.
 - After a server restart, in-flight work resumes or fails visibly; completed work is never silently repeated.
 - Reload or reconnect reconstructs task activity without re-running anything.
-- With the `docker` driver, agent-run code cannot read model keys, the host filesystem or the host environment. The `local` driver isolates only the environment, and the product labels it unisolated.
+- With the `docker` driver, agent-run code cannot read model keys, the host filesystem or the host environment. The `local` driver does not pass the server's environment into commands but hides nothing from them, so the product labels it unisolated.
 - A third bot routes through the same paths, with no two-bot special case.
 
 ## Boundaries

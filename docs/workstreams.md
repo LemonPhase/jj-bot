@@ -13,7 +13,7 @@ Work is tracked in [GitHub Issues](https://github.com/LemonPhase/jj-bot/issues).
 
 1. Choose an open issue in the current milestone with no open blockers. Its "blocked by" links are the source of truth for dependencies.
 2. Assign yourself or comment to claim it.
-3. Branch from `feat/revamp` until that branch merges into `main`, and open a PR that closes the issue.
+3. Branch from `main`, and open a PR that closes the issue.
 4. Follow [CONTRIBUTING.md](../CONTRIBUTING.md): acceptance checks first, then implement, verify and record evidence in the PR.
 
 Labels: `area: backend`, `area: frontend`, `area: shared` and `area: infra` route work; `decision` marks a choice to settle before dependent work; `epic` groups sub-issues.

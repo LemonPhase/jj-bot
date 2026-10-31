@@ -16,7 +16,7 @@ A self-hosted install embeds the worker in the API process. A server deployment 
 
 ## Execution model
 
-Each execution session runs one pi agent (`@earendil-works/pi-coding-agent`) inside the worker. Its tools — bash, read, edit, write and search — are bound to a sandbox through pi's pluggable tool operations, so the loop stays in the worker while every command and file access happens in the sandbox. Model credentials and provider calls therefore never enter agent-run code.
+Each execution session runs one pi agent (`@earendil-works/pi-coding-agent`) inside the worker. Its tools — bash, read, edit, write and search — are bound to a sandbox through pi's pluggable tool operations, so the loop stays in the worker while every command and file access happens in the sandbox. Provider calls therefore stay in the worker and model credentials are never handed to agent-run code; whether that code can still read them from the host depends on the driver (see [Sandbox boundary](#sandbox-boundary)).
 
 pi supplies the agent loop, the coding tools, context compaction, mid-run steering and the multi-provider model registry. JJ Bot supplies identity, durability, scheduling, collaboration and the event log. pi is reached only through the `SessionExecutor` interface, so the runtime can be upgraded or replaced without touching orchestration.
 
@@ -26,18 +26,25 @@ Each bot chooses its own model as a `provider/model` reference resolved through 
 
 ## Sandbox boundary
 
-A `SandboxDriver` turns a sandbox spec into a running `Sandbox` that exposes command execution, a workspace filesystem and optional ports, snapshots and metrics. The in-tree drivers are `local`, `docker` and `daytona`; other providers implement the same contract out of tree. The contract lives in `packages/sandbox`.
+A `SandboxDriver` turns a sandbox spec into a running `Sandbox` that exposes command execution, a workspace filesystem and optional ports, snapshots and metrics. The in-tree drivers are `local` and `docker`; remote drivers, such as one for Daytona, implement the same contract. The contract lives in `packages/sandbox`.
 
-- **Capabilities are declared, not assumed.** Each driver states what it can enforce (network policy, resource limits, filesystem isolation). A spec that asks for more is refused. A driver never silently weakens isolation.
-- **The environment is built from scratch.** A sandbox never inherits the host or worker environment. Declared variables and secrets injected by name are the only additions.
-- **Paths are contained.** Filesystem access outside the workspace is rejected.
-- **Interruption is reported honestly.** A command reports whether it was interrupted as `no`, `yes` or `unknown`; `unknown` means its effect may already have happened.
-- **Workspaces have explicit lifetimes:** `ephemeral` (discarded on release), `task` (shared by a task's sessions, the default) or `bot` (persists for one bot across tasks).
+- **Capabilities are declared, not assumed.** Each driver states what it can enforce: the network modes, resource limits and filesystem isolation. A spec that asks for more, or that is addressed to another driver, is refused. A driver never silently weakens isolation.
+- **The environment is built from scratch.** No driver passes the host or worker environment into a command; declared variables and secrets injected by name are the only additions. Not passing is not hiding: only a driver that declares filesystem isolation keeps the host environment and files out of reach.
+- **Paths are contained.** The sandbox filesystem API rejects any path outside the workspace, checked after following symlinks. This constrains the API, not commands: what a command can reach depends on the driver's isolation.
+- **Interruption is reported honestly.** A command reports `no`, `yes` or `unknown`. `yes` means the driver verified that none of the command's processes survive; `unknown` means it could not, so the command's effect may already have happened or may still be happening.
+- **Release ends everything the sandbox started,** background processes included, and discards an ephemeral workspace.
 - **Conformance is the contract.** A driver is valid when it passes the shared conformance suite.
 
-The `local` driver isolates the environment only. Agent-run code shares the host kernel, filesystem and network, so it can read any file the server's user can, including a key file. It exists for development on a trusted machine, and the product labels profiles that use it as unisolated. Key isolation from agent-run code holds only for drivers that declare filesystem isolation.
+A task acquires **one sandbox for all its sessions**. The worker's task sandbox manager acquires it once per task, with the coordinator's runtime profile and `workspaceKey` set to the task id, and releases it when the task ends; sessions never acquire their own. Bots therefore see each other's files immediately, and one runaway process affects the whole task within the profile's resource limits. Bots can also overwrite each other's edits, so the coordinator partitions work to avoid touching the same files concurrently.
 
-A task's sessions share **one sandbox and one workspace**, acquired with the coordinator's runtime profile. Bots therefore see each other's files immediately, and one runaway process affects the whole task within the profile's resource limits. Bots can also overwrite each other's edits, so the coordinator partitions work to avoid touching the same files concurrently.
+A workspace is identified by its mode and its key. Task execution uses two modes:
+
+- `task` (the default): files persist, across restarts too, until the task is deleted.
+- `ephemeral`: the workspace is discarded when the task's sandbox is released. Its sessions cannot resume after a restart; they fail visibly.
+
+The contract also defines `bot`, a workspace that persists for one bot across tasks. Task execution never uses it, because it would expose the coordinator's files from earlier tasks to every participant.
+
+The `local` driver runs commands directly on the host, as the server's user. It does not pass the server's environment into commands, but it hides nothing from them: they can read every file that user can, including `.env` and key files, and the server's own environment through `/proc`. Model keys are out of reach of agent-run code only on drivers that declare filesystem isolation. `local` exists for development on a trusted machine, and the product labels profiles that use it as unisolated. Without cgroups it cannot guarantee that a stopped command's process tree is gone, so it reports `unknown` whenever it cannot verify that.
 
 The `docker` driver starts sandboxes as sibling containers through the host's Docker API. When JJ Bot itself runs in a container, that API arrives as the mounted host socket, which is root-equivalent on the host. The driver therefore never passes the socket into a sandbox, never creates privileged containers and never bind-mounts host paths: workspaces are named volumes, and file access goes through the Docker API. A filtering proxy can sit in front of the socket through `DOCKER_HOST` without code changes.
 
@@ -112,7 +119,7 @@ A session's pi transcript is persisted after every completed turn. After a crash
 
 ## Security invariants
 
-- Model keys, provider calls and the worker's environment never enter a sandbox.
+- Model keys, provider calls and the worker's environment are never passed into a sandbox. They are out of agent-run code's reach only on drivers that declare filesystem isolation; `local` hides neither the server user's files nor its environment.
 - Secrets reach a sandbox only by name at acquisition, and are redacted from events and logs.
 - A driver refuses any spec it cannot enforce.
 - Sandboxes never receive the Docker socket, privileged mode or host bind mounts.
