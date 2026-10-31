@@ -9,3 +9,6 @@ coverage/
 *.log
 
 .jj-data/
+
+# Agent worktrees
+.claude/worktrees/

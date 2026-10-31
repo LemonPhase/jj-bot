@@ -1,18 +1,74 @@
 name: CI
+
 on:
+  # Pull requests run the gate on their merge result; pushes only on main.
   push:
+    branches: [main]
   pull_request:
+
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
+  verify:
+    # Same steps as `npm run verify`. Every step must pass.
+    name: Lint, typecheck, test, build
+    # Runs on the runner VM itself (no job container) so tests reach its Docker daemon.
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: jj
+          POSTGRES_PASSWORD: jj
+          POSTGRES_DB: jj_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jj -d jj_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Check out
+        uses: actions/checkout@v7
         with:
-          node-version: 24
+          persist-credentials: false
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
+
+      - name: Install dependencies
+        id: install
+        run: npm ci
+
+      # Fails the job if the daemon is unreachable, so Docker-gated tests never skip silently.
+      - name: Check Docker daemon
+        run: docker version
+
+      # The checks below run even when an earlier one fails, so one run reports every failure.
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint
+
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run typecheck
+
+      - name: Test (PostgreSQL and Docker enabled)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          JJ_TEST_DATABASE_URL: postgresql://jj:jj@127.0.0.1:5432/jj_test
+        run: npm test
+
+      - name: Build web
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run build -w @jj/web

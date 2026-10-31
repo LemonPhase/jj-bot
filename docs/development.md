@@ -22,11 +22,12 @@ The API requires a reachable database at startup. Use `docker compose up -d post
 | Directory            | Responsibility                                                                                                      |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `apps/web`           | React/Vite workspace: bot and task chat, execution graph, steering and stop controls                                |
-| `apps/api`           | Hono service: bootstrap/health, bot and task routes, SSE streaming, AG-UI run endpoint, CopilotKit runtime boundary |
+| `apps/api`           | Hono service: bootstrap/health, bot and task routes, task event streaming (SSE), legacy AG-UI and CopilotKit routes |
 | `apps/worker`        | Optional standalone PostgreSQL worker; the API embeds the scheduler by default                                      |
 | `packages/contracts` | Canonical Zod schemas/types for bots, tasks, sessions, messages, checks and attributed events                       |
 | `packages/backend`   | BackendService: coordinator, delegation, verification, steering, cancellation, leases and job scheduling            |
-| `packages/runtime`   | GeminiSessionExecutor over the Google GenAI SDK, allowlisted tools, deterministic and model checks                  |
+| `packages/runtime`   | Session execution behind `SessionExecutor`; the current `GeminiSessionExecutor` uses the Google GenAI SDK           |
+| `packages/sandbox`   | Sandbox driver contract, the `local` driver and the shared driver conformance suite                                 |
 | `packages/db`        | Transactional PGlite/PostgreSQL store, idempotent schema, append-only task event log                                |
 
 Internal packages export TypeScript source. API/worker run with `tsx`; `build` typechecks all packages and produces the web bundle.
@@ -53,7 +54,8 @@ Database: `docker compose up -d postgres` starts PostgreSQL 17 under the compose
 ## Checks
 
 ```sh
-npm run check         # lint + tests + all-package typecheck + web build
+npm run verify        # the CI gate: lint + all-package typecheck + tests + web build
+npm run check         # alias for verify
 npm run format        # format and safe lint/import fixes
 npm run test
 npm run typecheck
@@ -62,7 +64,14 @@ npm run smoke:tool    # live tool-call round trip; needs .env
 npm run smoke:backend # live end-to-end task run; needs .env, running API and database
 ```
 
-CI runs `npm ci`, lint and tests on Node 24. The default suite covers domain invariants, the coordination state machine and the HTTP surface. `packages/db/src/store.test.ts` includes an opt-in PostgreSQL adapter test enabled with `JJ_TEST_DATABASE_URL`. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the Notion coordination policy.
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it runs lint, typecheck, tests and the web build, the same steps as `npm run verify`, and every step must pass. Each check runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
+
+Some tests need external services and skip when those services are missing. CI provides both, so in CI these tests run instead of skipping:
+
+- PostgreSQL: tests gated on `JJ_TEST_DATABASE_URL`, such as the adapter integration test in `packages/db/src/store.test.ts`. CI starts a PostgreSQL 17 service container and exports the variable to the test step. Locally, point it at a disposable database, never the development one: `docker run -d --rm -p 55432:5432 -e POSTGRES_USER=jj -e POSTGRES_PASSWORD=jj -e POSTGRES_DB=jj_test postgres:17-alpine`, then `JJ_TEST_DATABASE_URL=postgresql://jj:jj@127.0.0.1:55432/jj_test npm run verify`.
+- Docker: sandbox driver tests that skip when no Docker daemon is reachable. The CI job runs on the runner VM with its Docker daemon, not inside a job container, and it fails if `docker version` cannot reach the daemon.
+
+The root `vitest.config.ts` sets a 20 s per-test timeout, because PGlite-backed suites are slow on loaded machines. It also excludes `.claude/` agent worktrees, so a run from the main checkout matches CI. The default suite covers domain invariants, the coordination state machine, the HTTP surface and the sandbox driver conformance suite against the `local` driver. Service and HTTP tests inject a fake executor, and the executor test uses a mocked provider client, so CI never calls a live model; live behavior is covered only by the smoke scripts. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the verification loop and [AGENTS.md](../AGENTS.md) for the issue workflow.
 
 Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to [the contract changelog](contract-changelog.md).
 
@@ -75,7 +84,7 @@ Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to
 - `/api/copilotkit/*`: OSS AG-UI runtime route; `GET /api/copilotkit/info` discovers agent `jj`.
 - `POST /api/agent`: AG-UI run that reuses a durable task and replays its events. Emits `RUN_STARTED`, `CUSTOM jj.task`, streamed task events, `TEXT_MESSAGE_*` and `RUN_FINISHED`/`RUN_ERROR`. Closing the browser connection does not cancel the task. With no service configured, it returns `SCAFFOLD_NOT_IMPLEMENTED`.
 
-Task execution is owned by the backend scheduler, not by an HTTP request or an open stream. CopilotKit's runtime is integration plumbing; it is not the durable task store. Keep development services on loopback: the only access control is the optional shared bearer token, and there is no per-user identity.
+Task execution is owned by the backend scheduler, not by an HTTP request or an open stream. The AG-UI and CopilotKit routes are not part of the supported contract; build new clients on `GET /api/tasks/:id/stream`. Keep development services on loopback: the only access control is the optional shared bearer token, and there is no per-user identity.
 
 ## Constraints
 

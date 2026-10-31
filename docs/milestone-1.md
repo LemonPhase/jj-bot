@@ -1,33 +1,34 @@
-# Milestone 1 · Multi-bot vertical slice
+# Milestone 1 · MVP
 
-The first demonstrable vertical slice. Single-bot execution alone does not satisfy it.
+A self-hostable product that someone can install and use for real multi-bot work. Single-bot execution does not satisfy it: multi-bot tasks are the product.
 
 ## Required experience
 
-Chat with a bot → create a task group chat → at least two bots contribute through separate execution sessions → inspect their activity → steer from the task chat → receive a consolidated, verified result.
+Start the stack with one command → configure a model and a runtime profile → create several bots → start a task with a goal and a roster → the coordinator delegates, and at least two bots do real command and file work in sandboxes, in parallel → watch the group chat and execution graph live → steer or stop → receive the consolidated result and its files.
 
 ## Acceptance criteria
 
-The milestone is met only when all of the following are demonstrable together in one flow:
+The milestone is met only when all of these are demonstrable together, through the product surface rather than scripts:
 
-- A frontend reaches a backend running locally or on a server.
-- Persistent bots retain identity and deliberately scoped memory across tasks.
-- Task creation records the goal, coordinator, participants and verification plan.
-- At least two bots do real work through separate execution sessions.
+- The stack runs from the repository with one compose command and no hosted dependency besides a model provider.
+- Bots persist identity, instructions, model choice, runtime profile and scoped memory across tasks.
+- Runtime profiles are created and edited in settings and select a sandbox driver; both `local` and `docker` work.
+- Task creation records goal, coordinator and participants.
+- At least two bots do real work in separate sessions, running in parallel inside sandboxes.
+- Sessions of one task can share files through the task workspace.
 - Task messages are attributed and visible to all participants without activating every bot.
-- A bot can communicate with another bot to align work and return results.
-- Session execution includes evidence-backed verification and correction.
-- The task interface exposes bots, delegated sessions, progress and verification activity.
-- User steering reaches the coordinator and changes relevant subsequent execution.
-- Stopping a task cancels active sessions and prevents new launches.
-- The coordinator verifies the integrated result and reports evidence and remaining gaps.
-- The same routing paths serve additional configured bots; there is no two-bot special case.
-- Reload or reconnect reconstructs current task activity without repeating execution.
-
-The demo task, permitted tools and sample inputs remain to be chosen. The flow must be driven through the product surface, not through scripts alone.
+- The coordinator delegates bounded work and receives the results back.
+- Each working bot shows its current activity live, and the execution graph shows bots, assignments, commands and results.
+- Steering reaches the coordinator and changes subsequent execution.
+- Stop cancels active sessions, prevents new launches and records what actually stopped.
+- Files a session produces can be downloaded as artifacts.
+- After a server restart, in-flight work resumes or fails visibly; completed work is never silently repeated.
+- Reload or reconnect reconstructs task activity without re-running anything.
+- With the `docker` driver, agent-run code cannot read model keys, the host filesystem or the host environment. The `local` driver does not pass the server's environment into commands but hides nothing from them, so the product labels it unisolated.
+- A third bot routes through the same paths, with no two-bot special case.
 
 ## Boundaries
 
-An arbitrary configurable team size means the domain and scheduler accept a variable participant list. It does not promise unlimited concurrent execution, budget, or quality. Exercise a third bot through the same route to catch a hard-coded pair while keeping the demo focused.
+A configurable team size means the domain and scheduler accept any participant list. It does not promise unlimited concurrency, budget or quality.
 
-Defer native desktop packaging, external messaging channels, broad connector catalogues and advanced memory retrieval unless the demo requires them. The final visualization layout is open.
+Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The API rejects a task that carries a verification plan rather than accepting one it cannot enforce. The demo task and final visualization layout remain open.

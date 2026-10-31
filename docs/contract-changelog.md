@@ -4,9 +4,8 @@ Every change to `packages/contracts` is recorded here, newest first. The shared 
 the frontend/backend boundary: a change that is not written down is a change the other side
 cannot plan around.
 
-Live ownership, status and acceptance checks stay in
-[01 · Maintain shared contracts and integration fixtures](https://app.notion.com/p/40af13214201818c98dcdf487628d1e4).
-This file is the implementation record; Notion is the coordination record.
+Live ownership, status and acceptance checks stay in the GitHub issue for each contract change.
+This file is the implementation record; issues are the coordination record.
 
 ## How to record a change
 
@@ -29,7 +28,7 @@ Add an entry before merging the schema change, using the template below.
 **Action required (backend):** …
 ```
 
-A `breaking` entry needs agreement from both sides first. Raise it as a Decision in Notion
+A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
 ## 0.4.0 — 2026-10-31 — Bot turn routing
