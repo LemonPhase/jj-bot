@@ -1,5 +1,5 @@
 import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
-import { colourHex } from "../../lib/appearance";
+import { colourRamp } from "../../lib/colour";
 import { statusWord } from "../../lib/status";
 import { orderedSessions, sessionOrdinal } from "../../lib/tasks";
 
@@ -79,7 +79,9 @@ export function layoutTaskGraph(
       title: coordinator?.name ?? "Coordinator",
       subtitle: `coordinator · ${statusWord(view.task.status)}`,
       status: view.task.status,
-      color: coordinator ? colourHex(coordinator.appearance.colour) : NEUTRAL,
+      color: coordinator
+        ? colourRamp(coordinator.appearance.colour).f
+        : NEUTRAL,
     });
   }
 
@@ -99,7 +101,7 @@ export function layoutTaskGraph(
         title: `${sessionOrdinal(view, session.id)} · ${bot?.name ?? "Bot"}`,
         subtitle: `${session.role} · ${statusWord(session.status)}`,
         status: session.status,
-        color: bot ? colourHex(bot.appearance.colour) : NEUTRAL,
+        color: bot ? colourRamp(bot.appearance.colour).f : NEUTRAL,
       });
       const parent = session.parentSessionId
         ? position.get(session.parentSessionId)

@@ -1,5 +1,6 @@
 import type { Bot } from "@jj/contracts";
-import { type BotGlyph, colourHex, faceGlyph } from "../../lib/appearance";
+import { type BotGlyph, faceGlyph } from "../../lib/appearance";
+import { colourRamp } from "../../lib/colour";
 
 type AvatarSize = "sm" | "md" | "lg";
 
@@ -110,7 +111,7 @@ export function BotAvatar({
   /** Show the idle/working dot. */
   presence?: boolean;
 }) {
-  const color = colourHex(bot.appearance.colour);
+  const color = colourRamp(bot.appearance.colour).f;
   return (
     <div className="bot-avatar-wrap">
       <div

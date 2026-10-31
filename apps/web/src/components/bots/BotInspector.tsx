@@ -1,7 +1,7 @@
 import { BOT_COLOURS, BOT_FACES, type Bot } from "@jj/contracts";
 import { useEffect, useState } from "react";
-import { colourHex } from "../../lib/appearance";
-import { taskStatusWord } from "../../lib/status";
+import { colourRamp } from "../../lib/colour";
+import { statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { StatusDot } from "../common/StatusDot";
@@ -54,7 +54,7 @@ export function BotInspector({ bot }: { bot: Bot }) {
               key={colour}
               type="button"
               className={`color-swatch ${bot.appearance.colour === colour ? "active" : ""}`}
-              style={{ background: colourHex(colour) }}
+              style={{ background: colourRamp(colour).f }}
               aria-label={`Colour ${colour}`}
               aria-pressed={bot.appearance.colour === colour}
               onClick={() => setAppearance({ colour })}
@@ -123,7 +123,7 @@ export function BotInspector({ bot }: { bot: Bot }) {
               <span className="mini-task-main">
                 <StatusDot status={task.status} />
                 <span className="mini-task-title">{task.title}</span>
-                <span className="mono-muted">{taskStatusWord(task)}</span>
+                <span className="mono-muted">{statusWord(task)}</span>
               </span>
               <span className="row-arrow">→</span>
             </button>

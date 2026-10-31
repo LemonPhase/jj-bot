@@ -1,8 +1,8 @@
 import type { TaskView } from "@jj/contracts";
 import { useEffect, useRef, useState } from "react";
-import { colourHex } from "../../lib/appearance";
+import { colourRamp } from "../../lib/colour";
 import { formatMessageTime } from "../../lib/format";
-import { acceptsMessages, isStoppable, taskStatusWord } from "../../lib/status";
+import { acceptsMessages, isStoppable, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { Composer } from "../common/Composer";
@@ -37,7 +37,7 @@ export function TaskChat({ view }: { view: TaskView }) {
               </span>
               <span className="status-pill">
                 <StatusDot status={task.status} />
-                {taskStatusWord(task)} · v{task.goalVersion}
+                {statusWord(task)} · v{task.goalVersion}
               </span>
             </div>
           </div>
@@ -67,7 +67,7 @@ export function TaskChat({ view }: { view: TaskView }) {
               className={`bot-chip ${isCoordinator ? "coordinator" : ""}`}
               onClick={() => jumpToBot(botId)}
             >
-              <StatusDot color={colourHex(bot.appearance.colour)} />
+              <StatusDot color={colourRamp(bot.appearance.colour).f} />
               <span>{bot.name}</span>
               {isCoordinator && <span className="chip-note">coord</span>}
             </button>

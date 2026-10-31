@@ -1,0 +1,925 @@
+/*
+ * C2 · Pixel Lite UI primitives. Measurements follow SPEC §3–§4; states that
+ * the design does not draw follow brief decision 5:
+ *   focus-visible  1px --ink-2 outline, 2px offset
+ *   hover          the next surface step
+ *   disabled       40% opacity, not-allowed cursor
+ * Every class is prefixed `ui-` so nothing collides with the legacy styles.css.
+ */
+
+/* ── Shared states ─────────────────────────────────────────────────────── */
+.ui-btn,
+.ui-icon-btn,
+.ui-seg__item,
+.ui-tab,
+.ui-list-item,
+.ui-chip,
+.ui-card--interactive,
+.ui-input,
+.ui-textarea,
+.ui-select {
+  transition:
+    background-color var(--dur-ui) var(--ease-ui),
+    border-color var(--dur-ui) var(--ease-ui),
+    color var(--dur-ui) var(--ease-ui);
+}
+
+.ui-btn:focus-visible,
+.ui-icon-btn:focus-visible,
+.ui-seg__item:focus-visible,
+.ui-tab:focus-visible,
+.ui-list-item:focus-visible,
+.ui-chip:focus-visible,
+.ui-card--interactive:focus-visible,
+.ui-input:focus-visible,
+.ui-textarea:focus-visible,
+.ui-select:focus-visible,
+.ui-tooltip__trigger:focus-visible,
+.ui-dialog__panel:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+.ui-btn:disabled,
+.ui-btn[aria-disabled="true"],
+.ui-icon-btn:disabled,
+.ui-seg__item:disabled,
+.ui-tab:disabled,
+.ui-list-item:disabled,
+.ui-chip:disabled,
+.ui-card--interactive:disabled,
+.ui-input:disabled,
+.ui-textarea:disabled,
+.ui-select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Button (pills) ────────────────────────────────────────────────────── */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: none;
+  height: var(--control-h);
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-regular);
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ui-btn--lg {
+  height: var(--control-h-lg);
+}
+
+.ui-btn--sm {
+  height: 28px;
+  padding: 0 10px;
+}
+
+.ui-btn--mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+
+.ui-btn--sm.ui-btn--mono {
+  font-size: var(--fs-mono);
+}
+
+/* Primary pill: --btn-primary-bg, 13px/500, padding 0 14px, no border. */
+.ui-btn--primary {
+  padding: 0 14px;
+  border-width: 0;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-ink);
+  font-weight: var(--fw-medium);
+}
+
+.ui-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: color-mix(in srgb, var(--btn-primary-bg) 86%, var(--bg-app));
+  color: var(--btn-primary-ink);
+}
+
+/* Secondary pill: 1px --line-strong border, transparent. */
+.ui-btn--secondary,
+.ui-btn--danger {
+  border-color: var(--line-strong);
+}
+
+.ui-btn--secondary:hover:not(:disabled):not([aria-disabled="true"]),
+.ui-btn--danger:hover:not(:disabled):not([aria-disabled="true"]),
+.ui-btn--ghost:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+/* Toggle pills (the steer toggle): off is --ink-3, on is an --ink border. */
+.ui-btn--secondary[aria-pressed="false"] {
+  color: var(--ink-3);
+}
+
+.ui-btn--secondary[aria-pressed="true"] {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+/* Ghost: no border, quiet text (not designed; for low-emphasis actions). */
+.ui-btn--ghost {
+  color: var(--ink-3);
+}
+
+/* Danger: the Stop pill, a secondary pill led by an 8×8 failed square. */
+.ui-btn__square {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--status-failed);
+}
+
+/* ── Icon button ───────────────────────────────────────────────────────── */
+.ui-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--control-h);
+  height: var(--control-h);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.ui-icon-btn--ink {
+  color: var(--ink);
+}
+
+.ui-icon-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.ui-icon-btn[aria-pressed="true"],
+.ui-icon-btn[aria-current="page"] {
+  background: var(--bg-active);
+  color: var(--ink);
+}
+
+/* Primary circle: send (34px) and play/pause (30px). */
+.ui-icon-btn--primary {
+  border-radius: 50%;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-ink);
+}
+
+.ui-icon-btn--primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--btn-primary-bg) 86%, var(--bg-app));
+  color: var(--btn-primary-ink);
+}
+
+.ui-icon-btn--lg {
+  width: 34px;
+  height: 34px;
+}
+
+/* ── Chip (Studio part chips) ──────────────────────────────────────────── */
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: var(--control-h);
+  margin: 0;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ui-chip:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.ui-chip[aria-pressed="true"] {
+  border-color: var(--line-chip-on);
+  background: var(--bg-active);
+  color: var(--ink);
+}
+
+/* ── Form fields ───────────────────────────────────────────────────────── */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.ui-field__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--sp-5);
+}
+
+/* Same voice as the Studio part labels: mono 11, .06em, muted, uppercase. */
+.ui-field__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--tracking-part);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.ui-field__note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-3);
+}
+
+.ui-field__hint,
+.ui-field__error {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
+.ui-field__error {
+  color: var(--status-failed-ink);
+}
+
+/* Composer-style boxes (SPEC §14.5 proposal): surface, 1px line, radius 12. */
+.ui-input,
+.ui-textarea,
+.ui-select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+}
+
+.ui-input,
+.ui-select {
+  height: 36px;
+  padding: 0 12px;
+}
+
+.ui-textarea {
+  min-height: 84px;
+  padding: 8px 12px;
+  resize: vertical;
+}
+
+.ui-input:hover:not(:disabled),
+.ui-textarea:hover:not(:disabled),
+.ui-select:hover:not(:disabled) {
+  border-color: var(--line-chip-on);
+}
+
+.ui-input[aria-invalid="true"],
+.ui-textarea[aria-invalid="true"],
+.ui-select[aria-invalid="true"] {
+  border-color: var(--status-failed);
+}
+
+.ui-select-wrap {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.ui-select {
+  padding-right: 34px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.ui-select-wrap__chevron {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+
+/* ── Segmented ─────────────────────────────────────────────────────────── */
+.ui-seg {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.ui-seg__item {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.ui-seg__item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bg-active) 45%, transparent);
+  color: var(--ink);
+}
+
+.ui-seg__item[aria-pressed="true"],
+.ui-seg__item[aria-current="page"] {
+  background: var(--bg-active);
+  color: var(--ink);
+  font-weight: var(--fw-medium);
+}
+
+.ui-seg__count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  font-weight: var(--fw-regular);
+  color: var(--ink-muted);
+}
+
+/* Studio "Preview motion": 28px items, 12.5px. */
+.ui-seg--compact .ui-seg__item {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-meta);
+}
+
+.ui-seg--compact .ui-seg__item[aria-pressed="true"] {
+  font-weight: var(--fw-regular);
+}
+
+/* 2D/3D switch: 92px track, radius 8; items radius 6, mono 11.5. */
+.ui-seg--mono {
+  width: 92px;
+  border-radius: var(--r-sm);
+}
+
+.ui-seg--mono .ui-seg__item {
+  padding: 2px 0;
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+
+.ui-seg--mono .ui-seg__item[aria-pressed="true"] {
+  font-weight: var(--fw-regular);
+}
+
+/* ── Tabs ──────────────────────────────────────────────────────────────── */
+.ui-tabs {
+  display: flex;
+  gap: var(--sp-9);
+  margin: 0;
+}
+
+.ui-tab {
+  margin: 0;
+  padding: 4px 0;
+  border: 0;
+  border-bottom: var(--border-tab) solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-ui);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+  cursor: pointer;
+}
+
+.ui-tab:hover:not(:disabled) {
+  color: var(--ink-2);
+}
+
+.ui-tab[aria-pressed="true"] {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+  font-weight: var(--fw-medium);
+}
+
+/* ── Badge (outline chip) ──────────────────────────────────────────────── */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.ui-badge--step {
+  padding: 1px 6px;
+}
+
+/* ── Status square and tag ─────────────────────────────────────────────── */
+.ui-square {
+  display: inline-block;
+  flex: none;
+  width: var(--status-square);
+  height: var(--status-square);
+  background: var(--status-idle);
+}
+
+.ui-square[data-tone="running"] {
+  background: var(--status-running);
+}
+
+.ui-square[data-tone="verifying"] {
+  background: var(--status-verifying);
+}
+
+.ui-square[data-tone="completed"] {
+  background: var(--status-completed);
+}
+
+.ui-square[data-tone="failed"] {
+  background: var(--status-failed);
+}
+
+.ui-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: var(--lh-body);
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.ui-status--lg {
+  gap: 6px;
+  font-size: var(--fs-small);
+}
+
+.ui-status--sm {
+  gap: 6px;
+  font-size: var(--fs-mono-sm);
+}
+
+.ui-status--sans {
+  font-family: var(--font-sans);
+  font-size: var(--fs-meta);
+}
+
+/* ── Card and panel ────────────────────────────────────────────────────── */
+.ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+
+.ui-card--compact {
+  gap: var(--sp-3);
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+}
+
+.ui-card--interactive {
+  width: 100%;
+  cursor: pointer;
+}
+
+.ui-card--interactive:hover:not(:disabled) {
+  border-color: var(--line-chip-on);
+}
+
+.ui-card--selected,
+.ui-card--interactive[aria-pressed="true"] {
+  border-color: var(--ink);
+  background: var(--bg-selected);
+}
+
+.ui-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-9);
+  min-width: 0;
+  padding: 16px 22px;
+  border-left: 1px solid var(--line-subtle);
+}
+
+/* ── List item (sidebar rows) ──────────────────────────────────────────── */
+.ui-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ui-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ui-list-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.ui-list-item[aria-pressed="true"],
+.ui-list-item[aria-current="page"] {
+  background: var(--bg-selected);
+}
+
+.ui-list-item__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ui-list-item__title {
+  font-weight: var(--fw-medium);
+}
+
+.ui-list-item__subtitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
+.ui-list-item--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-3);
+  padding: 10px;
+}
+
+.ui-list-item--stack .ui-list-item__title {
+  font-size: var(--fs-list-title);
+}
+
+.ui-list-item--muted .ui-list-item__title {
+  color: var(--ink-3);
+}
+
+.ui-list-item__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+/* ── Section label and day divider ─────────────────────────────────────── */
+.ui-section-label {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.ui-section-label--part {
+  letter-spacing: var(--tracking-part);
+}
+
+.ui-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.ui-divider::before,
+.ui-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-subtle);
+}
+
+/* ── Mention ───────────────────────────────────────────────────────────── */
+.ui-mention {
+  font-weight: var(--fw-medium);
+}
+
+/* ── Avatar fallback ───────────────────────────────────────────────────── */
+.ui-avatar-fallback {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-active);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+/* ── Empty state ───────────────────────────────────────────────────────── */
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-6);
+  padding: 0 10px;
+}
+
+.ui-empty--center {
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-11);
+  text-align: center;
+}
+
+.ui-empty__message {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+/* ── Spinner (pixel dots) and working row ──────────────────────────────── */
+.ui-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+
+.ui-dots__dot {
+  width: 4px;
+  height: 4px;
+  background: var(--ink-3);
+  animation: ui-blink var(--anim-blink);
+}
+
+.ui-dots__dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.ui-dots__dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* SPEC blink: 0%,100% .25, 50% 1. With animation off the dots stay fully visible. */
+@keyframes ui-blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-dots__dot {
+    animation: none;
+  }
+}
+
+.ui-spinner {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.ui-working {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  font-size: var(--fs-ui);
+  color: var(--ink-3);
+}
+
+/* ── Tooltip ───────────────────────────────────────────────────────────── */
+.ui-tooltip {
+  position: relative;
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.ui-tooltip__trigger {
+  display: inline-flex;
+  max-width: 100%;
+}
+
+/* An inverted pixel overlay, like the speech bubbles. */
+.ui-tooltip__bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 50;
+  width: max-content;
+  max-width: 260px;
+  padding: 4px 8px;
+  background: var(--pop-bg);
+  color: var(--pop-ink);
+  box-shadow: var(--shadow-pixel-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  line-height: var(--lh-bubble);
+  white-space: normal;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.ui-tooltip__bubble--bottom {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+
+/* ── Dialog ────────────────────────────────────────────────────────────── */
+.ui-dialog {
+  width: min(480px, calc(100vw - 32px));
+  max-width: none;
+  max-height: calc(100vh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  overflow: visible;
+}
+
+.ui-dialog::backdrop {
+  background: var(--bg-backdrop);
+}
+
+.ui-dialog__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  max-height: calc(100vh - 32px);
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-composer);
+  overflow: auto;
+}
+
+.ui-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-6);
+}
+
+.ui-dialog__titles {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.ui-dialog__title {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-body);
+}
+
+.ui-dialog__description {
+  margin: 0;
+  font-size: var(--fs-ui);
+  color: var(--ink-muted);
+}
+
+.ui-dialog__head .ui-icon-btn {
+  margin: -4px -6px 0 0;
+}
+
+.ui-dialog__footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-4);
+}
+
+/* ── Error banner ──────────────────────────────────────────────────────── */
+.ui-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-5);
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  font-size: var(--fs-ui);
+  color: var(--ink-2);
+}
+
+.ui-error__text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ui-error__word {
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-weight: var(--fw-medium);
+  color: var(--status-failed-ink);
+}
+
+.ui-error .ui-icon-btn {
+  width: 22px;
+  height: 22px;
+  margin: -1px -4px -1px 0;
+}
+
+/* ── Brand ─────────────────────────────────────────────────────────────── */
+.ui-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  color: var(--ink);
+  font-family: var(--font-pixel);
+  font-size: var(--fs-wordmark);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--tracking-wordmark);
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}

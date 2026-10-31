@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { taskStatusWord } from "../../lib/status";
+import { statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
 import { StatusDot } from "../common/StatusDot";
@@ -51,7 +51,7 @@ export function TaskList({ onNewTask }: { onNewTask: () => void }) {
               </div>
               <div className="item-top item-bottom">
                 <span className="item-subtitle">
-                  {taskStatusWord(task)} · {task.sessionCount}{" "}
+                  {statusWord(task)} · {task.sessionCount}{" "}
                   {task.sessionCount === 1 ? "session" : "sessions"}
                 </span>
                 <div className="avatar-stack">

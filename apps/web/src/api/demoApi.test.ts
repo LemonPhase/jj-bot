@@ -15,7 +15,7 @@ import {
   type WorkspaceHint,
 } from "@jj/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { taskStatusWord } from "../lib/status";
+import { statusWord } from "../lib/status";
 import { ApiError, type JJApi } from "./client";
 import { createDemoApi, titleFromGoal } from "./demoApi";
 import { DEMO_TASKS } from "./demoFixtures";
@@ -263,7 +263,7 @@ describe("demo API", () => {
     const api = demo();
     const stopping = await api.stopTask("task-101", { reason: "  " });
     expect(stopping.cancelReason).toBeNull();
-    expect(taskStatusWord(stopping)).toBe("stopping");
+    expect(statusWord(stopping)).toBe("stopping");
     await rejects(
       api.postTaskMessage("task-101", { text: "hello" }),
       "TASK_TERMINAL",

@@ -1,5 +1,5 @@
 import type { Bot, TaskView } from "@jj/contracts";
-import { statusWord, taskStatusWord, waitingTooltip } from "../../lib/status";
+import { statusTitle, statusWord } from "../../lib/status";
 import { sessionLine, sessionOrdinal, sessionTools } from "../../lib/tasks";
 import { StatusDot } from "../common/StatusDot";
 
@@ -26,7 +26,7 @@ export function NodeInspector({
               {sessionOrdinal(view, session.id)} · {bot?.name ?? "Bot"}
             </span>
           </div>
-          <span className="mono-muted" title={waitingTooltip(session)}>
+          <span className="mono-muted" title={statusTitle(session)}>
             {statusWord(session.status)}
           </span>
         </div>
@@ -52,7 +52,7 @@ export function NodeInspector({
           <StatusDot status={task.status} />
           <span>Goal (v{task.goalVersion})</span>
         </div>
-        <span className="mono-muted">{taskStatusWord(task)}</span>
+        <span className="mono-muted">{statusWord(task)}</span>
       </div>
       <div className="node-inspector-body">
         <div className="node-brief">{task.goal}</div>

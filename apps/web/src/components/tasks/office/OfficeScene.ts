@@ -11,7 +11,8 @@ import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import { colourHex, faceGlyph } from "../../../lib/appearance";
+import { faceGlyph } from "../../../lib/appearance";
+import { colourRamp } from "../../../lib/colour";
 import { statusWord } from "../../../lib/status";
 import { orderedSessions, sessionOrdinal } from "../../../lib/tasks";
 import type { Beat } from "./beats";
@@ -374,7 +375,7 @@ export class OfficeScene {
       const existing = this.actors.get(bot.id);
       if (existing) {
         existing.profile = bot;
-        existing.color = colourHex(bot.appearance.colour);
+        existing.color = colourRamp(bot.appearance.colour).f;
       } else {
         const desk = this.desks.find((d) => d.botId === null);
         if (desk) this.addActor(bot, desk);
@@ -713,7 +714,7 @@ export class OfficeScene {
     const m = this.mats as Record<string, THREE.MeshStandardMaterial>;
     const g = new THREE.Group();
     this.scene.add(g);
-    const color = colourHex(bot.appearance.colour);
+    const color = colourRamp(bot.appearance.colour).f;
     const col = new THREE.Color(color);
     const accent = new THREE.MeshStandardMaterial({
       color: col,

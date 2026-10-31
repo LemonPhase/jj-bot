@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { colourHex } from "../../lib/appearance";
+import { colourRamp } from "../../lib/colour";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { Modal } from "../common/Modal";
 import { StatusDot } from "../common/StatusDot";
@@ -62,7 +62,7 @@ export function NewTaskModal({
                 aria-pressed={index >= 0}
                 onClick={() => toggle(bot.id)}
               >
-                <StatusDot color={colourHex(bot.appearance.colour)} />
+                <StatusDot color={colourRamp(bot.appearance.colour).f} />
                 <span>{bot.name}</span>
                 {index === 0 && <span className="chip-note">coord</span>}
               </button>
