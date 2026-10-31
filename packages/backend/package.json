@@ -12,6 +12,8 @@
   "dependencies": {
     "@jj/contracts": "*",
     "@jj/db": "*",
-    "@jj/runtime": "*"
+    "@jj/runtime": "*",
+    "@jj/sandbox": "*",
+    "drizzle-orm": "0.45.4"
   }
 }
