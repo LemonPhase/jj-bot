@@ -3,8 +3,11 @@ import { z } from "zod";
 /**
  * Execution isolation boundary. A driver turns a SandboxSpec into a running
  * Sandbox; the agent runtime only ever talks to the Sandbox interface, so
- * swapping local/docker/daytona never reaches the orchestration layer.
+ * swapping drivers (the in-tree `local` and `docker`, or a remote provider
+ * such as Daytona) never reaches the orchestration layer.
  */
+
+export const networkModeSchema = z.enum(["none", "allowlist", "open"]);
 
 export const networkPolicySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("none") }),
@@ -22,17 +25,31 @@ export const resourceLimitsSchema = z.object({
   processes: z.number().int().positive().max(100_000).optional(),
 });
 
-/** Where a workspace lives between sessions. `task` is the useful default: sibling sessions share files. */
+/**
+ * Lifetime of a workspace. A workspace is identified by its mode *and* its
+ * `workspaceKey`: the same key in two modes never shares files.
+ *
+ * - `task` (default): persists across releases and is shared by every sandbox
+ *   acquired with the same key. For task execution the key is the task id and
+ *   the files live until the task is deleted.
+ * - `ephemeral`: a fresh, empty workspace per acquisition, discarded on
+ *   release unless `persist` is set. The key is not used for reuse.
+ * - `bot`: persists for one bot across tasks. Task execution never uses it:
+ *   it would expose a coordinator's files from earlier tasks to every
+ *   participant of a later one.
+ */
 export const workspaceModeSchema = z.enum(["ephemeral", "task", "bot"]);
 
 export const sandboxLimitsSchema = z.object({
+  /** Ceiling for every command; a per-call `timeoutMs` can only shorten it. */
   execTimeoutMs: z.number().int().positive().max(86_400_000).default(120_000),
   maxOutputBytes: z.number().int().positive().max(100_000_000).default(262_144),
 });
 
 export const sandboxSpecSchema = z.object({
+  /** Must equal the `id` of the driver that validates it. */
   driver: z.string().min(1),
-  /** Driver-specific image, snapshot or template reference. */
+  /** Driver-specific image, snapshot or template reference. A driver without images refuses it. */
   image: z.string().min(1).optional(),
   resources: resourceLimitsSchema.default({}),
   network: networkPolicySchema.default({ mode: "none" }),
@@ -40,10 +57,11 @@ export const sandboxSpecSchema = z.object({
   limits: sandboxLimitsSchema.prefault({}),
   /** Non-secret environment entries. Secrets arrive separately and are never persisted here. */
   env: z.record(z.string().min(1), z.string()).default({}),
-  /** Opaque per-driver settings, validated by that driver's `validateSpec`. */
+  /** Opaque per-driver settings, validated by that driver's `validateSpec`; unknown keys are refused. */
   driverConfig: z.record(z.string().min(1), z.unknown()).default({}),
 });
 
+export type NetworkMode = z.infer<typeof networkModeSchema>;
 export type NetworkPolicy = z.infer<typeof networkPolicySchema>;
 export type ResourceLimits = z.infer<typeof resourceLimitsSchema>;
 export type WorkspaceMode = z.infer<typeof workspaceModeSchema>;
@@ -51,14 +69,46 @@ export type SandboxLimits = z.infer<typeof sandboxLimitsSchema>;
 export type SandboxSpec = z.infer<typeof sandboxSpecSchema>;
 export type SandboxSpecInput = z.input<typeof sandboxSpecSchema>;
 
-/** Why a command stopped early. `unknown` means the effect may or may not have completed. */
+/**
+ * Allowed `workspaceKey` values: 1–128 characters of `[A-Za-z0-9_-]`.
+ * Deliberately conservative, because drivers turn keys into directory, volume
+ * or resource names: no separators, no `.` or `..`, no whitespace, no
+ * encodings. Task ids (UUIDs) fit.
+ */
+export const WORKSPACE_KEY_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Whether a command was stopped early.
+ *
+ * - `no`: it ran to completion. Background processes it started may still be
+ *   running; they live until `release()`.
+ * - `yes`: it was stopped (or, with an already-aborted signal, never started),
+ *   and the driver verified that none of its processes, background
+ *   descendants included, are still running when `exec` resolves.
+ * - `unknown`: a stop was attempted but the driver cannot prove the whole
+ *   process tree is gone. Its effects may have happened or still be happening.
+ */
 export type Interrupted = "no" | "yes" | "unknown";
 
 export interface ExecOptions {
-  /** Workspace-relative working directory. Absolute paths and escapes are rejected. */
+  /**
+   * Working directory: workspace-relative, or an absolute path inside the
+   * workspace. A path that resolves outside it (`..`, another absolute path,
+   * or a symlink pointing out) is rejected with `SandboxPathError`.
+   */
   cwd?: string;
+  /** Added to the sandbox environment for this command only. */
   env?: Record<string, string>;
+  /**
+   * Per-call timeout. It can only shorten `spec.limits.execTimeoutMs`, never
+   * extend it. Drivers apply the rule with `resolveExecTimeoutMs`.
+   */
   timeoutMs?: number;
+  /**
+   * Stops the command when aborted (`interruptReason: "abort"`). An
+   * already-aborted signal means the command never starts: `exitCode: null`,
+   * `interrupted: "yes"`, and no side effects.
+   */
   signal?: AbortSignal;
   onData?: (chunk: Buffer, stream: "stdout" | "stderr") => void;
 }
@@ -71,7 +121,8 @@ export interface ExecResult {
   truncated: boolean;
   durationMs: number;
   interrupted: Interrupted;
-  interruptReason?: "timeout" | "abort" | string;
+  /** Set whenever `interrupted` is not "no". `release` means the sandbox was released mid-command. */
+  interruptReason?: "timeout" | "abort" | "release" | string;
 }
 
 export interface SandboxStat {
@@ -86,6 +137,14 @@ export interface SandboxDirEntry {
   kind: "file" | "directory" | "other";
 }
 
+/**
+ * Workspace file access. Paths are workspace-relative, or absolute inside the
+ * workspace. Containment is checked on the real path: a path that leaves the
+ * workspace once symlinks are followed (including a dangling link whose target
+ * would be created outside) is rejected with `SandboxPathError`. `remove` and
+ * `move` act on a symlink itself, never its target, so an outward link can
+ * still be deleted or renamed.
+ */
 export interface SandboxFs {
   read(path: string): Promise<Buffer>;
   write(path: string, data: Buffer | string): Promise<void>;
@@ -117,16 +176,31 @@ export interface Sandbox {
   /** Returns a driver-scoped snapshot reference for retry-from-checkpoint. Optional capability. */
   snapshot?(): Promise<string>;
   metrics?(): Promise<SandboxMetrics>;
+  /**
+   * Ends the sandbox. Stops every process it started, background ones
+   * included; commands still running resolve with `interruptReason:
+   * "release"`. Then discards an `ephemeral` workspace unless `persist` is
+   * set. Idempotent. Afterwards `exec` and every `fs` call reject with
+   * `SandboxReleasedError`.
+   */
   release(options?: { persist?: boolean }): Promise<void>;
 }
 
 /** What a driver can actually enforce. Declared, not assumed, so the backend never over-promises. */
 export interface DriverCapabilities {
-  /** Enforces `network.mode` other than "open". */
-  networkPolicy: boolean;
+  /**
+   * The `network.mode` values this driver can enforce; `assertSpecSupported`
+   * refuses any other. List a mode only if it is really enforced: `none`
+   * means egress is blocked, not merely unconfigured.
+   */
+  networkModes: ReadonlyArray<NetworkMode>;
   /** Enforces `resources` limits. */
   resourceLimits: boolean;
-  /** Isolates the filesystem from the host. */
+  /**
+   * Agent-run code cannot reach the host filesystem, the host or worker
+   * process environment (including through `/proc`), or other workspaces.
+   * Model keys are kept from agent-run code only by drivers that declare this.
+   */
   filesystemIsolation: boolean;
   exposePort: boolean;
   snapshot: boolean;
@@ -134,10 +208,16 @@ export interface DriverCapabilities {
 }
 
 export interface AcquireRequest {
+  /** The session that asked for the sandbox, for attribution. A task's sessions share one sandbox. */
   sessionId: string;
   taskId: string;
   spec: SandboxSpec;
-  /** Identity of the reusable workspace when `spec.workspace` is not "ephemeral". */
+  /**
+   * Identity of the workspace together with `spec.workspace`: the same key in
+   * `task` or `bot` mode reuses and shares files; a different key or mode
+   * never does. Must match `WORKSPACE_KEY_PATTERN`; drivers check it with
+   * `assertWorkspaceKey`, in every mode. Task execution passes the task id.
+   */
   workspaceKey: string;
   /** Injected into the sandbox environment and never written to events or logs. */
   secrets?: Record<string, string>;
@@ -152,9 +232,14 @@ export interface DriverHealth {
 export interface SandboxDriver {
   readonly id: string;
   readonly capabilities: DriverCapabilities;
-  /** Parses and rejects a spec this driver cannot honor. Must never silently downgrade isolation. */
+  /**
+   * Parses and rejects a spec this driver cannot honor: one addressed to
+   * another driver, one asking for isolation it cannot enforce (both via
+   * `assertSpecSupported`), or one carrying settings it would ignore, such as
+   * an `image` or unknown `driverConfig` keys. Must never silently downgrade.
+   */
   validateSpec(spec: unknown): SandboxSpec;
-  /** Cheap reachability check for readiness probes. */
+  /** Cheap reachability check for readiness probes. Unhealthy where the driver cannot run. */
   probe(): Promise<DriverHealth>;
   acquire(request: AcquireRequest): Promise<Sandbox>;
 }
@@ -166,6 +251,7 @@ export class SandboxPathError extends Error {
   }
 }
 
+/** The spec asks for isolation or a setting the driver cannot enforce. */
 export class SandboxCapabilityError extends Error {
   constructor(driverId: string, capability: string) {
     super(`Driver ${driverId} cannot enforce ${capability}`);
@@ -173,15 +259,63 @@ export class SandboxCapabilityError extends Error {
   }
 }
 
+/** A spec or acquire request that is malformed for this driver, such as one addressed to another driver or an invalid workspace key. */
+export class SandboxRequestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxRequestError";
+  }
+}
+
+/** A call on a sandbox after `release()`. */
+export class SandboxReleasedError extends Error {
+  constructor(sandboxId: string) {
+    super(`Sandbox ${sandboxId} has been released`);
+    this.name = "SandboxReleasedError";
+  }
+}
+
+/** Throws `SandboxRequestError` unless `key` matches `WORKSPACE_KEY_PATTERN`. */
+export function assertWorkspaceKey(key: unknown): string {
+  if (typeof key === "string" && WORKSPACE_KEY_PATTERN.test(key)) return key;
+  const shown = JSON.stringify(key)?.slice(0, 80) ?? String(key);
+  throw new SandboxRequestError(
+    `Invalid workspaceKey ${shown}: expected 1-128 characters of [A-Za-z0-9_-]`,
+  );
+}
+
+/** Largest delay a Node timer represents; anything longer overflows and fires at once. */
+export const MAX_TIMER_MS = 2_147_483_647;
+
 /**
- * Rejects a spec whose isolation requirements exceed the driver's capabilities.
- * Honesty gate: downgrading silently is how a "sandbox" stops being one.
+ * The timeout an `exec` call actually gets: the per-call value when it is a
+ * positive finite number, capped by `limits.execTimeoutMs` and by what a
+ * timer can represent. Anything else falls back to the limit.
+ */
+export function resolveExecTimeoutMs(
+  limits: Pick<SandboxLimits, "execTimeoutMs">,
+  requested?: number,
+): number {
+  const ceiling = Math.min(limits.execTimeoutMs, MAX_TIMER_MS);
+  if (requested === undefined || !Number.isFinite(requested) || requested <= 0)
+    return ceiling;
+  return Math.max(1, Math.min(Math.floor(requested), ceiling));
+}
+
+/**
+ * Rejects a spec addressed to another driver, or whose isolation requirements
+ * exceed the driver's capabilities. Honesty gate: downgrading silently is how
+ * a "sandbox" stops being one. Every driver calls this from `validateSpec`.
  */
 export function assertSpecSupported(
   driver: Pick<SandboxDriver, "id" | "capabilities">,
   spec: SandboxSpec,
 ): void {
-  if (spec.network.mode !== "open" && !driver.capabilities.networkPolicy)
+  if (spec.driver !== driver.id)
+    throw new SandboxRequestError(
+      `Spec is addressed to driver "${spec.driver}", not "${driver.id}"`,
+    );
+  if (!driver.capabilities.networkModes.includes(spec.network.mode))
     throw new SandboxCapabilityError(
       driver.id,
       `network.mode="${spec.network.mode}"`,
