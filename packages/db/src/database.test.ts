@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, getTableName, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type Database, migrationsFolder, openDatabase } from "./database";
+import {
+  type Database,
+  migrationStatus,
+  migrationsFolder,
+  openDatabase,
+} from "./database";
 import { newId } from "./ids";
 import {
   DatabaseInUseError,
@@ -76,6 +81,15 @@ describe.each(targets)("openDatabase on $name", (target) => {
     expect(expectedTables).toHaveLength(16);
     expect(await publicTables(database)).toEqual(expectedTables);
     expect(await appliedMigrations(database)).toBe(await journalLength());
+  });
+
+  it("reports the migration status as applied with none pending", async () => {
+    const length = await journalLength();
+    expect(await migrationStatus(database.db)).toEqual({
+      expected: length,
+      applied: length,
+      pending: 0,
+    });
   });
 
   it("maps timestamps, jsonb and bytea the same way on both drivers", async () => {
@@ -180,6 +194,23 @@ describe.each(targets)("openDatabase on $name", (target) => {
     await expect(
       openDatabase({ mode: "postgres", connectionString: " " }),
     ).rejects.toThrow("connection string");
+  });
+});
+
+describe("migrationStatus", () => {
+  it("counts migrations newer than the last applied one as pending", async () => {
+    const database = await openDatabase({ mode: "pglite" });
+    try {
+      await database.db.execute(sql`delete from drizzle.__drizzle_migrations`);
+      const length = await journalLength();
+      expect(await migrationStatus(database.db)).toEqual({
+        expected: length,
+        applied: 0,
+        pending: length,
+      });
+    } finally {
+      await database.close();
+    }
   });
 });
 

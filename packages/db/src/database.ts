@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
-import type { ExtractTablesWithRelations } from "drizzle-orm";
+import { type ExtractTablesWithRelations, sql } from "drizzle-orm";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
 import { migrate as migrateNodePg } from "drizzle-orm/node-postgres/migrator";
 import type {
@@ -125,6 +126,36 @@ export async function openDatabase(config: DatabaseConfig): Promise<Database> {
     await endPool();
     throw error;
   }
+}
+
+export interface MigrationStatus {
+  /** Migrations in `migrationsFolder`. */
+  expected: number;
+  /** Migrations recorded as applied in this database. */
+  applied: number;
+  /** Migrations newer than the last applied one: what `openDatabase` would apply. */
+  pending: number;
+}
+
+/**
+ * Compares the database's migration record with the migrations shipped in
+ * `migrationsFolder`, the way the migrator decides what to apply. For
+ * readiness checks; `openDatabase` has already applied everything it opened.
+ */
+export async function migrationStatus(
+  exec: Executor,
+): Promise<MigrationStatus> {
+  const files = readMigrationFiles({ migrationsFolder });
+  const result = (await exec.execute(
+    sql`select created_at from drizzle.__drizzle_migrations`,
+  )) as unknown as { rows: { created_at: string | number }[] };
+  const applied = result.rows.map((row) => Number(row.created_at));
+  const last = applied.length > 0 ? Math.max(...applied) : -1;
+  return {
+    expected: files.length,
+    applied: applied.length,
+    pending: files.filter((file) => file.folderMillis > last).length,
+  };
 }
 
 export const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
