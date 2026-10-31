@@ -1,63 +1,71 @@
-import type { BotProfile, TaskView } from "../../api/types";
+import type { Bot, TaskView } from "@jj/contracts";
+import { statusWord, taskStatusWord, waitingTooltip } from "../../lib/status";
+import { sessionLine, sessionOrdinal, sessionTools } from "../../lib/tasks";
 import { StatusDot } from "../common/StatusDot";
 
 export function NodeInspector({
-  task,
+  view,
   selectedNodeId,
   getBot,
 }: {
-  task: TaskView;
+  view: TaskView;
   selectedNodeId: string | null;
-  getBot: (id: string) => BotProfile | undefined;
+  getBot: (id: string) => Bot | undefined;
 }) {
-  const session = task.sessions.find((s) => s.id === selectedNodeId);
+  const session = view.sessions.find((s) => s.id === selectedNodeId);
 
   if (session) {
     const bot = getBot(session.botId);
+    const tools = sessionTools(view, session.id);
     return (
       <div className="node-inspector">
         <div className="node-inspector-top">
           <div className="node-inspector-title">
             <StatusDot status={session.status} />
             <span>
-              {session.label} · {bot?.name ?? "Bot"}
+              {sessionOrdinal(view, session.id)} · {bot?.name ?? "Bot"}
             </span>
           </div>
-          <span className="mono-muted">{session.status}</span>
+          <span className="mono-muted" title={waitingTooltip(session)}>
+            {statusWord(session.status)}
+          </span>
         </div>
         <div className="node-inspector-body">
           <div className="node-brief">{session.brief}</div>
-          {session.tools.length > 0 && (
-            <div className="node-tools">Tools: {session.tools.join(" → ")}</div>
+          {tools.length > 0 && (
+            <div className="node-tools">Tools: {tools.join(" → ")}</div>
           )}
           <div className="node-evidence">
-            <strong>Evidence:</strong> {session.evidence}
+            <strong>{session.result ? "Result:" : "Now:"}</strong>{" "}
+            {session.result ?? sessionLine(session)}
           </div>
         </div>
       </div>
     );
   }
 
+  const { task } = view;
   return (
     <div className="node-inspector">
       <div className="node-inspector-top">
         <div className="node-inspector-title">
-          <span>Verification Criteria (v{task.goalVersion})</span>
+          <StatusDot status={task.status} />
+          <span>Goal (v{task.goalVersion})</span>
         </div>
-        <span className="muted-small">{task.checks.length} checks</span>
+        <span className="mono-muted">{taskStatusWord(task)}</span>
       </div>
-      <div className="check-pill-list">
-        {task.checks.map((check) => (
-          <div key={check.id} className="check-item">
-            <div className="check-item-head">
-              <span>{check.description}</span>
-              <span className={`check-outcome ${check.outcome}`}>
-                {check.outcome}
-              </span>
-            </div>
-            <div className="check-evidence">{check.evidence}</div>
+      <div className="node-inspector-body">
+        <div className="node-brief">{task.goal}</div>
+        {task.result && (
+          <div className="node-evidence">
+            <strong>Result:</strong> {task.result}
           </div>
-        ))}
+        )}
+        {task.error && (
+          <div className="node-evidence">
+            <strong>Error:</strong> {task.error}
+          </div>
+        )}
       </div>
     </div>
   );

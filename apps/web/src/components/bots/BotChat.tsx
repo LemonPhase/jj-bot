@@ -1,5 +1,5 @@
+import type { Bot } from "@jj/contracts";
 import { useEffect, useRef } from "react";
-import type { BotProfile } from "../../api/types";
 import { formatMessageTime } from "../../lib/format";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotAvatar } from "../common/BotAvatar";
@@ -12,13 +12,15 @@ export function BotChat({
   onNewTask,
   onToggleInspector,
 }: {
-  bot: BotProfile;
+  bot: Bot;
   onNewTask: () => void;
   onToggleInspector: () => void;
 }) {
-  const { conversations, sendDirectMessage, pendingBotTurns, tasks } =
+  const { conversations, sendBotMessage, pendingBotTurns, tasks } =
     useWorkspace();
-  const messages = conversations[bot.id] ?? [];
+  const conversation = conversations[bot.id];
+  const messages = conversation?.messages ?? [];
+  const replyError = conversation?.lastReplyError;
   const pendingText = pendingBotTurns[bot.id];
   const lastTaskId = [...messages].reverse().find((m) => m.taskId)?.taskId;
   const linkedTask = lastTaskId
@@ -26,13 +28,14 @@ export function BotChat({
     : undefined;
   const taskRunning =
     linkedTask?.status === "running" || linkedTask?.status === "queued";
-  const busy = Boolean(pendingText) || taskRunning;
+  const busy =
+    Boolean(pendingText) || Boolean(conversation?.replying) || taskRunning;
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, pendingText, busy, bot.id]);
+  }, [messages.length, pendingText, busy, replyError, bot.id]);
 
   return (
     <main className="chat-column">
@@ -69,13 +72,6 @@ export function BotChat({
           </div>
         )}
         {messages.map((m) => {
-          if (m.role === "system") {
-            return (
-              <div key={m.id} className="msg-row system">
-                <div className="system-pill">{m.text}</div>
-              </div>
-            );
-          }
           const isUser = m.role === "user";
           return (
             <div key={m.id} className={`msg-row ${isUser ? "user" : "bot"}`}>
@@ -98,10 +94,21 @@ export function BotChat({
             </div>
           </div>
         )}
+        {replyError && !conversation?.replying && (
+          <div className="msg-row system" role="alert">
+            <div className="system-pill">
+              Reply failed: {replyError.message}
+            </div>
+          </div>
+        )}
         {busy && (
           <TypingIndicator
             avatar={<BotAvatar bot={bot} size="sm" />}
-            label={`${bot.name} is working…`}
+            label={
+              conversation?.replying
+                ? `${bot.name} is replying…`
+                : `${bot.name} is working…`
+            }
           />
         )}
       </div>
@@ -110,7 +117,7 @@ export function BotChat({
         key={bot.id}
         placeholder={`Message ${bot.name}...`}
         disabled={Boolean(pendingText)}
-        onSend={(text) => void sendDirectMessage(bot.id, text)}
+        onSend={(text) => void sendBotMessage(bot.id, text)}
       />
     </main>
   );

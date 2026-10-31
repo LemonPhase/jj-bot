@@ -46,7 +46,7 @@ Internal packages export TypeScript source. API/worker run with `tsx`; `build` t
 | `JJ_CONCURRENCY`   | Concurrent execution sessions and claimed jobs, default `3`.                                |
 | `JJ_POSTGRES_PORT` | Host port for the compose PostgreSQL service, default `5433`.                               |
 | `JJ_SANDBOX_ROOT`  | `local` sandbox workspace root, default `<os.tmpdir()>/jj-sandbox`; the operator clears it. |
-| `API_TOKEN`        | Optional bearer token required on `/api/*` when set.                                        |
+| `API_TOKEN`        | Optional bearer token on `/api/*`. The web app reads it from `?token=` into localStorage.   |
 | `GEMINI_API_KEY`   | Server-only Google GenAI key. Never expose it to the browser.                               |
 | `GEMINI_MODEL`     | Exact model id used for sessions; validate access before relying on it.                     |
 
@@ -93,7 +93,6 @@ Task execution is owned by the backend scheduler, not by an HTTP request or an o
 
 - AG-UI client/core are pinned to 1.0.2 to match CopilotKit 1.83.0. Mixing that pinned client with a direct 1.0.3 client produced incompatible private class types; do not bypass this with casts.
 - The dependency audit is not clean. Review reachability and patched upstream releases before external deployment; do not apply blanket breaking overrides or claim a clean audit.
-- The CopilotKit provider produces large rendering-related chunks and the main bundle exceeds 2 MB before gzip. Isolate or lazy-load imports instead of suppressing the size warning.
 - PGlite is single-process. Its data directory is locked to the process that opens it, and a second process is refused. A separate worker, or more than one API process, requires PostgreSQL.
 - Writes serialize per task and per bot (sequence allocation row-locks that task or bot), never globally. Job claims use `FOR UPDATE SKIP LOCKED`, and at most one run per session and one chat reply per bot is ever active.
 - Pooled PostgreSQL connections set `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s), so a statement stuck waiting on a lock, or a transaction left open, fails instead of hanging.
