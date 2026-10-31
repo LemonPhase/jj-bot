@@ -22,6 +22,8 @@ Every coding tool acts through the run's `Sandbox`. `read`, `edit`, `write`, `ls
 - A collaboration tool returning `endRun` (complete_task) ends the run after its tool batch.
 - No context compaction: a session's transcript grows until the run stops at `maxTurns` or the deadline, or the model's context window is exceeded (an `error` outcome). Compacting would need a persisted compaction entry; it is out of scope for the MVP.
 
+`configureOutboundProxy(env)` installs undici's `EnvHttpProxyAgent` as the global dispatcher, so the provider SDKs inside pi-ai (openai, @anthropic-ai/sdk and @google/genai, all on Node's global `fetch`) honour `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Processes that call providers run it once at startup.
+
 Tests use pi's faux provider, the scripted model and the `local` sandbox driver; none call a live model. `npm run smoke:runtime` runs one live tool cycle with `JJ_SMOKE_MODEL` (default `openai/gpt-6-luna`).
 
 `src/legacy` holds the Gemini-era `GeminiSessionExecutor` and `GeminiBotRouter`, re-exported unchanged for the old backend until the engine rewrite removes them.

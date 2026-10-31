@@ -12,7 +12,8 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@google/genai": "2.32.0",
     "@jj/contracts": "*",
-    "@jj/sandbox": "*"
+    "@jj/sandbox": "*",
+    "undici": "8.12.2"
   },
   "exports": {
     ".": "./src/index.ts"

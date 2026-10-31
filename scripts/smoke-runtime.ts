@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addUsage, emptyUsage } from "@jj/contracts";
 import {
+  configureOutboundProxy,
   type ExecutorEvent,
   ModelRegistry,
   ModelResolutionError,
@@ -14,6 +15,8 @@ import {
 } from "@jj/runtime";
 import { LocalSandboxDriver } from "@jj/sandbox";
 
+// Provider SDKs use Node's fetch, which ignores HTTPS_PROXY on its own.
+const proxy = configureOutboundProxy(process.env);
 const ref = process.env.JJ_SMOKE_MODEL?.trim() || "openai/gpt-6-luna";
 const registry = new ModelRegistry({ env: process.env });
 
@@ -115,6 +118,9 @@ async function main(): Promise<boolean> {
             test: "runtime",
             status: passed ? "passed" : "failed",
             model: ref,
+            proxy: proxy
+              ? { httpsProxy: proxy.httpsProxy, httpProxy: proxy.httpProxy }
+              : "none",
             outcome,
             turns: usage.modelCalls,
             toolCalls: tools,

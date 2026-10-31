@@ -6,6 +6,7 @@ export * from "./chat";
 export * from "./executor";
 export * from "./legacy/index";
 export * from "./models";
+export * from "./proxy";
 export * from "./scripted";
 export {
   capToolOutput,
