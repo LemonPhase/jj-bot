@@ -51,8 +51,8 @@ Every task and execution session includes a verification loop; see [Verification
 ## Still open
 
 - The first concrete demo task, target persona, broader tool catalogue, and sample inputs.
-- The frontend task workspace: chat, session activity, and steering controls.
-- Qualitative review rubrics and per-task escalation policy; retry budgets are implemented.
+- Qualitative review rubrics and per-task escalation policy.
+- The final visualization layout.
 - Real user identity, tool permissions, shared-resource isolation, and deployment details.
 - License and public distribution policy.
 
