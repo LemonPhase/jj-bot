@@ -491,31 +491,40 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   };
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  const unsupported = (message: string) =>
+    new ApiError("PROFILE_UNSUPPORTED", message, undefined, 422);
+  /**
+   * Refuses what the server refuses, with the same messages: the server
+   * answers PROFILE_UNSUPPORTED with the driver's own error (packages/sandbox
+   * `assertSpecSupported`, then each driver's `validateSpec`).
+   */
   const assertSupported = (spec: SandboxSpec) => {
     const driver = DEMO_DRIVERS.find((d) => d.id === spec.driver);
     if (!driver)
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `There is no sandbox driver "${spec.driver}".`,
-        undefined,
-        422,
+      throw unsupported(
+        `No sandbox driver "${spec.driver}" is installed on this server.`,
       );
     if (!driver.capabilities.networkModes.includes(spec.network.mode))
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `The ${driver.label} driver cannot enforce network mode "${spec.network.mode}".`,
-        undefined,
-        422,
+      throw unsupported(
+        `Driver ${driver.id} cannot enforce network.mode="${spec.network.mode}"`,
       );
     const wantsLimits = Object.values(spec.resources).some(
       (v) => v !== undefined,
     );
     if (wantsLimits && !driver.capabilities.resourceLimits)
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `The ${driver.label} driver cannot enforce resource limits.`,
-        undefined,
-        422,
+      throw unsupported(`Driver ${driver.id} cannot enforce resources`);
+    if (driver.id === "local" && spec.image !== undefined)
+      throw unsupported(
+        `Driver local cannot enforce image "${spec.image}": commands run directly on the host`,
+      );
+    if (driver.id === "docker" && spec.resources.diskMb !== undefined)
+      throw unsupported(
+        "Driver docker cannot enforce resources.diskMb: named volumes have no size limit",
+      );
+    const configKeys = Object.keys(spec.driverConfig);
+    if (configKeys.length > 0)
+      throw unsupported(
+        `Driver ${driver.id} takes no driverConfig; got ${configKeys.join(", ")}`,
       );
   };
   const profileStatus = (spec: SandboxSpec): RuntimeProfile["status"] => {
@@ -539,6 +548,21 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     const record = bots.get(botId);
     if (!record) throw notFound("bot", botId);
     return record;
+  };
+  const assertNameFree = (name: string, exceptId?: string) => {
+    const taken = [...bots.values()].some(
+      (record) =>
+        !record.archived &&
+        record.bot.id !== exceptId &&
+        record.bot.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (taken)
+      throw new ApiError(
+        "CONFLICT",
+        `A bot named ${name} already exists.`,
+        undefined,
+        409,
+      );
   };
   const checkBotRefs = (fields: { runtimeProfileId?: string | null }) => {
     if (fields.runtimeProfileId && !profiles.has(fields.runtimeProfileId))
@@ -618,6 +642,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     createBot: async (command) => {
       const parsed = validate(createBotCommandSchema, command);
       checkBotRefs(parsed);
+      assertNameFree(parsed.name);
       const id = `bot-new-${++botCounter}`;
       const createdAt = now();
       const record: BotRecord = {
@@ -649,6 +674,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       const record = getBotRecord(botId);
       const parsed = validate(updateBotCommandSchema, command);
       checkBotRefs(parsed);
+      if (parsed.name !== undefined) assertNameFree(parsed.name, botId);
       const changes = Object.fromEntries(
         Object.entries(parsed).filter(([, value]) => value !== undefined),
       );
@@ -736,13 +762,33 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     updateProfile: async (profileId, command) => {
       const stored = getProfileRecord(profileId);
       const patch = validate(updateRuntimeProfileCommandSchema, command);
-      // Deep-merge as the server does; tools, network, env and driverConfig are replaced whole.
-      const sandbox = validate(sandboxSpecSchema, {
-        ...stored.sandbox,
-        ...patch.sandbox,
-        resources: { ...stored.sandbox.resources, ...patch.sandbox?.resources },
-        limits: { ...stored.sandbox.limits, ...patch.sandbox?.limits },
-      });
+      if (patch.isDefault === false && stored.isDefault)
+        throw new ApiError(
+          "CONFLICT",
+          "Make another profile the default instead of unsetting this one.",
+          undefined,
+          409,
+        );
+      // Deep-merge as the server does: tools, network, env and driverConfig
+      // are replaced whole, and a driver change drops the old driver's image
+      // and driverConfig unless the patch sets them.
+      const switching =
+        patch.sandbox?.driver !== undefined &&
+        patch.sandbox.driver !== stored.sandbox.driver;
+      const base: Partial<SandboxSpec> = switching
+        ? { ...stored.sandbox, image: undefined, driverConfig: {} }
+        : stored.sandbox;
+      const changes = Object.fromEntries(
+        Object.entries(patch.sandbox ?? {}).filter(([, v]) => v !== undefined),
+      );
+      const merged: Record<string, unknown> = {
+        ...base,
+        ...changes,
+        resources: { ...base.resources, ...patch.sandbox?.resources },
+        limits: { ...base.limits, ...patch.sandbox?.limits },
+      };
+      if (merged.image === undefined) delete merged.image;
+      const sandbox = validate(sandboxSpecSchema, merged);
       assertSupported(sandbox);
       const next: RuntimeProfile = {
         ...stored,
@@ -761,16 +807,21 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     },
     deleteProfile: async (profileId) => {
       const profile = getProfileRecord(profileId);
+      if (profile.isDefault)
+        throw new ApiError(
+          "CONFLICT",
+          "This is the default profile; make another profile the default first.",
+          undefined,
+          409,
+        );
       const users = [...bots.values()].filter(
         (record) =>
-          !record.archived &&
-          (record.bot.runtimeProfileId === profileId ||
-            (profile.isDefault && record.bot.runtimeProfileId === null)),
+          !record.archived && record.bot.runtimeProfileId === profileId,
       );
       if (users.length)
         throw new ApiError(
           "PROFILE_IN_USE",
-          `${profile.name} is used by ${users.map((u) => u.bot.name).join(", ")}.`,
+          `Used by ${users.map((u) => u.bot.name).join(", ")}.`,
           { botIds: users.map((u) => u.bot.id) },
           409,
         );
