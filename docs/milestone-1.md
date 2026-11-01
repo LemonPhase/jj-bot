@@ -16,7 +16,7 @@ The milestone is met only when all of these are demonstrable together, through t
 - Task creation records goal, coordinator and participants.
 - At least two bots do real work in separate sessions, running in parallel inside sandboxes.
 - Sessions of one task can share files through the task workspace.
-- Task messages are attributed and visible to all participants without activating every bot.
+- Task messages are attributed and shared in one task chat, and posting one does not activate every bot.
 - The coordinator delegates bounded work and receives the results back.
 - Each working bot shows its current activity live, and the execution graph shows bots, assignments, commands and results.
 - Steering reaches the coordinator and changes subsequent execution.
@@ -45,7 +45,7 @@ The acceptance run uses this task through the product surface. It exercises ever
 | Builder | Implementer   | Writes `wordfreq.js`: an exported `topWords(text, n)` function and a CLI (`node wordfreq.js <file> [n]`).                                                 |
 | Tester  | Test engineer | Writes `wordfreq.test.js` with `node:test` against the agreed interface, plus a `sample.txt` fixture.                                                     |
 
-Lead is the coordinator and all three are participants. The runtime profile is the default docker profile with network `none`.
+Lead is the coordinator and all three are participants. Lead's runtime profile, which the task's sandbox uses, is a docker profile with network `none` (the seeded Docker sandbox profile has `open`, so edit it or create one).
 
 Expected run:
 

@@ -4,25 +4,26 @@ The JJ Bot engine: domain services (bots, memory, profiles, tasks, messages, cha
 
 ## Wiring
 
-The engine depends on its ports in `src/ports.ts`, never on `@jj/runtime` or a concrete driver. The runtime's classes satisfy them (checked at compile time by `src/runtime-ports.test.ts`):
+The engine depends on its ports in `src/ports.ts`, never on `@jj/runtime` or a concrete driver. The runtime's classes satisfy them (checked at compile time by `src/runtime-ports.test.ts`). The composition the API and the standalone worker share is `openServices` in `apps/api/src/wiring.ts`; in outline:
 
 ```ts
 const database = await openDatabase(/* pglite or postgres */);
-const models = new ModelRegistry({
-  enableScripted: process.env.JJ_ENABLE_SCRIPTED_MODEL === "true",
-});
+const models = new ModelRegistry({ env, enableScripted });
 const engine = await createEngine({
   db: database,
   drivers: createDriverRegistry([
-    { driver: new DockerSandboxDriver(), label: "Docker" },
-    { driver: new LocalSandboxDriver(), label: "Local (unisolated)" },
+    { driver: new DockerSandboxDriver({ namespace }), label: "Docker" },
+    {
+      driver: new LocalSandboxDriver({ root, env: {} }),
+      label: "Local (unisolated)",
+    },
   ]),
   executor: new PiSessionExecutor({ models, outputCapBytes }),
-  chat: new ChatResponder({ models }),
+  chat: new ChatResponder({ models, outputCapBytes }),
   models,
-  config: configFromEnv(),
+  config: configFromEnv(env),
 });
-if (process.env.JJ_EMBED_WORKER !== "false") await engine.worker.start();
+await engine.worker.start(); // unless the worker runs in its own process
 // On shutdown: await engine.worker.stop(); await database.close();
 ```
 

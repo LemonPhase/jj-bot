@@ -21,7 +21,7 @@ Search (grep and find) runs through `exec` with tools in the sandbox image. It i
 | `local`  | None. Commands run on the host as the server's user; only the environment is built fresh.                                                                  | Development and trusted single-user machines |
 | `docker` | One sibling container per sandbox: non-root, no capabilities, `no-new-privileges`, cgroup limits; named-volume workspace; no Docker socket or host mounts. | Self-hosted installs that run agent code     |
 
-Remote drivers, such as one for Daytona, implement the same contract out of tree.
+A remote driver, such as one for Daytona, implements the same contract; none ships in this repository.
 
 Workspaces live under the `root` option, else `JJ_SANDBOX_ROOT`, else `<os.tmpdir()>/jj-sandbox`, as `task/<key>`, `bot/<key>` and `ephemeral/<key>-<random>`. The root is fixed, so `task` workspaces survive a server restart; the OS may still clear its temporary directory, so set `JJ_SANDBOX_ROOT` to a durable directory where that matters. The default directory must be owned by the server's user and not be a symlink, or the driver reports unhealthy. Only ephemeral workspaces are deleted, on release; the operator clears the rest of the root.
 
