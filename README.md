@@ -12,29 +12,27 @@ JJ Bot is an open, self-hostable multi-bot agent workspace — an open alternati
 
 ## Run locally
 
-Use Node.js 24 (minimum 22.12), npm, and Docker for the default PostgreSQL store:
+Use Node.js 24 (minimum 22.12) and npm:
 
 ```sh
 npm ci
-cp .env.example .env
-docker compose up -d postgres
-npm run dev
+JJ_ENABLE_SCRIPTED_MODEL=true npm run dev
 ```
 
-Open http://127.0.0.1:5173. The API listens on http://127.0.0.1:3001. Set `JJ_DATABASE_MODE=pglite` to run without Docker (single process only). Model execution currently uses Gemini: add `GEMINI_API_KEY` and `GEMINI_MODEL`. Without them the API still stores and serves bots and tasks, but execution cannot start.
+Open http://127.0.0.1:5173. The API listens on http://127.0.0.1:3001 and keeps its data in embedded PGlite under `.jj-data`, so nothing else is needed. `JJ_ENABLE_SCRIPTED_MODEL=true` enables a keyless, deterministic test model; for real bots, put a model provider's key in `.env` (`cp .env.example .env`). Without a model the API still stores and serves bots and tasks, but execution cannot start. Set `DATABASE_URL` to use PostgreSQL (`docker compose up -d postgres` starts one), and build the web app (`npm run build -w @jj/web`) to have the API serve everything from one process.
 
-Run `npm run check` for lint, tests, all-package typecheck and the web build. Never commit `.env`. See [development setup](docs/development.md) for the full command set, configuration and endpoint boundaries.
+Run `npm run check` for lint, tests, all-package typecheck and the web build, and `npm run smoke:e2e` for the whole server end to end. Never commit `.env`. See [development setup](docs/development.md) for the full command set, configuration and endpoints.
 
 ## Repository layout
 
 | Directory            | Responsibility                                                                       |
 | -------------------- | ------------------------------------------------------------------------------------ |
 | `apps/web`           | React/Vite workspace: bot and task chat, execution graph, steering and stop controls |
-| `apps/api`           | Hono service: bootstrap/health, bot and task routes, task event streaming            |
-| `apps/worker`        | Standalone worker for deployments that do not embed the scheduler in the API         |
+| `apps/api`           | Hono HTTP and SSE API over the engine; serves the built web app                      |
+| `apps/worker`        | Standalone worker for PostgreSQL deployments that do not embed it in the API         |
 | `packages/contracts` | Canonical Zod schemas and types; the frontend/backend boundary                       |
-| `packages/backend`   | Coordination, delegation, steering, cancellation and scheduling                      |
-| `packages/runtime`   | Agent session execution behind the `SessionExecutor` interface                       |
+| `packages/backend`   | The engine: coordination, delegation, steering, cancellation and the job worker      |
+| `packages/runtime`   | The pi agent runtime: models, session executor and chat responder                    |
 | `packages/sandbox`   | Sandbox driver contract, drivers and the shared driver conformance suite             |
 | `packages/db`        | Transactional PGlite/PostgreSQL store with an append-only task event log             |
 
@@ -48,7 +46,7 @@ Docs describe stable design, contracts and constraints — not progress. Impleme
 - [Verification](docs/verification.md): opt-in task verification, check kinds and evidence.
 - [Milestone 1](docs/milestone-1.md): MVP acceptance criteria.
 - [Task continuation](docs/task-continuation.md): goal versioning and extending a completed task.
-- [Development setup](docs/development.md): commands, configuration and endpoint boundaries.
+- [Development setup](docs/development.md): commands, configuration and endpoints.
 - [Contract changelog](docs/contract-changelog.md): schema changes and required coordination.
 - [Reference implementations](docs/references.md): Rakazo, OpenMausBot and OpenBot.
 
