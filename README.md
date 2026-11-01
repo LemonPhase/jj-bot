@@ -16,10 +16,11 @@ With Docker Engine and Compose v2, from the repository root:
 
 ```sh
 cp .env.example .env    # then set one model provider key, such as OPENAI_API_KEY
-docker compose up -d --build
+docker compose up -d --build --wait
+docker compose logs app | grep "Open JJ Bot"
 ```
 
-Open http://127.0.0.1:3001. This runs PostgreSQL and the app (the API serving the web app, with the worker embedded) and builds the sandbox image; every task runs in its own isolated Docker container. The app mounts the host's Docker socket, which is root-equivalent on the host, and serves without a token only because the port is published on loopback: set `API_TOKEN` before exposing it any further. Stop with `docker compose down` (add `-v` to delete the data). See [Docker Compose](docs/development.md#docker-compose) for the details.
+Open the printed link, `http://127.0.0.1:3001/?token=…`. The token is generated on first boot and kept with the data, so the same link works after restarts; the web app remembers it and removes it from the address bar. This runs PostgreSQL and the app (the API serving the web app, with the worker embedded) and builds the sandbox image; every task runs in its own isolated Docker container. The app mounts the host's Docker socket, which is root-equivalent on the host, and publishes its port on loopback only. Stop with `docker compose down` (add `-v` to delete the data and the token). See [Docker Compose](docs/development.md#docker-compose) for the details.
 
 ## Run locally
 
