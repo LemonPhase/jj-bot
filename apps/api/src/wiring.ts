@@ -32,7 +32,8 @@ export function sandboxDrivers(config: ServicesConfig): DriverEntry[] {
   return config.drivers.map((id): DriverEntry => {
     if (id === "local")
       return {
-        driver: new LocalSandboxDriver({ root: config.localRoot }),
+        // `env: {}`: the root comes from the settings, never from process.env.
+        driver: new LocalSandboxDriver({ root: config.localRoot, env: {} }),
         label: "Local (unisolated)",
       };
     try {
