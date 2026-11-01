@@ -129,6 +129,23 @@ describe("loadServerConfig", () => {
     expect(() => loadServerConfig({ JJ_CONCURRENCY: "0" })).toThrow(
       ConfigError,
     );
+    for (const pool of [
+      "10.213.0.0",
+      "10.213.0.1/16",
+      "8.8.0.0/16",
+      "10.0.0.0/29",
+    ])
+      expect(() =>
+        loadServerConfig({ JJ_DOCKER_EGRESS_SUBNET_POOL: pool }),
+      ).toThrow(/JJ_DOCKER_EGRESS_SUBNET_POOL/);
+  });
+
+  it("passes a valid egress subnet pool to the docker driver, and none by default", () => {
+    expect(loadServerConfig({}).dockerEgressSubnetPool).toBeUndefined();
+    expect(
+      loadServerConfig({ JJ_DOCKER_EGRESS_SUBNET_POOL: " 172.29.0.0/20 " })
+        .dockerEgressSubnetPool,
+    ).toBe("172.29.0.0/20");
   });
 });
 

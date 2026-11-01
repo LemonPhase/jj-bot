@@ -178,8 +178,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.0.1", () => {
-    expect(CONTRACT_VERSION).toBe("1.0.1");
+  it("is version 1.0.2", () => {
+    expect(CONTRACT_VERSION).toBe("1.0.2");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -433,6 +433,56 @@ describe("contracts 1.0", () => {
         tools: ["bash", "bash"],
       }).success,
     ).toBe(false);
+  });
+
+  it("validates allowlist hosts, lowercasing and deduplicating them", () => {
+    const allowlist = (hosts: string[]) =>
+      createRuntimeProfileCommandSchema.safeParse({
+        name: "Registry only",
+        sandbox: { driver: "docker", network: { mode: "allowlist", hosts } },
+      });
+    const parsed = allowlist([
+      "Registry.NPMJS.org",
+      " registry.npmjs.org ",
+      "*.pythonhosted.org",
+      "files.example.com:8443",
+      "93.184.215.14",
+    ]);
+    expect(parsed.success && parsed.data.sandbox.network).toEqual({
+      mode: "allowlist",
+      hosts: [
+        "registry.npmjs.org",
+        "*.pythonhosted.org",
+        "files.example.com:8443",
+        "93.184.215.14",
+      ],
+    });
+    for (const bad of [
+      "https://registry.npmjs.org",
+      "registry.npmjs.org/path",
+      "*",
+      "*.org",
+      "*.8.8",
+      "*.0x8.0x8:443",
+      "two words.com",
+      "under_score.com",
+      "-leading.com",
+      "example.com:0",
+      "example.com:65536",
+      "[::1]",
+      "::1",
+      "",
+    ]) {
+      const result = allowlist(["example.com", bad]);
+      expect(result.success, bad).toBe(false);
+      expect(result.error?.issues[0]?.path, bad).toEqual([
+        "sandbox",
+        "network",
+        "hosts",
+        1,
+      ]);
+    }
+    expect(allowlist([]).success).toBe(false);
   });
 
   it("never fills defaults into a profile patch", () => {

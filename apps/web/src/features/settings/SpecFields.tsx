@@ -132,7 +132,11 @@ function FieldView({
           value={value}
           rows={3}
           spellCheck={false}
-          placeholder={field.kind === "map" ? "KEY=value" : "example.com"}
+          placeholder={
+            field.kind === "map"
+              ? "KEY=value"
+              : (field.placeholder ?? "One item per line")
+          }
           onChange={(event) => onChange(field.key, event.target.value)}
         />
       );

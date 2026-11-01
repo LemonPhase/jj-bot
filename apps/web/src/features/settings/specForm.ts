@@ -84,6 +84,12 @@ export interface ListField extends FieldBase {
   minItems: number;
   maxItems?: number;
   itemMinLength: number;
+  itemMaxLength?: number;
+  /** The items' `pattern`; every line must match it. */
+  itemPattern?: RegExp;
+  /** What a line that does not match should look like, for its error. */
+  itemHint?: string;
+  placeholder?: string;
 }
 
 export interface MapField extends FieldBase {
@@ -113,6 +119,8 @@ interface Presentation {
   hint?: string;
   unit?: string;
   placeholder?: string;
+  /** For a list: how a valid line looks, completing "Line N: …". */
+  itemHint?: string;
   optionLabels?: Readonly<Record<string, string>>;
   /** Values never offered (still accepted when already stored). */
   exclude?: readonly string[];
@@ -137,7 +145,13 @@ export const SPEC_PRESENTATION: Readonly<Record<string, Presentation>> = {
     optionLabels: { none: "None", allowlist: "Allowlist", open: "Open" },
     allowed: (capabilities) => capabilities.networkModes,
   },
-  "network.hosts": { label: "Allowed hosts", hint: "One host per line." },
+  "network.hosts": {
+    label: "Allowed hosts",
+    hint: "One host per line, e.g. registry.npmjs.org or *.pythonhosted.org. Plain HTTP(S) only; private addresses are never reachable.",
+    placeholder: "registry.npmjs.org",
+    itemHint:
+      "write a host such as registry.npmjs.org or *.example.com, optionally with :port, without a scheme or path",
+  },
   resources: {
     label: "Resources",
     hint: "Empty means no limit.",
@@ -177,6 +191,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const num = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** A JSON Schema `pattern` (ECMA-262 syntax); one this browser cannot compile is left to the server. */
+function patternOf(value: unknown): RegExp | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    return new RegExp(value, "u");
+  } catch {
+    return undefined;
+  }
+}
 
 const humanise = (key: string) => {
   const words = key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
@@ -311,6 +335,10 @@ function mapField(
         minItems: num(schema.minItems) ?? 0,
         maxItems: num(schema.maxItems),
         itemMinLength: num(items.minLength) ?? 0,
+        itemMaxLength: num(items.maxLength),
+        itemPattern: patternOf(items.pattern),
+        itemHint: presentation.itemHint,
+        placeholder: presentation.placeholder,
       };
     }
     case "object": {
@@ -551,6 +579,18 @@ function readField(
     }
     case "list": {
       const items = lines(text);
+      // Numbered as typed, blank lines included, like the map field.
+      const invalid = text
+        .split(/\r?\n/)
+        .map((raw, index) => ({ item: raw.trim(), line: index + 1 }))
+        .find(
+          ({ item }) =>
+            item.length > 0 &&
+            ((field.itemMaxLength !== undefined &&
+              item.length > field.itemMaxLength) ||
+              (field.itemPattern !== undefined &&
+                !field.itemPattern.test(item))),
+        );
       if (items.length < field.minItems)
         errors[field.key] =
           field.minItems === 1
@@ -560,6 +600,9 @@ function readField(
         errors[field.key] = `At most ${field.maxItems}.`;
       else if (items.some((item) => item.length < field.itemMinLength))
         errors[field.key] = "Every line needs a value.";
+      else if (invalid)
+        errors[field.key] =
+          `Line ${invalid.line}: ${field.itemHint ?? "not a valid entry"}.`;
       else if (items.length > 0) target[name] = items;
       return;
     }

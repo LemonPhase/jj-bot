@@ -50,6 +50,9 @@ services:
       JJ_SANDBOX_DRIVERS: docker
       # One worker per namespace on a daemon, so each compose project has its own.
       JJ_DOCKER_NAMESPACE: ${JJ_DOCKER_NAMESPACE:-${COMPOSE_PROJECT_NAME:-jj-bot}}
+      # Private range allowlist sandboxes take their /28 networks from; empty
+      # uses the driver's default, 10.213.0.0/16.
+      JJ_DOCKER_EGRESS_SUBNET_POOL: ${JJ_DOCKER_EGRESS_SUBNET_POOL:-}
       JJ_ENABLE_SCRIPTED_MODEL: ${JJ_ENABLE_SCRIPTED_MODEL:-false}
       JJ_DEFAULT_MODEL: ${JJ_DEFAULT_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
