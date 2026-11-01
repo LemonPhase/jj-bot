@@ -192,6 +192,13 @@ export const tasks = pgTable(
     cancelReason: text("cancel_reason"),
     /** Set when a stop is requested; the task is cancelled once nothing of it runs. */
     cancelRequestedAt: optionalTime("cancel_requested_at"),
+    /**
+     * The worker holding the task's ephemeral sandbox, which no other worker
+     * can reach, and until when (refreshed while held, cleared on release).
+     * Other workers hand the task's sessions back while it is live.
+     */
+    sandboxHolder: text("sandbox_holder"),
+    sandboxHolderUntil: optionalTime("sandbox_holder_until"),
     /** Last allocated `task_events.sequence`; see `appendEvent`. */
     eventSeq: integer("event_seq").notNull().default(0),
     /** Last allocated `task_messages.sequence`; see `nextMessageSequence`. */
