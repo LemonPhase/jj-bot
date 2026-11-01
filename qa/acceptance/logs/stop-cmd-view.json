@@ -1,0 +1,166 @@
+{
+ "task": {
+  "id": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+  "title": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash…",
+  "goal": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+  "goalVersion": 1,
+  "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+  "participantBotIds": [
+   "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+  ],
+  "status": "cancelled",
+  "result": null,
+  "error": null,
+  "cancelReason": null,
+  "cancelRequestedAt": "2026-11-01T03:34:59.493Z",
+  "createdAt": "2026-11-01T03:34:52.732Z",
+  "updatedAt": "2026-11-01T03:34:59.877Z",
+  "finishedAt": "2026-11-01T03:34:59.877Z"
+ },
+ "sessions": [
+  {
+   "id": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "parentSessionId": null,
+   "role": "coordinator",
+   "brief": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+   "goalVersion": 1,
+   "depth": 0,
+   "status": "cancelled",
+   "waitingFor": null,
+   "result": null,
+   "error": null,
+   "activity": null,
+   "runCount": 1,
+   "createdAt": "2026-11-01T03:34:52.741Z",
+   "updatedAt": "2026-11-01T03:34:59.609Z",
+   "startedAt": "2026-11-01T03:34:52.766Z",
+   "finishedAt": "2026-11-01T03:34:59.609Z"
+  },
+  {
+   "id": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "role": "worker",
+   "brief": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+   "goalVersion": 1,
+   "depth": 1,
+   "status": "cancelled",
+   "waitingFor": null,
+   "result": null,
+   "error": null,
+   "activity": null,
+   "runCount": 1,
+   "createdAt": "2026-11-01T03:34:54.596Z",
+   "updatedAt": "2026-11-01T03:34:59.798Z",
+   "startedAt": "2026-11-01T03:34:54.627Z",
+   "finishedAt": "2026-11-01T03:34:59.798Z"
+  },
+  {
+   "id": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "role": "worker",
+   "brief": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+   "goalVersion": 1,
+   "depth": 1,
+   "status": "cancelled",
+   "waitingFor": null,
+   "result": null,
+   "error": null,
+   "activity": null,
+   "runCount": 1,
+   "createdAt": "2026-11-01T03:34:55.739Z",
+   "updatedAt": "2026-11-01T03:34:59.870Z",
+   "startedAt": "2026-11-01T03:34:55.761Z",
+   "finishedAt": "2026-11-01T03:34:59.870Z"
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_01M6AJSAC9R2J3NQKYGKTCGCTS",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 1,
+   "authorKind": "bot",
+   "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "intent": "assignment",
+   "text": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+   "recipientBotIds": [
+    "bot_01M6AJF5DHWDDH35KRC0JPKA57"
+   ],
+   "createdAt": "2026-11-01T03:34:54.602Z"
+  },
+  {
+   "id": "msg_01M6AJSBFZPX02F9963WGSQ5S1",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 2,
+   "authorKind": "bot",
+   "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "intent": "assignment",
+   "text": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+   "recipientBotIds": [
+    "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+   ],
+   "createdAt": "2026-11-01T03:34:55.744Z"
+  },
+  {
+   "id": "msg_01M6AJSCQKC42SNXFJG81R5TTR",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 3,
+   "authorKind": "bot",
+   "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "intent": "discussion",
+   "text": "Both tasks are delegated independently. Waiting for each result; I will verify the reported completion/files and summarize.",
+   "recipientBotIds": [],
+   "createdAt": "2026-11-01T03:34:57.012Z"
+  }
+ ],
+ "artifacts": [],
+ "usage": {
+  "total": {
+   "modelCalls": 7,
+   "inputTokens": 18,
+   "outputTokens": 285,
+   "cacheReadTokens": 5125,
+   "cacheWriteTokens": 4653,
+   "costUsd": 0.000777175
+  },
+  "bySession": {
+   "sess_01M6AJS8J5EYHTXM465V7JH66K": {
+    "modelCalls": 5,
+    "inputTokens": 12,
+    "outputTokens": 221,
+    "cacheReadTokens": 5125,
+    "cacheWriteTokens": 1876,
+    "costUsd": 0.00039744999999999993
+   },
+   "sess_01M6AJSAC46S5MMCXA8ZPDQSTE": {
+    "modelCalls": 1,
+    "inputTokens": 3,
+    "outputTokens": 32,
+    "cacheReadTokens": 0,
+    "cacheWriteTokens": 1392,
+    "costUsd": 0.0001903
+   },
+   "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0": {
+    "modelCalls": 1,
+    "inputTokens": 3,
+    "outputTokens": 32,
+    "cacheReadTokens": 0,
+    "cacheWriteTokens": 1385,
+    "costUsd": 0.00018942499999999998
+   }
+  }
+ },
+ "firstSequence": 1,
+ "hasEarlier": false,
+ "cursor": 51
+}

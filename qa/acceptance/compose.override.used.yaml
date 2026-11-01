@@ -1,0 +1,26 @@
+# QA acceptance run only - NOT committed. Environment accommodations for a
+# cloud container: apt mirrors are blocked, outbound HTTPS goes through a
+# TLS-intercepting proxy.
+services:
+  app:
+    build:
+      secrets: [build_ca]
+      args:
+        HTTPS_PROXY: http://172.17.0.1:3128
+    environment:
+      NODE_EXTRA_CA_CERTS: /etc/jj-proxy-ca.pem
+    volumes:
+      - /tmp/jj-ca.pem:/etc/jj-proxy-ca.pem:ro
+  sandbox-image:
+    build:
+      dockerfile_inline: |
+        FROM node:22-bookworm-slim
+        RUN usermod --login sandbox --home /home/sandbox --move-home node \
+          && groupmod --new-name sandbox node \
+          && mkdir /workspace && chown sandbox:sandbox /workspace
+        LABEL jj.sandbox.image="base-1" qa.fallback="true"
+        USER 1000:1000
+        WORKDIR /workspace
+secrets:
+  build_ca:
+    file: /tmp/jj-ca.pem

@@ -1,0 +1,11 @@
+tool calls started: 85 unique toolCallIds: 85
+toolCallIds started more than once: []
+completed before restart: 10
+completed-before-restart calls re-started after restart: []
+started but never finished: []
+interrupted tool results: []
+run reasons: Counter({'start': 6, 'recovery': 4, 'wake': 1})
+  70 E1513H {'error': 'The worker stopped; the session resumes from its last completed turn.', 'outcome': 'cancelled'}
+  72 PHVM1Q {'error': 'The worker stopped; the session resumes from its last completed turn.', 'outcome': 'cancelled'}
+  74 X0749Y {'error': 'The worker stopped; the session resumes from its last completed turn.', 'outcome': 'cancelled'}
+  76 NHSVA6 {'error': 'The worker stopped; the session resumes from its last completed turn.', 'outcome': 'cancelled'}

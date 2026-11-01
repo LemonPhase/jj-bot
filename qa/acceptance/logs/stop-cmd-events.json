@@ -1,0 +1,1139 @@
+{
+ "events": [
+  {
+   "id": "evt_01M6AJS8J1AKPQ6FAV2GERARA1",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 1,
+   "occurredAt": "2026-11-01T03:34:52.738Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "task.created",
+   "payload": {
+    "task": {
+     "id": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "goal": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "error": null,
+     "title": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash…",
+     "result": null,
+     "status": "queued",
+     "createdAt": "2026-11-01T03:34:52.732Z",
+     "updatedAt": "2026-11-01T03:34:52.732Z",
+     "finishedAt": null,
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": null,
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+      "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+      "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+     ]
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJS8J73DRAABVJH61VBYJH",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 2,
+   "occurredAt": "2026-11-01T03:34:52.744Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": null,
+   "causedBy": null,
+   "type": "session.created",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "depth": 0,
+     "error": null,
+     "result": null,
+     "status": "queued",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 0,
+     "createdAt": "2026-11-01T03:34:52.741Z",
+     "startedAt": null,
+     "updatedAt": "2026-11-01T03:34:52.741Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJS8K107RZSY474DGC4HYQ",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 3,
+   "occurredAt": "2026-11-01T03:34:52.770Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "depth": 0,
+     "error": null,
+     "result": null,
+     "status": "running",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:52.741Z",
+     "startedAt": "2026-11-01T03:34:52.766Z",
+     "updatedAt": "2026-11-01T03:34:52.768Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AJS8K47EJ3XD44DZHH95FX",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 4,
+   "occurredAt": "2026-11-01T03:34:52.773Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "run.started",
+   "payload": {
+    "reason": "start"
+   }
+  },
+  {
+   "id": "evt_01M6AJS8K951MX3ZKKTFPKZANY",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 5,
+   "occurredAt": "2026-11-01T03:34:52.778Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "task.updated",
+   "payload": {
+    "task": {
+     "id": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "goal": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "error": null,
+     "title": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash…",
+     "result": null,
+     "status": "running",
+     "createdAt": "2026-11-01T03:34:52.732Z",
+     "updatedAt": "2026-11-01T03:34:52.774Z",
+     "finishedAt": null,
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": null,
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+      "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+      "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+     ]
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AJS8TNPA6632EFAH21J8A8",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 6,
+   "occurredAt": "2026-11-01T03:34:53.014Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSABH0EF06T1R3KX7G5DG",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 7,
+   "occurredAt": "2026-11-01T03:34:54.578Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.00022855,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 58,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 1594
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSABTTRMQK3YTBPMG16W0",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 8,
+   "occurredAt": "2026-11-01T03:34:54.586Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "delegate",
+    "summary": "Builder",
+    "toolCallId": "call_UGYABY81qw1oRnNkANH4qOZZ|fc_062034592f5fdf6e016ae6b35e01f487d281c44c13b90c9325"
+   }
+  },
+  {
+   "id": "evt_01M6AJSAC6AWKQPAVEZ3315S31",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 9,
+   "occurredAt": "2026-11-01T03:34:54.599Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "session.created",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+     "role": "worker",
+     "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+     "brief": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "queued",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 0,
+     "createdAt": "2026-11-01T03:34:54.596Z",
+     "startedAt": null,
+     "updatedAt": "2026-11-01T03:34:54.596Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJSACCP3XGM0K6GK44XMW9",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 10,
+   "occurredAt": "2026-11-01T03:34:54.604Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "message.posted",
+   "payload": {
+    "message": {
+     "id": "msg_01M6AJSAC9R2J3NQKYGKTCGCTS",
+     "text": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+     "intent": "assignment",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "sequence": 1,
+     "createdAt": "2026-11-01T03:34:54.602Z",
+     "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "authorKind": "bot",
+     "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "recipientBotIds": [
+      "bot_01M6AJF5DHWDDH35KRC0JPKA57"
+     ]
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJSACQ6H7PQARQH3K477AN",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 11,
+   "occurredAt": "2026-11-01T03:34:54.616Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "delegate",
+    "output": "Delegated to Builder (session sess_01M6AJSAC46S5MMCXA8ZPDQSTE). Its result will arrive as a message; end your turn when you have nothing else to do meanwhile.",
+    "summary": "Builder",
+    "truncated": false,
+    "toolCallId": "call_UGYABY81qw1oRnNkANH4qOZZ|fc_062034592f5fdf6e016ae6b35e01f487d281c44c13b90c9325"
+   }
+  },
+  {
+   "id": "evt_01M6AJSAD51C10ZF23ACT3FX12",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 12,
+   "occurredAt": "2026-11-01T03:34:54.630Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+     "role": "worker",
+     "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+     "brief": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "running",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:54.596Z",
+     "startedAt": "2026-11-01T03:34:54.627Z",
+     "updatedAt": "2026-11-01T03:34:54.628Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AJSAD85NKZTFKV61XD65N7",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 13,
+   "occurredAt": "2026-11-01T03:34:54.633Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "run.started",
+   "payload": {
+    "reason": "start"
+   }
+  },
+  {
+   "id": "evt_01M6AJSADP85FDXDZF4G1R3CHR",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 14,
+   "occurredAt": "2026-11-01T03:34:54.646Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSAE19NGGNMRSYCASFRJK",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 15,
+   "occurredAt": "2026-11-01T03:34:54.658Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSBFBW0Q2TTJHBR7SPA8G",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 16,
+   "occurredAt": "2026-11-01T03:34:55.724Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.00005949,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 58,
+     "cacheReadTokens": 1594,
+     "cacheWriteTokens": 114
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBFM7442B875SV93NVF0",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 17,
+   "occurredAt": "2026-11-01T03:34:55.733Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "delegate",
+    "summary": "Tester",
+    "toolCallId": "call_cAZKmIT0YNizrysDpcU1YCnd|fc_062034592f5fdf6e016ae6b35f444487d28db75175f55a55be"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBFXR1M6FYNFKMEBY5RX",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 18,
+   "occurredAt": "2026-11-01T03:34:55.741Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "session.created",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+     "role": "worker",
+     "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+     "brief": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "queued",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 0,
+     "createdAt": "2026-11-01T03:34:55.739Z",
+     "startedAt": null,
+     "updatedAt": "2026-11-01T03:34:55.739Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJSBG1XNMXSZKSPK654ZSC",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 19,
+   "occurredAt": "2026-11-01T03:34:55.745Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "message.posted",
+   "payload": {
+    "message": {
+     "id": "msg_01M6AJSBFZPX02F9963WGSQ5S1",
+     "text": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+     "intent": "assignment",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "sequence": 2,
+     "createdAt": "2026-11-01T03:34:55.744Z",
+     "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "authorKind": "bot",
+     "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "recipientBotIds": [
+      "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+     ]
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJSBGB82K20DFPZ3HJAATH",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 20,
+   "occurredAt": "2026-11-01T03:34:55.755Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "delegate",
+    "output": "Delegated to Tester (session sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0). Its result will arrive as a message; end your turn when you have nothing else to do meanwhile.",
+    "summary": "Tester",
+    "truncated": false,
+    "toolCallId": "call_cAZKmIT0YNizrysDpcU1YCnd|fc_062034592f5fdf6e016ae6b35f444487d28db75175f55a55be"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBGKQSAFF3C6FMT3PK6Y",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 21,
+   "occurredAt": "2026-11-01T03:34:55.764Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+     "role": "worker",
+     "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+     "brief": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "running",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": null,
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:55.739Z",
+     "startedAt": "2026-11-01T03:34:55.761Z",
+     "updatedAt": "2026-11-01T03:34:55.762Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBGNWCPE523K1JT0TZK7",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 22,
+   "occurredAt": "2026-11-01T03:34:55.766Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "run.started",
+   "payload": {
+    "reason": "start"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBH43DH5PJTFBY86FHK5",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 23,
+   "occurredAt": "2026-11-01T03:34:55.780Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSBHHGS2YKDT4NDABNPQ0",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 24,
+   "occurredAt": "2026-11-01T03:34:55.793Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSBSN6MD11KVPBC9VVK4F",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 25,
+   "occurredAt": "2026-11-01T03:34:56.054Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.0001903,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 32,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 1392
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSBSXXG0YEFZZTYT4GFK0",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 26,
+   "occurredAt": "2026-11-01T03:34:56.061Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "bash",
+    "summary": "sleep 120 && echo builder-done > builder.txt",
+    "toolCallId": "call_6mJvZgEPQGChP6cjYpUCRSqh|fc_0b223ff89cf9818f016ae6b35fce0887d288065a1dcc78529e"
+   }
+  },
+  {
+   "id": "evt_01M6AJSCQ3AXX6MB20229GQJX7",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 27,
+   "occurredAt": "2026-11-01T03:34:56.996Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.000050255,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 37,
+     "cacheReadTokens": 1708,
+     "cacheWriteTokens": 115
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSCQD5FMJTM6PNMRTV714",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 28,
+   "occurredAt": "2026-11-01T03:34:57.005Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "message",
+    "summary": "the team",
+    "toolCallId": "call_zvfwpA7EqIBUNVtiosWPRfyT|fc_062034592f5fdf6e016ae6b3608b1487d294f0ae987b310403"
+   }
+  },
+  {
+   "id": "evt_01M6AJSCQNJXJWBSS3MB1MB37X",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 29,
+   "occurredAt": "2026-11-01T03:34:57.014Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "message.posted",
+   "payload": {
+    "message": {
+     "id": "msg_01M6AJSCQKC42SNXFJG81R5TTR",
+     "text": "Both tasks are delegated independently. Waiting for each result; I will verify the reported completion/files and summarize.",
+     "intent": "discussion",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "sequence": 3,
+     "createdAt": "2026-11-01T03:34:57.012Z",
+     "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "authorKind": "bot",
+     "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "recipientBotIds": []
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AJSCS4F5VEN59BJ31CYFXQ",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 30,
+   "occurredAt": "2026-11-01T03:34:57.060Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "message",
+    "output": "Posted to the task chat.",
+    "summary": "the team",
+    "truncated": false,
+    "toolCallId": "call_zvfwpA7EqIBUNVtiosWPRfyT|fc_062034592f5fdf6e016ae6b3608b1487d294f0ae987b310403"
+   }
+  },
+  {
+   "id": "evt_01M6AJSCSJ8458PB0YACRAB48S",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 31,
+   "occurredAt": "2026-11-01T03:34:57.074Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSCV2EXQT27WE0NRSEJ86",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 32,
+   "occurredAt": "2026-11-01T03:34:57.122Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.00018942499999999998,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 32,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 1385
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSCV8DKS6MX0AR8YPZSZN",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 33,
+   "occurredAt": "2026-11-01T03:34:57.129Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "bash",
+    "summary": "sleep 120 && echo tester-done > tester.txt",
+    "toolCallId": "call_dlpY85IZ6ltbUjhUZIWIg1lZ|fc_0d1fa55d40d6c1ff016ae6b360cb5887d29f9f34cc5f7514ad"
+   }
+  },
+  {
+   "id": "evt_01M6AJSE37TAJGJEQQ6ZZVN0ZG",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 34,
+   "occurredAt": "2026-11-01T03:34:58.407Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.000059155,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 68,
+     "cacheReadTokens": 1823,
+     "cacheWriteTokens": 53
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AJSE3GR7A0V26EYRCE960G",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 35,
+   "occurredAt": "2026-11-01T03:34:58.417Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "complete_task",
+    "summary": "complete_task",
+    "toolCallId": "call_DVm5EXKPqVVfPf9kGNbJQfRC|fc_062034592f5fdf6e016ae6b361c2e087d28a1f4a3031b1d967"
+   }
+  },
+  {
+   "id": "evt_01M6AJSE3YYB77SXX4772SCK8T",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 36,
+   "occurredAt": "2026-11-01T03:34:58.430Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": false,
+    "tool": "complete_task",
+    "output": "2 delegation(s) have not reported yet. End your turn to wait for their results, then complete.",
+    "summary": "complete_task",
+    "truncated": false,
+    "toolCallId": "call_DVm5EXKPqVVfPf9kGNbJQfRC|fc_062034592f5fdf6e016ae6b361c2e087d28a1f4a3031b1d967"
+   }
+  },
+  {
+   "id": "evt_01M6AJSE4DCX9DASNPP8P5Y848",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 37,
+   "occurredAt": "2026-11-01T03:34:58.446Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AJSF57FG2PK4FHY07G5CQ2",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 38,
+   "occurredAt": "2026-11-01T03:34:59.495Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "task.updated",
+   "payload": {
+    "task": {
+     "id": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "goal": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "error": null,
+     "title": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash…",
+     "result": null,
+     "status": "running",
+     "createdAt": "2026-11-01T03:34:52.732Z",
+     "updatedAt": "2026-11-01T03:34:59.493Z",
+     "finishedAt": null,
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": "2026-11-01T03:34:59.493Z",
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+      "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+      "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+     ]
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AJSF592FCHZ40HR1J2XXEP",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 39,
+   "occurredAt": "2026-11-01T03:34:59.497Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "cancellation.requested",
+   "payload": {
+    "reason": null
+   }
+  },
+  {
+   "id": "evt_01M6AJSF5VVFTTSC64ACB8976G",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 40,
+   "occurredAt": "2026-11-01T03:34:59.515Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0,
+     "modelCalls": 1,
+     "inputTokens": 0,
+     "outputTokens": 0,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 0
+    },
+    "stopReason": "aborted"
+   }
+  },
+  {
+   "id": "evt_01M6AJSF8PHXX7N0GSDRF110J3",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 41,
+   "occurredAt": "2026-11-01T03:34:59.607Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "run.finished",
+   "payload": {
+    "outcome": "cancelled"
+   }
+  },
+  {
+   "id": "evt_01M6AJSF8X88W8CTSVRB5RVJ1H",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 42,
+   "occurredAt": "2026-11-01T03:34:59.613Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+   "runId": "run_01M6AJS8JY6QRHM9Q6QG23JHSJ",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "depth": 0,
+     "error": null,
+     "result": null,
+     "status": "cancelled",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": {
+      "kind": "thinking",
+      "text": "Thinking…",
+      "since": "2026-11-01T03:34:58.446Z"
+     },
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:52.741Z",
+     "startedAt": "2026-11-01T03:34:52.766Z",
+     "updatedAt": "2026-11-01T03:34:59.609Z",
+     "finishedAt": "2026-11-01T03:34:59.609Z",
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFCYEJBMMAEQYS6H9BHS",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 43,
+   "occurredAt": "2026-11-01T03:34:59.743Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": false,
+    "tool": "bash",
+    "output": "(no output)\n\nCommand stopped: the run was cancelled.",
+    "summary": "sleep 120 && echo builder-done > builder.txt",
+    "exitCode": 143,
+    "truncated": false,
+    "toolCallId": "call_6mJvZgEPQGChP6cjYpUCRSqh|fc_0b223ff89cf9818f016ae6b35fce0887d288065a1dcc78529e",
+    "interrupted": "yes"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFEN4GZA9WTK64A37PX8",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 44,
+   "occurredAt": "2026-11-01T03:34:59.797Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "run.finished",
+   "payload": {
+    "outcome": "cancelled"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFER9TS3JRW0XCVA5AWX",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 45,
+   "occurredAt": "2026-11-01T03:34:59.800Z",
+   "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+   "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+   "runId": "run_01M6AJSAD3AGKG8P7R3JNZ3NME",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+     "role": "worker",
+     "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+     "brief": "Run exactly the bash command `sleep 120 && echo builder-done > builder.txt` in the workspace and report whether it completed, including any output/status. You own builder.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "cancelled",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": {
+      "kind": "command",
+      "text": "Running `sleep 120 && echo builder-done > builder.txt`",
+      "since": "2026-11-01T03:34:56.061Z"
+     },
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:54.596Z",
+     "startedAt": "2026-11-01T03:34:54.627Z",
+     "updatedAt": "2026-11-01T03:34:59.798Z",
+     "finishedAt": "2026-11-01T03:34:59.798Z",
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFEZ9W3RW6ND5ZZH3PC8",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 46,
+   "occurredAt": "2026-11-01T03:34:59.808Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": false,
+    "tool": "bash",
+    "output": "(no output)\n\nCommand stopped: the run was cancelled.",
+    "summary": "sleep 120 && echo tester-done > tester.txt",
+    "exitCode": 143,
+    "truncated": false,
+    "toolCallId": "call_dlpY85IZ6ltbUjhUZIWIg1lZ|fc_0d1fa55d40d6c1ff016ae6b360cb5887d29f9f34cc5f7514ad",
+    "interrupted": "yes"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFGXT6AAPG419EYKSP7H",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 47,
+   "occurredAt": "2026-11-01T03:34:59.869Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "run.finished",
+   "payload": {
+    "outcome": "cancelled"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFH065GCXGTEK2PK0590",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 48,
+   "occurredAt": "2026-11-01T03:34:59.872Z",
+   "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+   "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+   "runId": "run_01M6AJSBGHF45JN7XCJAJGP9NK",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+     "role": "worker",
+     "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+     "brief": "Run exactly the bash command `sleep 120 && echo tester-done > tester.txt` in the workspace and report whether it completed, including any output/status. You own tester.txt only.",
+     "depth": 1,
+     "error": null,
+     "result": null,
+     "status": "cancelled",
+     "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "activity": {
+      "kind": "command",
+      "text": "Running `sleep 120 && echo tester-done > tester.txt`",
+      "since": "2026-11-01T03:34:57.129Z"
+     },
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:34:55.739Z",
+     "startedAt": "2026-11-01T03:34:55.761Z",
+     "updatedAt": "2026-11-01T03:34:59.870Z",
+     "finishedAt": "2026-11-01T03:34:59.870Z",
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K"
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFH7FP51JDB1E31CNAKR",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 49,
+   "occurredAt": "2026-11-01T03:34:59.880Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "task.updated",
+   "payload": {
+    "task": {
+     "id": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+     "goal": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash command `sleep 120 && echo builder-done > builder.txt` and report. In parallel, delegate to Tester: run the bash command `sleep 120 && echo tester-done > tester.txt` and report. Then summarise.",
+     "error": null,
+     "title": "Smoke test of long-running sandbox commands. Delegate to Builder: run the bash…",
+     "result": null,
+     "status": "cancelled",
+     "createdAt": "2026-11-01T03:34:52.732Z",
+     "updatedAt": "2026-11-01T03:34:59.877Z",
+     "finishedAt": "2026-11-01T03:34:59.877Z",
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": "2026-11-01T03:34:59.493Z",
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+      "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+      "bot_01M6AJF8MT1E92Y8RJ2DYHWF99"
+     ]
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AJSFHA0DTZB4A2T43DFF9Z",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 50,
+   "occurredAt": "2026-11-01T03:34:59.882Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "cancellation.completed",
+   "payload": {
+    "stopped": [
+     {
+      "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+      "sessionId": "sess_01M6AJS8J5EYHTXM465V7JH66K",
+      "interrupted": "no"
+     },
+     {
+      "botId": "bot_01M6AJF5DHWDDH35KRC0JPKA57",
+      "command": "sleep 120 && echo builder-done > builder.txt",
+      "sessionId": "sess_01M6AJSAC46S5MMCXA8ZPDQSTE",
+      "interrupted": "yes"
+     },
+     {
+      "botId": "bot_01M6AJF8MT1E92Y8RJ2DYHWF99",
+      "command": "sleep 120 && echo tester-done > tester.txt",
+      "sessionId": "sess_01M6AJSBFV2ZE6ZGP6CYMS6BS0",
+      "interrupted": "yes"
+     }
+    ],
+    "neverStarted": []
+   }
+  },
+  {
+   "id": "evt_01M6AJSFHBHN9A9JTT91ZXAQA7",
+   "taskId": "task_01M6AJS8HWHZJVP6KPE3T34G6X",
+   "sequence": 51,
+   "occurredAt": "2026-11-01T03:34:59.884Z",
+   "botId": null,
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "task.finished",
+   "payload": {
+    "error": null,
+    "result": null,
+    "status": "cancelled"
+   }
+  }
+ ]
+}

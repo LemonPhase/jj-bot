@@ -1,0 +1,19 @@
+== demo: messages by intent {'assignment': 7, 'discussion': 13, 'result': 8}; bot-to-bot discussion msgs=13; sessions created=8; runs=Counter({'start': 8, 'wake': 1})
+    8 ('run.started', 'start', None, None)
+    1 ('run.started', 'wake', None, None)
+    8 ('session.created', None, None, None)
+   sample message keys: ['authorBotId', 'authorKind', 'createdAt', 'id', 'intent', 'recipientBotIds', 'sequence', 'sessionId', 'taskId', 'text']
+== steer: messages by intent {'assignment': 5, 'steering': 1, 'discussion': 12, 'result': 6}; bot-to-bot discussion msgs=12; sessions created=6; runs=Counter({'start': 6, 'wake': 1})
+    6 ('run.started', 'start', None, None)
+    1 ('run.started', 'wake', None, None)
+    6 ('session.created', None, None, None)
+   sample message keys: ['authorBotId', 'authorKind', 'createdAt', 'id', 'intent', 'recipientBotIds', 'sequence', 'sessionId', 'taskId', 'text']
+== restart: messages by intent {'assignment': 5, 'discussion': 21, 'result': 6, 'steering': 1}; bot-to-bot discussion msgs=21; sessions created=6; runs=Counter({'start': 6, 'recovery': 4, 'wake': 1})
+    6 ('run.started', 'start', None, None)
+    4 ('run.started', 'recovery', None, None)
+    1 ('run.started', 'wake', None, None)
+    6 ('session.created', None, None, None)
+   sample message keys: ['authorBotId', 'authorKind', 'createdAt', 'id', 'intent', 'recipientBotIds', 'sequence', 'sessionId', 'taskId', 'text']
+demo: successful delegate calls=7, worker sessions created=7, message-tool calls (bot-to-bot)=13 -> no extra sessions; wake runs=[(375, '95SJ81')]
+steer: successful delegate calls=5, worker sessions created=5, message-tool calls (bot-to-bot)=11 -> no extra sessions; wake runs=[(376, 'NP56SJ')]
+restart: successful delegate calls=5, worker sessions created=5, message-tool calls (bot-to-bot)=20 -> no extra sessions; wake runs=[(446, 'E1513H')]

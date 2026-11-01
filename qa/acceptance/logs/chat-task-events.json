@@ -1,0 +1,610 @@
+{
+ "events": [
+  {
+   "id": "evt_01M6AKJY3V95V50DN3VR1B46JD",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 1,
+   "occurredAt": "2026-11-01T03:48:54.012Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "task.created",
+   "payload": {
+    "task": {
+     "id": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "goal": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "error": null,
+     "title": "Create and verify notes.txt",
+     "result": null,
+     "status": "queued",
+     "createdAt": "2026-11-01T03:48:54.007Z",
+     "updatedAt": "2026-11-01T03:48:54.007Z",
+     "finishedAt": null,
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": null,
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA"
+     ]
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AKJY40N5J531GXVANH2836",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 2,
+   "occurredAt": "2026-11-01T03:48:54.017Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": null,
+   "causedBy": null,
+   "type": "session.created",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "depth": 0,
+     "error": null,
+     "result": null,
+     "status": "queued",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "activity": null,
+     "runCount": 0,
+     "createdAt": "2026-11-01T03:48:54.014Z",
+     "startedAt": null,
+     "updatedAt": "2026-11-01T03:48:54.014Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AKJY4S7MHECTTG9XJ6AKB8",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 3,
+   "occurredAt": "2026-11-01T03:48:54.041Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "depth": 0,
+     "error": null,
+     "result": null,
+     "status": "running",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "activity": null,
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:48:54.014Z",
+     "startedAt": "2026-11-01T03:48:54.038Z",
+     "updatedAt": "2026-11-01T03:48:54.039Z",
+     "finishedAt": null,
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AKJY4VKFGMTYY6NB3T387T",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 4,
+   "occurredAt": "2026-11-01T03:48:54.044Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "run.started",
+   "payload": {
+    "reason": "start"
+   }
+  },
+  {
+   "id": "evt_01M6AKJY4ZG5T4EMESHKM1HD24",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 5,
+   "occurredAt": "2026-11-01T03:48:54.047Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "task.updated",
+   "payload": {
+    "task": {
+     "id": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "goal": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "error": null,
+     "title": "Create and verify notes.txt",
+     "result": null,
+     "status": "running",
+     "createdAt": "2026-11-01T03:48:54.007Z",
+     "updatedAt": "2026-11-01T03:48:54.045Z",
+     "finishedAt": null,
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": null,
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA"
+     ]
+    },
+    "previousStatus": "queued"
+   }
+  },
+  {
+   "id": "evt_01M6AKJYCF5YZAYWNB6BYFH1KG",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 6,
+   "occurredAt": "2026-11-01T03:48:54.288Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AKJZPATN2TQCD3D6RXETFA",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 7,
+   "occurredAt": "2026-11-01T03:48:55.627Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.000166675,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 23,
+     "cacheReadTokens": 0,
+     "cacheWriteTokens": 1239
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AKJZPMFNDX56QFFCXC4QTR",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 8,
+   "occurredAt": "2026-11-01T03:48:55.636Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "write",
+    "summary": "notes.txt",
+    "toolCallId": "call_FQJ2KhvD5TC7AfZUisH4aG3q|fc_03cbca7cbf058b1b016ae6b6a77f4487d2aad024d10192309e"
+   }
+  },
+  {
+   "id": "evt_01M6AKJZRNCBVHTMJBN5WCZ6Y9",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 9,
+   "occurredAt": "2026-11-01T03:48:55.701Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "write",
+    "output": "Successfully wrote 6 bytes to notes.txt.",
+    "summary": "notes.txt",
+    "truncated": false,
+    "toolCallId": "call_FQJ2KhvD5TC7AfZUisH4aG3q|fc_03cbca7cbf058b1b016ae6b6a77f4487d2aad024d10192309e"
+   }
+  },
+  {
+   "id": "evt_01M6AKJZRZGH2BBXZKZ0DSEGDB",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 10,
+   "occurredAt": "2026-11-01T03:48:55.712Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AKK0TGYTE1GM1FX3JQ3SPQ",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 11,
+   "occurredAt": "2026-11-01T03:48:56.784Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.00003194,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 28,
+     "cacheReadTokens": 1239,
+     "cacheWriteTokens": 42
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AKK0TP23HRJX6X39056M3W",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 12,
+   "occurredAt": "2026-11-01T03:48:56.791Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "bash",
+    "summary": "sleep 40 && cat notes.txt",
+    "toolCallId": "call_BDnixXFqb1UikNMWBRxKQ8oH|fc_03cbca7cbf058b1b016ae6b6a88fac87d28803521d203bcea3"
+   }
+  },
+  {
+   "id": "evt_01M6AKK2P33GNV50DVP9RQSC7M",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 13,
+   "occurredAt": "2026-11-01T03:48:58.692Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": null,
+   "runId": null,
+   "causedBy": null,
+   "type": "message.posted",
+   "payload": {
+    "message": {
+     "id": "msg_01M6AKK2P1D3YMBMHF3GB36PZ6",
+     "text": "Follow-up: append a second line `beta` to notes.txt before reporting. User originally requested create first line alpha, run sleep 40, then cat; honor sequencing and verify.",
+     "intent": "discussion",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "sequence": 1,
+     "createdAt": "2026-11-01T03:48:58.689Z",
+     "sessionId": null,
+     "authorKind": "bot",
+     "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "recipientBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA"
+     ]
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AKM7Z6XMX5GYR64BT753QV",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 14,
+   "occurredAt": "2026-11-01T03:49:36.871Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "bash",
+    "output": "alpha",
+    "summary": "sleep 40 && cat notes.txt",
+    "exitCode": 0,
+    "truncated": false,
+    "toolCallId": "call_BDnixXFqb1UikNMWBRxKQ8oH|fc_03cbca7cbf058b1b016ae6b6a88fac87d28803521d203bcea3",
+    "interrupted": "no"
+   }
+  },
+  {
+   "id": "evt_01M6AKM7ZMQHBDPRK04PT3ZVH4",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 15,
+   "occurredAt": "2026-11-01T03:49:36.885Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AKM9FJKRHHZQQJYT43T7DN",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 16,
+   "occurredAt": "2026-11-01T03:49:38.419Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.000041735,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 34,
+     "cacheReadTokens": 1281,
+     "cacheWriteTokens": 93
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AKM9FSEEXEYQ8K0GNYT4YM",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 17,
+   "occurredAt": "2026-11-01T03:49:38.426Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "bash",
+    "summary": "printf 'beta\\n' >> notes.txt && cat notes.txt",
+    "toolCallId": "call_eRUoPM4yAjGWV5PE1TgSxz56|fc_03cbca7cbf058b1b016ae6b6d2251487d29d9cdca8737fc290"
+   }
+  },
+  {
+   "id": "evt_01M6AKM9HXW96AC701G3KTMB6F",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 18,
+   "occurredAt": "2026-11-01T03:49:38.494Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "bash",
+    "output": "alpha\nbeta",
+    "summary": "printf 'beta\\n' >> notes.txt && cat notes.txt",
+    "exitCode": 0,
+    "truncated": false,
+    "toolCallId": "call_eRUoPM4yAjGWV5PE1TgSxz56|fc_03cbca7cbf058b1b016ae6b6d2251487d29d9cdca8737fc290",
+    "interrupted": "no"
+   }
+  },
+  {
+   "id": "evt_01M6AKM9J8YHR6G20SGKBBAGC0",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 19,
+   "occurredAt": "2026-11-01T03:49:38.504Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.started",
+   "payload": {}
+  },
+  {
+   "id": "evt_01M6AKMASVQP9V2RQZ3MFA9D74",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 20,
+   "occurredAt": "2026-11-01T03:49:39.772Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "model.finished",
+   "payload": {
+    "model": "openai/gpt-6-luna",
+    "usage": {
+     "costUsd": 0.00005054,
+     "modelCalls": 1,
+     "inputTokens": 3,
+     "outputTokens": 61,
+     "cacheReadTokens": 1374,
+     "cacheWriteTokens": 48
+    },
+    "stopReason": "toolUse"
+   }
+  },
+  {
+   "id": "evt_01M6AKMAT25TP2A9S7NKJMYXWQ",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 21,
+   "occurredAt": "2026-11-01T03:49:39.779Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.started",
+   "payload": {
+    "tool": "complete_task",
+    "summary": "complete_task",
+    "toolCallId": "call_HuQAWDuZuYCKzrrSiQ1OPkIV|fc_03cbca7cbf058b1b016ae6b6d33b2487d2bfb73ac23ea46f02"
+   }
+  },
+  {
+   "id": "evt_01M6AKMATE7R83VM2MZRWBJ7HD",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 22,
+   "occurredAt": "2026-11-01T03:49:39.790Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "tool.finished",
+   "payload": {
+    "ok": true,
+    "tool": "complete_task",
+    "output": "The result is recorded; the task completes when this turn ends.",
+    "summary": "complete_task",
+    "truncated": false,
+    "toolCallId": "call_HuQAWDuZuYCKzrrSiQ1OPkIV|fc_03cbca7cbf058b1b016ae6b6d33b2487d2bfb73ac23ea46f02"
+   }
+  },
+  {
+   "id": "evt_01M6AKMB0CYC6WJJ7ZFK6T7NFB",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 23,
+   "occurredAt": "2026-11-01T03:49:39.980Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "artifact.created",
+   "payload": {
+    "artifact": {
+     "id": "art_01M6AKMB099SMMMWM43S65WXG5",
+     "kind": "file",
+     "name": "notes.txt",
+     "path": "notes.txt",
+     "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+     "sha256": "e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "createdAt": "2026-11-01T03:49:39.978Z",
+     "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+     "sizeBytes": 11,
+     "contentType": "text/plain; charset=utf-8"
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AKMB0QGZ4WZSD5C13FX2HS",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 24,
+   "occurredAt": "2026-11-01T03:49:39.992Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "message.posted",
+   "payload": {
+    "message": {
+     "id": "msg_01M6AKMB0N9DAE8QVJ80JQSJB5",
+     "text": "Created `notes.txt` with `alpha`, ran `sleep 40`, then read the file. Per the follow-up, appended `beta` and verified the final contents:\n```\nalpha\nbeta\n```",
+     "intent": "result",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "sequence": 2,
+     "createdAt": "2026-11-01T03:49:39.989Z",
+     "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+     "authorKind": "bot",
+     "authorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "recipientBotIds": []
+    }
+   }
+  },
+  {
+   "id": "evt_01M6AKMB0V9FNNSBMZQD7TBR6Y",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 25,
+   "occurredAt": "2026-11-01T03:49:39.995Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "session.updated",
+   "payload": {
+    "session": {
+     "id": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+     "role": "coordinator",
+     "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "brief": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "depth": 0,
+     "error": null,
+     "result": "Created `notes.txt` with `alpha`, ran `sleep 40`, then read the file. Per the follow-up, appended `beta` and verified the final contents:\n```\nalpha\nbeta\n```",
+     "status": "completed",
+     "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "activity": {
+      "kind": "messaging",
+      "text": "Writing the result…",
+      "since": "2026-11-01T03:49:39.779Z"
+     },
+     "runCount": 1,
+     "createdAt": "2026-11-01T03:48:54.014Z",
+     "startedAt": "2026-11-01T03:48:54.038Z",
+     "updatedAt": "2026-11-01T03:49:39.993Z",
+     "finishedAt": "2026-11-01T03:49:39.993Z",
+     "waitingFor": null,
+     "goalVersion": 1,
+     "parentSessionId": null
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AKMB106P0VVESQK25Z2JX4",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 26,
+   "occurredAt": "2026-11-01T03:49:40.001Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "run.finished",
+   "payload": {
+    "outcome": "completed"
+   }
+  },
+  {
+   "id": "evt_01M6AKMB15KF339A9YPFVZ3ZHD",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 27,
+   "occurredAt": "2026-11-01T03:49:40.005Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "task.updated",
+   "payload": {
+    "task": {
+     "id": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+     "goal": "Create notes.txt with exactly the line `alpha`, then run `sleep 40`, then `cat notes.txt` and report the result. Do not delegate.",
+     "error": null,
+     "title": "Create and verify notes.txt",
+     "result": "Created `notes.txt` with `alpha`, ran `sleep 40`, then read the file. Per the follow-up, appended `beta` and verified the final contents:\n```\nalpha\nbeta\n```",
+     "status": "completed",
+     "createdAt": "2026-11-01T03:48:54.007Z",
+     "updatedAt": "2026-11-01T03:49:40.002Z",
+     "finishedAt": "2026-11-01T03:49:40.002Z",
+     "goalVersion": 1,
+     "cancelReason": null,
+     "coordinatorBotId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+     "cancelRequestedAt": null,
+     "participantBotIds": [
+      "bot_01M6AJF26FM3WXHBAC96GZRTVA"
+     ]
+    },
+    "previousStatus": "running"
+   }
+  },
+  {
+   "id": "evt_01M6AKMB18WNC89V8RJED86SZ3",
+   "taskId": "task_01M6AKJY3Q7CT3KZYMC1VQF80R",
+   "sequence": 28,
+   "occurredAt": "2026-11-01T03:49:40.009Z",
+   "botId": "bot_01M6AJF26FM3WXHBAC96GZRTVA",
+   "sessionId": "sess_01M6AKJY3Y66792CP1EFNKTDY6",
+   "runId": "run_01M6AKJY4PHG2959913WJA0GD7",
+   "causedBy": null,
+   "type": "task.finished",
+   "payload": {
+    "error": null,
+    "result": "Created `notes.txt` with `alpha`, ran `sleep 40`, then read the file. Per the follow-up, appended `beta` and verified the final contents:\n```\nalpha\nbeta\n```",
+    "status": "completed"
+   }
+  }
+ ]
+}
