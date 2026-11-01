@@ -112,6 +112,18 @@ export function headingFor(task: Pick<Task, "title" | "goal">): {
   return derived ? { heading: goal, goal: null } : { heading: title, goal };
 }
 
+/** "s-2" for every session: its position in creation order (as the office shows it). */
+export function ordinalsOf(
+  view: Pick<TaskView, "sessions">,
+): Map<string, string> {
+  return new Map(
+    orderedSessions(view as TaskView).map((session, index) => [
+      session.id,
+      `s-${index + 1}`,
+    ]),
+  );
+}
+
 /** The bot's name, or a neutral stand-in for a bot that is gone. */
 export const botName = (bot: Bot | undefined): string =>
   bot?.name ?? "Unknown bot";
@@ -162,37 +174,79 @@ export interface SessionTools {
   partial: boolean;
 }
 
+/**
+ * The tool calls every session made, from the view's events in one pass,
+ * oldest first per session.
+ */
+export function toolCallsBySession(
+  view: Pick<TaskView, "events" | "hasEarlier">,
+  /** The previous result: unchanged entries are reused, so memoised rows can skip. */
+  previous?: ReadonlyMap<string, SessionTools>,
+): Map<string, SessionTools> {
+  const calls = new Map<string, Map<string, ToolCall>>();
+  const created = new Set<string>();
+  for (const event of view.events) {
+    const { sessionId } = event;
+    if (sessionId === null) continue;
+    if (event.type === "session.created") {
+      created.add(sessionId);
+      continue;
+    }
+    if (event.type !== "tool.started" && event.type !== "tool.finished")
+      continue;
+    const mine = calls.get(sessionId) ?? new Map<string, ToolCall>();
+    calls.set(sessionId, mine);
+    const { toolCallId, tool, summary } = event.payload;
+    mine.set(
+      toolCallId,
+      event.type === "tool.started"
+        ? { id: toolCallId, tool, summary, state: "running", exitCode: null }
+        : {
+            id: toolCallId,
+            tool,
+            summary,
+            state: event.payload.ok ? "ok" : "failed",
+            exitCode: event.payload.exitCode ?? null,
+          },
+    );
+  }
+  const result = new Map<string, SessionTools>();
+  for (const sessionId of new Set([...calls.keys(), ...created])) {
+    const next: SessionTools = {
+      calls: [...(calls.get(sessionId)?.values() ?? [])],
+      partial: view.hasEarlier && !created.has(sessionId),
+    };
+    const before = previous?.get(sessionId);
+    result.set(sessionId, before && sameTools(before, next) ? before : next);
+  }
+  return result;
+}
+
+const sameTools = (a: SessionTools, b: SessionTools) =>
+  a.partial === b.partial &&
+  a.calls.length === b.calls.length &&
+  a.calls.every((call, index) => {
+    const other = b.calls[index];
+    return (
+      other !== undefined &&
+      call.id === other.id &&
+      call.state === other.state &&
+      call.exitCode === other.exitCode &&
+      call.summary === other.summary
+    );
+  });
+
 /** The tool calls a session made, from the view's events, oldest first. */
 export function sessionToolCalls(
-  view: TaskView,
+  view: Pick<TaskView, "events" | "hasEarlier">,
   sessionId: string,
 ): SessionTools {
-  const calls = new Map<string, ToolCall>();
-  let createdInView = false;
-  for (const event of view.events) {
-    if (event.sessionId !== sessionId) continue;
-    if (event.type === "session.created") createdInView = true;
-    else if (event.type === "tool.started")
-      calls.set(event.payload.toolCallId, {
-        id: event.payload.toolCallId,
-        tool: event.payload.tool,
-        summary: event.payload.summary,
-        state: "running",
-        exitCode: null,
-      });
-    else if (event.type === "tool.finished")
-      calls.set(event.payload.toolCallId, {
-        id: event.payload.toolCallId,
-        tool: event.payload.tool,
-        summary: event.payload.summary,
-        state: event.payload.ok ? "ok" : "failed",
-        exitCode: event.payload.exitCode ?? null,
-      });
-  }
-  return {
-    calls: [...calls.values()],
-    partial: view.hasEarlier && !createdInView,
-  };
+  return (
+    toolCallsBySession(view).get(sessionId) ?? {
+      calls: [],
+      partial: view.hasEarlier,
+    }
+  );
 }
 
 /** "bash(npm test)", or the bare tool name when it has no summary. */
@@ -241,6 +295,45 @@ export function activityLines(view: TaskView): ActivityLine[] {
     });
 }
 
+/**
+ * What to announce when sessions change: only transitions into waiting or a
+ * finished status ("Moss finished", "Juno is waiting for you"), never each
+ * "Thinking…" or "Running…" line. `previous` holds the last statuses seen.
+ */
+export function statusAnnouncements(
+  previous: ReadonlyMap<string, ExecutionSession["status"]>,
+  sessions: readonly ExecutionSession[],
+  nameOf: (botId: string) => string,
+): string[] {
+  const said: string[] = [];
+  for (const session of sessions) {
+    const before = previous.get(session.id);
+    if (before === undefined || before === session.status) continue;
+    const name = nameOf(session.botId);
+    switch (session.status) {
+      case "waiting":
+        said.push(
+          session.waitingFor === "user"
+            ? `${name} is waiting for you`
+            : session.waitingFor === "delegations"
+              ? `${name} is waiting on delegated work`
+              : `${name} is waiting`,
+        );
+        break;
+      case "completed":
+        said.push(`${name} finished`);
+        break;
+      case "failed":
+        said.push(`${name} failed`);
+        break;
+      case "cancelled":
+        said.push(`${name} stopped`);
+        break;
+    }
+  }
+  return said;
+}
+
 const capitalise = (text: string) =>
   text ? `${text[0]?.toUpperCase()}${text.slice(1)}` : text;
 
@@ -278,37 +371,43 @@ const escapeRegExp = (text: string) =>
   text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
- * Splits message text into plain runs and `@Name` mentions of the given bots
- * (longest names first, case-insensitive, not inside a longer word).
+ * A splitter of message text into plain runs and `@Name` mentions of the
+ * given bots (longest names first, case-insensitive, not inside a longer
+ * word). Build it once per bot list; it compiles one pattern.
  */
-export function mentionSegments(
-  text: string,
+export function createMentionMatcher(
   bots: readonly Bot[],
-): MentionSegment[] {
+): (text: string) => MentionSegment[] {
   const named = bots
     .filter((bot) => bot.name.trim())
     .sort((a, b) => b.name.length - a.name.length);
-  if (named.length === 0) return [{ text }];
+  if (named.length === 0) return (text) => [{ text }];
+  const byName = new Map(named.map((bot) => [bot.name.toLowerCase(), bot]));
   const pattern = new RegExp(
     `@(${named.map((bot) => escapeRegExp(bot.name)).join("|")})(?![\\p{L}\\p{N}_])`,
     "giu",
   );
-  const segments: MentionSegment[] = [];
-  let last = 0;
-  for (const match of text.matchAll(pattern)) {
-    const name = (match[1] ?? "").toLowerCase();
-    const bot = named.find(
-      (candidate) => candidate.name.toLowerCase() === name,
-    );
-    if (!bot) continue;
-    if (match.index > last)
-      segments.push({ text: text.slice(last, match.index) });
-    segments.push({ text: match[0], bot });
-    last = match.index + match[0].length;
-  }
-  if (last < text.length) segments.push({ text: text.slice(last) });
-  return segments;
+  return (text) => {
+    const segments: MentionSegment[] = [];
+    let last = 0;
+    for (const match of text.matchAll(pattern)) {
+      const bot = byName.get((match[1] ?? "").toLowerCase());
+      if (!bot) continue;
+      if (match.index > last)
+        segments.push({ text: text.slice(last, match.index) });
+      segments.push({ text: match[0], bot });
+      last = match.index + match[0].length;
+    }
+    if (last < text.length) segments.push({ text: text.slice(last) });
+    return segments;
+  };
 }
+
+/** One-off form of `createMentionMatcher`. */
+export const mentionSegments = (
+  text: string,
+  bots: readonly Bot[],
+): MentionSegment[] => createMentionMatcher(bots)(text);
 
 // ── Chat timeline ───────────────────────────────────────────────────────────
 
@@ -344,22 +443,25 @@ const noticeText = (event: TaskEvent): string | null => {
  * The group chat: messages in order, with notices for goal changes, stop
  * requests and the finish placed where they happened. Notices come from the
  * view's retained events, so very old ones may be missing; messages never are.
- * A user message followed by `task.goal_changed` is marked as the new goal.
+ * The user message posted after a `task.goal_changed` is marked as the new goal.
  */
 export function taskTimeline(view: TaskView): TimelineEntry[] {
   const postedAt = new Map<string, number>();
   const goalSetBy = new Map<string, number>();
   const notices: { sequence: number; entry: TimelineEntry }[] = [];
-  let lastUserMessage: string | null = null;
+  // The server posts the user's message after `task.goal_changed` (and the
+  // task reopening) in the same transaction, so the next user message is the
+  // one that set the goal.
+  let changedTo: number | null = null;
   for (const event of view.events) {
+    if (event.type === "task.goal_changed")
+      changedTo = event.payload.goalVersion;
     if (event.type === "message.posted") {
       postedAt.set(event.payload.message.id, event.sequence);
-      if (event.payload.message.authorKind === "user")
-        lastUserMessage = event.payload.message.id;
-    }
-    if (event.type === "task.goal_changed" && lastUserMessage) {
-      goalSetBy.set(lastUserMessage, event.payload.goalVersion);
-      lastUserMessage = null;
+      if (event.payload.message.authorKind === "user" && changedTo !== null) {
+        goalSetBy.set(event.payload.message.id, changedTo);
+        changedTo = null;
+      }
     }
     const text = noticeText(event);
     if (text)

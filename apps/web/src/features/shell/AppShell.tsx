@@ -61,18 +61,20 @@ export function AppShell() {
   const botIds = bots.map((bot) => bot.id);
   const taskIds = tasks.map((task) => task.id);
   const listedKey = `${botIds.join("\n")}\t${taskIds.join("\n")}`;
-  // `listedKey` stands for the two id lists, which are new arrays every render.
+  // One effect keeps the URL naming what is on screen, always with
+  // history.replace: a list route without an id opens the first item (once
+  // the lists are loaded), and any route is spelled canonically ("#bots",
+  // "#/studio" and no hash at all are rewritten). Two effects would undo each
+  // other within one commit. `listedKey` stands for the two id lists, which are
+  // new arrays every render.
   useEffect(() => {
-    if (loading) return;
-    const next = canonicalRoute(route, { bots: botIds, tasks: taskIds });
-    if (next) navigate(next, { replace: true });
+    const target =
+      (loading
+        ? null
+        : canonicalRoute(route, { bots: botIds, tasks: taskIds })) ?? route;
+    if (window.location.hash !== routeHref(target))
+      navigate(target, { replace: true });
   }, [loading, route, listedKey]);
-  // A hash that parses but is not spelled canonically ("#bots", "#/studio",
-  // none at all) is rewritten in place, so it adds no history entry of its own.
-  useEffect(() => {
-    if (window.location.hash !== routeHref(route))
-      navigate(route, { replace: true });
-  }, [route]);
 
   const switchSection = (next: Section) => {
     const remembered = lastIds.current[next];

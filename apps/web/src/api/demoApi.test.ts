@@ -236,6 +236,60 @@ describe("demo API", () => {
     expectValidEvents(final.events);
   });
 
+  it("posts a goal change in the server's event order", async () => {
+    const api = demo();
+    // Waiting task: the goal change also reopens it.
+    await api.postTaskMessage("task-103", {
+      text: "Switch over in one go",
+      goal: "Plan a one-step rollout of the Docker sandbox driver",
+      observedGoalVersion: 1,
+    });
+    const { events } = await api.getTask("task-103");
+    const from = events.findIndex((e) => e.type === "task.goal_changed") - 1;
+    expect(events.slice(from).map((e) => e.type)).toEqual([
+      "task.updated",
+      "task.goal_changed",
+      "task.updated",
+      "task.reopened",
+      "message.posted",
+      "steering.received",
+    ]);
+    // A completed task's finished coordinator session is queued again too.
+    await api.postTaskMessage("task-102", { text: "One more thing" });
+    const after = (await api.getTask("task-102")).events;
+    const reopened = after.findIndex((e) => e.type === "task.reopened");
+    expect(after.slice(reopened - 1).map((e) => e.type)).toEqual([
+      "task.updated",
+      "task.reopened",
+      "session.updated",
+      "message.posted",
+      "steering.received",
+    ]);
+  });
+
+  it("checks the goal version only when the goal changes", async () => {
+    const api = demo();
+    const { task } = await api.getTask("task-101");
+    // The same goal is no change: no version check, no new version.
+    await api.postTaskMessage("task-101", {
+      text: "Same goal, more detail",
+      goal: task.goal,
+      observedGoalVersion: 99,
+    });
+    expect((await api.getTask("task-101")).task.goalVersion).toBe(1);
+    await expect(
+      api.postTaskMessage("task-101", {
+        text: "New goal",
+        goal: "Something else",
+        observedGoalVersion: 3,
+      }),
+    ).rejects.toMatchObject({
+      code: "STALE_GOAL_VERSION",
+      message: "The goal is at version 1; you edited version 3.",
+      details: { goalVersion: 1 },
+    });
+  });
+
   it("changes the goal only against the observed version", async () => {
     const api = demo();
     await rejects(
@@ -259,14 +313,23 @@ describe("demo API", () => {
     expect(events.some((e) => e.type === "task.goal_changed")).toBe(true);
   });
 
-  it("stops a task: stopping first, then cancelled", async () => {
+  it("stops a task as the server does: stopping while runs stop, then cancelled", async () => {
     const api = demo();
+    // Start the workers, so there are runs to stop.
+    await api.advanceDemoTask?.("task-101");
     const stopping = await api.stopTask("task-101", { reason: "  " });
     expect(stopping.cancelReason).toBeNull();
     expect(statusWord(stopping)).toBe("stopping");
-    await rejects(
-      api.postTaskMessage("task-101", { text: "hello" }),
-      "TASK_TERMINAL",
+    const refused = await api
+      .postTaskMessage("task-101", { text: "hello" })
+      .catch((reason: unknown) => reason);
+    expect(refused).toMatchObject({
+      code: "TASK_TERMINAL",
+      message: "The task is stopping and takes no new messages.",
+    });
+    // A repeat stop is idempotent.
+    expect((await api.stopTask("task-101")).cancelRequestedAt).toBe(
+      stopping.cancelRequestedAt,
     );
     await api.advanceDemoTask?.("task-101");
     const view = taskViewSchema.parse(await api.getTask("task-101"));
@@ -274,15 +337,47 @@ describe("demo API", () => {
     expect(
       view.sessions.every((s) => ["cancelled", "completed"].includes(s.status)),
     ).toBe(true);
-    expect(view.events.map((e) => e.type)).toEqual(
-      expect.arrayContaining([
-        "cancellation.requested",
-        "cancellation.completed",
-        "task.finished",
-      ]),
-    );
+    const types = view.events.map((e) => e.type);
+    const requested = types.indexOf("cancellation.requested");
+    // The server's order: request; runs stop (run.finished, then the session);
+    // the task is cancelled; cancellation.completed; task.finished.
+    expect(types.slice(requested - 1, requested + 1)).toEqual([
+      "task.updated",
+      "cancellation.requested",
+    ]);
+    expect(types.slice(-3)).toEqual([
+      "task.updated",
+      "cancellation.completed",
+      "task.finished",
+    ]);
+    const firstStop = types.indexOf("run.finished", requested);
+    expect(types[firstStop + 1]).toBe("session.updated");
     expectValidEvents(view.events);
-    await rejects(api.stopTask("task-101"), "TASK_TERMINAL");
+    expect((await api.stopTask("task-101")).status).toBe("cancelled");
+    await expect(
+      api.postTaskMessage("task-101", { text: "hello" }),
+    ).rejects.toMatchObject({
+      code: "TASK_TERMINAL",
+      message: "The task was cancelled; start a new task to continue the work.",
+    });
+  });
+
+  it("settles a stop at once with no run in progress, and refuses finished tasks", async () => {
+    const api = demo();
+    // task-101 as seeded: the coordinator waits and the workers are queued.
+    const stopped = await api.stopTask("task-101");
+    expect(stopped.status).toBe("cancelled");
+    const view = await api.getTask("task-101");
+    const completed = view.events.find(
+      (e) => e.type === "cancellation.completed",
+    );
+    expect(
+      completed?.type === "cancellation.completed" && completed.payload,
+    ).toMatchObject({ stopped: [] });
+    await expect(api.stopTask("task-102")).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "The task already completed; there is nothing to stop.",
+    });
   });
 
   it("replies to a greeting without starting a task", async () => {

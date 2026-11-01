@@ -23,6 +23,7 @@ import {
   participantsLabel,
   sessionToolCalls,
   sessionTree,
+  statusAnnouncements,
   TASK_NODE,
   taskTimeline,
   toolCount,
@@ -321,6 +322,35 @@ describe("live activity lines", () => {
   });
 });
 
+describe("status announcements", () => {
+  it("announces waiting and finished transitions only", () => {
+    const previous = new Map<string, ExecutionSession["status"]>([
+      ["a", "running"],
+      ["b", "running"],
+      ["c", "queued"],
+      ["d", "running"],
+      ["e", "running"],
+    ]);
+    const said = statusAnnouncements(
+      previous,
+      [
+        session("a", null, { status: "waiting", waitingFor: "delegations" }),
+        session("b", "a", { botId: "bot-b", status: "completed" }),
+        session("c", "a", { botId: "bot-c", status: "running" }),
+        session("d", "a", { status: "running" }),
+        session("e", "a", { status: "failed" }),
+        session("new", "a", { status: "completed" }),
+      ],
+      (botId) => botId.replace("bot-", "").toUpperCase(),
+    );
+    expect(said).toEqual([
+      "A is waiting on delegated work",
+      "B finished",
+      "A failed",
+    ]);
+  });
+});
+
 describe("mentions", () => {
   const bots = [bot("bot-m", "Moss"), bot("bot-mo", "Moss Two")];
 
@@ -369,15 +399,18 @@ describe("chat timeline", () => {
 
   it("places goal changes, stop requests and the finish where they happened", () => {
     const old = message(1, "bot", "Before the window");
-    const steer = message(2, "user", "New goal text");
-    const reply = message(3, "bot", "On it");
+    const earlier = message(2, "user", "Plain steering");
+    const steer = message(3, "user", "New goal text");
+    const reply = message(4, "bot", "On it");
+    // The server's order: task.updated, task.goal_changed, then the message.
     const events: TaskEvent[] = [
-      posted(10, steer),
+      posted(9, earlier),
       {
-        ...base(11),
+        ...base(10),
         type: "task.goal_changed",
         payload: { goal: "New goal text", goalVersion: 2 },
       },
+      posted(11, steer),
       posted(12, reply),
       {
         ...base(13),
@@ -392,7 +425,7 @@ describe("chat timeline", () => {
     ];
     const timeline = taskTimeline(
       view([], {
-        messages: [reply, old, steer],
+        messages: [reply, old, steer, earlier],
         events,
         firstSequence: 10,
         hasEarlier: true,
@@ -406,8 +439,9 @@ describe("chat timeline", () => {
       ),
     ).toEqual([
       "Before the window",
-      "New goal text (v2)",
+      "Plain steering",
       "Goal updated to v2",
+      "New goal text (v2)",
       "On it",
       "Stop requested",
       "Task stopped",

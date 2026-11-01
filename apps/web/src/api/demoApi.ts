@@ -57,6 +57,7 @@ import {
 import {
   askScript,
   continueScript,
+  createRootSession,
   type EventRef,
   type IdKind,
   requestCancel,
@@ -125,8 +126,17 @@ function validate<Schema extends z.ZodType>(
   );
 }
 
+/** The server's NOT_FOUND (packages/backend errors.ts `notFound`). */
 const notFound = (what: string, id: string) =>
-  new ApiError("NOT_FOUND", `No ${what} with id ${id}.`, undefined, 404);
+  new ApiError(
+    "NOT_FOUND",
+    `${what[0]?.toUpperCase()}${what.slice(1)} ${id} was not found.`,
+    undefined,
+    404,
+  );
+
+/** The server's goal version budget (backend config `maxGoalVersions`). */
+const MAX_GOAL_VERSIONS = 20;
 
 /** A task title from its goal: the first line, cut at a word near 60 characters. */
 export function titleFromGoal(goal: string): string {
@@ -377,6 +387,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     };
     const state = createTaskState(task, true);
     state.host.emit("task.created", { task });
+    // The server creates the coordinator's session with the task.
+    createRootSession(state.host);
     return state;
   };
 
@@ -399,23 +411,25 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
 
   const createTask = (command: unknown): Task => {
     const parsed = validate(createTaskCommandSchema, command);
+    // As services/tasks.ts `createTask`.
     if (parsed.verificationPlan)
       throw new ApiError(
         "VERIFICATION_UNAVAILABLE",
-        "Verification plans are not available: this server does not enforce them.",
+        "Verification plans are not enforced by this server yet; create the task without one.",
         undefined,
-        409,
+        422,
       );
-    for (const botId of parsed.participantBotIds) {
+    const missing = parsed.participantBotIds.filter((botId) => {
       const record = bots.get(botId);
-      if (!record || record.archived)
-        throw new ApiError(
-          "VALIDATION_FAILED",
-          `No bot with id ${botId}.`,
-          undefined,
-          400,
-        );
-    }
+      return !record || record.archived;
+    });
+    if (missing.length > 0)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `Unknown bot: ${missing.join(", ")}.`,
+        { botIds: missing },
+        400,
+      );
     const before = botState();
     const state = newTask({ ...parsed, id: `task-${++taskCounter}` });
     state.steps = teamScript(state.host);
@@ -560,7 +574,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     if (fields.runtimeProfileId && !profiles.has(fields.runtimeProfileId))
       throw new ApiError(
         "VALIDATION_FAILED",
-        `No runtime profile with id ${fields.runtimeProfileId}.`,
+        `Runtime profile ${fields.runtimeProfileId} does not exist.`,
         undefined,
         400,
       );
@@ -681,7 +695,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       if (bot.activeTaskIds.length)
         throw new ApiError(
           "CONFLICT",
-          `${bot.name} is still in ${bot.activeTaskIds.length} active task(s). Stop or finish them first.`,
+          `${bot.name} still takes part in ${bot.activeTaskIds.length} unfinished task(s); stop or finish them first.`,
           { activeTaskIds: bot.activeTaskIds },
           409,
         );
@@ -830,34 +844,44 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     createTask: async (command) => createTask(command),
     getTask,
+    // As services/messages.ts `postTaskMessage`, check for check and message
+    // for message.
     postTaskMessage: async (taskId, command) => {
-      const state = getState(taskId);
       const parsed = validate(postTaskMessageCommandSchema, command);
+      if (parsed.verificationPlan)
+        throw new ApiError(
+          "VERIFICATION_UNAVAILABLE",
+          "Verification plans are not enforced by this server yet.",
+          undefined,
+          422,
+        );
+      const state = getState(taskId);
       const { task } = state.view;
       if (task.status === "cancelled" || task.cancelRequestedAt)
         throw new ApiError(
           "TASK_TERMINAL",
-          "This task was stopped and can't take new messages.",
+          task.status === "cancelled"
+            ? "The task was cancelled; start a new task to continue the work."
+            : "The task is stopping and takes no new messages.",
           undefined,
           409,
         );
-      if (parsed.verificationPlan)
-        throw new ApiError(
-          "VERIFICATION_UNAVAILABLE",
-          "Verification plans are not available: this server does not enforce them.",
-          undefined,
-          409,
-        );
-      if (
-        parsed.goal !== undefined &&
-        parsed.observedGoalVersion !== task.goalVersion
-      )
-        throw new ApiError(
-          "STALE_GOAL_VERSION",
-          `The goal changed to version ${task.goalVersion} since you looked at it.`,
-          { goalVersion: task.goalVersion },
-          409,
-        );
+      if (parsed.goal !== undefined && parsed.goal !== task.goal) {
+        if (parsed.observedGoalVersion !== task.goalVersion)
+          throw new ApiError(
+            "STALE_GOAL_VERSION",
+            `The goal is at version ${task.goalVersion}; you edited version ${parsed.observedGoalVersion}.`,
+            { goalVersion: task.goalVersion },
+            409,
+          );
+        if (task.goalVersion >= MAX_GOAL_VERSIONS)
+          throw new ApiError(
+            "GOAL_VERSION_BUDGET",
+            `The goal can change at most ${MAX_GOAL_VERSIONS - 1} times; start a new task instead.`,
+            undefined,
+            409,
+          );
+      }
       const before = botState();
       const { message, reopened } = userMessage(state.host, parsed);
       if (reopened) {
@@ -870,20 +894,27 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       schedule(state);
       return clone(message);
     },
+    // As services/tasks.ts `stopTask`: idempotent while stopping or cancelled,
+    // CONFLICT once completed or failed.
     stopTask: async (taskId, command = {}) => {
-      const state = getState(taskId);
       const { reason } = validate(stopTaskCommandSchema, command);
+      const state = getState(taskId);
       const { task } = state.view;
-      if (isFinishedStatus(task.status) || task.cancelRequestedAt)
+      if (task.status === "cancelled" || task.cancelRequestedAt)
+        return clone(task);
+      if (task.status === "completed" || task.status === "failed")
         throw new ApiError(
-          "TASK_TERMINAL",
-          "This task has already finished or is stopping.",
+          "CONFLICT",
+          `The task already ${task.status}; there is nothing to stop.`,
           undefined,
           409,
         );
-      state.steps = [requestCancel(state.host, reason ?? null)];
+      const before = botState();
+      const settle = requestCancel(state.host, reason ?? null);
+      state.steps = settle ? [settle] : [];
       state.autoplay = true;
       notify({ type: "tasks.changed", taskId });
+      if (botState() !== before) notify({ type: "bots.changed" });
       schedule(state);
       return clone(state.view.task);
     },

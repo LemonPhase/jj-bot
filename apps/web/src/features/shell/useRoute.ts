@@ -35,7 +35,12 @@ function onHashChange() {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  if (listeners.size === 1) window.addEventListener("hashchange", onHashChange);
+  if (listeners.size === 1) {
+    // The app (re)mounted: it opened on this route, with nothing to go back to.
+    lastHash = currentHash();
+    previousHash = null;
+    window.addEventListener("hashchange", onHashChange);
+  }
   return () => {
     listeners.delete(listener);
     if (listeners.size === 0)
