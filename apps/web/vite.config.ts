@@ -1,10 +1,12 @@
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv, type ProxyOptions } from "vite";
-// The extension keeps the config loadable by Vite's native config loader.
+import { defineConfig, type ProxyOptions } from "vite";
+// The extensions keep the config loadable by Vite's native config loader.
+import { apiTarget } from "./devEnv.ts";
 import { closeClientWithUpstream } from "./devProxy.ts";
 
 /**
- * `/api` and `/health` go to the API on loopback (`API_PORT`, default 3001).
+ * `/api` and `/health` go to the API on loopback (`API_PORT` from the
+ * environment or the repository root's `.env`, default 3001).
  * Server-sent event streams (`/api/stream`, `/api/tasks/:id/stream`) pass
  * through unbuffered. The upstream request is aborted when the browser closes
  * the stream, so the API does not keep writing to a dead socket, and the
@@ -34,8 +36,7 @@ const apiProxy = (target: string): ProxyOptions => ({
 });
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
-  const target = `http://127.0.0.1:${env.API_PORT || "3001"}`;
+  const target = apiTarget(mode);
   return {
     plugins: [react()],
     server: {

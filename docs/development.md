@@ -9,7 +9,7 @@ npm ci
 JJ_ENABLE_SCRIPTED_MODEL=true npm run dev
 ```
 
-Open http://127.0.0.1:5173. `npm run dev` starts the API on http://127.0.0.1:3001 with the worker embedded, and the Vite dev server, which proxies `/api` and `/health` to it (update `apps/web/vite.config.ts` if you change `API_PORT`). Stop both with Ctrl+C.
+Open http://127.0.0.1:5173. `npm run dev` starts the API on http://127.0.0.1:3001 with the worker embedded, and the Vite dev server, which proxies `/api` and `/health` to it, following `API_PORT` from the environment or the root `.env`. Stop both with Ctrl+C.
 
 With no settings the API stores everything in embedded PGlite under `.jj-data` and needs no other service. To run bots, configure a model: `JJ_ENABLE_SCRIPTED_MODEL=true` registers the keyless, deterministic scripted test model (`scripted/team`), or put a provider key in `.env` (`cp .env.example .env`). Without either, the API stores and serves bots and tasks, bootstrap reports `capabilities.agentExecution: false` and tasks are refused with `MODEL_NOT_CONFIGURED`. Never commit `.env`.
 
