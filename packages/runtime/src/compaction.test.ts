@@ -6,14 +6,18 @@ import {
   fauxToolCall,
   getSystemMessageText,
   type Message,
+  type Model,
+  normalizeContext,
   type ToolCall,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   compactionSettings,
+  cutByContext,
   isCompaction,
   MIN_COMPACTION_WINDOW,
   MIN_RESERVE_TOKENS,
@@ -53,11 +57,14 @@ let workspace: Awaited<ReturnType<typeof localSandbox>>;
 /**
  * faux-1's 20000-token window compacts past 10000 tokens (the reserve is
  * half the window) and keeps about 5000; faux-big never reaches its
- * threshold in these tests, only a provider's overflow.
+ * threshold in these tests, only a provider's overflow. faux-small's window
+ * and faux-unknown's missing one turn compaction off.
  */
 const FAUX_MODELS = [
   { id: "faux-1", contextWindow: 20_000 },
   { id: "faux-big", contextWindow: 100_000 },
+  { id: "faux-small", contextWindow: 12_000 },
+  { id: "faux-unknown", contextWindow: 0 },
 ];
 /** For faux-big: compact on an overflow, keeping about 1000 tokens. */
 const ON_OVERFLOW = { keepRecentTokens: 1000 };
@@ -146,24 +153,62 @@ const isSummaryRequest = (context: TranscriptContext) => {
   );
 };
 
+/** A reply, or one built from the request it answers. */
+type Reply =
+  | AssistantMessage
+  | ((context: TranscriptContext, model: Model<string>) => AssistantMessage);
+
 /**
  * Faux steps that answer summary requests with numbered summaries and every
  * other request with the next reply, recording each request.
  */
-function respond(replies: AssistantMessage[]) {
+function respond(replies: Reply[]) {
   const requests: TranscriptContext[] = [];
   const summaries: TranscriptContext[] = [];
-  const step = (context: TranscriptContext) => {
+  const step = (
+    context: TranscriptContext,
+    _options: unknown,
+    _state: unknown,
+    model: Model<string>,
+  ) => {
     if (isSummaryRequest(context)) {
       summaries.push(context);
       return say(`Summary ${summaries.length}: counted the files so far.`);
     }
     requests.push(context);
-    return replies.shift() ?? say("No more replies.");
+    const reply = replies.shift() ?? say("No more replies.");
+    return typeof reply === "function" ? reply(context, model) : reply;
   };
   faux.setResponses(Array.from({ length: 30 }, () => step));
   return { requests, summaries };
 }
+
+/** The output cap pi-ai's providers set for a request. */
+const capOf = (context: TranscriptContext, model: Model<string>) =>
+  clampMaxTokensToContext(model, context, model.maxTokens);
+
+/**
+ * A reply stopped with stop reason length after `tokens(cap)` output tokens
+ * (the faux provider counts four characters a token), with a bash call it
+ * never finished unless `call` is false.
+ */
+const cutReply =
+  (tokens: (cap: number) => number, call = true) =>
+  (context: TranscriptContext, model: Model<string>) => {
+    const calls = call
+      ? [fauxToolCall("bash", { command: "echo cut" }, { id: "cut" })]
+      : [];
+    const callChars = calls
+      .map((c) => `\n${c.name}:${JSON.stringify(c.arguments)}`)
+      .join("").length;
+    const text = "Running the next".padEnd(
+      tokens(capOf(context, model)) * 4 - callChars,
+      ".",
+    );
+    return fauxAssistantMessage([fauxText(text), ...calls], {
+      stopReason: "length",
+    });
+  };
 
 const conversationOf = (context: TranscriptContext) =>
   context.messages.filter((message) => message.role !== "system");
@@ -771,47 +816,96 @@ describe("context compaction", () => {
     expectValid(seen);
   });
 
-  it("compacts and retries once when a full context cuts the answer short", async () => {
-    // The provider capped the output for lack of room: stop reason length.
-    const cut = fauxAssistantMessage(
-      [
-        fauxText("Running the next"),
-        fauxToolCall("bash", { command: "echo cut" }, { id: "cut" }),
-      ],
-      { stopReason: "length" },
-    );
+  it.each([
+    ["at the cap", (cap: number) => cap],
+    ["1% under the cap, as providers count", (cap: number) => cap * 0.99],
+  ])(
+    "compacts and retries once when a full context cuts the answer short %s",
+    async (_, tokens) => {
+      // The provider capped the output for lack of room: stop reason length.
+      const recorded = recordingHooks();
+      const { requests, summaries } = respond([
+        cutReply((cap) => Math.floor(tokens(cap))),
+        say("Fits now."),
+      ]);
+      const outcome = await executor().run(
+        input({
+          hooks: recorded.hooks,
+          transcript: longTranscript(4),
+          inputs: ["Report."],
+        }),
+      );
+      expect(outcome).toEqual({ kind: "ended", finalText: "Fits now." });
+      expect(summaries.length).toBeGreaterThan(0);
+      expect(requests).toHaveLength(2);
+      expect(compactions(recorded.entries)).toHaveLength(1);
+      // The cut answer is reported as an overflow, never persisted, and its call never ran.
+      const finished = recorded.events.filter(
+        (event): event is Extract<ExecutorEvent, { type: "model.finished" }> =>
+          event.type === "model.finished",
+      );
+      expect(finished[0]).toMatchObject({
+        stopReason: "error",
+        errorCode: "context_overflow",
+        error: expect.stringContaining("left it no room"),
+      });
+      expect(
+        recorded.events.filter((event) => event.type === "tool.started"),
+      ).toEqual([]);
+      expect(
+        recorded.entries.filter(
+          (entry) =>
+            entry.role === "assistant" && textOf(entry).includes("Running"),
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it("keeps a length stop short of the output cap an ordinary length stop", async () => {
+    // Cut by something else, such as a provider-side limit below the
+    // catalog's: it is persisted and pi answers its unfinished call as
+    // truncated. One turn, so no later call compacts past the threshold.
     const recorded = recordingHooks();
-    const { requests, summaries } = respond([cut, say("Fits now.")]);
+    const { requests, summaries } = respond([
+      cutReply((cap) => Math.floor(cap * 0.98)),
+      say("Not asked for."),
+    ]);
     const outcome = await executor().run(
       input({
         hooks: recorded.hooks,
         transcript: longTranscript(4),
         inputs: ["Report."],
+        budgets: budgets(1),
       }),
     );
-    expect(outcome).toEqual({ kind: "ended", finalText: "Fits now." });
-    expect(summaries.length).toBeGreaterThan(0);
-    expect(requests).toHaveLength(2);
-    expect(compactions(recorded.entries)).toHaveLength(1);
-    // The cut answer is reported as an overflow, never persisted, and its call never ran.
+    expect(outcome).toMatchObject({
+      kind: "budget",
+      finalText: expect.stringMatching(/^Running the next\.+$/),
+    });
+    expect(summaries).toHaveLength(0);
+    expect(requests).toHaveLength(1);
+    expect(compactions(recorded.entries)).toHaveLength(0);
     const finished = recorded.events.filter(
       (event): event is Extract<ExecutorEvent, { type: "model.finished" }> =>
         event.type === "model.finished",
     );
-    expect(finished[0]).toMatchObject({
-      stopReason: "error",
-      errorCode: "context_overflow",
-      error: expect.stringContaining("left it no room"),
-    });
+    expect(finished[0]).toMatchObject({ stopReason: "length" });
+    expect(finished[0]).not.toHaveProperty("error");
+    expect(finished[0]).not.toHaveProperty("warning");
     expect(
-      recorded.events.filter((event) => event.type === "tool.started"),
-    ).toEqual([]);
+      recorded.events.find((event) => event.type === "tool.finished"),
+    ).toMatchObject({
+      ok: false,
+      output: expect.stringContaining("truncated"),
+    });
     expect(
       recorded.entries.filter(
         (entry) =>
-          entry.role === "assistant" && textOf(entry).includes("Running"),
+          entry.role === "assistant" &&
+          entry.stopReason === "length" &&
+          textOf(entry).includes("Running"),
       ),
-    ).toEqual([]);
+    ).toHaveLength(1);
   });
 
   it("does not count the overflowed call against the turn budget", async () => {
@@ -897,6 +991,193 @@ describe("context compaction", () => {
     );
     expect(summaries).toHaveLength(0);
     expect(compactions(recorded.entries)).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      "faux-small",
+      {},
+      " Context compaction is off for models with a context window under 16384 tokens.",
+    ],
+    [
+      "faux-unknown",
+      {},
+      " Context compaction is off for models with no known context window.",
+    ],
+    ["faux-big", { enabled: false }, ""],
+  ])(
+    "says when %s's window turned compaction off for an overflow",
+    async (model, compaction, note) => {
+      const overflow =
+        "400 Your input exceeds the context window of this model.";
+      const { summaries } = respond([
+        fauxAssistantMessage([], {
+          stopReason: "error",
+          errorMessage: overflow,
+        }),
+      ]);
+      const outcome = await new PiSessionExecutor({
+        models: registry,
+        compaction,
+      }).run(
+        input({
+          hooks: recordingHooks().hooks,
+          model: `faux/${model}`,
+          transcript: longTranscript(2),
+          inputs: ["Report."],
+        }),
+      );
+      expect(outcome).toEqual({
+        kind: "error",
+        code: "context_overflow",
+        error: `${overflow}${note}`,
+      });
+      expect(summaries).toHaveLength(0);
+    },
+  );
+
+  it("warns on an answer cut for lack of room when the window turns compaction off", async () => {
+    const run = async (reply: Reply) => {
+      const recorded = recordingHooks();
+      const { summaries } = respond([reply]);
+      const outcome = await executor().run(
+        input({
+          hooks: recorded.hooks,
+          model: "faux/faux-small",
+          transcript: longTranscript(1),
+          inputs: ["Report."],
+        }),
+      );
+      // An ordinary length stop either way: the run ends with its text.
+      expect(outcome).toMatchObject({ kind: "ended" });
+      expect(summaries).toHaveLength(0);
+      return recorded.events.find((event) => event.type === "model.finished");
+    };
+    expect(await run(cutReply((cap) => cap, false))).toMatchObject({
+      stopReason: "length",
+      warning: expect.stringMatching(
+        /^The model's output was cut short because the context left it no room \(stop reason length after \d+ output tokens\)\. Context compaction is off for models with a context window under 16384 tokens\.$/,
+      ),
+    });
+    const short = await run(cutReply((cap) => Math.floor(cap / 2), false));
+    expect(short).toMatchObject({ stopReason: "length" });
+    expect(short).not.toHaveProperty("warning");
+  });
+});
+
+describe("cutByContext", () => {
+  // pi-ai estimates 35000 characters as 10000 tokens, so on faux-1's 20000
+  // window its providers cap the output at 20000 - 10000 - 4096 = 5904.
+  const context = normalizeContext({
+    messages: [user("x".repeat(35_000)) as Message],
+  });
+  const stopped = (
+    output: number,
+    stopReason: "length" | "stop" = "length",
+  ) => {
+    const message = fauxAssistantMessage(fauxText("..."), { stopReason });
+    return { ...message, usage: { ...message.usage, output } };
+  };
+  const model = (id: string) => faux.getModel(id) as Model<string>;
+
+  it("takes a length stop at the context's output cap for a cut", () => {
+    expect(capOf(context, model("faux-1"))).toBe(5904);
+    expect(cutByContext(stopped(5904), model("faux-1"), context)).toBe(true);
+    // Within 1% of the cap (60 tokens), for providers that count differently.
+    expect(cutByContext(stopped(5844), model("faux-1"), context)).toBe(true);
+  });
+
+  it("leaves a stop short of the cap, or a cap that did not bite, alone", () => {
+    expect(cutByContext(stopped(5843), model("faux-1"), context)).toBe(false);
+    expect(cutByContext(stopped(3000), model("faux-1"), context)).toBe(false);
+    expect(cutByContext(stopped(5904, "stop"), model("faux-1"), context)).toBe(
+      false,
+    );
+    // On faux-big the cap is the model's own 16384-token limit.
+    expect(cutByContext(stopped(16_000), model("faux-big"), context)).toBe(
+      false,
+    );
+    expect(cutByContext(stopped(5904), model("faux-unknown"), context)).toBe(
+      false,
+    );
+  });
+
+  /** A length stop with this usage. */
+  const used = (usage: {
+    input?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    output: number;
+  }) => {
+    const message = stopped(usage.output);
+    return { ...message, usage: { ...message.usage, ...usage } };
+  };
+
+  it("allows at least 16 tokens when the context leaves little room", () => {
+    // 55440 characters are 15840 tokens: a cap of 20000 - 15840 - 4096 = 64,
+    // whose 1% would be a single token.
+    const full = normalizeContext({
+      messages: [user("x".repeat(55_440)) as Message],
+    });
+    expect(capOf(full, model("faux-1"))).toBe(64);
+    expect(cutByContext(stopped(48), model("faux-1"), full)).toBe(true);
+    expect(cutByContext(stopped(47), model("faux-1"), full)).toBe(false);
+  });
+
+  it("takes a length stop that reached the window for a cut, below pi-ai's cap", () => {
+    // pi estimates this context at 1000 tokens, a cap of 14904; a server
+    // that counts 15000 stops the answer at the real window instead.
+    const small = normalizeContext({
+      messages: [user("x".repeat(3_500)) as Message],
+    });
+    expect(capOf(small, model("faux-1"))).toBe(14_904);
+    const faux1 = model("faux-1");
+    // Within 1% (200 tokens) of the 20000 window, cache included.
+    expect(
+      cutByContext(used({ input: 15_000, output: 4_800 }), faux1, small),
+    ).toBe(true);
+    expect(
+      cutByContext(
+        used({
+          input: 5_000,
+          cacheRead: 8_000,
+          cacheWrite: 2_000,
+          output: 4_800,
+        }),
+        faux1,
+        small,
+      ),
+    ).toBe(true);
+    expect(
+      cutByContext(used({ input: 14_999, output: 4_800 }), faux1, small),
+    ).toBe(false);
+  });
+
+  it("goes by the window alone where pi-ai sends no output cap", () => {
+    const faux1 = model("faux-1");
+    const uncapped = [
+      { ...faux1, api: "openai-codex-responses" },
+      {
+        ...faux1,
+        api: "openai-responses",
+        compat: { supportsMaxOutputTokens: false },
+      },
+    ] as unknown as Model<string>[];
+    for (const target of uncapped) {
+      // At pi-ai's cap, which the provider never got: its own limit stopped it.
+      expect(cutByContext(stopped(5904), target, context)).toBe(false);
+      expect(
+        cutByContext(used({ input: 14_000, output: 5_904 }), target, context),
+      ).toBe(true);
+    }
+    // A Responses model that takes max_output_tokens gets the cap.
+    expect(
+      cutByContext(
+        stopped(5904),
+        { ...faux1, api: "openai-responses" } as Model<string>,
+        context,
+      ),
+    ).toBe(true);
   });
 });
 

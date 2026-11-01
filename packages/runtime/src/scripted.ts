@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   type AssistantMessage,
+  type AssistantMessageEventStream,
+  createAssistantMessageEventStream,
   createFauxCore,
   createProvider,
   fauxAssistantMessage,
@@ -19,6 +21,7 @@ import {
   type ToolResultMessage,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 
 /**
  * The scripted test model: a keyless, deterministic stand-in for a real model
@@ -65,8 +68,6 @@ export interface ScriptedTurn {
 
 /** The scripted model's own output limit. */
 const MAX_OUTPUT_TOKENS = 16_384;
-/** pi-ai's providers cap output at the window less the context less this (`clampMaxTokensToContext`). */
-const PROVIDER_MARGIN_TOKENS = 4096;
 
 export interface ScriptedProviderOptions {
   /** The model's context window in tokens; default 128000. Tests use small ones to exercise compaction. */
@@ -93,25 +94,32 @@ export function createScriptedProvider(
     ],
   });
   const respond = (
+    model: Model<string>,
     context: TranscriptContext,
     request?: SimpleStreamOptions,
-  ): AssistantMessage => {
+  ): { message: AssistantMessage; cutAt?: number } => {
     const tokens = promptTokens(context.messages);
     if (tokens > contextWindow)
-      return fauxAssistantMessage([], {
-        stopReason: "error",
-        errorMessage: `prompt is too long: ${tokens} tokens > ${contextWindow} maximum`,
-      });
-    // Output is capped the way pi-ai's providers cap it, so a full context
-    // cuts the answer short (stop reason "length").
-    const limit = Math.min(
-      request?.maxTokens ?? MAX_OUTPUT_TOKENS,
-      Math.max(1, contextWindow - tokens - PROVIDER_MARGIN_TOKENS),
+      return {
+        message: fauxAssistantMessage([], {
+          stopReason: "error",
+          errorMessage: `prompt is too long: ${tokens} tokens > ${contextWindow} maximum`,
+        }),
+      };
+    // Output is capped at the limit pi-ai's providers send, so a full
+    // context cuts the answer short (stop reason "length").
+    const limit = clampMaxTokensToContext(
+      model,
+      context,
+      request?.maxTokens ?? model.maxTokens,
     );
-    return cutToLimit(
+    const message = cutToLimit(
       toAssistantMessage(scriptedTurn(context.messages)),
       limit,
     );
+    return message.stopReason === "length"
+      ? { message, cutAt: limit }
+      : { message };
   };
   // The faux core streams queued responses; queueing exactly one dynamic
   // response per request (synchronously, right before it is taken) makes it a
@@ -121,10 +129,20 @@ export function createScriptedProvider(
     context: TranscriptContext,
     options?: SimpleStreamOptions,
   ) => {
-    core.appendResponses([respond]);
+    let cutAt: number | undefined;
+    core.appendResponses([
+      (request: TranscriptContext, requestOptions?: SimpleStreamOptions) => {
+        const answer = respond(model, request, requestOptions);
+        cutAt = answer.cutAt;
+        return answer.message;
+      },
+    ]);
     // No prompt cache: the faux core would count uncached tokens both as
     // input and as cache writes, overstating the context the usage reports.
-    return core.stream(model, context, { ...options, cacheRetention: "none" });
+    return withCutUsage(
+      core.stream(model, context, { ...options, cacheRetention: "none" }),
+      () => cutAt,
+    );
   };
   return createProvider({
     id: SCRIPTED_PROVIDER_ID,
@@ -184,6 +202,45 @@ function cutToLimit(
     break;
   }
   return { ...message, content, stopReason: "length" };
+}
+
+/**
+ * A provider reports the limit it cut an answer at as its output tokens; the
+ * faux core counts only the content left. A cut answer (`cutAt()` set) is
+ * reported with that many output tokens.
+ */
+function withCutUsage(
+  inner: AssistantMessageEventStream,
+  cutAt: () => number | undefined,
+): AssistantMessageEventStream {
+  const outer = createAssistantMessageEventStream();
+  void (async () => {
+    for await (const event of inner) {
+      const output = cutAt();
+      if (
+        event.type !== "done" ||
+        event.reason !== "length" ||
+        output === undefined
+      ) {
+        outer.push(event);
+        continue;
+      }
+      const { usage } = event.message;
+      const message: AssistantMessage = {
+        ...event.message,
+        usage: {
+          ...usage,
+          output,
+          totalTokens: usage.totalTokens - usage.output + output,
+        },
+      };
+      outer.push({ ...event, message });
+      outer.end(message);
+      return;
+    }
+    outer.end(await inner.result());
+  })();
+  return outer;
 }
 
 const promptText = (message: Message): string => {

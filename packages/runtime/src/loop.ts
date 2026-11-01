@@ -25,7 +25,11 @@ import {
   TOOL_OUTPUT_PREVIEW_LIMIT,
   type Usage,
 } from "@jj/contracts";
-import { type ContextCompactor, cutByContext } from "./compaction";
+import {
+  type ContextCompactor,
+  compactionOffNote,
+  cutByContext,
+} from "./compaction";
 import {
   classifyErrorText,
   classifyModelError,
@@ -275,8 +279,13 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   let thresholdOff = false;
   /** An overflow was compacted and retried, and no response has succeeded since. */
   let overflowRetried = false;
-  /** The estimated context of the request in flight. */
-  let requestTokens = 0;
+  /** Why compaction cannot help on this model, when its window turned it off. */
+  const compactionOff =
+    spec.compactor && !spec.compactor.settings.enabled
+      ? compactionOffNote(resolved.model.contextWindow)
+      : undefined;
+  /** Set when the response in flight was cut for lack of room with compaction off. */
+  let cutWarning: string | undefined;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
   const collabByName = new Map(
@@ -306,6 +315,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         if (message.role === "assistant") {
           const text = scrub(assistantText(message));
           const failed = message.stopReason === "error";
+          const warning = cutWarning;
+          cutWarning = undefined;
           await spec.onEvent({
             type: "model.finished",
             model: ref,
@@ -323,6 +334,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
                   ),
                 }
               : {}),
+            ...(warning ? { warning } : {}),
           });
           // The call must be durable before its tools run.
           if (persistable(message) && hasToolCalls(message)) await flush();
@@ -461,7 +473,6 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           update = { context: latestContext };
         } else if (result.reason === "summary_failed") thresholdOff = true;
       }
-      if (compactor) requestTokens = compactor.estimate(latestContext.messages);
       turns++;
       await spec.onEvent({ type: "model.started", model: ref });
       return update;
@@ -502,23 +513,27 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   const retrying = retryingStreamFn(spec.streamFn, spec.retry);
   // With compaction on, a response the provider cut short for lack of room
   // is an overflow: it is not persisted, its calls never run, and it is
-  // compacted and retried below.
-  const streamFn: StreamFn = compactor
-    ? async (model, request, options) => {
-        const message = await (
-          await retrying(model, request, options)
-        ).result();
-        return streamOf(
-          cutByContext(message, resolved.model, requestTokens)
-            ? {
-                ...message,
-                stopReason: "error",
-                errorMessage: `${OUTPUT_CUT_BY_CONTEXT} (stop reason length after ${message.usage.output} output tokens).`,
-              }
-            : message,
-        );
-      }
-    : retrying;
+  // compacted and retried below. With compaction off for the model's window
+  // it stays a length stop, and its event warns that nothing compacts.
+  const streamFn: StreamFn =
+    compactor || compactionOff
+      ? async (model, request, options) => {
+          const message = await (
+            await retrying(model, request, options)
+          ).result();
+          if (!cutByContext(message, model, request, options?.maxTokens))
+            return streamOf(message);
+          const cut = `${OUTPUT_CUT_BY_CONTEXT} (stop reason length after ${message.usage.output} output tokens).`;
+          if (compactor)
+            return streamOf({
+              ...message,
+              stopReason: "error",
+              errorMessage: cut,
+            });
+          cutWarning = `${cut} ${compactionOff}`;
+          return streamOf(message);
+        }
+      : retrying;
   const overflowed = (message: AssistantMessage) =>
     message.stopReason === "error" &&
     classifyModelError(message, resolved.model.contextWindow) ===
@@ -607,10 +622,10 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   if (last?.stopReason === "error" || last?.stopReason === "aborted") {
     const error =
       last.errorMessage || `The model call ended with ${last.stopReason}.`;
-    return fail(
-      classifyModelError(last, resolved.model.contextWindow),
-      overflowNote ? `${error} ${overflowNote}` : error,
-    );
+    const code = classifyModelError(last, resolved.model.contextWindow);
+    const note =
+      overflowNote ?? (code === "context_overflow" ? compactionOff : undefined);
+    return fail(code, note ? `${error} ${note}` : error);
   }
   return { kind: "ended", finalText };
 }

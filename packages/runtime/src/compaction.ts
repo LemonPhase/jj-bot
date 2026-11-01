@@ -6,8 +6,10 @@ import {
   isRecoverableLength,
   type Model,
   type RetryPolicy,
+  type TranscriptContext,
   type UserMessage,
 } from "@earendil-works/pi-ai";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import {
   calculateContextTokens,
   compact,
@@ -171,23 +173,73 @@ export function compactionSettings(
 }
 
 /**
+ * The line an overflow's error carries when compaction is off because of the
+ * model's window (under `MIN_COMPACTION_WINDOW`, or unknown); undefined for a
+ * window that allows it.
+ */
+export function compactionOffNote(contextWindow: number): string | undefined {
+  const window = Math.max(0, Math.floor(contextWindow) || 0);
+  if (window >= MIN_COMPACTION_WINDOW) return undefined;
+  return window === 0
+    ? "Context compaction is off for models with no known context window."
+    : `Context compaction is off for models with a context window under ${MIN_COMPACTION_WINDOW} tokens.`;
+}
+
+/**
+ * How far below a limit a cut response may report reaching it: 1% of the
+ * limit, and at least 16 tokens. The limit is exact on pi-ai's side, but
+ * providers report usage in their own count, which can differ by a few
+ * tokens from the one they enforced (an end-of-turn token, tool-call or
+ * reasoning framing); the floor matters when little room is left, exactly
+ * when a context is nearly full. A response that really stopped at a lower
+ * provider-side cap within this margin costs one compaction: its retry has
+ * more room, so it is not taken for a cut again.
+ */
+const reachedWithin = (limit: number) => Math.max(Math.ceil(limit * 0.01), 16);
+
+/**
+ * Whether pi-ai sends a request's output cap to the provider. Codex
+ * responses, and Responses models whose compat says the API takes no
+ * `max_output_tokens`, get none: the provider applies its own limits.
+ */
+function sendsOutputCap(model: Model<Api>): boolean {
+  if (model.api === "openai-codex-responses") return false;
+  const compat = model.compat as
+    | { supportsMaxOutputTokens?: boolean }
+    | undefined;
+  return !(
+    model.api === "openai-responses" &&
+    compat?.supportsMaxOutputTokens === false
+  );
+}
+
+/**
  * A response the provider cut short because the context left it no room:
  * pi's recoverable length stop (`isRecoverableLength`: a `length` stop below
- * the model's own output limit) on a request whose context was big enough
- * for the providers' output cap to bite. The runtime reports it as a context
- * overflow, so it is compacted and retried like one.
+ * the output limit) that reached either the cap pi-ai's providers set for
+ * this request (`clampMaxTokensToContext`: the window less pi-ai's estimate
+ * of `context` less 4096, where that is below the limit and pi-ai sends it),
+ * or the window itself (input, cache and output together: a server
+ * enforcing the real window stops there, below pi-ai's cap when pi's
+ * estimate of the context runs low). A response that stopped short of both
+ * was cut by something else, such as a lower provider-side limit, and stays
+ * an ordinary `length` stop. The runtime reports a cut as a context
+ * overflow, so it is compacted and retried.
  */
 export function cutByContext(
   message: AssistantMessage,
   model: Model<Api>,
-  contextTokens: number,
+  context: TranscriptContext,
+  maxTokens: number = model.maxTokens,
 ): boolean {
-  return (
-    model.contextWindow > 0 &&
-    isRecoverableLength(message, model.maxTokens) &&
-    model.contextWindow - contextTokens - PROVIDER_SAFETY_TOKENS <
-      model.maxTokens
-  );
+  const window = model.contextWindow;
+  if (window <= 0 || !isRecoverableLength(message, maxTokens)) return false;
+  const { input, cacheRead, cacheWrite, output } = message.usage;
+  if (input + cacheRead + cacheWrite + output >= window - reachedWithin(window))
+    return true;
+  if (!sendsOutputCap(model)) return false;
+  const cap = clampMaxTokensToContext(model, context, maxTokens);
+  return cap < maxTokens && output >= cap - reachedWithin(cap);
 }
 
 export interface ContextCompactorOptions {
