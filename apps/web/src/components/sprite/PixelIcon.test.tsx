@@ -32,6 +32,8 @@ describe("PixelIcon brand", () => {
     expect(brand).toContain('viewBox="0 0 12 12"');
     expect(brand).toContain('width="24"');
     expect(brand).toContain('height="24"');
+    // The default is a multiple of 12 too, so a bare brand mark stays square.
+    expect(renderToStaticMarkup(<PixelIcon name="brand" />)).toBe(brand);
   });
 
   it("draws the head in --ink and only the antenna tip in bot coral", () => {

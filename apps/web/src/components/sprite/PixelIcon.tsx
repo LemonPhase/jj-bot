@@ -1,3 +1,4 @@
+import { COLOUR_RAMPS } from "../../lib/colour";
 import "./sprite.css";
 
 /**
@@ -18,7 +19,7 @@ interface IconData {
 const ICONS: Readonly<Record<PixelIconName, IconData>> = {
   brand: {
     // 12×12, the sprite grid. Head in --ink; the eyes are holes that show the ground.
-    // The antenna tip is bot coral (COLOUR_RAMPS.coral.f), the same in both themes.
+    // The antenna tip is bot coral, the same in both themes.
     viewBox: "0 0 12 12",
     grid: [
       ".....tt.....",
@@ -34,7 +35,7 @@ const ICONS: Readonly<Record<PixelIconName, IconData>> = {
       "..aaaaaaaa..",
       "............",
     ],
-    fills: { a: "var(--ink)", t: "#FF7A66" },
+    fills: { a: "var(--ink)", t: COLOUR_RAMPS.coral.f },
   },
   gate: {
     // The design draws it in a "-1 -1 12 12" viewBox; this grid includes that margin.
@@ -105,7 +106,7 @@ export interface PixelIconProps {
 
 export function PixelIcon({
   name,
-  size = 20,
+  size = 24,
   label,
   className,
 }: PixelIconProps) {
