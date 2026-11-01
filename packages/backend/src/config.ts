@@ -51,8 +51,8 @@ export type EngineConfigInput = Partial<Omit<EngineConfig, "artifacts">> & {
 };
 
 export const DEFAULT_ARTIFACT_LIMITS: ArtifactLimits = {
-  maxFileBytes: 10 * 1024 * 1024,
-  maxFilesPerRun: 200,
+  maxFileBytes: 5 * 1024 * 1024,
+  maxFilesPerRun: 50,
   maxListEntries: 2000,
   ignoreDirectories: [
     "node_modules",

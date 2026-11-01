@@ -11,6 +11,7 @@ import {
   fail,
   nextConversationSequence,
   type Tx,
+  taskMessages,
   taskParticipants,
   tasks,
   usage,
@@ -37,6 +38,11 @@ const HOUR_MS = 60 * 60_000;
 const refuse = (text: string): CollabToolResult => ({ text, isError: true });
 
 interface ChatState {
+  /**
+   * The user message being answered. Side effects are keyed by it, so a reply
+   * that runs again after a hand-off or crash does not repeat them.
+   */
+  triggerId: string;
   /** The task the reply created or forwarded to. */
   linkedTaskId: string | null;
 }
@@ -72,7 +78,8 @@ export async function runChatJob(
         ? await ctx.db.select().from(tasks).where(inArray(tasks.id, activeIds))
         : [];
     const memory = await memoryText(ctx.db, botId);
-    const state: ChatState = { linkedTaskId: null };
+    const trigger = history.at(-1) as { id: string };
+    const state: ChatState = { triggerId: trigger.id, linkedTaskId: null };
     const tools: CollabTool[] = [
       createTaskTool(ctx, write, bot, everyone, state),
     ];
@@ -223,6 +230,22 @@ function createTaskTool(
           .from(bots)
           .where(eq(bots.id, bot.id))
           .for("update");
+        const [existing] = await tx
+          .select()
+          .from(tasks)
+          .where(
+            and(
+              eq(tasks.createdByBotId, bot.id),
+              eq(tasks.createdFromMessageId, state.triggerId),
+            ),
+          );
+        if (existing) {
+          // This reply already created its task (it ran before a hand-off or crash).
+          state.linkedTaskId = existing.id;
+          return {
+            text: `Created task "${existing.title}" (${existing.id}). You coordinate it; it has started.`,
+          };
+        }
         const since = new Date(ctx.clock().getTime() - HOUR_MS);
         const [recent] = await tx
           .select({ value: count() })
@@ -245,6 +268,7 @@ function createTaskTool(
             member ? [member.id] : [],
           ),
           createdByBotId: bot.id,
+          createdFromMessageId: state.triggerId,
         });
         state.linkedTaskId = task.id;
         return {
@@ -296,6 +320,20 @@ function sendToTaskTool(
             ),
           );
         if (!member) return refuse("You do not take part in that task.");
+        const [relayed] = await tx
+          .select({ id: taskMessages.id })
+          .from(taskMessages)
+          .where(
+            and(
+              eq(taskMessages.taskId, taskId),
+              eq(taskMessages.relayedFromMessageId, state.triggerId),
+            ),
+          );
+        if (relayed) {
+          // Already relayed by this reply before a hand-off or crash.
+          state.linkedTaskId = taskId;
+          return { text: `Sent to the task "${task.title}".` };
+        }
         if (isFinishedStatus(task.status) && task.status !== "cancelled")
           return refuse("That task has finished; create a new one instead.");
         let root: Awaited<ReturnType<typeof continueTask>>["root"];
@@ -312,6 +350,7 @@ function sendToTaskTool(
           intent: "discussion",
           text,
           recipientBotIds: [task.coordinatorBotId],
+          relayedFromMessageId: state.triggerId,
         });
         await deliver(
           tx,

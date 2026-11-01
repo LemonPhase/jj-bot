@@ -320,7 +320,8 @@ export function createWorker(
       };
       every(ctx.config.pollIntervalMs, pump);
       every(Math.max(50, Math.floor(ctx.config.leaseMs / 3)), tick);
-      every(Math.min(ctx.config.sandboxIdleMs, 60_000), () =>
+      // Also frees sandboxes of tasks that finished on another worker.
+      every(Math.min(ctx.config.sandboxIdleMs, 30_000), () =>
         sandboxes.sweep(),
       );
       await pump();

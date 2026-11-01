@@ -38,6 +38,8 @@ export interface PostMessageInput {
   intent: MessageIntent;
   text: string;
   recipientBotIds?: string[];
+  /** The conversation message a bot relayed (one relay per message and task). */
+  relayedFromMessageId?: string | null;
 }
 
 /** Inserts a task message (sequence allocated per task) and emits `message.posted`. */
@@ -60,6 +62,7 @@ export async function postMessage(
       intent: input.intent,
       text: input.text.trim() ? input.text : "(no text)",
       recipientBotIds: [...new Set(input.recipientBotIds ?? [])],
+      relayedFromMessageId: input.relayedFromMessageId ?? null,
     })
     .returning();
   if (!row) throw new Error("The message insert returned no row.");

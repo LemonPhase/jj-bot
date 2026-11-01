@@ -180,6 +180,12 @@ export const tasks = pgTable(
       .references(() => bots.id),
     /** The bot that created the task from direct chat; null when the user created it. Rate-limited per bot. */
     createdByBotId: text("created_by_bot_id").references(() => bots.id),
+    /**
+     * The conversation message whose reply created the task (attribution, not a
+     * foreign key). Unique per creating bot, so a reply that runs again after a
+     * hand-off or crash finds the task instead of creating a second one.
+     */
+    createdFromMessageId: text("created_from_message_id"),
     status: text("status").$type<TaskStatus>().notNull().default("queued"),
     result: text("result"),
     error: text("error"),
@@ -198,6 +204,9 @@ export const tasks = pgTable(
     index("tasks_coordinator_idx").on(t.coordinatorBotId),
     // Covers the creator foreign key and the per-bot hourly creation count.
     index("tasks_created_by_created_idx").on(t.createdByBotId, t.createdAt),
+    uniqueIndex("tasks_created_from_message_unique")
+      .on(t.createdByBotId, t.createdFromMessageId)
+      .where(sql`${t.createdFromMessageId} is not null`),
     check("tasks_status_check", oneOf(t.status, TASK_STATUSES)),
   ],
 );
@@ -393,6 +402,11 @@ export const taskMessages = pgTable(
     sessionId: text("session_id"),
     intent: text("intent").$type<MessageIntent>().notNull(),
     text: text("text").notNull(),
+    /**
+     * The conversation message a bot relayed into this task (attribution, not a
+     * foreign key). Unique per task, so a relay that runs again posts nothing new.
+     */
+    relayedFromMessageId: text("relayed_from_message_id"),
     /** Activation, not visibility: the bots this message may wake. */
     recipientBotIds: jsonb("recipient_bot_ids")
       .$type<string[]>()
@@ -404,6 +418,9 @@ export const taskMessages = pgTable(
   },
   (t) => [
     unique("task_messages_task_sequence").on(t.taskId, t.sequence),
+    uniqueIndex("task_messages_relayed_from_unique")
+      .on(t.taskId, t.relayedFromMessageId)
+      .where(sql`${t.relayedFromMessageId} is not null`),
     check("task_messages_author_kind_check", oneOf(t.authorKind, AUTHOR_KINDS)),
     check("task_messages_intent_check", oneOf(t.intent, MESSAGE_INTENTS)),
   ],

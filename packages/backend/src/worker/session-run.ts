@@ -7,17 +7,18 @@ import {
   bots,
   type ClaimedJob,
   complete,
+  enqueue,
   heartbeat,
+  jobs,
   type RunReason,
   runs,
   type SessionRow,
-  sessionInbox,
-  sessions,
   type TaskRow,
+  type Tx,
   taskParticipants,
-  tasks,
 } from "@jj/db";
-import { and, asc, count, eq, isNull } from "drizzle-orm";
+import type { SandboxSpec } from "@jj/sandbox/contract";
+import { and, asc, count, eq, gt, ne, sql } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
 import type { RunExecutor, RunOutcome } from "../ports";
@@ -44,13 +45,19 @@ import {
   runHooks,
   takeInbox,
   type WorkerDeps,
-  writeRun,
 } from "./run-context";
-import { closeStaleRun, runningRun } from "./runs";
+import {
+  CONTINUING_KINDS,
+  closeStaleRun,
+  hasContinuingInput,
+  runningRun,
+} from "./runs";
 import { type SandboxHold, SandboxUnavailableError } from "./sandboxes";
 
 /** Executor calls one job may make while new input keeps arriving. */
 const MAX_CONTINUATIONS = 20;
+/** How long a session waits before retrying when another worker holds its task's ephemeral workspace. */
+const EPHEMERAL_RETRY_MS = 1_000;
 
 type Start =
   | { kind: "skip"; taskId?: string; taskFinished: boolean }
@@ -58,8 +65,41 @@ type Start =
       kind: "run";
       rc: RunContext;
       reason: RunReason;
-      priorRuns: number;
+      /** The task sandbox's spec (the coordinator's profile). */
+      spec?: SandboxSpec;
+      /** Why the session cannot run here; the run fails visibly with it. */
+      unavailable?: string;
     };
+
+/** The coordinator's runtime profile (else the default) decides the task sandbox. */
+async function taskSandboxSpec(
+  tx: Tx,
+  task: TaskRow,
+): Promise<SandboxSpec | undefined> {
+  const [coordinator] = await tx
+    .select({ profileId: bots.runtimeProfileId })
+    .from(bots)
+    .where(eq(bots.id, task.coordinatorBotId));
+  const profile = await profileFor(tx, coordinator?.profileId ?? null);
+  return profile ? profileSettings(profile).sandbox : undefined;
+}
+
+/** Another live worker is running a job of this task, so it may hold the task's sandbox. */
+async function heldElsewhere(tx: Tx, taskId: string, workerId: string) {
+  const [row] = await tx
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.taskId, taskId),
+        eq(jobs.status, "running"),
+        ne(jobs.leaseOwner, workerId),
+        gt(jobs.leaseUntil, sql`now()`),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
 
 /** The start transaction: launch guard, stale-run cleanup, run row and `run.started`. */
 async function startRun(
@@ -111,16 +151,10 @@ async function startRun(
       };
     }
 
-    const [pending] = await tx
-      .select({ value: count() })
-      .from(sessionInbox)
-      .where(
-        and(
-          eq(sessionInbox.sessionId, sessionId),
-          isNull(sessionInbox.deliveredAt),
-        ),
-      );
-    const hasInput = (pending?.value ?? 0) > 0;
+    // Only briefs, results and steering start a run. A plain message waiting
+    // in the inbox rides along with a run that happens anyway; it never makes
+    // a coalesced wake launch one (notification semantics).
+    const hasInput = await hasContinuingInput(tx, sessionId);
     const recovering =
       stale !== undefined ||
       session.status === "running" ||
@@ -150,6 +184,34 @@ async function startRun(
       .select({ value: count() })
       .from(runs)
       .where(eq(runs.taskId, task.id));
+    // An ephemeral workspace exists only in the sandbox that created it. If an
+    // earlier run of the task had one and this worker does not hold it, wait
+    // for the worker that may (it is running the task), or fail truthfully.
+    const spec = await taskSandboxSpec(tx, task);
+    let unavailable: string | undefined;
+    if (!spec)
+      unavailable =
+        "There is no runtime profile for this task: the coordinator has none and no default profile exists.";
+    else if (
+      spec.workspace === "ephemeral" &&
+      (prior?.value ?? 0) > 0 &&
+      !deps.sandboxes.holds(task.id)
+    ) {
+      if (await heldElsewhere(tx, task.id, ctx.config.workerId)) {
+        await complete(tx, job.lease);
+        await enqueue(tx, {
+          kind: "session.run",
+          taskId: task.id,
+          sessionId,
+          payload: job.payload,
+          runAfter: new Date(Date.now() + EPHEMERAL_RETRY_MS),
+        });
+        return { kind: "skip", taskFinished: false };
+      }
+      unavailable = deps.sandboxes.wasDiscarded(task.id)
+        ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished, stopped or sat idle), so this session cannot continue its work."
+        : "The task's ephemeral workspace is not on this worker: a worker restart discarded it, or another worker that is not running this task holds it. Ephemeral workspaces cannot move between workers.";
+    }
     const now = ctx.clock();
     const [run] = await tx
       .insert(runs)
@@ -210,7 +272,7 @@ async function startRun(
       startedAt: now,
       taskFinished: false,
     };
-    return { kind: "run", rc, reason, priorRuns: prior?.value ?? 0 };
+    return { kind: "run", rc, reason, spec, unavailable };
   });
 }
 
@@ -228,21 +290,6 @@ async function teammates(rc: RunContext): Promise<Teammate[]> {
     self: row.id === rc.bot.id,
   }));
 }
-
-/** Drops a recorded completion request: new input arrived after it. */
-async function clearCompletion(rc: RunContext) {
-  if (!rc.session.completionRequested) return;
-  await writeRun(rc, (tx) =>
-    tx
-      .update(sessions)
-      .set({ completionRequested: null })
-      .where(eq(sessions.id, rc.session.id)),
-  );
-  rc.session = { ...rc.session, completionRequested: null };
-}
-
-/** Input kinds that continue a run that is ending; plain messages wait for the next activation. */
-export const CONTINUING_KINDS = ["brief", "result", "steering"] as const;
 
 /** Builds the executor call for this run: prompt, tools, budgets and hooks. */
 async function prepare(
@@ -322,29 +369,16 @@ export async function runSessionJob(
   try {
     let call: ((inputs: string[]) => Promise<RunOutcome>) | undefined;
     try {
-      const coordinator = await ctx.db
-        .select({ profileId: bots.runtimeProfileId })
-        .from(tasks)
-        .innerJoin(bots, eq(bots.id, tasks.coordinatorBotId))
-        .where(eq(tasks.id, rc.task.id));
-      const profile = await profileFor(
-        ctx.db,
-        coordinator[0]?.profileId ?? null,
+      if (start.unavailable || !start.spec)
+        throw new SandboxUnavailableError(
+          start.unavailable ?? "The task has no sandbox spec.",
+        );
+      hold = await sandboxes.acquire(
+        rc.task.id,
+        rc.session.id,
+        start.spec,
+        rc.control.controller.signal,
       );
-      if (!profile)
-        throw new SandboxUnavailableError(
-          "There is no runtime profile for this task: the coordinator has none and no default profile exists.",
-        );
-      const spec = profileSettings(profile).sandbox;
-      if (
-        spec.workspace === "ephemeral" &&
-        start.priorRuns > 0 &&
-        !sandboxes.holds(rc.task.id)
-      )
-        throw new SandboxUnavailableError(
-          "The task's ephemeral workspace did not survive a worker restart, so this session cannot resume.",
-        );
-      hold = await sandboxes.acquire(rc.task.id, rc.session.id, spec);
       call = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;
@@ -362,13 +396,11 @@ export async function runSessionJob(
           rc,
           calls === 1 ? undefined : CONTINUING_KINDS,
         );
-        if (calls > 1) await clearCompletion(rc);
         outcome = await call(inputs);
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
           inputs = await takeInbox(rc, CONTINUING_KINDS);
           if (inputs.length === 0) break;
-          await clearCompletion(rc);
           calls += 1;
           outcome = await call(inputs);
         }

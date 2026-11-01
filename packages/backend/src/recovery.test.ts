@@ -233,9 +233,11 @@ describe("recovery", () => {
       20_000,
     );
     expect(view.sessions[0]?.error).toContain(
-      "ephemeral workspace did not survive",
+      "ephemeral workspace is not on this worker: a worker restart discarded it",
     );
-    expect(view.task.error).toContain("ephemeral workspace did not survive");
+    expect(view.task.error).toContain(
+      "ephemeral workspace is not on this worker: a worker restart discarded it",
+    );
     expect(second.executor.inputs).toEqual([]);
   });
 
