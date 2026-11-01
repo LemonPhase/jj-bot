@@ -31,7 +31,11 @@ export interface EngineConfig {
   outputCapBytes: number;
   /** Goal versions a task may reach; a further change answers GOAL_VERSION_BUDGET. */
   maxGoalVersions: number;
-  /** A task's sandbox is released after this long without a run (ephemeral workspaces excepted). */
+  /**
+   * A task's sandbox is released after this long without a run. Ephemeral
+   * workspaces are excepted: they are kept until the task finishes, since
+   * releasing one discards its files.
+   */
   sandboxIdleMs: number;
   /** Conversation messages a chat reply sees. */
   chatHistoryLimit: number;

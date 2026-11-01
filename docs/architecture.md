@@ -35,12 +35,12 @@ A `SandboxDriver` turns a sandbox spec into a running `Sandbox` that exposes com
 - **Release ends everything the sandbox started,** background processes included, and discards an ephemeral workspace.
 - **Conformance is the contract.** A driver is valid when it passes the shared conformance suite.
 
-A task acquires **one sandbox for all its sessions**. The worker's task sandbox manager acquires it once per task, with the coordinator's runtime profile and `workspaceKey` set to the task id, and releases it when the task ends; sessions never acquire their own. Bots therefore see each other's files immediately, and one runaway process affects the whole task within the profile's resource limits. Bots can also overwrite each other's edits, so the coordinator partitions files: each brief names the files its worker owns, workers edit only those (they may read any), and files several pieces need are edited by the coordinator after the results arrive.
+A task acquires **one sandbox for all its sessions**. The worker's task sandbox manager acquires it once per task, with the coordinator's runtime profile and `workspaceKey` set to the task id, and releases it when the task ends, or, for a `task` workspace, after it sits idle (`sandboxIdleMs`); sessions never acquire their own. Bots therefore see each other's files immediately, and one runaway process affects the whole task within the profile's resource limits. Bots can also overwrite each other's edits, so the coordinator partitions files: each brief names the files its worker owns, workers edit only those (they may read any), and files several pieces need are edited by the coordinator after the results arrive.
 
 A workspace is identified by its mode and its key. Task execution uses two modes:
 
 - `task` (the default): files persist across releases and restarts. No API deletes a task workspace, so deleting a task leaves its files; the operator clears the driver's storage (for `local`, its root directory).
-- `ephemeral`: the workspace is discarded when the task's sandbox is released. Its sessions cannot resume after a restart; they fail visibly.
+- `ephemeral`: the workspace is discarded when the task's sandbox is released, so it is never released for idling while the task is open; it goes when the task finishes or stops, or the worker stops. Its sessions cannot resume after a restart; they fail visibly.
 
 The contract also defines `bot`, a workspace that persists for one bot across tasks. Task execution never uses it, because it would expose the coordinator's files from earlier tasks to every participant.
 

@@ -1,7 +1,9 @@
 // One sandbox per task, shared by all of the task's sessions in this worker.
 // Acquired with the coordinator's profile and `workspaceKey = taskId`, held
 // while runs use it, released when the task finishes (here or on another
-// worker, after the `onFinished` hook's final look at it) or after it idles.
+// worker, after the `onFinished` hook's final look at it) or, for a `task`
+// workspace, after it idles. An ephemeral workspace is never idle-released
+// while its task is open: releasing it would discard the files.
 import { isFinishedStatus, type TaskStatus } from "@jj/contracts";
 import { tasks } from "@jj/db";
 import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
@@ -214,9 +216,10 @@ export class TaskSandboxes {
   }
 
   /**
-   * Releases unused sandboxes whose task has finished (on any worker) or that
-   * sat idle for `sandboxIdleMs`, ephemeral ones included: an idle ephemeral
-   * workspace is discarded, and a later session of its task fails visibly.
+   * Releases unused sandboxes whose task has finished (on any worker) or is
+   * gone, and those with a `task` workspace that sat idle for
+   * `sandboxIdleMs`. An ephemeral sandbox stays while its task is open, so a
+   * waiting task's next session still finds its files.
    */
   async sweep(now = Date.now()): Promise<void> {
     const unused = [...this.entries].filter(
@@ -228,11 +231,10 @@ export class TaskSandboxes {
       if (entry.refs > 0 || this.entries.get(taskId) !== entry) continue;
       const status = statuses.get(taskId);
       const finished = status !== undefined && isFinishedStatus(status);
-      if (
-        finished ||
-        status === undefined ||
-        now - entry.idleSince >= this.ctx.config.sandboxIdleMs
-      )
+      const idle =
+        entry.spec.workspace !== "ephemeral" &&
+        now - entry.idleSince >= this.ctx.config.sandboxIdleMs;
+      if (finished || status === undefined || idle)
         this.releaseEntry(taskId, entry, finished);
     }
   }

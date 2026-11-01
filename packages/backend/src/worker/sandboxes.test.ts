@@ -52,7 +52,7 @@ describe("task sandboxes", () => {
     expect(sandboxes.holds("task_1")).toBe(false);
   });
 
-  it("releases idle sandboxes, ephemeral ones included, and records the discarded workspace", async () => {
+  it("releases idle task-workspace sandboxes, but keeps an open task's ephemeral one", async () => {
     const statuses = new Map<string, TaskStatus>([
       ["task_t", "waiting"],
       ["task_e", "waiting"],
@@ -63,13 +63,22 @@ describe("task sandboxes", () => {
     await sandboxes.sweep(Date.now() - 60_000);
     expect(counts.released).toBe(0);
     await sandboxes.sweep(Date.now() + 1_000);
-    await until(() => counts.released === 2, { what: "the idle releases" });
-    expect(sandboxes.wasDiscarded("task_e")).toBe(true);
-    expect(sandboxes.wasDiscarded("task_t")).toBe(false);
+    await until(() => counts.released === 1, { what: "the idle release" });
+    expect(sandboxes.holds("task_t")).toBe(false);
+    // The waiting task's ephemeral workspace survives any idle time.
+    await sandboxes.sweep(Date.now() + 24 * 60 * 60_000);
+    expect(sandboxes.holds("task_e")).toBe(true);
+    expect(sandboxes.wasDiscarded("task_e")).toBe(false);
     // Re-acquired on demand; the task workspace keeps its files.
     const again = await sandboxes.acquire("task_t", "s", spec("task"));
     expect(counts.acquired).toBe(3);
     again.done();
+    // Once its task finishes, the ephemeral sandbox goes and is recorded discarded.
+    statuses.set("task_e", "completed");
+    await sandboxes.sweep();
+    await until(() => counts.released === 2, { what: "the finished release" });
+    expect(sandboxes.wasDiscarded("task_e")).toBe(true);
+    expect(sandboxes.wasDiscarded("task_t")).toBe(false);
     await sandboxes.releaseAll();
     expect(counts.released).toBe(3);
   });

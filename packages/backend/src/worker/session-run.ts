@@ -193,7 +193,7 @@ async function startRun(
         return { kind: "skip", taskFinished: false };
       }
       unavailable = deps.sandboxes.wasDiscarded(task.id)
-        ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished, stopped or sat idle), so this session cannot continue its work."
+        ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished or stopped), so this session cannot continue its work."
         : "The task's ephemeral workspace is not on this worker: a worker restart discarded it, or the worker that held it stopped. Ephemeral workspaces cannot move between workers.";
     }
     const now = ctx.clock();
