@@ -136,7 +136,9 @@ async function serverUnderTest(dir: string): Promise<{
     JJ_SANDBOX_DRIVERS: "local",
     JJ_SANDBOX_ROOT: join(dir, "sandbox"),
     JJ_ENABLE_SCRIPTED_MODEL: realModel ? "false" : "true",
-    JJ_DEFAULT_MODEL: realModel,
+    // Pin the scripted model, so provider keys in the environment do not
+    // change which model the keyless smoke runs.
+    JJ_DEFAULT_MODEL: realModel ?? "scripted/team",
   };
   const server = await step("boot the API (PGlite, local driver)", () =>
     startServer({ env }),
