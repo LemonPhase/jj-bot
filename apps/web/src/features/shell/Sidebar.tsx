@@ -45,7 +45,7 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
             label="New bot"
             tone="ink"
             icon={<Icon name="plus" size={16} />}
-            current={route.name === "studio"}
+            current={route.name === "studio" && route.botId === null}
             onClick={openNewBot}
           />
         ) : (

@@ -1,28 +1,75 @@
-import { buttonClass, EmptyState } from "../../components/ui";
-import { botHref } from "../shell/router";
+import { useState } from "react";
+import { Tabs } from "../../components/ui";
 import { ScreenHeader } from "../shell/ScreenHeader";
+import { DriversPanel } from "./DriversPanel";
+import { ModelsPanel } from "./ModelsPanel";
+import { ProfilesPanel } from "./ProfilesPanel";
+import { useDrivers } from "./useDrivers";
+import "./settings.css";
+
+type Section = "models" | "profiles" | "drivers";
+
+const SECTIONS: readonly { value: Section; label: string }[] = [
+  { value: "models", label: "Models" },
+  { value: "profiles", label: "Runtime profiles" },
+  { value: "drivers", label: "Drivers" },
+];
+
+const SECTION_KEY = "jj.settings.section";
+
+/** The last section shown, remembered per browser as a convenience only. */
+function useSection(): [Section, (section: Section) => void] {
+  const [section, setSection] = useState<Section>(() => {
+    try {
+      const stored = window.localStorage.getItem(SECTION_KEY);
+      return SECTIONS.find((item) => item.value === stored)?.value ?? "models";
+    } catch {
+      return "models";
+    }
+  });
+  const update = (next: Section) => {
+    setSection(next);
+    try {
+      window.localStorage.setItem(SECTION_KEY, next);
+    } catch {}
+  };
+  return [section, update];
+}
 
 /**
- * `#/settings`. Route stub: the Settings screen (models and runtime profiles,
- * frontend brief "Settings") replaces this.
+ * `#/settings` (frontend brief, "Settings"; not in the design, built in the
+ * same language): models and providers, runtime profiles, sandbox drivers.
+ * Keys never pass through here: providers are enabled by server env vars.
  */
 export function SettingsScreen() {
+  const [section, setSection] = useSection();
+  const drivers = useDrivers();
   return (
-    <main className="screen">
-      <ScreenHeader lead={<h1 className="screen-title">Settings</h1>} />
-      <div className="screen-body screen-body--center">
-        <EmptyState
-          align="center"
-          message="Settings are not available yet."
-          action={
-            <a
-              className={buttonClass({ variant: "primary" })}
-              href={botHref(null)}
-            >
-              Back to bots
-            </a>
-          }
+    <main className="screen settings-screen">
+      <ScreenHeader
+        lead={
+          <>
+            <h1 className="screen-title">Settings</h1>
+            <span className="settings-subtitle">
+              Models, runtime profiles and sandbox drivers
+            </span>
+          </>
+        }
+      />
+      <div className="settings-tabs">
+        <Tabs
+          label="Settings section"
+          items={SECTIONS}
+          value={section}
+          onChange={setSection}
         />
+      </div>
+      <div className="settings-body">
+        <div className="settings-column">
+          {section === "models" && <ModelsPanel />}
+          {section === "profiles" && <ProfilesPanel drivers={drivers} />}
+          {section === "drivers" && <DriversPanel drivers={drivers} />}
+        </div>
       </div>
     </main>
   );

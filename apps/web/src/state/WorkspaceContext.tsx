@@ -73,6 +73,8 @@ interface WorkspaceValue {
   updateBot: (botId: string, command: UpdateBotCommand) => Promise<Bot>;
   /** Rejects with `CONFLICT` while the bot has active tasks. */
   archiveBot: (botId: string) => Promise<void>;
+  /** Refetches the runtime profiles, e.g. after Settings changed one. */
+  refreshProfiles: () => Promise<void>;
   saveMemory: (botId: string, text: string) => Promise<BotMemory>;
   /** Creates the task and opens it. */
   createTask: (input: NewTaskInput) => Promise<Task>;
@@ -313,6 +315,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setBots((current) => current.filter((b) => b.id !== botId));
         setMemories((current) => without(current, botId));
       },
+      refreshProfiles,
       loadMemory: (botId) =>
         run(async () => {
           const memory = await api.getMemory(botId);
@@ -415,6 +418,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       pendingTaskSends,
       selectTask,
       selectBot,
+      refreshProfiles,
       report,
       run,
     ],
