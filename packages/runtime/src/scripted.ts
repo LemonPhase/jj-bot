@@ -7,7 +7,9 @@ import {
   fauxText,
   fauxToolCall,
   getCurrentTools,
+  getSystemMessageText,
   type JsonObject,
+  type JsonValue,
   type Message,
   type Model,
   type Provider,
@@ -22,7 +24,8 @@ import {
  * The scripted test model: a keyless, deterministic stand-in for a real model
  * so tests, CI end-to-end runs and demos exercise the whole engine. It reads
  * the conversation and answers by rule. The system prompt is free-form and
- * ignored; everything it needs comes from the tools it is offered:
+ * ignored but for a worker's brief (below); everything else it needs comes
+ * from the tools it is offered:
  *
  * - its role: `create_task`/`send_to_task` → chat, `complete_task` →
  *   coordinator, otherwise worker;
@@ -31,6 +34,16 @@ import {
  * - the active tasks in chat: the enum of `send_to_task`'s `taskId`, with
  *   titles in its description (for example "task_7: Penguin report");
  * - the bots a chat can include: the item enum of `create_task`'s `participants`.
+ *
+ * A worker reads its brief from the system prompt's last `## Your brief`
+ * section (the engine puts it there), else from its first message; the rest
+ * of the system prompt is ignored.
+ *
+ * Like a provider, it refuses a prompt longer than its context window
+ * (estimated at four characters a token) with a context overflow error. Asked
+ * for a compaction summary, it answers with one that records the summarised
+ * conversation in a `<scripted-transcript>` block, and it reads that block
+ * back as the start of the conversation, so its rules hold after compaction.
  *
  * It is always labelled "Scripted test model" and never poses as a real model.
  */
@@ -50,7 +63,20 @@ export interface ScriptedTurn {
   calls?: PlannedCall[];
 }
 
-export function createScriptedProvider(): Provider {
+/** The scripted model's own output limit. */
+const MAX_OUTPUT_TOKENS = 16_384;
+/** pi-ai's providers cap output at the window less the context less this (`clampMaxTokensToContext`). */
+const PROVIDER_MARGIN_TOKENS = 4096;
+
+export interface ScriptedProviderOptions {
+  /** The model's context window in tokens; default 128000. Tests use small ones to exercise compaction. */
+  contextWindow?: number;
+}
+
+export function createScriptedProvider(
+  options: ScriptedProviderOptions = {},
+): Provider {
+  const contextWindow = options.contextWindow ?? 128_000;
   const core = createFauxCore({
     api: "scripted",
     provider: SCRIPTED_PROVIDER_ID,
@@ -61,13 +87,32 @@ export function createScriptedProvider(): Provider {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
-        maxTokens: 16_384,
+        contextWindow,
+        maxTokens: MAX_OUTPUT_TOKENS,
       },
     ],
   });
-  const respond = (context: TranscriptContext): AssistantMessage =>
-    toAssistantMessage(scriptedTurn(context.messages));
+  const respond = (
+    context: TranscriptContext,
+    request?: SimpleStreamOptions,
+  ): AssistantMessage => {
+    const tokens = promptTokens(context.messages);
+    if (tokens > contextWindow)
+      return fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: `prompt is too long: ${tokens} tokens > ${contextWindow} maximum`,
+      });
+    // Output is capped the way pi-ai's providers cap it, so a full context
+    // cuts the answer short (stop reason "length").
+    const limit = Math.min(
+      request?.maxTokens ?? MAX_OUTPUT_TOKENS,
+      Math.max(1, contextWindow - tokens - PROVIDER_MARGIN_TOKENS),
+    );
+    return cutToLimit(
+      toAssistantMessage(scriptedTurn(context.messages)),
+      limit,
+    );
+  };
   // The faux core streams queued responses; queueing exactly one dynamic
   // response per request (synchronously, right before it is taken) makes it a
   // pure function of the conversation, safe under concurrent sessions.
@@ -77,7 +122,9 @@ export function createScriptedProvider(): Provider {
     options?: SimpleStreamOptions,
   ) => {
     core.appendResponses([respond]);
-    return core.stream(model, context, options);
+    // No prompt cache: the faux core would count uncached tokens both as
+    // input and as cache writes, overstating the context the usage reports.
+    return core.stream(model, context, { ...options, cacheRetention: "none" });
   };
   return createProvider({
     id: SCRIPTED_PROVIDER_ID,
@@ -104,6 +151,64 @@ function toAssistantMessage(turn: ScriptedTurn): AssistantMessage {
   return fauxAssistantMessage(content.length > 0 ? content : fauxText("OK."), {
     stopReason: calls.length > 0 ? "toolUse" : "stop",
   });
+}
+
+const blockText = (block: AssistantMessage["content"][number]) =>
+  block.type === "text"
+    ? block.text
+    : block.type === "thinking"
+      ? block.thinking
+      : `${block.name}:${JSON.stringify(block.arguments)}`;
+
+/**
+ * The answer cut to `limit` output tokens (four characters a token): text is
+ * cut, and a tool call that does not fit is dropped with what follows.
+ */
+function cutToLimit(
+  message: AssistantMessage,
+  limit: number,
+): AssistantMessage {
+  const size = (text: string) => Math.ceil(text.length / 4);
+  if (size(message.content.map(blockText).join("\n")) <= limit) return message;
+  const content: AssistantMessage["content"] = [];
+  let left = limit * 4;
+  for (const block of message.content) {
+    const text = blockText(block);
+    if (text.length <= left) {
+      content.push(block);
+      left -= text.length + 1;
+      continue;
+    }
+    if (block.type === "text" && left > 0)
+      content.push({ ...block, text: block.text.slice(0, left) });
+    break;
+  }
+  return { ...message, content, stopReason: "length" };
+}
+
+const promptText = (message: Message): string => {
+  switch (message.role) {
+    case "system":
+      return [
+        getSystemMessageText(message),
+        ...(message.toolsAdded ?? []).map((tool) => JSON.stringify(tool)),
+      ].join("\n");
+    case "assistant":
+      return message.content.map(blockText).join("\n");
+    case "toolResult":
+      return `${message.toolName}\n${textOf(message.content)}`;
+    default:
+      return textOf(message.content);
+  }
+};
+
+/** The prompt's size in tokens at four characters a token, as the faux core counts usage. */
+export function promptTokens(messages: readonly Message[]): number {
+  return Math.ceil(
+    messages
+      .map((message) => `${message.role}:${promptText(message)}`)
+      .join("\n\n").length / 4,
+  );
 }
 
 const textOf = (content: Message["content"]): string =>
@@ -191,10 +296,27 @@ interface Conversation {
   /** Active tasks `send_to_task` offers. */
   activeTasks: { id: string; title: string }[];
   calls: { call: ToolCall; result: ToolResultMessage | undefined }[];
+  /** A worker's brief from the system prompt's last "## Your brief" section. */
+  brief?: string;
+}
+
+/** The engine puts a worker's brief last in its system prompt, under this heading. */
+const BRIEF_HEADING = "\n## Your brief";
+
+function briefOf(all: Message[]): string | undefined {
+  const system = all.find((message) => message.role === "system");
+  if (system?.role !== "system") return undefined;
+  const text = getSystemMessageText(system);
+  const start = text.lastIndexOf(BRIEF_HEADING);
+  if (start < 0) return undefined;
+  const body = text.indexOf("\n", start + 1);
+  return body < 0 ? undefined : text.slice(body + 1).trim() || undefined;
 }
 
 function readConversation(all: Message[]): Conversation {
-  const messages = all.filter((message) => message.role !== "system");
+  const messages = expandSummary(
+    all.filter((message) => message.role !== "system"),
+  );
   const tools = new Map(getCurrentTools(all).map((tool) => [tool.name, tool]));
   const taskId = parameter(tools.get("send_to_task"), "taskId");
   const taskIds = choices(taskId);
@@ -217,11 +339,14 @@ function readConversation(all: Message[]): Conversation {
       title: titleOf(taskId?.description ?? "", id, taskIds),
     })),
     calls,
+    brief: briefOf(all),
   };
 }
 
 /** The scripted model's next turn for a transcript. Pure and deterministic. */
 export function scriptedTurn(all: Message[]): ScriptedTurn {
+  const summary = scriptedSummary(all);
+  if (summary !== undefined) return { text: summary };
   const conversation = readConversation(all);
   if (
     conversation.tools.has("create_task") ||
@@ -379,7 +504,7 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
 
 function workerTurn(conversation: Conversation): ScriptedTurn {
   const { messages, tools, calls } = conversation;
-  const brief = userTexts(messages)[0] ?? "my assignment";
+  const brief = conversation.brief ?? userTexts(messages)[0] ?? "my assignment";
   const file = notesFileFor(brief);
   const wrote = calls.find(
     ({ call }) =>
@@ -510,4 +635,228 @@ function chatTurn(conversation: Conversation): ScriptedTurn {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+// Compaction. pi's summary requests serialize the conversation as text
+// ("[User]: ...", "[Assistant]: ...", "[Assistant tool calls]: name(k=<json>,
+// ...)", "[Tool result]: ..."); the scripted summary records it as JSON, with
+// tool output clipped, and the reader turns that back into messages.
+
+/** One summarised message. Tool results answer the calls before them, in order. */
+type SummaryItem =
+  | { role: "user"; text: string }
+  | { role: "assistant"; text: string; calls: PlannedCall[] }
+  | { role: "toolResult"; tool: string; text: string };
+
+const TRANSCRIPT_OPEN = "<scripted-transcript>";
+const TRANSCRIPT_CLOSE = "</scripted-transcript>";
+
+const between = (text: string, open: string, close: string) => {
+  const start = text.indexOf(open);
+  const end = text.lastIndexOf(close);
+  return start >= 0 && end > start
+    ? text.slice(start + open.length, end)
+    : undefined;
+};
+
+/** Every `<scripted-transcript>` block in a text, in order. */
+function summaryItems(text: string): SummaryItem[] {
+  const items: SummaryItem[] = [];
+  let from = 0;
+  for (;;) {
+    const start = text.indexOf(TRANSCRIPT_OPEN, from);
+    if (start < 0) return items;
+    const end = text.indexOf(TRANSCRIPT_CLOSE, start);
+    if (end < 0) return items;
+    try {
+      const parsed = JSON.parse(
+        text.slice(start + TRANSCRIPT_OPEN.length, end),
+      ) as SummaryItem[];
+      if (Array.isArray(parsed)) items.push(...parsed);
+    } catch {
+      // Not ours; ignore it.
+    }
+    from = end + TRANSCRIPT_CLOSE.length;
+  }
+}
+
+/** Where a JSON value that starts at `start` ends, or -1. */
+function jsonEnd(text: string, start: number): number {
+  const skipString = (from: number) => {
+    for (let index = from + 1; index < text.length; index++) {
+      if (text[index] === "\\") index++;
+      else if (text[index] === '"') return index + 1;
+    }
+    return -1;
+  };
+  const first = text[start];
+  if (first === '"') return skipString(start);
+  if (first === "{" || first === "[") {
+    let depth = 0;
+    for (let index = start; index < text.length; index++) {
+      const char = text[index];
+      if (char === '"') {
+        const next = skipString(index);
+        if (next < 0) return -1;
+        index = next - 1;
+      } else if (char === "{" || char === "[") depth++;
+      else if (char === "}" || char === "]") {
+        depth--;
+        if (depth === 0) return index + 1;
+      }
+    }
+    return -1;
+  }
+  let index = start;
+  while (index < text.length && text[index] !== "," && text[index] !== ")")
+    index++;
+  return index;
+}
+
+/** `name(k=<json>, k2=<json>); name2()` back to calls. */
+function parseCalls(text: string): PlannedCall[] {
+  const calls: PlannedCall[] = [];
+  let index = 0;
+  while (index < text.length) {
+    const open = text.indexOf("(", index);
+    if (open < 0) break;
+    const name = text.slice(index, open).trim();
+    const args: JsonObject = {};
+    index = open + 1;
+    while (index < text.length && text[index] !== ")") {
+      const equals = text.indexOf("=", index);
+      if (equals < 0) return calls;
+      const end = jsonEnd(text, equals + 1);
+      if (end < 0) return calls;
+      try {
+        args[text.slice(index, equals).trim()] = JSON.parse(
+          text.slice(equals + 1, end),
+        ) as JsonValue;
+      } catch {
+        return calls;
+      }
+      index = text.startsWith(", ", end) ? end + 2 : end;
+    }
+    calls.push({ name, args });
+    index += 1;
+    if (text.startsWith("; ", index)) index += 2;
+  }
+  return calls;
+}
+
+const PART =
+  /\n\n(?=\[(?:User|Assistant|Assistant tool calls|Tool result)\]: )/;
+
+/** pi's serialized conversation back to items; tool output is clipped. */
+function parseSerialized(text: string): SummaryItem[] {
+  const items: SummaryItem[] = [];
+  const pendingTools: string[] = [];
+  for (const part of text.split(PART)) {
+    const match =
+      /^\[(User|Assistant|Assistant tool calls|Tool result)\]: ([\s\S]*)$/.exec(
+        part,
+      );
+    if (!match) continue;
+    const [, kind, body = ""] = match;
+    if (kind === "User") items.push({ role: "user", text: body });
+    else if (kind === "Assistant")
+      items.push({ role: "assistant", text: body, calls: [] });
+    else if (kind === "Assistant tool calls") {
+      const calls = parseCalls(body);
+      const last = items.at(-1);
+      if (last?.role === "assistant" && last.calls.length === 0)
+        last.calls = calls;
+      else items.push({ role: "assistant", text: "", calls });
+      pendingTools.splice(0, pendingTools.length, ...calls.map((c) => c.name));
+    } else
+      items.push({
+        role: "toolResult",
+        tool: pendingTools.shift() ?? "tool",
+        text: clip(body, 300),
+      });
+  }
+  return items;
+}
+
+/**
+ * The scripted model's answer to a compaction summary request: pi's
+ * history format (`<conversation>`, optionally `<previous-summary>`) or its
+ * turn-prefix format (`# Conversation`). Undefined for any other request.
+ */
+export function scriptedSummary(all: Message[]): string | undefined {
+  if (getCurrentTools(all).length > 0) return undefined;
+  const last = all.at(-1);
+  if (last?.role !== "user") return undefined;
+  const prompt = textOf(last.content);
+  let conversation: string | undefined;
+  let previous: SummaryItem[] = [];
+  if (prompt.startsWith("<conversation>\n")) {
+    conversation = between(prompt, "<conversation>\n", "\n</conversation>");
+    const earlier = between(
+      prompt,
+      "<previous-summary>\n",
+      "\n</previous-summary>",
+    );
+    if (earlier) previous = summaryItems(earlier);
+  } else if (prompt.startsWith("# Conversation\n"))
+    conversation = between(prompt, "# Conversation\n", "\n\n# Instructions\n");
+  if (conversation === undefined) return undefined;
+  const items = [...previous, ...parseSerialized(conversation)];
+  const goal = items.find((item) => item.role === "user")?.text ?? "";
+  const done = items.flatMap((item) =>
+    item.role === "assistant"
+      ? item.calls.map((call) => `- [x] ${call.name}`)
+      : [],
+  );
+  return [
+    "## Goal",
+    clip(goal, 500) || "(none)",
+    "",
+    "## Progress",
+    "### Done",
+    ...(done.length > 0 ? done : ["- (nothing yet)"]),
+    "",
+    "## Critical Context",
+    `${TRANSCRIPT_OPEN}${JSON.stringify(items)}${TRANSCRIPT_CLOSE}`,
+  ].join("\n");
+}
+
+/** A leading compaction summary of its own, as the messages it records. */
+function expandSummary(messages: Message[]): Message[] {
+  const [first, ...rest] = messages;
+  if (first?.role !== "user") return messages;
+  const items = summaryItems(textOf(first.content));
+  if (items.length === 0) return messages;
+  const expanded: Message[] = [];
+  let open: ToolCall[] = [];
+  items.forEach((item, index) => {
+    if (item.role === "user")
+      expanded.push({
+        role: "user",
+        content: [{ type: "text", text: item.text }],
+        timestamp: 0,
+      });
+    else if (item.role === "assistant") {
+      open = item.calls.map((call, n) =>
+        fauxToolCall(call.name, call.args, { id: `summarised_${index}_${n}` }),
+      );
+      expanded.push(
+        fauxAssistantMessage(
+          [...(item.text ? [fauxText(item.text)] : []), ...open],
+          { stopReason: open.length > 0 ? "toolUse" : "stop", timestamp: 0 },
+        ),
+      );
+    } else {
+      const call = open.shift();
+      expanded.push({
+        role: "toolResult",
+        toolCallId: call?.id ?? `summarised_${index}`,
+        toolName: call?.name ?? item.tool,
+        content: [{ type: "text", text: item.text }],
+        isError: false,
+        timestamp: 0,
+      });
+    }
+  });
+  return [...expanded, ...rest];
 }

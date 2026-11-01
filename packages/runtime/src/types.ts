@@ -9,11 +9,32 @@ import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
 import type { RunErrorCode } from "./errors";
 
 /**
- * One persisted transcript entry: a pi message, stored as JSON in
- * `session_entries`. System messages are never persisted; the system prompt is
- * rebuilt for every run.
+ * A pi message as persisted in `session_entries` (as JSON). System messages
+ * are never persisted; the system prompt is rebuilt for every run.
  */
 export type PiMessage = UserMessage | AssistantMessage | ToolResultMessage;
+
+/**
+ * A persisted context checkpoint. The `keptEntries` stored entries right
+ * before it stay in the model's context as they are; everything earlier is
+ * replaced by `summary`, which also folds in any earlier summary.
+ */
+export interface CompactionEntry {
+  role: "compaction";
+  summary: string;
+  /** Stored entries immediately before this one that the context keeps. */
+  keptEntries: number;
+  /** Estimated context tokens when it was compacted. */
+  tokensBefore: number;
+  /** Files the summarised part read (and did not change), carried into later summaries. */
+  readFiles: string[];
+  /** Files the summarised part wrote or edited. */
+  modifiedFiles: string[];
+  timestamp: number;
+}
+
+/** One stored transcript entry: a pi message or a compaction checkpoint. */
+export type TranscriptEntry = PiMessage | CompactionEntry;
 
 export interface CollabToolContext {
   toolCallId: string;
@@ -61,6 +82,8 @@ export type ExecutorEvent =
       error?: string;
       /** Its classification when `stopReason` is "error". */
       errorCode?: RunErrorCode;
+      /** Something the operator should know, such as a compaction that failed; the engine logs it. */
+      warning?: string;
     }
   | {
       type: "tool.started";
@@ -91,10 +114,11 @@ export interface RunHooks {
    * run's inputs and any injected steering before the model call that sees
    * them, with an assistant message that calls tools before those tools run
    * (so a crash mid-tool leaves a call for `repairTranscript`), and with each
-   * turn's tool results or final message when the turn completes. A rejection
-   * ends the run with an error outcome.
+   * turn's tool results or final message when the turn completes; and with a
+   * compaction entry, alone, once everything before it is persisted. A
+   * rejection ends the run with an error outcome.
    */
-  onTurnComplete(entries: PiMessage[]): void | Promise<void>;
+  onTurnComplete(entries: TranscriptEntry[]): void | Promise<void>;
   /**
    * New inbox items (results, steering, messages). Called before the first
    * model call and at every turn boundary while the run continues; returned
@@ -116,8 +140,11 @@ export interface RunInput {
   sessionId: string;
   runId: string;
   systemPrompt: string;
-  /** Persisted entries, oldest first. Dangling tool calls are repaired before use. */
-  transcript: PiMessage[];
+  /**
+   * Persisted entries, oldest first. The context is rebuilt from the latest
+   * compaction entry, and dangling tool calls are repaired before use.
+   */
+  transcript: TranscriptEntry[];
   /** New user-role messages for this run: the brief first, then results, steering and messages on wake. */
   inputs: string[];
   /** The bot's model; null uses the registry default. */

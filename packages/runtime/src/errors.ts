@@ -1,6 +1,7 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 import {
   type AssistantMessage,
+  type AssistantMessageEventStream,
   createAssistantMessageEventStream,
   isContextOverflow,
   type RetryPolicy,
@@ -28,11 +29,20 @@ const PROVIDER =
 const INVALID =
   /\b(400|404|409|413|422)\b|invalid[ _-]?request|bad request|not found|unsupported|invalid[ _-]argument/i;
 
+/**
+ * Starts the error text of a response the provider cut short because the
+ * context left it no room (see `cutByContext`); classified as an overflow.
+ */
+export const OUTPUT_CUT_BY_CONTEXT =
+  "The model's output was cut short because the context left it no room";
+
 /** Classifies a failed model response; context overflow uses pi-ai's own detector. */
 export function classifyModelError(
   message: AssistantMessage,
   contextWindow?: number,
 ): RunErrorCode {
+  if (message.errorMessage?.startsWith(OUTPUT_CUT_BY_CONTEXT))
+    return "context_overflow";
   if (isContextOverflow(message, contextWindow)) return "context_overflow";
   return classifyErrorText(message.errorMessage ?? "");
 }
@@ -100,12 +110,43 @@ export function retryPolicy(options: RetryOptions = {}): RetryPolicy {
   };
 }
 
+/** Ends `stream` with one finished response. */
+function finish(
+  stream: AssistantMessageEventStream,
+  message: AssistantMessage,
+) {
+  if (message.stopReason === "error" || message.stopReason === "aborted")
+    stream.push({ type: "error", reason: message.stopReason, error: message });
+  else
+    stream.push({
+      type: "done",
+      reason: message.stopReason as "stop",
+      message,
+    });
+  stream.end(message);
+}
+
+/** A finished response as a stream, for stream functions that wrap another. */
+export function streamOf(
+  message: AssistantMessage,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  finish(stream, message);
+  return stream;
+}
+
+/** A context overflow, carried out of `retryAssistantCall` so it is not retried. */
+class Overflowed {
+  constructor(readonly message: AssistantMessage) {}
+}
+
 /**
  * Wraps a stream function so a transient failure (429, 5xx, overload, a
  * dropped connection; per pi-ai's `isRetryableAssistantError`) is retried
- * before the agent loop sees it. Each attempt runs to its end before the next
- * starts, so the loop receives one final message. Provider SDK retries are
- * turned off by the caller to avoid retrying twice.
+ * before the agent loop sees it. A context overflow is never retried, even
+ * when its text looks transient: compaction handles it. Each attempt runs to
+ * its end before the next starts, so the loop receives one final message.
+ * Provider SDK retries are turned off by the caller to avoid retrying twice.
  */
 export function retryingStreamFn(
   base: StreamFn,
@@ -115,54 +156,55 @@ export function retryingStreamFn(
   return (model, context, options) => {
     const stream = createAssistantMessageEventStream();
     void retryAssistantCall(
-      async () => (await base(model, context, options)).result(),
+      async () => {
+        const message = await (await base(model, context, options)).result();
+        if (
+          message.stopReason === "error" &&
+          classifyModelError(message, model.contextWindow) ===
+            "context_overflow"
+        )
+          throw new Overflowed(message);
+        return message;
+      },
       policy,
       options?.signal,
-    ).then(
-      (message) => {
-        if (message.stopReason === "error" || message.stopReason === "aborted")
-          stream.push({
-            type: "error",
-            reason: message.stopReason,
-            error: message,
-          });
-        else
-          stream.push({
-            type: "done",
-            reason: message.stopReason as "stop",
-            message,
-          });
-        stream.end(message);
-      },
-      (error: unknown) => {
-        const message: AssistantMessage = {
-          role: "assistant",
-          content: [],
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: {
+    )
+      .catch((error: unknown) => {
+        if (error instanceof Overflowed) return error.message;
+        throw error;
+      })
+      .then(
+        (message) => finish(stream, message),
+        (error: unknown) => {
+          const message: AssistantMessage = {
+            role: "assistant",
+            content: [],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: {
               input: 0,
               output: 0,
               cacheRead: 0,
               cacheWrite: 0,
-              total: 0,
+              totalTokens: 0,
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                total: 0,
+              },
             },
-          },
-          stopReason: "error",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          timestamp: Date.now(),
-        };
-        stream.push({ type: "error", reason: "error", error: message });
-        stream.end(message);
-      },
-    );
+            stopReason: "error",
+            errorMessage:
+              error instanceof Error ? error.message : String(error),
+            timestamp: Date.now(),
+          };
+          stream.push({ type: "error", reason: "error", error: message });
+          stream.end(message);
+        },
+      );
     return stream;
   };
 }

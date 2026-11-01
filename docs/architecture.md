@@ -66,13 +66,13 @@ On first boot, with no profiles stored, the server seeds one profile per registe
 | Task              | Title, goal and goal version, coordinator, state, final result, stop request.                                      |
 | TaskParticipation | Bot membership in a task.                                                                                          |
 | ExecutionSession  | Task, bot, parent session, role, brief, depth, goal version, status, what it waits for, result.                    |
-| SessionEntry      | One entry of a session's pi transcript.                                                                            |
+| SessionEntry      | One entry of a session's pi transcript: a pi message or a compaction checkpoint.                                   |
 | InboxItem         | Input waiting for a session: a brief, a result, steering or a message, delivered at its next turn boundary or run. |
 | Run               | One execution or resumption of a session. Separates context lifetime from execution attempts.                      |
 | Message           | Attributed author, task or conversation, sequence, intent and recipients.                                          |
 | TaskEvent         | Ordered durable activity. The single source for chat, the execution graph and the audit trail.                     |
 | Artifact          | A workspace file or spilled tool output, credited to the run that wrote it, or task-level when no run can be.      |
-| Usage             | Tokens and cost per model call, attributed to session and run.                                                     |
+| Usage             | Tokens and cost per model call, compaction summaries included, attributed to session and run.                      |
 
 There is no separate assignment record: a delegated assignment is an execution session (see [Coordination](#coordination)). A bot's appearance is cosmetic and never affects execution. How artifact snapshots credit files is in the engine README.
 
@@ -121,7 +121,15 @@ Messages arrive whole; text is not streamed token by token. While a bot works, c
 
 ## Context and memory
 
-A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster and the shared workspace. Its inputs are its brief and what its inbox delivers. No model call receives the whole task transcript. The runtime does not compact context: a session whose transcript outgrows its model's context window ends with a `context_overflow` error.
+A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster, the shared workspace and, for a delegated session, its brief as the requester wrote it. Its inputs are what its inbox delivers; a delegated session starts on an item that points at the brief in its prompt, so the brief is not sent twice. No model call receives the whole task transcript.
+
+An execution session's context is compacted with pi's compaction when it nears its model's context window; direct chat sends a bounded history instead. The [runtime README](../packages/runtime/README.md#context-compaction) has the details; the invariants are:
+
+- **When.** Before a model call whose context passes the window less a reserve (which always leaves the provider room to answer), and once after a provider `context_overflow` or a response the provider cut short for lack of room, which then retries the call. If the context still overflows, the run fails with `context_overflow`. Models with a window under 16384 tokens do not compact.
+- **What.** The bot's own model summarises the older part, keeping decisions, files changed, open delegations, results received and pending work, and folding in any earlier summary. The recent part is kept from a cut point that never separates a tool call from its results. The system prompt is rebuilt every run and is not summarised, so the goal and a delegated session's brief always reach the model as written.
+- **Persisted.** The compaction is one transcript entry (the summary, how many stored entries before it are kept, the tokens before), written in one transaction after everything it covers. The full transcript stays stored and append-only; a run builds its context as [latest summary] + the kept entries + every entry after it, then repairs crashed tool calls on that view. A crash before the entry is written loses only the summary, and the next run compacts again.
+- **Never dropped.** A tool call is summarised or kept together with its results, and one a crash left unanswered is still answered as interrupted, never re-run or lost. Undelivered inbox items stay undelivered (compaction never touches the inbox). The most recent messages up to the cut are kept as they are; when the cut falls inside a turn, the turn's start is summarised with pi's turn-prefix prompt.
+- **Accounted.** Each summary call is reported as `model.started` and `model.finished` with its usage, so it has a usage row attributed to its task, session, run and bot.
 
 A bot's memory is one text that the user edits (`PUT /api/bots/:id/memory`). It is added to that bot's own prompts, in task sessions and direct chat, never to a teammate's, and no agent tool writes it. Shared task membership is never authority to read a bot's private conversations.
 
@@ -129,7 +137,7 @@ A bot's memory is one text that the user edits (`PUT /api/bots/:id/memory`). It 
 
 A job lease gives each active run a single owner, and every write-back re-checks ownership. Event and conversation sequences are serialized per task and per bot rather than globally, so independent tasks never contend. Side effects of a job that can run again are keyed by its input: a chat reply that runs again after a hand-off or crash creates no second task and relays no message twice.
 
-A session's pi transcript is persisted as the run proceeds: its inputs before the model call that sees them, an assistant message before its tools run, and each tool result as soon as that tool finishes. After a crash or restart, the session resumes from what was persisted, in a new run. A command that was running at the crash is reported to the agent as interrupted with an unknown outcome; it is never silently re-run. A session whose workspace did not survive, such as an ephemeral one, is not resumed: it fails visibly. A pi upgrade that changes the transcript format must migrate stored transcripts or refuse to resume them.
+A session's pi transcript is persisted as the run proceeds: its inputs before the model call that sees them, an assistant message before its tools run, each tool result as soon as that tool finishes, and a compaction entry once everything it covers is stored. After a crash or restart, the session resumes from what was persisted, in a new run. A command that was running at the crash is reported to the agent as interrupted with an unknown outcome; it is never silently re-run. A session whose workspace did not survive, such as an ephemeral one, is not resumed: it fails visibly. A pi upgrade that changes the transcript format must migrate stored transcripts or refuse to resume them.
 
 ## Security invariants
 

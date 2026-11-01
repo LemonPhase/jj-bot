@@ -1,6 +1,7 @@
 // The pi agent runtime: model registry, session executor, chat responder,
 // transcript helpers and the scripted test model.
 export * from "./chat";
+export * from "./compaction";
 export * from "./errors";
 export * from "./executor";
 export { NOT_STARTED_TEXT } from "./loop";

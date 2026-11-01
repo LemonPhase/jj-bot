@@ -12,7 +12,7 @@ import {
   type Tx,
   taskEvents,
 } from "@jj/db";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit } from "../events";
 
@@ -119,12 +119,20 @@ export async function closeStaleRun(
   await closeRun(tx, ctx, run, status, attribution, note);
 }
 
-/** The text of the transcript's last entry when it is a final assistant message. */
+/**
+ * The text of the transcript's last message when it is a final assistant
+ * message. Compaction entries are checkpoints, not messages, and are skipped.
+ */
 export async function lastAssistantText(tx: Tx, sessionId: string) {
   const [row] = await tx
     .select({ entry: sessionEntries.entry })
     .from(sessionEntries)
-    .where(eq(sessionEntries.sessionId, sessionId))
+    .where(
+      and(
+        eq(sessionEntries.sessionId, sessionId),
+        sql`${sessionEntries.entry}->>'role' is distinct from 'compaction'`,
+      ),
+    )
     .orderBy(desc(sessionEntries.seq))
     .limit(1);
   return row ? assistantText(row.entry) : undefined;

@@ -243,6 +243,13 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
       });
       return;
     case "model.finished": {
+      if (event.warning)
+        ctx.logger.warn(event.warning, {
+          taskId: rc.task.id,
+          sessionId: rc.session.id,
+          runId: rc.run.id,
+          model: event.model,
+        });
       await tx.insert(usage).values({
         id: ctx.ids("usage"),
         taskId: rc.task.id,
