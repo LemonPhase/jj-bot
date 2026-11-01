@@ -6,12 +6,9 @@ import {
   isStoppable,
   moodAnimates,
   moodForStatus,
-  statusColour,
   statusTitle,
   statusTone,
   statusWord,
-  taskStatusWord,
-  waitingTooltip,
 } from "./status";
 
 describe("moodForStatus (brief decision 1)", () => {
@@ -110,6 +107,14 @@ describe("statusTitle", () => {
       "waiting on delegated work",
     );
     expect(statusTitle("waiting")).toBe("waiting for you");
+    // A waiting task has no `waitingFor`: its coordinator asked the user.
+    expect(statusTitle({ status: "waiting", cancelRequestedAt: null })).toBe(
+      "waiting for you",
+    );
+    // A session waiting with no recorded reason.
+    expect(statusTitle({ status: "waiting", waitingFor: null })).toBe(
+      "waiting",
+    );
   });
 
   it("has nothing to add for other words", () => {
@@ -139,58 +144,25 @@ describe("statusTitle", () => {
   });
 });
 
-describe("status vocabulary", () => {
-  it("maps every status to one word and colour", () => {
-    expect(
-      TASK_STATUSES.map((status) => [
-        status,
-        statusWord(status),
-        statusColour(statusWord(status)),
-      ]),
-    ).toEqual([
-      ["queued", "queued", "grey"],
-      ["running", "working", "blue"],
-      ["waiting", "waiting", "grey"],
-      ["completed", "done", "green"],
-      ["failed", "failed", "red"],
-      ["cancelled", "stopped", "grey"],
-    ]);
+describe("task actions", () => {
+  const at = "2026-10-31T12:00:00.000Z";
+
+  it("offers Stop until the task finishes or a stop was requested", () => {
+    for (const status of ["queued", "running", "waiting"] as const) {
+      expect(isStoppable({ status, cancelRequestedAt: null })).toBe(true);
+      expect(isStoppable({ status, cancelRequestedAt: at })).toBe(false);
+    }
+    for (const status of ["completed", "failed", "cancelled"] as const)
+      expect(isStoppable({ status, cancelRequestedAt: null })).toBe(false);
   });
 
-  it("shows a stop request as stopping until the task is cancelled", () => {
-    const at = "2026-10-31T12:00:00.000Z";
-    expect(taskStatusWord({ status: "running", cancelRequestedAt: at })).toBe(
-      "stopping",
-    );
-    expect(taskStatusWord({ status: "cancelled", cancelRequestedAt: at })).toBe(
-      "stopped",
-    );
-    expect(isStoppable({ status: "running", cancelRequestedAt: at })).toBe(
-      false,
-    );
-    expect(isStoppable({ status: "waiting", cancelRequestedAt: null })).toBe(
-      true,
-    );
-    expect(isStoppable({ status: "completed", cancelRequestedAt: null })).toBe(
-      false,
-    );
-    expect(
-      acceptsMessages({ status: "completed", cancelRequestedAt: null }),
-    ).toBe(true);
+  it("takes messages unless the task is cancelled or stopping", () => {
+    for (const status of TASK_STATUSES)
+      expect(acceptsMessages({ status, cancelRequestedAt: null })).toBe(
+        status !== "cancelled",
+      );
     expect(acceptsMessages({ status: "running", cancelRequestedAt: at })).toBe(
       false,
     );
-  });
-
-  it("says what a waiting session waits for", () => {
-    expect(waitingTooltip({ status: "waiting", waitingFor: "user" })).toBe(
-      "waiting for you",
-    );
-    expect(
-      waitingTooltip({ status: "waiting", waitingFor: "delegations" }),
-    ).toBe("waiting on delegated work");
-    expect(
-      waitingTooltip({ status: "running", waitingFor: null }),
-    ).toBeUndefined();
   });
 });

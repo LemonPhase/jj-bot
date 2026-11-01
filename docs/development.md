@@ -32,6 +32,10 @@ The API requires a reachable database at startup. Use `docker compose up -d post
 
 Internal packages export TypeScript source. API/worker run with `tsx`; `build` typechecks all packages and produces the web bundle.
 
+### Web app structure
+
+`apps/web/src` keeps screens in feature folders (`features/shell`, `bots`, `tasks`, `office`, `studio`, `settings`), the design-system kit in `components/ui` and `components/sprite`, pure helpers in `lib`, and the backend seam in `api` (`JJApi`) with workspace state in `state`. Screens are addressed by URL hash, so every view is linkable and survives a reload: `#/bots/:botId`, `#/tasks/:taskId`, `#/studio` (new bot) or `#/studio/:botId`, and `#/settings`. `features/shell/router.ts` parses and formats them and `useRoute()`/`navigate()` bind them to the window; a list route without an id opens the first item. The dev-only kit gallery is at `?gallery=1`, and `?demo` forces demo data.
+
 ## Configuration
 
 | Variable           | Purpose                                                                                     |

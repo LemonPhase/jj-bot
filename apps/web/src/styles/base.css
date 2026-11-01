@@ -1,9 +1,8 @@
 /*
  * Base layer: reset, body, focus, scrollbars, reduced motion and text utilities.
  *
- * Everything sits in the `base` cascade layer, so any unlayered rule (the
- * legacy styles.css, component CSS) wins over it without specificity tricks.
- * That keeps the current app's look while it still ships the old stylesheet.
+ * Everything sits in the `base` cascade layer, so any unlayered rule (kit and
+ * feature CSS) wins over it without specificity tricks.
  */
 @layer base {
   *,

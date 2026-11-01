@@ -1,7 +1,7 @@
 /**
  * Stroke icons from SPEC §3 (24-unit viewBox, round caps and joins, stroked
- * in currentColor). `close` and `chevron-down` are not in the design; they
- * follow the same drawing rules.
+ * in currentColor). `close`, `chevron-down`, `settings` and `arrow-left` are
+ * not in the design; they follow the same drawing rules.
  */
 const ICONS = {
   plus: { d: "M12 5v14M5 12h14", width: 2 },
@@ -18,6 +18,12 @@ const ICONS = {
   "arrow-right": { d: "M5 12h14M13 6l6 6-6 6", width: 2 },
   close: { d: "M6 6l12 12M18 6L6 18", width: 2 },
   "chevron-down": { d: "M6 9l6 6 6-6", width: 1.8 },
+  "arrow-left": { d: "M19 12H5M11 6l-6 6 6 6", width: 2 },
+  /** Sliders: the Settings entry in the sidebar footer. */
+  settings: {
+    d: "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4",
+    width: 1.8,
+  },
 } as const;
 
 export type IconName = keyof typeof ICONS;
