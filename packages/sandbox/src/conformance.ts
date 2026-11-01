@@ -1,5 +1,16 @@
+import { lookup } from "node:dns/promises";
 import { existsSync } from "node:fs";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { type AddressInfo, createServer, isIPv4, isIPv6 } from "node:net";
+import { networkInterfaces } from "node:os";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  type TestContext,
+} from "vitest";
 import type {
   AcquireRequest,
   NetworkMode,
@@ -665,6 +676,173 @@ export function describeSandboxConformance(
       testTimeout,
     );
 
+    /**
+     * Network mode `allowlist`. Probes run with Node inside the sandbox and
+     * reach hosts the way proxy-aware clients do: through `HTTPS_PROXY` or
+     * `HTTP_PROXY` when the sandbox has them, directly otherwise. Refusals
+     * need no internet; the listed-host check does (see `ONLINE`).
+     */
+    const allowlistOnly = (context: TestContext) => {
+      if (!driver.capabilities.networkModes.includes("allowlist"))
+        context.skip(`${name} does not declare network mode "allowlist"`);
+    };
+
+    /**
+     * Probes for the allowlist checks. A driver that declares allowlist must
+     * be checked, so an image without node fails them instead of skipping.
+     */
+    const allowlistProbe = async (sandbox: Sandbox, probes: NetworkProbe[]) => {
+      const results = await probeNetwork(sandbox, probes);
+      if (!results)
+        throw new Error(
+          `${name} declares network mode "allowlist", whose checks probe with node inside the sandbox, ` +
+            "but its image has no node: run the suite with an image that has node 22 or later (options.spec.image)",
+        );
+      return results;
+    };
+
+    it(
+      "refuses unlisted hosts, its own DNS and connections that bypass its proxy in network mode allowlist",
+      async (context) => {
+        allowlistOnly(context);
+        const sandbox = await acquire({
+          network: { mode: "allowlist", hosts: ["example.com"] },
+        });
+        const results = await allowlistProbe(sandbox, [
+          { kind: "http", url: "https://example.org/" },
+          { kind: "http", url: "http://example.org/" },
+          { kind: "http", url: "https://example.com:8443/" },
+          { kind: "tcp", host: "1.1.1.1", port: 443 },
+          { kind: "tcp", host: "8.8.8.8", port: 53 },
+          { kind: "dns", host: "example.org" },
+        ]);
+        for (const result of results)
+          expect(reached(result), show(result)).toBe(false);
+      },
+      testTimeout,
+    );
+
+    it(
+      "keeps the machine running the suite unreachable in network mode allowlist, even when it is listed",
+      async (context) => {
+        allowlistOnly(context);
+        const banner = `jj-conformance-host-${Math.random().toString(36).slice(2)}`;
+        let hits = 0;
+        const server = createServer((socket) => {
+          hits++;
+          socket.on("error", () => {});
+          socket.end(`${banner}\n`);
+        });
+        await new Promise<void>((done, fail) => {
+          server.once("error", () => {
+            // No IPv6 on this machine: IPv4 only.
+            server.once("error", fail);
+            server.listen(0, "0.0.0.0", done);
+          });
+          server.listen(0, "::", done);
+        });
+        try {
+          const port = (server.address() as AddressInfo).port;
+          // This machine's addresses, except link-local IPv6 (which needs a
+          // scope). Read again once the probing sandbox exists, because a
+          // driver may add an interface for it (a container bridge).
+          const hostAddresses = () =>
+            Object.values(networkInterfaces())
+              .flat()
+              .filter((entry) => entry !== undefined)
+              .map((entry) => entry.address)
+              .filter((address) => !address.toLowerCase().startsWith("fe80:"));
+          // A first sandbox brings up the interfaces the driver adds for
+          // sandboxes in general, so the second can list them.
+          await acquire({
+            network: { mode: "allowlist", hosts: ["example.com"] },
+          });
+          const v4 = hostAddresses().filter((address) => isIPv4(address));
+          const names = ["localhost", "host.docker.internal"];
+          const sandbox = await acquire({
+            network: {
+              mode: "allowlist",
+              hosts: [
+                "example.com",
+                ...[...names, ...v4].map((host) => `${host}:${port}`),
+              ],
+            },
+          });
+          const route = await sandbox.exec(
+            "cat /proc/net/route 2>/dev/null; true",
+          );
+          const gateways = defaultGateways(route.stdout);
+          const addresses = [...new Set([...v4, ...hostAddresses()])];
+          const bracket = (host: string) => (isIPv6(host) ? `[${host}]` : host);
+          const probes: NetworkProbe[] = [
+            ...[...addresses, ...gateways].map(
+              (host): NetworkProbe => ({ kind: "tcp", host, port }),
+            ),
+            ...[...names, ...addresses, ...gateways].flatMap(
+              (host): NetworkProbe[] => [
+                { kind: "http", url: `http://${bracket(host)}:${port}/` },
+                { kind: "http", url: `https://${bracket(host)}:${port}/` },
+              ],
+            ),
+          ];
+          const results = await allowlistProbe(sandbox, probes);
+          expect(v4.length).toBeGreaterThan(0);
+          for (const [index, result] of results.entries()) {
+            expect(
+              reached(result),
+              `${JSON.stringify(probes[index])} ${show(result)}`,
+            ).toBe(false);
+            expect(JSON.stringify(result)).not.toContain(banner);
+          }
+          expect(hits).toBe(0);
+        } finally {
+          server.close();
+        }
+      },
+      testTimeout,
+    );
+
+    it(
+      "reaches a listed public host in network mode allowlist (needs internet; JJ_SANDBOX_TEST_OFFLINE=1 skips it)",
+      async (context) => {
+        allowlistOnly(context);
+        if (!ONLINE)
+          return context.skip(
+            "JJ_SANDBOX_TEST_OFFLINE=1: the listed-host check needs internet access",
+          );
+        const sandbox = await acquire({
+          network: { mode: "allowlist", hosts: ["example.com"] },
+        });
+        const proxied = await sandbox.exec(
+          'printf "%s%s" "$HTTPS_PROXY" "$https_proxy"',
+        );
+        // A proxy-based driver must also stop a direct connection to the
+        // listed host's own address, which the suite resolves here.
+        const direct = proxied.stdout.trim()
+          ? (await lookup("example.com", { all: true }))
+              .filter((entry) => entry.family === 4)
+              .map(
+                (entry): NetworkProbe => ({
+                  kind: "tcp",
+                  host: entry.address,
+                  port: 443,
+                }),
+              )
+          : [];
+        const results = await allowlistProbe(sandbox, [
+          { kind: "http", url: "https://example.com/" },
+          { kind: "http", url: "http://example.com/" },
+          ...direct,
+        ]);
+        const [https, http, ...bypass] = results;
+        expect(https && reached(https), show(https)).toBe(true);
+        expect(http && reached(http), show(http)).toBe(true);
+        for (const result of bypass)
+          expect(reached(result), show(result)).toBe(false);
+      },
+      testTimeout,
+    );
+
     it(
       "declares optional capabilities consistently with its implementation",
       async () => {
@@ -683,6 +861,203 @@ export function describeSandboxConformance(
     );
   });
 }
+
+/**
+ * Whether the allowlist check that needs internet access runs. Only an
+ * explicit `JJ_SANDBOX_TEST_OFFLINE=1` turns it off, for machines whose
+ * containers cannot reach the internet; CI never sets it.
+ */
+export const ONLINE = process.env.JJ_SANDBOX_TEST_OFFLINE !== "1";
+
+export type NetworkProbe =
+  | { kind: "tcp"; host: string; port: number }
+  | { kind: "http"; url: string }
+  | { kind: "dns"; host: string };
+
+export interface ProbeResult {
+  /** `connected` (tcp), `response`, `refused` (a CONNECT the proxy answered with an error), `resolved` (dns) or `error`. */
+  outcome: "connected" | "response" | "refused" | "resolved" | "error";
+  status?: number;
+  reason?: string;
+  body?: string;
+  banner?: string;
+  addresses?: string[];
+  code?: string;
+}
+
+/** Whether a probe got through: a connection, a resolved name, or an HTTP answer that is not an error. */
+export const reached = (result: ProbeResult): boolean =>
+  result.outcome === "connected" ||
+  result.outcome === "resolved" ||
+  (result.outcome === "response" && (result.status ?? 600) < 400);
+
+const show = (result: ProbeResult | undefined) =>
+  JSON.stringify(result)?.slice(0, 400) ?? "no result";
+
+/** IPv4 default gateways from `/proc/net/route` (little-endian hex). */
+function defaultGateways(routes: string): string[] {
+  const found = new Set<string>();
+  for (const line of routes.split("\n").slice(1)) {
+    const [, destination, gateway] = line.trim().split(/\s+/);
+    if (
+      destination !== "00000000" ||
+      !gateway ||
+      !/^[0-9A-F]{8}$/i.test(gateway)
+    )
+      continue;
+    const value = Number.parseInt(gateway, 16);
+    found.add(
+      [value & 255, (value >> 8) & 255, (value >> 16) & 255, value >>> 24].join(
+        ".",
+      ),
+    );
+  }
+  found.delete("0.0.0.0");
+  return [...found];
+}
+
+/**
+ * Runs `probes` inside the sandbox with Node and returns one result each, or
+ * undefined when the image has no `node`.
+ */
+export async function probeNetwork(
+  sandbox: Sandbox,
+  probes: NetworkProbe[],
+): Promise<ProbeResult[] | undefined> {
+  const node = await sandbox.exec(
+    "command -v node >/dev/null 2>&1 && echo yes",
+  );
+  if (node.stdout.trim() !== "yes") return undefined;
+  await sandbox.fs.write("jj-net-probe.cjs", NET_PROBE);
+  await sandbox.fs.write("jj-net-probes.json", JSON.stringify(probes));
+  const result = await sandbox.exec(
+    "node jj-net-probe.cjs jj-net-probes.json",
+    { timeoutMs: 60_000 },
+  );
+  const line = result.stdout.trim().split("\n").pop() ?? "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    throw new Error(
+      `network probe failed (exit ${result.exitCode}): ${result.stdout}${result.stderr}`.slice(
+        0,
+        2000,
+      ),
+    );
+  }
+  if (!Array.isArray(parsed) || parsed.length !== probes.length)
+    throw new Error(`network probe returned ${line.slice(0, 500)}`);
+  return parsed as ProbeResult[];
+}
+
+/**
+ * The in-sandbox side of `probeNetwork`, CommonJS on Node built-ins. HTTP
+ * probes use `HTTPS_PROXY`/`HTTP_PROXY` (either case) when set, as curl and
+ * pip do, with a CONNECT tunnel for https; tcp and dns probes never use a
+ * proxy. Every probe ends within 8 s.
+ */
+const NET_PROBE = String.raw`"use strict";
+const fs = require("fs"), net = require("net"), tls = require("tls"), dns = require("dns");
+const LIMIT = 8000;
+const probes = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const envProxy = (name) => process.env[name.toLowerCase()] || process.env[name] || "";
+const failure = (error) => ({ outcome: "error", code: String((error && (error.code || error.message)) || error) });
+
+function settle(work) {
+  return new Promise((resolve) => {
+    let done = false;
+    const sockets = [];
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const socket of sockets) socket.destroy();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish({ outcome: "error", code: "TIMEOUT" }), LIMIT);
+    const track = (socket) => {
+      sockets.push(socket);
+      socket.on("error", (error) => finish(failure(error)));
+      return socket;
+    };
+    try { work(finish, track); } catch (error) { finish(failure(error)); }
+  });
+}
+
+function parseResponse(raw, outcome) {
+  const match = /^HTTP\/1\.[01] (\d{3}) ?([^\r\n]*)/.exec(raw);
+  if (!match) return { outcome: "error", code: "NO_HTTP_RESPONSE", body: raw.slice(0, 200) };
+  const end = raw.indexOf("\r\n\r\n");
+  return { outcome, status: Number(match[1]), reason: match[2], body: end < 0 ? "" : raw.slice(end + 4, end + 304) };
+}
+
+function readResponse(socket, finish, outcome) {
+  let raw = "";
+  socket.on("data", (chunk) => {
+    raw += chunk.toString("latin1");
+    if (raw.length > 65536) finish(parseResponse(raw, outcome));
+  });
+  socket.on("close", () => finish(parseResponse(raw, outcome)));
+}
+
+function tcp(probe) {
+  return settle((finish, track) => {
+    let banner = "";
+    const socket = track(net.connect({ host: probe.host, port: probe.port }));
+    socket.on("data", (chunk) => { banner += chunk.toString("latin1"); });
+    socket.on("connect", () => setTimeout(() => finish({ outcome: "connected", banner }), 500));
+  });
+}
+
+function http(probe) {
+  const url = new URL(probe.url);
+  const secure = url.protocol === "https:";
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const port = Number(url.port) || (secure ? 443 : 80);
+  const proxy = envProxy(secure ? "HTTPS_PROXY" : "HTTP_PROXY");
+  const request = (target) =>
+    "GET " + target + " HTTP/1.1\r\nHost: " + url.host + "\r\nUser-Agent: jj-conformance\r\nAccept: */*\r\nConnection: close\r\n\r\n";
+  return settle((finish, track) => {
+    const via = proxy ? new URL(proxy) : null;
+    const proxyAddress = via && { host: via.hostname.replace(/^\[|\]$/g, ""), port: Number(via.port) || 80 };
+    if (!secure) {
+      const socket = track(net.connect(proxyAddress || { host, port }));
+      socket.on("connect", () => socket.write(request(via ? url.href : url.pathname + url.search)));
+      return readResponse(socket, finish, "response");
+    }
+    const startTls = (socket) => {
+      const options = { servername: net.isIP(host) ? undefined : host };
+      const secured = track(socket ? tls.connect({ ...options, socket }) : tls.connect({ ...options, host, port }));
+      secured.on("secureConnect", () => secured.write(request(url.pathname + url.search)));
+      readResponse(secured, finish, "response");
+    };
+    if (!proxyAddress) return startTls(null);
+    const socket = track(net.connect(proxyAddress));
+    const authority = (net.isIPv6(host) ? "[" + host + "]" : host) + ":" + port;
+    socket.on("connect", () => socket.write("CONNECT " + authority + " HTTP/1.1\r\nHost: " + authority + "\r\n\r\n"));
+    let head = "";
+    const onData = (chunk) => {
+      head += chunk.toString("latin1");
+      if (head.indexOf("\r\n\r\n") < 0) return;
+      socket.off("data", onData);
+      if (/^HTTP\/1\.[01] 200/.test(head)) return startTls(socket);
+      readResponse(socket, (result) => finish(result), "refused");
+      socket.emit("data", Buffer.from(head, "latin1"));
+    };
+    socket.on("data", onData);
+  });
+}
+
+function lookup(probe) {
+  return settle((finish) =>
+    dns.lookup(probe.host, { all: true }, (error, addresses) =>
+      finish(error ? failure(error) : { outcome: "resolved", addresses: addresses.map((entry) => entry.address) })));
+}
+
+Promise.all(probes.map((probe) => (probe.kind === "tcp" ? tcp : probe.kind === "dns" ? lookup : http)(probe)))
+  .then((results) => console.log(JSON.stringify(results)));
+`;
 
 /**
  * Tries a TCP connection to a public address with the first client available.

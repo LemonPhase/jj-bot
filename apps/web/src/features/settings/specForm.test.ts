@@ -16,7 +16,7 @@ const schema = z.toJSONSchema(sandboxSpecSchema, { io: "input" }) as Record<
 >;
 
 const docker: DriverCapabilities = {
-  networkModes: ["none", "open"],
+  networkModes: ["none", "allowlist", "open"],
   resourceLimits: true,
   filesystemIsolation: true,
   exposePort: false,
@@ -110,7 +110,11 @@ describe("specFormFields (JSON Schema → form)", () => {
     const network = byKey(fields, "network");
     if (network.kind !== "variant") throw new Error("network is a variant");
     expect(network.discriminator).toBe("mode");
-    expect(network.options.map((o) => o.value)).toEqual(["none", "open"]);
+    expect(network.options.map((o) => o.value)).toEqual([
+      "none",
+      "allowlist",
+      "open",
+    ]);
     expect(network.variants.map((o) => o.value)).toEqual([
       "none",
       "allowlist",
@@ -118,12 +122,65 @@ describe("specFormFields (JSON Schema → form)", () => {
     ]);
     const allowlist = network.variants.find((v) => v.value === "allowlist");
     expect(allowlist?.fields).toMatchObject([
-      { key: "network.hosts", kind: "list", minItems: 1, maxItems: 256 },
+      {
+        key: "network.hosts",
+        kind: "list",
+        label: "Allowed hosts",
+        hint: expect.stringContaining("One host per line"),
+        placeholder: "registry.npmjs.org",
+        minItems: 1,
+        maxItems: 256,
+        itemMaxLength: 260,
+        itemPattern: expect.any(RegExp),
+      },
     ]);
 
+    const narrowed = byKey(
+      specFormFields(schema, { ...docker, networkModes: ["none", "open"] }),
+      "network",
+    );
+    if (narrowed.kind !== "variant") throw new Error("variant");
+    expect(narrowed.options.map((o) => o.value)).toEqual(["none", "open"]);
     const localNetwork = byKey(specFormFields(schema, local), "network");
     if (localNetwork.kind !== "variant") throw new Error("variant");
     expect(localNetwork.options.map((o) => o.value)).toEqual(["open"]);
+  });
+
+  it("checks every allowed host against the contract's pattern, line by line", () => {
+    const draft = (hosts: string) => ({
+      ...draftFromSpec(fields),
+      network: "allowlist",
+      "network.hosts": hosts,
+    });
+    const valid = readSpecDraft(
+      fields,
+      draft(
+        "Registry.npmjs.org\n\n  *.pythonhosted.org \nfiles.example.com:8443",
+      ),
+    );
+    expect(valid.errors).toEqual({});
+    // Sent as typed; the server lowercases and deduplicates.
+    expect(valid.value.network).toEqual({
+      mode: "allowlist",
+      hosts: [
+        "Registry.npmjs.org",
+        "*.pythonhosted.org",
+        "files.example.com:8443",
+      ],
+    });
+    for (const [hosts, line] of [
+      ["registry.npmjs.org\nhttps://pypi.org", 2],
+      ["registry.npmjs.org\n\nexample.com/path", 3],
+      ["*", 1],
+      ["two words.com", 1],
+    ] as const)
+      expect(readSpecDraft(fields, draft(hosts)).errors, hosts).toEqual({
+        "network.hosts": `Line ${line}: write a host such as registry.npmjs.org or *.example.com, optionally with :port, without a scheme or path.`,
+      });
+    // The contract's own checks beyond the pattern stay the server's.
+    expect(readSpecDraft(fields, draft("example.com:99999")).errors).toEqual(
+      {},
+    );
   });
 
   it("notes resource limits a driver cannot enforce", () => {

@@ -116,7 +116,7 @@ export const DEMO_DRIVERS: readonly SandboxDriverInfo[] = [
     available: true,
     detail: DEMO_DETAIL,
     capabilities: {
-      networkModes: ["none", "open"],
+      networkModes: ["none", "allowlist", "open"],
       resourceLimits: true,
       filesystemIsolation: true,
       exposePort: false,

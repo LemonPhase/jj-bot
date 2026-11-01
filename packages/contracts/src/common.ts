@@ -5,7 +5,7 @@ import { z } from "zod";
  * additive changes and the major for breaking ones, and record every change in
  * docs/contract-changelog.md.
  */
-export const CONTRACT_VERSION = "1.0.1";
+export const CONTRACT_VERSION = "1.0.2";
 
 /** Longest text a command accepts (messages, goals, instructions). */
 export const COMMAND_TEXT_LIMIT = 20_000;
