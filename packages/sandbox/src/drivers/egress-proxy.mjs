@@ -71,7 +71,10 @@ export function parseAllowEntry(entry) {
   if (!match) return null;
   const [, star, host = "", portText] = match;
   if (!isHostName(host)) return null;
-  if (star && host.split(".").length < 2) return null;
+  // A wildcard names subdomains of a host name: never part of an IP address.
+  const labels = host.split(".");
+  if (star && (labels.length < 2 || NUMERIC_LABEL.test(labels.at(-1) ?? "")))
+    return null;
   let ports = [80, 443];
   if (portText !== undefined) {
     const port = Number(portText);
@@ -104,9 +107,7 @@ export function compileAllowlist(entries) {
  * @param {string} host
  */
 export function hostListed(rules, host) {
-  return rules.some((rule) =>
-    rule.wildcard ? host.endsWith(`.${rule.host}`) : host === rule.host,
-  );
+  return rules.some((rule) => names(rule, host));
 }
 
 /**
@@ -116,10 +117,35 @@ export function hostListed(rules, host) {
  * @param {number} port
  */
 export function isAllowed(rules, host, port) {
-  return rules.some(
-    (rule) =>
-      (rule.wildcard ? host.endsWith(`.${rule.host}`) : host === rule.host) &&
-      rule.ports.includes(port),
+  return rules.some((rule) => names(rule, host) && rule.ports.includes(port));
+}
+
+/**
+ * Whether a rule names `host`: the same name, or for a wildcard a subdomain
+ * of it. A wildcard never matches an IP address, whatever its rule says.
+ * @param {AllowRule} rule
+ * @param {string} host
+ */
+function names(rule, host) {
+  if (!rule.wildcard) return host === rule.host;
+  return (
+    isHostName(host) && !isIPLiteral(host) && host.endsWith(`.${rule.host}`)
+  );
+}
+
+/** A label resolvers read as a number (`inet_aton`): decimal, octal or hex. */
+const NUMERIC_LABEL = /^(?:\d+|0x[0-9a-f]*)$/i;
+
+/**
+ * Whether `host` is an IP address in any form a resolver accepts: IPv6, or
+ * one to four numeric labels (`8.8.8.8`, `134744072`, `0x8.0x8.0x8.0x8`).
+ * @param {string} host
+ */
+export function isIPLiteral(host) {
+  if (parseIPv6(host)) return true;
+  const labels = host.split(".");
+  return (
+    labels.length <= 4 && labels.every((label) => NUMERIC_LABEL.test(label))
   );
 }
 
@@ -530,6 +556,17 @@ export function createEgressProxy(config, io = {}) {
           ? "use CONNECT for https:// (set HTTPS_PROXY, not only HTTP_PROXY)"
           : "only plain http:// requests and CONNECT are forwarded",
       );
+    // The body is forwarded with the framing it arrived with, decoded and
+    // re-encoded by Node, so its bytes can never pass upstream as another
+    // request. Node's parser already refuses Content-Length together with
+    // Transfer-Encoding; any coding but plain chunked is refused here.
+    const coding = request.headers["transfer-encoding"];
+    if (coding !== undefined && coding.trim().toLowerCase() !== "chunked")
+      return refuse(
+        501,
+        `transfer-encoding "${coding}" is not forwarded; send chunked or Content-Length bodies`,
+      );
+    const length = request.headers["content-length"];
     const host = url.hostname.replace(/^\[(.*)\]$/, "$1").toLowerCase();
     const port = url.port ? Number(url.port) : 80;
     const verdict = await authorize(rules, host, port, resolve);
@@ -546,11 +583,19 @@ export function createEgressProxy(config, io = {}) {
     if (request.destroyed) return socket.destroy();
     // RFC 9112 §3.2.2: a proxy replaces Host with the request target's.
     const headers = [
-      ...endToEndHeaders(request.rawHeaders, new Set(["host"])),
+      ...endToEndHeaders(
+        request.rawHeaders,
+        new Set(["host", "content-length"]),
+      ),
       "Host",
       url.host,
       "Connection",
       "close",
+      ...(coding !== undefined
+        ? ["Transfer-Encoding", "chunked"]
+        : length !== undefined
+          ? ["Content-Length", length]
+          : []),
     ];
     const upstream = httpRequest({
       createConnection: () => socket,

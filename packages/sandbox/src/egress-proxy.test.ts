@@ -28,6 +28,7 @@ import {
   endToEndHeaders,
   hostListed,
   isAllowed,
+  isIPLiteral,
   isPublicAddress,
   listenAddress,
   parseAllowEntry,
@@ -74,6 +75,11 @@ describe("allowlist entries", () => {
       "*",
       "*.",
       "*.org",
+      "*.8.8",
+      "*.8.8.8",
+      "*.0x8.0x8",
+      "*.example.123",
+      "*.example.0x1",
       "**.example.com",
       "a.*.example.com",
       "https://example.com",
@@ -114,6 +120,13 @@ describe("allowlist entries", () => {
       "*.example.com",
       "*.com",
       "*.co.uk",
+      "*.8.8",
+      "*.8.8.8:53",
+      "*.0x8.0x8",
+      "*.example.123",
+      "*.123.example.com",
+      "*.0x1.example.com",
+      "8.8.8.8",
       "x.y.z.example.com:65535",
       "example.com:65536",
       "example.com:00080",
@@ -161,6 +174,30 @@ describe("matching", () => {
     expect(isAllowed(list, "example.com", 443)).toBe(false);
     expect(isAllowed(list, "badexample.com", 443)).toBe(false);
     expect(isAllowed(list, "a.example.com.evil.net", 443)).toBe(false);
+  });
+
+  it("never lets a wildcard match an IP address, in any form", () => {
+    // Such rules cannot be configured (see above); built by hand, they still
+    // never match an address.
+    const handmade = [
+      { host: "8.8", wildcard: true, ports: [80, 443] },
+      { host: "0x8.0x8", wildcard: true, ports: [80, 443] },
+    ];
+    for (const host of ["8.8.8.8", "0x8.0x8.0x8.0x8", "1.8.8", "10.8.8"])
+      expect(isAllowed(handmade, host, 443), host).toBe(false);
+    for (const host of [
+      "8.8.8.8",
+      "134744072",
+      "0x8.0x8.0x8.0x8",
+      "1.2.3",
+      "::1",
+      "::ffff:8.8.8.8",
+    ])
+      expect(isIPLiteral(host), host).toBe(true);
+    for (const host of ["a.8.8.8", "example.com", "8.8.8.8.8", "8.example"])
+      expect(isIPLiteral(host), host).toBe(false);
+    // An exact entry for an address still works.
+    expect(isAllowed(rules("8.8.8.8:53"), "8.8.8.8", 53)).toBe(true);
   });
 
   it("allows only the given port for host:port, and unions entries", () => {
@@ -448,13 +485,17 @@ function exchange(
 describe("the proxy server", () => {
   const PUBLIC_TUNNEL = "93.184.215.14";
   const PUBLIC_WEB = "93.184.215.15";
+  const PUBLIC_RAW = "93.184.215.17";
   let tunnelPort = 0;
   let webPort = 0;
+  let rawPort = 0;
   let proxyPort = 0;
   const sockets = new Set<Socket>();
   const servers: Server[] = [];
   const connects: string[] = [];
   const resolves: string[] = [];
+  /** Every byte each connection to the raw upstream carried. */
+  const rawReceived: string[] = [];
   let seen: { url?: string; headers: IncomingHttpHeaders } | undefined;
 
   beforeAll(async () => {
@@ -462,6 +503,26 @@ describe("the proxy server", () => {
       sockets.add(socket);
       socket.on("data", (chunk) => socket.write(`UPSTREAM:${chunk}`));
     });
+    // Records what arrives, then answers once the client falls quiet.
+    const raw = createNetServer((socket) => {
+      sockets.add(socket);
+      const index = rawReceived.push("") - 1;
+      let quiet: NodeJS.Timeout | undefined;
+      socket.on("data", (chunk) => {
+        rawReceived[index] += chunk.toString("latin1");
+        clearTimeout(quiet);
+        quiet = setTimeout(
+          () =>
+            socket.end(
+              "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            ),
+          150,
+        );
+      });
+      socket.on("error", () => {});
+    });
+    servers.push(raw);
+    rawPort = await listen(raw);
     const web = createHttpServer((request, response) => {
       seen = { url: request.url, headers: request.headers };
       response.writeHead(200, { "content-type": "text/plain" });
@@ -473,6 +534,7 @@ describe("the proxy server", () => {
     const answers: Record<string, string[]> = {
       "tunnel.example.com": [PUBLIC_TUNNEL],
       "web.example.com": [PUBLIC_WEB],
+      "raw.example.com": [PUBLIC_RAW],
       "down.example.com": ["93.184.215.16"],
       "private.example.com": ["10.1.2.3"],
     };
@@ -495,7 +557,9 @@ describe("the proxy server", () => {
               ? tunnelPort
               : address === PUBLIC_WEB
                 ? webPort
-                : 1;
+                : address === PUBLIC_RAW
+                  ? rawPort
+                  : 1;
           return netConnect(local, "127.0.0.1");
         },
       },
@@ -507,7 +571,71 @@ describe("the proxy server", () => {
   afterEach(() => {
     connects.length = 0;
     resolves.length = 0;
+    rawReceived.length = 0;
     seen = undefined;
+  });
+
+  /** What the raw upstream received for one request, split into head and body. */
+  const upstreamRequest = (index = 0) => {
+    const received = rawReceived[index] ?? "";
+    const end = received.indexOf("\r\n\r\n");
+    return {
+      head: received.slice(0, end).toLowerCase(),
+      body: received.slice(end + 4),
+    };
+  };
+
+  it("frames a chunked body as chunked, so it can never pass as another request", async () => {
+    // A GET whose chunked body is itself a request. Sent upstream without
+    // framing, the upstream would read GET /smuggled with Host: internal.
+    const smuggled = "GET /smuggled HTTP/1.1\r\nHost: internal\r\n\r\n";
+    const answer = await exchange(
+      proxyPort,
+      "GET http://raw.example.com/ HTTP/1.1\r\nHost: raw.example.com\r\nTransfer-Encoding: chunked\r\n\r\n" +
+        `${smuggled.length.toString(16)}\r\n${smuggled}\r\n0\r\n\r\n`,
+      "ok",
+    );
+    expect(answer).toMatch(/^HTTP\/1\.1 200 OK/);
+    expect(rawReceived).toHaveLength(1);
+    const { head, body } = upstreamRequest();
+    expect(head).toMatch(/^get \/ http\/1\.1\r\n/);
+    expect(head).toContain("\r\ntransfer-encoding: chunked");
+    expect(head).not.toContain("content-length");
+    // The smuggled text arrives inside a chunk, as the body it was.
+    expect(body).toBe(
+      `${smuggled.length.toString(16)}\r\n${smuggled}\r\n0\r\n\r\n`,
+    );
+  });
+
+  it("forwards a Content-Length body with its length, for any method", async () => {
+    for (const method of ["POST", "GET", "DELETE"]) {
+      rawReceived.length = 0;
+      await exchange(
+        proxyPort,
+        `${method} http://raw.example.com/upload HTTP/1.1\r\nHost: raw.example.com\r\nContent-Length: 5\r\n\r\nhello`,
+        "ok",
+      );
+      const { head, body } = upstreamRequest();
+      expect(head, method).toContain("\r\ncontent-length: 5");
+      expect(head, method).not.toContain("transfer-encoding");
+      expect(body, method).toBe("hello");
+    }
+  });
+
+  it("refuses transfer codings it would have to pass through", async () => {
+    const refused = await exchange(
+      proxyPort,
+      "POST http://raw.example.com/ HTTP/1.1\r\nHost: raw.example.com\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+      "Content-Length",
+    );
+    expect(refused).toMatch(/^HTTP\/1\.1 501 JJ Bot egress: transfer-encoding/);
+    // Content-Length together with Transfer-Encoding never gets through.
+    const both = await exchange(
+      proxyPort,
+      "POST http://raw.example.com/ HTTP/1.1\r\nHost: raw.example.com\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
+    );
+    expect(both).toMatch(/^HTTP\/1\.1 400 /);
+    expect(rawReceived).toEqual([]);
   });
 
   afterAll(async () => {

@@ -37,7 +37,8 @@ rather than landing it and announcing it afterwards.
 
 - `networkPolicySchema` (`mode: "allowlist"`): each of `hosts` must be a host name (letters,
   digits, hyphens and dots, IPv4 literals included), optionally prefixed with `*.` (every
-  subdomain of a name with at least two labels, not the name itself) and optionally followed by
+  subdomain of a name with at least two labels whose last label is not numeric, decimal or `0x`
+  hex, so a wildcard never covers an IP address; not the name itself) and optionally followed by
   `:port` (1–65535). No scheme, path, whitespace, IPv6 literal or bare `*`. Entries are trimmed,
   lowercased and deduplicated; an invalid one is a field error at `sandbox.network.hosts.<index>`.
   The pattern is exported as `NETWORK_HOST_PATTERN` and appears as the items' `pattern` in the

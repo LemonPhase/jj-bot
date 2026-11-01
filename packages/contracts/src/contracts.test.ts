@@ -462,6 +462,8 @@ describe("contracts 1.0", () => {
       "registry.npmjs.org/path",
       "*",
       "*.org",
+      "*.8.8",
+      "*.0x8.0x8:443",
       "two words.com",
       "under_score.com",
       "-leading.com",

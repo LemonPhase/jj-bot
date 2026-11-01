@@ -12,8 +12,8 @@ export const networkModeSchema = z.enum(["none", "allowlist", "open"]);
 /**
  * One `allowlist` entry: a host name (letters, digits, hyphens and dots; IPv4
  * literals included), optionally prefixed with `*.` to match every subdomain
- * of a name of at least two labels (not the name itself), optionally followed
- * by `:port`. Without a port an entry allows ports 80 and 443. No scheme,
+ * of a name of at least two labels whose last label is not numeric (not the
+ * name itself, and never an IP address), optionally followed by `:port`. Without a port an entry allows ports 80 and 443. No scheme,
  * path, whitespace, IPv6 literal or bare `*`. Case-insensitive; stored
  * lowercase.
  */
@@ -52,6 +52,17 @@ export const networkHostSchema = z
     {
       message:
         "A wildcard needs at least two labels after it, as in *.example.com.",
+    },
+  )
+  .refine(
+    // The last label must not read as a number (decimal or 0x hex), so a
+    // wildcard can never cover an IP address.
+    (entry) =>
+      !entry.startsWith("*.") ||
+      !/\.(?:\d+|0x[0-9a-f]*)$/.test(entry.replace(/:\d+$/, "")),
+    {
+      message:
+        "A wildcard needs a host name after it, not part of an IP address.",
     },
   );
 
