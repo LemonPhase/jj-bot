@@ -25,6 +25,7 @@ import {
   TOOL_OUTPUT_PREVIEW_LIMIT,
   type Usage,
 } from "@jj/contracts";
+import type { ContextCompactor } from "./compaction";
 import {
   classifyErrorText,
   classifyModelError,
@@ -39,7 +40,13 @@ import {
   type OutputPolicy,
   type ToolCallDetails,
 } from "./tools";
-import type { CollabTool, ExecutorEvent, PiMessage, RunOutcome } from "./types";
+import type {
+  CollabTool,
+  ExecutorEvent,
+  PiMessage,
+  RunOutcome,
+  TranscriptEntry,
+} from "./types";
 
 /** Largest delay a Node timer represents. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -133,7 +140,14 @@ export interface LoopSpec {
   systemPrompt: string;
   tools: AgentTool[];
   collabTools: readonly CollabTool[];
+  /** The conversation after the summary, if any, repaired. */
   transcript: PiMessage[];
+  /**
+   * Context compaction (execution sessions; chat has none). Its summary, if
+   * any, leads the context; when enabled it compacts past the threshold
+   * before a model call, and once after a context overflow before retrying.
+   */
+  compactor?: ContextCompactor;
   /** Entries to persist before the first model call (inputs are added by the loop). */
   pendingEntries?: PiMessage[];
   inputs: UserMessage[];
@@ -145,7 +159,7 @@ export interface LoopSpec {
   /** True once a tool asked to end the run. */
   endRequested(): boolean;
   getSteering(): Promise<UserMessage[]>;
-  persist(entries: PiMessage[]): Promise<void>;
+  persist(entries: TranscriptEntry[]): Promise<void>;
   onEvent(event: ExecutorEvent): Promise<void>;
   /** Replaces the server's secrets in summaries, model text and output previews, before any clip. */
   redact?: (text: string) => string;
@@ -209,6 +223,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     if (pending.length === 0) return;
     const batch = pending.splice(0, pending.length);
     await spec.persist(batch);
+    spec.compactor?.record(batch);
   };
   /** Early exits still persist what the engine already handed over. */
   const exitEarly = async (outcome: RunOutcome): Promise<RunOutcome> => {
@@ -248,6 +263,14 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     );
 
   const produced: AgentMessage[] = [];
+  const { compactor } = spec;
+  const compacting = compactor?.settings.enabled === true;
+  /** The loop's context as of the latest request or turn, for overflow recovery. */
+  let latestContext: AgentContext | undefined;
+  /** A threshold compaction whose summary failed is not tried again this run. */
+  let thresholdOff = false;
+  /** An overflow was compacted and retried, and no response has succeeded since. */
+  let overflowRetried = false;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
   const collabByName = new Map(
@@ -262,6 +285,12 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       case "message_end": {
         const message = event.message;
         produced.push(message);
+        if (
+          message.role === "assistant" &&
+          message.stopReason !== "error" &&
+          message.stopReason !== "aborted"
+        )
+          overflowRetried = false;
         if (message.role === "toolResult") {
           // Already persisted when the tool finished.
           if (answered.has(message.toolCallId)) return;
@@ -408,13 +437,31 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     // Keys come from the registry's env, per call; pi's own env lookup is never relied on.
     getApiKey: () => resolved.getApiKey(),
     toolExecution: "parallel",
-    prepareRequest: async () => {
+    prepareRequest: async (request) => {
       await flush();
+      latestContext = request.context;
+      let update: { context: AgentContext } | undefined;
+      if (
+        compactor &&
+        compacting &&
+        !thresholdOff &&
+        compactor.overThreshold(request.context.messages)
+      ) {
+        const result = await compactor.compact(
+          request.context.messages,
+          signal,
+        );
+        if (result.ok) {
+          latestContext = { ...request.context, messages: result.messages };
+          update = { context: latestContext };
+        } else if (result.reason === "summary_failed") thresholdOff = true;
+      }
       turns++;
       await spec.onEvent({ type: "model.started", model: ref });
-      return undefined;
+      return update;
     },
     finishTurn: async (turn) => {
+      latestContext = turn.context;
       if (signal.aborted) return { action: "end" };
       const wantsMore =
         hasToolCalls(turn.message) && turn.toolResults.length > 0;
@@ -437,18 +484,71 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     spec.systemPrompt,
     tools.map(toToolDeclaration),
   );
+  const summary = compactor?.summaryMessage;
   const context: AgentContext = {
-    messages: [...(system ? [system] : []), ...spec.transcript],
+    messages: [
+      ...(system ? [system] : []),
+      ...(summary ? [summary] : []),
+      ...spec.transcript,
+    ],
     tools,
   };
   const streamFn = retryingStreamFn(spec.streamFn, spec.retry);
+  const overflowed = (message: AssistantMessage) =>
+    message.stopReason === "error" &&
+    classifyModelError(message, resolved.model.contextWindow) ===
+      "context_overflow";
+  /** Why an overflow could not be recovered, added to the error. */
+  let overflowNote: string | undefined;
 
   let loopError: unknown;
   try {
-    if (spec.inputs.length > 0)
-      await runAgentLoop(spec.inputs, context, config, emit, signal, streamFn);
-    else await runAgentLoopContinue(context, config, emit, signal, streamFn);
-    await flush();
+    let resume: AgentContext | undefined;
+    for (;;) {
+      if (resume)
+        await runAgentLoopContinue(resume, config, emit, signal, streamFn);
+      else if (spec.inputs.length > 0)
+        await runAgentLoop(
+          spec.inputs,
+          context,
+          config,
+          emit,
+          signal,
+          streamFn,
+        );
+      else await runAgentLoopContinue(context, config, emit, signal, streamFn);
+      await flush();
+      const failed = produced.at(-1);
+      if (
+        !compactor ||
+        !compacting ||
+        signal.aborted ||
+        failed?.role !== "assistant" ||
+        !overflowed(failed)
+      )
+        break;
+      if (overflowRetried) {
+        overflowNote =
+          "The context still exceeded the model's context window after it was compacted.";
+        break;
+      }
+      // Compact and retry the overflowed call once; it does not count as a turn.
+      overflowRetried = true;
+      const result = await compactor.compact(
+        latestContext?.messages ?? [],
+        signal,
+      );
+      if (!result.ok) {
+        overflowNote =
+          result.reason === "nothing_to_summarize"
+            ? "Compacting the context could not make room: there was nothing older to summarise."
+            : `Compacting the context failed: ${result.error ?? "unknown error"}`;
+        break;
+      }
+      turns = Math.max(0, turns - 1);
+      resume = { ...(latestContext ?? context), messages: result.messages };
+      latestContext = resume;
+    }
   } catch (error) {
     loopError = error;
   } finally {
@@ -480,10 +580,13 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       loopError instanceof Error ? loopError.message : String(loopError);
     return fail(classifyErrorText(message), message);
   }
-  if (last?.stopReason === "error" || last?.stopReason === "aborted")
+  if (last?.stopReason === "error" || last?.stopReason === "aborted") {
+    const error =
+      last.errorMessage || `The model call ended with ${last.stopReason}.`;
     return fail(
       classifyModelError(last, resolved.model.contextWindow),
-      last.errorMessage || `The model call ended with ${last.stopReason}.`,
+      overflowNote ? `${error} ${overflowNote}` : error,
     );
+  }
   return { kind: "ended", finalText };
 }

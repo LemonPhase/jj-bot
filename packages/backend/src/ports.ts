@@ -18,8 +18,10 @@ import type {
 } from "@jj/sandbox/contract";
 
 /**
- * One persisted transcript entry (a pi message), opaque to the engine. It is
- * stored as JSON in `session_entries` and handed back unchanged.
+ * One persisted transcript entry, opaque to the engine: a pi message, or a
+ * compaction checkpoint (`role: "compaction"`) the runtime appends when it
+ * compacts the context. It is stored as JSON in `session_entries` and handed
+ * back unchanged, every entry in order.
  */
 export type PiMessage = object;
 
@@ -85,7 +87,9 @@ export interface RunHooks {
   /**
    * Persists entries in order as session_entries. Called for inputs and steering
    * before the model sees them, for an assistant tool call before the tool runs,
-   * and for each turn's results. A rejection (for example a lost lease) ends the run.
+   * for each turn's results, and for a compaction checkpoint alone (one write,
+   * so it is stored whole or not at all). A rejection (for example a lost
+   * lease) ends the run.
    */
   onTurnComplete(entries: PiMessage[]): void | Promise<void>;
   /** Undelivered inbox items, injected as user messages at the next turn boundary. */
@@ -105,7 +109,10 @@ export interface RunInput {
   sessionId: string;
   runId: string;
   systemPrompt: string;
-  /** Persisted entries, oldest first. The executor repairs dangling tool calls. */
+  /**
+   * Every persisted entry, oldest first. The executor rebuilds the context
+   * from the latest compaction checkpoint and repairs dangling tool calls.
+   */
   transcript: PiMessage[];
   /**
    * New user-role messages: the brief on the first run, results, steering and

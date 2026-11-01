@@ -12,7 +12,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { LocalSandboxDriver, type Sandbox } from "@jj/sandbox";
-import type { ExecutorEvent, PiMessage, RunHooks } from "./types";
+import type { ExecutorEvent, RunHooks, TranscriptEntry } from "./types";
 
 /** pi's faux provider, for tests in other packages that drive the real executor. */
 export {
@@ -99,8 +99,8 @@ export function recordingSandbox(sandbox: Sandbox) {
 /** Hooks that record everything and serve inbox batches in order. */
 export function recordingHooks(inbox: string[][] = []) {
   const events: ExecutorEvent[] = [];
-  const entries: PiMessage[] = [];
-  const persistCalls: PiMessage[][] = [];
+  const entries: TranscriptEntry[] = [];
+  const persistCalls: TranscriptEntry[][] = [];
   const spilled: { text: string; label: string }[] = [];
   let drains = 0;
   const hooks: RunHooks = {
@@ -132,8 +132,11 @@ export function recordingHooks(inbox: string[][] = []) {
   };
 }
 
-export const textOf = (message: Message | undefined): string => {
+export const textOf = (
+  message: Message | TranscriptEntry | undefined,
+): string => {
   if (!message || message.role === "system") return "";
+  if (message.role === "compaction") return message.summary;
   const content = message.content;
   if (typeof content === "string") return content;
   return content

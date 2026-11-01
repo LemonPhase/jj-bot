@@ -28,7 +28,12 @@ import {
   repairTranscript,
   serializeEntry,
 } from "./transcript";
-import type { ExecutorEvent, PiMessage, RunInput } from "./types";
+import type {
+  ExecutorEvent,
+  PiMessage,
+  RunInput,
+  TranscriptEntry,
+} from "./types";
 
 type Faux = ReturnType<typeof fauxProvider>;
 
@@ -72,7 +77,7 @@ const finished = (events: ExecutorEvent[], tool: string) =>
       event.type === "tool.finished" && event.tool === tool,
   );
 
-const toolResults = (messages: PiMessage[]) =>
+const toolResults = (messages: readonly TranscriptEntry[]) =>
   messages.filter(
     (message): message is ToolResultMessage => message.role === "toolResult",
   );
@@ -951,6 +956,8 @@ describe("PiSessionExecutor", () => {
     });
     expect(textOf(results[1])).toBe(NOT_STARTED_TEXT);
     // Nothing is left for a restart to call "outcome unknown".
-    expect(repairTranscript(recorded.entries)).toEqual(recorded.entries);
+    expect(repairTranscript(recorded.entries as PiMessage[])).toEqual(
+      recorded.entries,
+    );
   });
 });

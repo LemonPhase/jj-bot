@@ -1,4 +1,12 @@
-import { Type } from "@earendil-works/pi-ai";
+import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  type Message,
+  type ToolCall,
+  Type,
+} from "@earendil-works/pi-ai";
+import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
@@ -7,9 +15,16 @@ import {
   SCRIPTED_MODEL_REF,
   scriptedCommands,
   scriptedNotesFile,
+  scriptedSummary,
+  scriptedTurn,
 } from "./scripted";
 import { budgets, localSandbox, recordingHooks } from "./test-support";
-import type { CollabTool, ExecutorEvent, PiMessage, RunOutcome } from "./types";
+import type {
+  CollabTool,
+  ExecutorEvent,
+  RunOutcome,
+  TranscriptEntry,
+} from "./types";
 
 let workspace: Awaited<ReturnType<typeof localSandbox>>;
 beforeEach(async () => {
@@ -32,7 +47,7 @@ function harness() {
   const executor = new PiSessionExecutor({
     models: new ModelRegistry({ env: {}, enableScripted: true }),
   });
-  const transcripts = new Map<string, PiMessage[]>();
+  const transcripts = new Map<string, TranscriptEntry[]>();
   const events: ExecutorEvent[] = [];
   const delegations: { bot: string; brief: string }[] = [];
   const completions: string[] = [];
@@ -276,6 +291,80 @@ describe("scripted test model", () => {
     expect(completions[0]).toContain("- Cy: Done. Bob still owes notes-bob.md");
     expect(completions[0]).toContain(
       "- Steering applied: Bob, please also cover the music.",
+    );
+  });
+});
+
+describe("scripted compaction summaries", () => {
+  const brief = 'Collect notes into notes-x.md: run `echo "a, b); c"`.';
+  const write = fauxAssistantMessage(
+    [
+      fauxText("Writing."),
+      fauxToolCall("write", {
+        path: "notes-x.md",
+        content: 'quotes " and ), commas; = signs\nand lines',
+      }),
+    ],
+    { stopReason: "toolUse" },
+  );
+  const writeCall = write.content[1] as ToolCall;
+  const conversation: Message[] = [
+    { role: "user", content: [{ type: "text", text: brief }], timestamp: 1 },
+    write,
+    {
+      role: "toolResult",
+      toolCallId: writeCall.id,
+      toolName: "write",
+      content: [{ type: "text", text: "Wrote notes-x.md." }],
+      isError: false,
+      timestamp: 2,
+    },
+  ];
+  const request = (text: string): Message[] => [
+    { role: "user", content: [{ type: "text", text }], timestamp: 3 },
+  ];
+  const history = (messages: Message[], previous?: string) =>
+    request(
+      `<conversation>\n${serializeConversation(messages)}\n</conversation>\n\n${
+        previous
+          ? `<previous-summary>\n${previous}\n</previous-summary>\n\n`
+          : ""
+      }Summarise.`,
+    );
+
+  it("summarises pi's serialized conversation and resumes from its own summary", () => {
+    const summary = scriptedSummary(history(conversation));
+    expect(summary).toContain("## Goal\nCollect notes into notes-x.md");
+    // Resumed from the summary, the worker moves on to the command instead of rewriting.
+    const turn = scriptedTurn([
+      {
+        role: "system",
+        content: "",
+        toolsAdded: [
+          { name: "write", description: "", parameters: {} },
+          { name: "bash", description: "", parameters: {} },
+        ],
+        timestamp: 0,
+      } as Message,
+      ...request(`Summary:\n${summary}`),
+    ]);
+    expect(turn).toEqual({
+      calls: [{ name: "bash", args: { command: 'echo "a, b); c"' } }],
+    });
+  });
+
+  it("folds an earlier summary into the next one, in order", () => {
+    const earlier = scriptedSummary(history(conversation.slice(0, 1)));
+    const later = scriptedSummary(history(conversation.slice(1), earlier));
+    const whole = scriptedSummary(
+      request(
+        `# Conversation\n${serializeConversation(conversation)}\n\n# Instructions\nSummarise the prefix.`,
+      ),
+    );
+    expect(later).toBeDefined();
+    expect(later).toBe(whole);
+    expect(scriptedSummary(request("Write a summary of penguins."))).toBe(
+      undefined,
     );
   });
 });

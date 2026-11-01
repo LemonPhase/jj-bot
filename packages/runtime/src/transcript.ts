@@ -1,6 +1,6 @@
 import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { z } from "@jj/contracts";
-import type { PiMessage } from "./types";
+import type { PiMessage, TranscriptEntry } from "./types";
 
 /** The tool result recorded for a call whose outcome was lost in a crash. */
 export const INTERRUPTED_BY_RESTART =
@@ -93,8 +93,9 @@ export function appendedRepairs(
 }
 
 /**
- * Transcript entries are pi-ai 1.4 messages stored as JSON. A pi upgrade that
- * changes this shape must migrate stored transcripts or refuse to resume them;
+ * Transcript entries are pi-ai 1.4 messages and JJ compaction entries
+ * (`role: "compaction"`), stored as JSON. A pi upgrade that changes these
+ * shapes must migrate stored transcripts or refuse to resume them;
  * `parseTranscript` refuses entries it does not recognise.
  */
 export const TRANSCRIPT_FORMAT = "pi-ai-1";
@@ -157,15 +158,28 @@ const entrySchema = z.discriminatedUnion("role", [
     isError: z.boolean(),
     timestamp: z.number(),
   }),
+  z.looseObject({
+    role: z.literal("compaction"),
+    summary: z.string(),
+    keptEntries: z.number().int().nonnegative(),
+    tokensBefore: z.number().nonnegative(),
+    readFiles: z.array(z.string()),
+    modifiedFiles: z.array(z.string()),
+    timestamp: z.number(),
+  }),
 ]);
 
-/** A message as JSON for one `session_entries` row. */
-export function serializeEntry(message: PiMessage): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(message)) as Record<string, unknown>;
+/** An entry as JSON for one `session_entries` row. */
+export function serializeEntry(
+  entry: TranscriptEntry,
+): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(entry)) as Record<string, unknown>;
 }
 
-/** Stored rows back to messages, oldest first. Throws `TranscriptFormatError` on an unknown shape. */
-export function parseTranscript(entries: readonly unknown[]): PiMessage[] {
+/** Stored rows back to entries, oldest first. Throws `TranscriptFormatError` on an unknown shape. */
+export function parseTranscript(
+  entries: readonly unknown[],
+): TranscriptEntry[] {
   return entries.map((entry, index) => {
     const parsed = entrySchema.safeParse(entry);
     if (!parsed.success)
@@ -173,6 +187,6 @@ export function parseTranscript(entries: readonly unknown[]): PiMessage[] {
         index,
         parsed.error.issues[0]?.message ?? "invalid",
       );
-    return parsed.data as unknown as PiMessage;
+    return parsed.data as unknown as TranscriptEntry;
   });
 }

@@ -1,5 +1,11 @@
 import type { RetryPolicy } from "@earendil-works/pi-ai";
 import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import {
+  type CompactionOptions,
+  ContextCompactor,
+  compactionSettings,
+  viewTranscript,
+} from "./compaction";
 import { type RetryOptions, redactSecrets, retryPolicy } from "./errors";
 import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
 import {
@@ -21,6 +27,11 @@ export interface PiSessionExecutorOptions {
   outputCapBytes?: number;
   /** Retries of transient provider failures (default: 3, from 1 s, at most 30 s apart). */
   retry?: RetryOptions;
+  /**
+   * Context compaction (default on, with pi's reserve and keep-recent
+   * tokens, clamped to the model's context window).
+   */
+  compaction?: CompactionOptions;
 }
 
 /** Clamps a configured output cap to the contract's preview limit. */
@@ -43,17 +54,22 @@ export class PiSessionExecutor implements RunExecutor {
   private readonly models: ModelRegistry;
   private readonly capBytes: number;
   private readonly retry: RetryPolicy;
+  private readonly compaction: CompactionOptions;
 
   constructor(options: PiSessionExecutorOptions) {
     this.models = options.models;
     this.capBytes = resolveOutputCap(options.outputCapBytes);
     this.retry = retryPolicy(options.retry);
+    this.compaction = options.compaction ?? {};
   }
 
   async run(input: RunInput): Promise<RunOutcome> {
     const { hooks } = input;
-    const transcript = repairTranscript(input.transcript);
-    const repairs = appendedRepairs(input.transcript, transcript);
+    // The context: the latest compaction's summary, then what it kept and
+    // everything after it, repaired.
+    const view = viewTranscript(input.transcript);
+    const transcript = repairTranscript(view.messages);
+    const repairs = appendedRepairs(view.messages, transcript);
     let inputs = input.inputs
       .filter((text) => text.trim().length > 0)
       .map((text) => userMessage(text));
@@ -148,6 +164,27 @@ export class PiSessionExecutor implements RunExecutor {
       }
     }
 
+    const compactor = new ContextCompactor(input.transcript, view, {
+      model: resolved.model,
+      ref: resolved.ref,
+      getApiKey: () => resolved.getApiKey(),
+      streamFn: this.models.streamFn,
+      retry: this.retry,
+      sessionId: input.sessionId,
+      settings: compactionSettings(
+        resolved.model.contextWindow,
+        this.compaction,
+      ),
+      persist: async (entries) => {
+        await hooks.onTurnComplete(entries);
+      },
+      onEvent: async (event) => {
+        await hooks.onEvent(event);
+      },
+      scrub: input.redact ?? ((text) => text),
+      redactError: (text) => redactSecrets(text, [resolved.getApiKey()]),
+    });
+
     // From here runLoop persists repairs and inputs on every path, early exits included.
     const outcome = await runLoop({
       resolved,
@@ -157,6 +194,7 @@ export class PiSessionExecutor implements RunExecutor {
       tools,
       collabTools: input.collaborationTools,
       transcript,
+      compactor,
       pendingEntries: repairs,
       inputs,
       maxTurns: input.budgets.maxTurns,
