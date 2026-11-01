@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/service.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
@@ -12,6 +12,8 @@
   "dependencies": {
     "@jj/contracts": "*",
     "@jj/db": "*",
-    "@jj/runtime": "*"
+    "@jj/runtime": "*",
+    "@jj/sandbox": "*",
+    "drizzle-orm": "0.45.4"
   }
 }
