@@ -1,0 +1,159 @@
+/*
+ * Base layer: reset, body, focus, scrollbars, reduced motion and text utilities.
+ *
+ * Everything sits in the `base` cascade layer, so any unlayered rule (the
+ * legacy styles.css, component CSS) wins over it without specificity tricks.
+ * That keeps the current app's look while it still ships the old stylesheet.
+ */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);
+    color: var(--ink);
+    background: var(--bg-app);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  a {
+    color: var(--ink);
+    text-underline-offset: 3px;
+  }
+
+  a:hover {
+    color: var(--ink-hover);
+  }
+
+  svg {
+    flex: none;
+  }
+
+  /* Brief decision 5: 1px outline in --ink-2 with a 2px offset, keyboard focus only. */
+  :focus-visible {
+    outline: 1px solid var(--ink-2);
+    outline-offset: 2px;
+  }
+
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::placeholder {
+    color: var(--ink-muted);
+    opacity: 1;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+
+  /* Thin, quiet scrollbars in the line colour. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid transparent;
+    border-radius: var(--r-pill);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--line-chip-on);
+  }
+
+  /* SPEC §8: reduced motion turns every animation off. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* Text utilities (SPEC §1.2). */
+  .clamp1 {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  .clamp2,
+  .clamp3 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .clamp2 {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .clamp3 {
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+  }
+
+  .mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Hidden visually, still read by assistive technology. */
+  .visually-hidden {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}

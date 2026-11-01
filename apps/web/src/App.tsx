@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BotsView } from "./components/bots/BotsView";
 import { NewBotModal } from "./components/modals/NewBotModal";
 import { NewTaskModal } from "./components/modals/NewTaskModal";
@@ -11,7 +11,26 @@ type ModalState =
   | { kind: "bot" }
   | { kind: "task"; botIds: string[] };
 
+// Dev-only kit gallery at ?gallery=1. `import.meta.env.DEV` is false in
+// production builds, so the gallery is neither bundled nor reachable there.
+const Gallery = import.meta.env.DEV
+  ? lazy(() => import("./dev/Gallery").then((m) => ({ default: m.Gallery })))
+  : null;
+const showGallery =
+  Gallery !== null &&
+  new URLSearchParams(window.location.search).has("gallery");
+
 export function App() {
+  if (Gallery && showGallery)
+    return (
+      <Suspense fallback={null}>
+        <Gallery />
+      </Suspense>
+    );
+  return <Workspace />;
+}
+
+function Workspace() {
   const { activeTab, loading, error, dismissError, bots, selectedBotId } =
     useWorkspace();
   const [modal, setModal] = useState<ModalState>({ kind: "none" });
