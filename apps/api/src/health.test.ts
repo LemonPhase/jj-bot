@@ -1,12 +1,20 @@
 // Liveness and readiness: database, migrations, the embedded worker's
 // heartbeat and at least one available sandbox driver.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Engine } from "@jj/backend";
+import { migrationsFolder } from "@jj/db";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "./app";
 import { OPEN_TIMEOUT, quietLogger, type TestApp, testApp } from "./testing";
 
 const json = (response: Response): Promise<any> => response.json();
+const shipped = (
+  JSON.parse(
+    readFileSync(join(migrationsFolder, "meta", "_journal.json"), "utf8"),
+  ) as { entries: unknown[] }
+).entries.length;
 let t: TestApp;
 let idle: TestApp;
 
@@ -38,7 +46,7 @@ describe("GET /health/ready", () => {
       status: "ready",
       checks: {
         database: { ok: true },
-        migrations: { ok: true, applied: 1, expected: 1 },
+        migrations: { ok: true, applied: shipped, expected: shipped },
         worker: { ok: true, embedded: true, activeJobs: 0 },
         drivers: { ok: true, available: ["local"], unavailable: [] },
       },
@@ -102,7 +110,7 @@ describe("GET /health/ready", () => {
     expect((await json(pending)).checks.migrations).toEqual({
       ok: false,
       applied: 0,
-      expected: 1,
+      expected: shipped,
     });
 
     const engine = {

@@ -14,5 +14,8 @@
     "@jj/db": "*",
     "@jj/sandbox": "*",
     "drizzle-orm": "0.45.4"
+  },
+  "devDependencies": {
+    "@jj/runtime": "*"
   }
 }

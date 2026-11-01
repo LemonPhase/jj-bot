@@ -1,6 +1,6 @@
 # Engine (`@jj/backend`)
 
-The JJ Bot engine: domain services (bots, memory, profiles, tasks, messages, chat, artifacts, views) and the worker (job loop, per-task sandboxes, run lifecycle, wakes, steering, stop, recovery, chat replies) over `@jj/db`. `apps/api` is a thin HTTP and SSE layer over it. The legacy JSONB-store `BackendService` in `src/legacy/` is re-exported unchanged until `apps/api` switches over.
+The JJ Bot engine: domain services (bots, memory, profiles, tasks, messages, chat, artifacts, views) and the worker (job loop, per-task sandboxes, run lifecycle, wakes, steering, stop, recovery, chat replies) over `@jj/db`. `apps/api` is a thin HTTP and SSE layer over it.
 
 ## Wiring
 
