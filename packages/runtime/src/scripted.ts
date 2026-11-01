@@ -127,6 +127,17 @@ const slug = (name: string) =>
 export const scriptedNotesFile = (botName: string) =>
   `notes-${slug(botName)}.md`;
 
+/**
+ * Commands a brief quotes after "run", as in run `sleep 20`, in order. A
+ * scripted worker runs each once with bash after writing its notes, so a
+ * goal can give a run a slow or failing step deterministically.
+ */
+export function scriptedCommands(brief: string): string[] {
+  return [...brief.matchAll(/\brun `([^`\n]+)`/gi)]
+    .map((match) => match[1]?.trim() ?? "")
+    .filter(Boolean);
+}
+
 /** A worker writes the notes file its brief names, else one named after the brief. */
 const notesFileFor = (brief: string) =>
   /\bnotes-[a-z0-9-]+\.md\b/.exec(brief)?.[0] ??
@@ -399,6 +410,15 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
       text: `I have no file tools, so here is my piece: ${clip(brief, 500)}`,
     };
   }
+  const requested = scriptedCommands(brief).find(
+    (command) =>
+      !calls.some(
+        ({ call }) =>
+          call.name === "bash" && call.arguments.command === command,
+      ),
+  );
+  if (requested && tools.has("bash"))
+    return { calls: [{ name: "bash", args: { command: requested } }] };
   if (!listed && tools.has("bash"))
     return { calls: [{ name: "bash", args: { command: "ls -la" } }] };
 
