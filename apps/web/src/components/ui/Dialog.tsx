@@ -19,10 +19,15 @@ const FOCUSABLE = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+/** Rendered and not hidden; falls back to the `hidden` attribute where `checkVisibility` is missing. */
+const isVisible = (element: HTMLElement): boolean =>
+  typeof element.checkVisibility === "function"
+    ? element.checkVisibility()
+    : !element.closest("[hidden]");
+
 function focusableIn(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (element) =>
-      !element.hasAttribute("hidden") && element.offsetParent !== null,
+    isVisible,
   );
 }
 
@@ -72,6 +77,8 @@ export function Dialog({
   const pressStartedOnBackdrop = useRef(false);
   const onCloseRef = useRef(onClose);
   const openRef = useRef(open);
+  /** Closes this component started; their `close` events are not user closes. */
+  const closesInFlight = useRef(0);
   const titleId = useId();
   const descriptionId = useId();
 
@@ -100,12 +107,24 @@ export function Dialog({
       panelRef.current;
     target?.focus();
     return () => {
-      if (dialog.open) dialog.close();
+      if (dialog.open) {
+        if (typeof dialog.close === "function") {
+          closesInFlight.current += 1;
+          dialog.close();
+        } else dialog.removeAttribute("open");
+      }
       previous?.focus();
     };
   }, [open, initialFocusRef]);
 
-  const trapTab = (event: KeyboardEvent<HTMLDialogElement>) => {
+  const onKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
+    if (event.key === "Escape") {
+      // Handled here so the parent stays in control; preventing the default
+      // also stops the browser's own cancel-and-close.
+      event.preventDefault();
+      onCloseRef.current();
+      return;
+    }
     if (event.key !== "Tab" || !panelRef.current) return;
     const items = focusableIn(panelRef.current);
     const first = items[0];
@@ -138,15 +157,19 @@ export function Dialog({
         event.preventDefault();
         onCloseRef.current();
       }}
-      onClose={(event) => {
-        // `close` fires asynchronously. A dialog that is open again by then was
-        // reopened after our own effect cleanup closed it (StrictMode mounts a
-        // dialog that starts open twice), so that event is stale.
-        if (event.currentTarget.open) return;
-        // The browser closed it anyway (some Escape paths cannot be cancelled).
+      onClose={() => {
+        // The `close` event arrives in a later task. Ignore the ones our own
+        // cleanup caused (StrictMode runs effects twice, so a close can land
+        // after the dialog has reopened) and any that arrive while it is open.
+        if (closesInFlight.current > 0) {
+          closesInFlight.current -= 1;
+          return;
+        }
+        if (dialogRef.current?.open) return;
+        // Otherwise the browser closed it (some platform paths cannot be cancelled).
         if (openRef.current) onCloseRef.current();
       }}
-      onKeyDown={trapTab}
+      onKeyDown={onKeyDown}
       onMouseDown={(event) => {
         pressStartedOnBackdrop.current = event.target === event.currentTarget;
       }}
@@ -176,6 +199,8 @@ export function Dialog({
             <IconButton
               data-dialog-close=""
               label="Close"
+              // The panel scrolls (overflow: auto), which would clip a tooltip.
+              tooltip={false}
               icon={<Icon name="close" size={16} />}
               onClick={() => onCloseRef.current()}
             />

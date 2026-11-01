@@ -66,6 +66,7 @@ export function TaskList({ labelledBy }: { labelledBy: string }) {
               layout="stack"
               tabIndex={index === stop ? 0 : -1}
               selected={task.id === selectedTaskId}
+              aria-current={task.id === selectedTaskId ? "page" : undefined}
               muted={task.status === "completed"}
               onClick={() => navigate({ name: "tasks", taskId: task.id })}
               title={task.title}

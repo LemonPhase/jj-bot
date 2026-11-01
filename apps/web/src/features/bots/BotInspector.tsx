@@ -2,7 +2,9 @@ import type { Bot } from "@jj/contracts";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { isApiError } from "../../api/client";
 import {
+  Avatar,
   Button,
+  buttonClass,
   Dialog,
   ErrorBanner,
   Icon,
@@ -14,9 +16,10 @@ import {
   StatusTag,
   Textarea,
 } from "../../components/ui";
+import { appearanceSummary } from "../../lib/appearance";
 import { formatMessageTime } from "../../lib/format";
 import { useWorkspace } from "../../state/WorkspaceContext";
-import { taskHref } from "../shell/router";
+import { studioHref, taskHref } from "../shell/router";
 import { navigate } from "../shell/useRoute";
 import { DEFAULT_OPTION, modelOptions, profileOptions } from "./botOptions";
 import { useModels } from "./useModels";
@@ -66,11 +69,46 @@ export function BotInspector({
           onClick={onClose}
         />
       </div>
+      <Appearance bot={bot} />
       <DetailsForm bot={bot} />
       <MemoryForm bot={bot} fieldId={memoryId} />
       <ActiveTasks bot={bot} focusId={tasksId} />
       <ArchiveSection bot={bot} />
     </Panel>
+  );
+}
+
+/** The bot's look, edited in Bot Studio (`#/studio/:botId`). */
+function Appearance({ bot }: { bot: Bot }) {
+  const labelId = useId();
+  return (
+    <section className="inspector-section" aria-labelledby={labelId}>
+      <SectionLabel
+        as="h3"
+        id={labelId}
+        tracking="part"
+        className="inspector-heading"
+      >
+        Appearance
+      </SectionLabel>
+      <div className="inspector-look">
+        <Avatar
+          appearance={bot.appearance}
+          name={bot.name}
+          size={36}
+          animate={false}
+          decorative
+        />
+        <span className="inspector-look__summary">
+          {appearanceSummary(bot.appearance)}
+        </span>
+      </div>
+      <div className="inspector-actions">
+        <a className={buttonClass()} href={studioHref(bot.id)}>
+          Edit in Studio
+        </a>
+      </div>
+    </section>
   );
 }
 

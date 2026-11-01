@@ -7,6 +7,7 @@ import {
   SectionLabel,
   Segmented,
   ThemeToggle,
+  Tooltip,
   Wordmark,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
@@ -86,15 +87,17 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
       <div className="shell-footer">
         <ModeBadge kind={badge.kind} title={badge.title} />
         <div className="shell-footer__actions">
-          <a
-            className="ui-icon-btn"
-            href={SETTINGS_HREF}
-            aria-label="Settings"
-            title="Settings"
-            aria-current={route.name === "settings" ? "page" : undefined}
-          >
-            <Icon name="settings" size={16} />
-          </a>
+          {/* The label repeats the accessible name, so the tip does not describe. */}
+          <Tooltip content="Settings" placement="auto" describe={false}>
+            <a
+              className="ui-icon-btn"
+              href={SETTINGS_HREF}
+              aria-label="Settings"
+              aria-current={route.name === "settings" ? "page" : undefined}
+            >
+              <Icon name="settings" size={16} />
+            </a>
+          </Tooltip>
           <ThemeToggle />
         </div>
       </div>

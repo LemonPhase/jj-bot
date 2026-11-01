@@ -81,6 +81,40 @@ export function applyThemePreference(
   else root.setAttribute("data-theme", preference);
 }
 
+/**
+ * Browser-chrome colour per theme (`<meta name="theme-color">`): the page
+ * ground, `--bg-app`. index.html repeats these in its pre-paint script.
+ */
+export const THEME_COLOURS: Readonly<Record<ResolvedTheme, string>> = {
+  light: "#f7f7f8",
+  dark: "#0b0b0d",
+};
+
+/**
+ * Points the theme-color metas at the chosen theme, or back at their
+ * `prefers-color-scheme` media for "system".
+ */
+export function syncThemeColorMeta(
+  preference: ThemePreference,
+  doc: Pick<Document, "querySelectorAll"> | null = typeof document ===
+  "undefined"
+    ? null
+    : document,
+): void {
+  if (!doc) return;
+  for (const meta of doc.querySelectorAll<HTMLMetaElement>(
+    'meta[name="theme-color"]',
+  )) {
+    const forTheme: ResolvedTheme =
+      preference === "system"
+        ? (meta.getAttribute("media") ?? "").includes("dark")
+          ? "dark"
+          : "light"
+        : preference;
+    meta.setAttribute("content", THEME_COLOURS[forTheme]);
+  }
+}
+
 function systemPrefersDark(): boolean {
   try {
     return (
@@ -107,6 +141,7 @@ let snapshot: ThemeSnapshot = (() => {
   };
 })();
 applyThemePreference(snapshot.preference);
+syncThemeColorMeta(snapshot.preference);
 
 function update(preference: ThemePreference): void {
   const resolved = resolveTheme(preference, systemPrefersDark());
@@ -114,6 +149,7 @@ function update(preference: ThemePreference): void {
     return;
   snapshot = { preference, resolved };
   applyThemePreference(preference);
+  syncThemeColorMeta(preference);
   for (const listener of listeners) listener();
 }
 
