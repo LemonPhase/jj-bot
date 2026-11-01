@@ -9,8 +9,12 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@jj/runtime": "*",
-    "@jj/backend": "*",
-    "@jj/db": "*"
+    "@jj/api": "*",
+    "@jj/runtime": "*"
+  },
+  "devDependencies": {
+    "@jj/db": "*",
+    "@types/pg": "8.23.1",
+    "pg": "8.23.1"
   }
 }
