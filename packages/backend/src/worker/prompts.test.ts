@@ -82,7 +82,7 @@ describe("prompts", () => {
 
   it("tell the coordinator not to delegate assigned work again", () => {
     expect(coordinator).toContain(
-      "Never delegate work that is already assigned (`delegate` lists your open delegations)",
+      "Never delegate work that is already assigned (each `delegate` result and each result you receive lists your open delegations)",
     );
   });
 

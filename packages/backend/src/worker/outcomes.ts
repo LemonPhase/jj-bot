@@ -26,6 +26,7 @@ import {
   updateTask,
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
+import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import {
   closeOpenTools,
@@ -99,7 +100,7 @@ export async function failSessionTx(
       parent,
       {
         kind: "result",
-        text: `Failure from ${name} (session ${failed.id}):\n${error}`,
+        text: `Failure from ${name} (session ${failed.id}):\n${error}\n\n${await openDelegationsText(tx, parent)}`,
         sourceMessageId: message.id,
       },
       { wake: true, ctx },
@@ -281,7 +282,7 @@ async function endTurn(
     parent,
     {
       kind: "result",
-      text: `Result from ${rc.bot.name} (session ${session.id}):\n${message.text}${stale}`,
+      text: `Result from ${rc.bot.name} (session ${session.id}):\n${message.text}${stale}\n\n${await openDelegationsText(tx, parent)}`,
       sourceMessageId: message.id,
     },
     { wake: true, ctx },

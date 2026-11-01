@@ -203,7 +203,7 @@ describe("orchestration", () => {
     expect(view.task.result).toBe("both parts");
   });
 
-  it("lists the caller's open delegations in delegate's result and description, and refuses an exact duplicate", async () => {
+  it("lists open delegations in delegate's result and in the results that wake the caller, keeps tool definitions identical, and refuses an exact duplicate", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
     const [ada, bob, cy] = team.names as [string, string, string];
@@ -277,21 +277,34 @@ describe("orchestration", () => {
       ),
     );
     expect(view.sessions).toHaveLength(3);
-    const descriptions = executor.inputs
-      .filter((input) => promptBot(input.systemPrompt) === ada)
-      .map(
-        (input) =>
-          input.collaborationTools.find((tool) => tool.name === "delegate")
-            ?.description ?? "",
-      );
-    expect(descriptions[0]).toContain("Your open delegations: none.");
-    expect(descriptions[0]).toContain(
+    const calls = executor.inputs.filter(
+      (input) => promptBot(input.systemPrompt) === ada,
+    );
+    // Tools lead the prompt cache prefix: every run sends the same definitions.
+    const definitions = calls.map((input) =>
+      JSON.stringify(
+        input.collaborationTools.map(({ name, description, parameters }) => ({
+          name,
+          description,
+          parameters,
+        })),
+      ),
+    );
+    expect(definitions.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(definitions).size).toBe(1);
+    expect(definitions[0]).toContain(
       "Never delegate work that is already assigned",
     );
-    expect(descriptions[1]).toMatch(
-      new RegExp(`\n- ${cy}: Write cy\\.txt \\((queued|running)\\)$`),
+    expect(definitions[0]).not.toContain("Write bob.txt");
+    // Bob's result, which woke the coordinator, lists what is still open.
+    const woke = calls[1]?.inputs.find((text) =>
+      text.startsWith(`Result from ${bob} (session`),
     );
-    expect(descriptions[1]).not.toContain(`- ${bob}: Write bob.txt`);
+    expect(woke).toMatch(
+      new RegExp(
+        `\n\nYour open delegations \\(assigned, not yet reported\\):\n- ${cy}: Write cy\\.txt \\((queued|running)\\)$`,
+      ),
+    );
   });
 
   it("tells the coordinator when a result that arrives after complete_task sets the completion aside", async () => {

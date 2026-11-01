@@ -90,7 +90,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
         ? [
             "- Split the goal into bounded pieces and give each to a teammate with `delegate`: say what to produce, the files it owns, and what to report back.",
             "- Files: every brief names the files that worker owns, and a file has one owner at a time. Workers edit only the files in their brief and may read any other. Files several pieces need (such as package.json or a shared README) are yours: edit them after the results arrive.",
-            "- Delegate each piece once. Never delegate work that is already assigned (`delegate` lists your open delegations); wait for its result, or `message` that teammate.",
+            "- Delegate each piece once. Never delegate work that is already assigned (each `delegate` result and each result you receive lists your open delegations); wait for its result, or `message` that teammate.",
             "- After delegating, end your turn to wait. Each result arrives as a message; react to each as it comes: check it against the goal, follow up, or delegate again.",
           ]
         : ["- Do the work yourself with your coding tools."]),

@@ -3,7 +3,7 @@
 // scripted test model reads. Refusals are tool errors the model can adapt to,
 // never exceptions.
 import { isFinishedStatus } from "@jj/contracts";
-import { type SessionRow, sessions } from "@jj/db";
+import { bots, type Executor, type SessionRow, sessions } from "@jj/db";
 import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import type { CollabTool, CollabToolResult } from "../ports";
 import { deliver, postMessage } from "../services/messages";
@@ -53,13 +53,22 @@ function briefSummary(brief: string): string {
   return line.length <= 80 ? line : `${line.slice(0, 79).trimEnd()}…`;
 }
 
-/** The caller's delegations that have not reported yet: bot, brief summary and status. */
-export function describeOpenDelegations(
-  open: readonly Pick<SessionRow, "botId" | "brief" | "status">[],
-  team: readonly Teammate[],
-): string {
+/**
+ * A session's delegations that have not reported yet: bot, brief summary and
+ * status. It goes in tool results and result deliveries, never in a tool
+ * description, which must stay byte-identical for the prompt cache.
+ */
+export async function openDelegationsText(
+  exec: Executor,
+  session: SessionRow,
+): Promise<string> {
+  const open = await openChildren(exec, session);
   if (open.length === 0) return "Your open delegations: none.";
-  const names = new Map(team.map((member) => [member.botId, member.name]));
+  const rows = await exec
+    .select({ id: bots.id, name: bots.name })
+    .from(bots)
+    .where(inArray(bots.id, [...new Set(open.map((child) => child.botId))]));
+  const names = new Map(rows.map((row) => [row.id, row.name]));
   return [
     "Your open delegations (assigned, not yet reported):",
     ...open.map(
@@ -69,15 +78,11 @@ export function describeOpenDelegations(
   ].join("\n");
 }
 
-function delegateTool(
-  rc: RunContext,
-  team: readonly Teammate[],
-  open: readonly SessionRow[],
-): CollabTool {
+function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
   const { ctx } = rc.deps;
   return {
     name: "delegate",
-    description: `Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Name the files the teammate owns in the brief. Never delegate work that is already assigned: while a delegation is open, wait for its result, or \`message\` that teammate.\nTeammates:\n${describeTeam(team)}\n${describeOpenDelegations(open, team)}`,
+    description: `Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Name the files the teammate owns in the brief. Never delegate work that is already assigned: while a delegation is open, wait for its result, or \`message\` that teammate. This tool's result, and each result you receive, lists your open delegations.\nTeammates:\n${describeTeam(team)}`,
     parameters: {
       type: "object",
       properties: {
@@ -177,9 +182,8 @@ function delegateTool(
           },
           { wake: true, ctx },
         );
-        const open = await openChildren(tx, rc.session);
         return {
-          text: `Delegated to ${assignee.name} (session ${child.id}).\n${describeOpenDelegations(open, team)}\nEach result arrives as a message. Do not delegate work that is already assigned; end your turn to wait when you have nothing else to do meanwhile.`,
+          text: `Delegated to ${assignee.name} (session ${child.id}).\n${await openDelegationsText(tx, rc.session)}\nEach result arrives as a message. Do not delegate work that is already assigned; end your turn to wait when you have nothing else to do meanwhile.`,
         };
       });
     },
@@ -351,21 +355,21 @@ function completeTaskTool(rc: RunContext): CollabTool {
 }
 
 /**
- * The collaboration tools for one executor call. `delegate` is omitted when
- * nobody can be delegated to; its description lists `open`, the caller's
- * delegations that have not reported yet.
+ * The collaboration tools for a run. Their names, descriptions and schemas
+ * depend only on the session and its task's roster, so every run of a
+ * session sends identical definitions (tools lead the prompt cache prefix).
+ * `delegate` is omitted when nobody can be delegated to.
  */
 export function sessionTools(
   rc: RunContext,
   team: readonly Teammate[],
-  open: readonly SessionRow[] = [],
 ): CollabTool[] {
   const tools: CollabTool[] = [];
   if (
     team.length > 0 &&
     rc.session.depth < rc.deps.ctx.config.maxDelegationDepth
   )
-    tools.push(delegateTool(rc, team, open));
+    tools.push(delegateTool(rc, team));
   if (team.length > 0) tools.push(messageTool(rc, team));
   if (rc.session.parentSessionId === null) tools.push(completeTaskTool(rc));
   return tools;
