@@ -31,6 +31,17 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.0.1 — 2026-11-01 — Remove the legacy entry points
+
+**Changed by:** backend · **Compatibility:** clarifying
+
+- `@jj/contracts/legacy` and `@jj/contracts/legacy/backend` are removed, as 1.0.0 planned: nothing
+  imported them once `apps/api` and `apps/worker` ran on the engine. No schema or wire shape
+  changes.
+
+**Action required (frontend):** none.
+**Action required (backend):** none.
+
 ## 1.0.0 — 2026-10-31 — Revamp contracts
 
 **Changed by:** backend & frontend ([#11](https://github.com/LemonPhase/jj-bot/issues/11)) · **Compatibility:** breaking

@@ -178,8 +178,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.0.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.0.0");
+  it("is version 1.0.1", () => {
+    expect(CONTRACT_VERSION).toBe("1.0.1");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {

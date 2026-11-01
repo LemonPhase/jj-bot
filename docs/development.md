@@ -102,7 +102,7 @@ Schema: opening the database applies the SQL migrations in `packages/db/migratio
 
 ## Endpoints
 
-The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.0); the schemas are in `packages/contracts`.
+The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.1); the schemas are in `packages/contracts`.
 
 | Method | Path                                           | Answer                                                      |
 | ------ | ---------------------------------------------- | ----------------------------------------------------------- |
