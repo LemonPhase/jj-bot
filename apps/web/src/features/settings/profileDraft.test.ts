@@ -27,7 +27,7 @@ const schema = z.toJSONSchema(sandboxSpecSchema, { io: "input" }) as Record<
   unknown
 >;
 const dockerCaps: DriverCapabilities = {
-  networkModes: ["none", "open"],
+  networkModes: ["none", "allowlist", "open"],
   resourceLimits: true,
   filesystemIsolation: true,
   exposePort: false,
