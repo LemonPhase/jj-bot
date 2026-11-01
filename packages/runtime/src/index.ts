@@ -1,11 +1,8 @@
 // The pi agent runtime: model registry, session executor, chat responder,
-// transcript helpers and the scripted test model. `./legacy/index` is the
-// Gemini-era executor and router, re-exported unchanged for the old backend
-// until the engine rewrite deletes it.
+// transcript helpers and the scripted test model.
 export * from "./chat";
 export * from "./errors";
 export * from "./executor";
-export * from "./legacy/index";
 export { NOT_STARTED_TEXT } from "./loop";
 export * from "./models";
 export * from "./proxy";

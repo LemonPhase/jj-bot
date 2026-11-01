@@ -1,51 +1,43 @@
-import { serve } from "@hono/node-server";
-import { BackendService } from "@jj/backend";
-import { openStore } from "@jj/db";
-import { GeminiBotRouter, GeminiSessionExecutor } from "@jj/runtime";
-import { createApp } from "./app";
+// The API process: boots the server, and shuts it down gracefully on SIGINT
+// or SIGTERM. A second signal, or a shutdown that hangs, exits at once.
+import { ConfigError } from "./config";
+import { startServer } from "./server";
 
-const port = Number(process.env.API_PORT ?? 3001);
-if (!Number.isInteger(port) || port < 1 || port > 65535)
-  throw new Error("API_PORT must be a valid port.");
-const hostname = process.env.API_HOST ?? "127.0.0.1";
-if (
-  !["127.0.0.1", "localhost", "::1"].includes(hostname) &&
-  !process.env.API_TOKEN
-)
-  throw new Error("API_TOKEN is required when listening beyond loopback.");
-const mode = process.env.JJ_DATABASE_MODE === "pglite" ? "pglite" : "postgres";
-const store = await openStore({
-  mode,
-  path: process.env.JJ_DATABASE_PATH ?? "../../.jj-data",
-  connectionString:
-    process.env.DATABASE_URL ??
-    "postgresql://jj:jj_local@localhost:5433/jj_bot",
-});
-const apiKey = process.env.GEMINI_API_KEY?.trim() ?? "";
-const model = process.env.GEMINI_MODEL?.trim() ?? "";
-const service = new BackendService({
-  store,
-  executor: new GeminiSessionExecutor({ apiKey, model }),
-  router: new GeminiBotRouter({ apiKey, model }),
-  concurrency: Number(process.env.JJ_CONCURRENCY ?? 3),
-});
-if (process.env.JJ_EMBED_WORKER !== "false") service.start();
-const app = createApp({
-  agentUrl: process.env.AGENT_URL ?? `http://127.0.0.1:${port}/api/agent`,
-  modelConfigured: Boolean(apiKey && model),
-  service,
-  apiToken: process.env.API_TOKEN,
-});
-const server = serve({ fetch: app.fetch, port, hostname }, () =>
-  console.info(`JJ backend listening at http://${hostname}:${port} (${mode})`),
-);
-let stopping = false;
-async function shutdown() {
-  if (stopping) return;
-  stopping = true;
-  server.close();
-  await service.stop();
-  await store.close();
+const SHUTDOWN_TIMEOUT_MS = 20_000;
+
+let server: Awaited<ReturnType<typeof startServer>>;
+try {
+  server = await startServer();
+} catch (error) {
+  if (error instanceof ConfigError)
+    console.error(`JJ Bot API: ${error.message}`);
+  else
+    console.error(
+      "JJ Bot API failed to start:",
+      error instanceof Error ? error.message : error,
+    );
+  process.exit(1);
 }
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
+
+let stopping = false;
+function shutdown(signal: string) {
+  if (stopping) {
+    console.error(`[api] ${signal} again: exiting now.`);
+    process.exit(1);
+  }
+  stopping = true;
+  console.info(`[api] ${signal}: shutting down.`);
+  setTimeout(() => {
+    console.error("[api] Shutdown timed out: exiting.");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+  server.close().then(
+    () => process.exit(0),
+    (error: unknown) => {
+      console.error("[api] Shutdown failed:", error);
+      process.exit(1);
+    },
+  );
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));

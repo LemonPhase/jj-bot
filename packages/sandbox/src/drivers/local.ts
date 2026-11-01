@@ -44,7 +44,9 @@ import {
  * boundary.
  *
  * What it does: builds each command's environment from scratch, so commands
- * do not *inherit* host variables or credentials; contains `fs` paths and
+ * do not *inherit* host variables or credentials, with
+ * `GIT_CEILING_DIRECTORIES` set to the root so git never finds a repository
+ * above it (such as a checkout the root sits in); contains `fs` paths and
  * `cwd` to the workspace, checked on real paths per call so a symlink cannot
  * lead the fs API outside (best effort against a command swapping links
  * concurrently); keeps workspaces in separate directories under a fixed root,
@@ -81,6 +83,7 @@ const DRAIN_MS = 250;
 /** How often finished commands' leftover process groups are checked, so a reused group id is never signalled. */
 const PRUNE_INTERVAL_MS = 1_000;
 const MARKER = "JJ_SANDBOX_EXEC";
+const GIT_CEILING = "GIT_CEILING_DIRECTORIES";
 const UNSUPPORTED_PLATFORM = "The local sandbox driver does not run on Windows";
 /** Default workspace root, under the OS temporary directory. */
 const DEFAULT_ROOT_NAME = "jj-sandbox";
@@ -430,6 +433,8 @@ class LocalSandbox implements Sandbox {
 
   constructor(
     readonly workspaceDir: string,
+    /** The driver root; git never searches above it. */
+    private readonly root: string,
     private readonly spec: SandboxSpec,
     private readonly secrets: Record<string, string>,
     private readonly shell: string,
@@ -469,7 +474,7 @@ class LocalSandbox implements Sandbox {
     marker: string,
     extra?: Record<string, string>,
   ): Record<string, string> {
-    return {
+    const env: Record<string, string> = {
       PATH: DEFAULT_PATH,
       HOME: this.workspaceDir,
       TMPDIR: join(this.workspaceDir, ".tmp"),
@@ -477,9 +482,16 @@ class LocalSandbox implements Sandbox {
       ...this.spec.env,
       ...this.secrets,
       ...extra,
-      // Last, so nothing overrides the tag that release and interruption rely on.
-      [MARKER]: marker,
     };
+    // git never searches above the root, so a workspace without a repository
+    // of its own never reaches one that encloses the root (such as a checkout
+    // the root sits in). Ceilings a spec adds are kept after it.
+    env[GIT_CEILING] = [this.root, env[GIT_CEILING]]
+      .filter((entry) => entry)
+      .join(":");
+    // Last, so nothing overrides the tag that release and interruption rely on.
+    env[MARKER] = marker;
+    return env;
   }
 
   async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
@@ -731,7 +743,8 @@ export class LocalSandboxDriver implements SandboxDriver {
     const key = assertWorkspaceKey(request.workspaceKey);
     request.signal?.throwIfAborted();
     // Namespaced by mode, so the same key in two modes never shares files.
-    const parent = join(await this.root(), spec.workspace);
+    const root = await this.root();
+    const parent = join(root, spec.workspace);
     await mkdir(parent, { recursive: true });
     const ephemeral = spec.workspace === "ephemeral";
     const directory = ephemeral
@@ -740,6 +753,7 @@ export class LocalSandboxDriver implements SandboxDriver {
     await mkdir(directory, { recursive: true });
     return new LocalSandbox(
       await realpath(directory),
+      root,
       spec,
       request.secrets ?? {},
       this.options.shell ?? SHELL,

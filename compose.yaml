@@ -1,5 +1,6 @@
-# Local PostgreSQL for the default backend mode.
-# Run with `docker compose up -d postgres`; use JJ_DATABASE_MODE=pglite to run without Docker.
+# Local PostgreSQL. Run with `docker compose up -d postgres` and set
+# DATABASE_URL=postgresql://jj:jj_local@localhost:5433/jj_bot; without
+# DATABASE_URL the API uses embedded PGlite and needs no Docker.
 name: jj-bot
 
 services:

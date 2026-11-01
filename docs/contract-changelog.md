@@ -110,7 +110,7 @@ produces, up to `RECORD_TEXT_LIMIT` (200000), and an empty final turn is stored 
 | Method   | Path                                           | Body → response                                                   |
 | -------- | ---------------------------------------------- | ----------------------------------------------------------------- |
 | `GET`    | `/health`                                      | liveness                                                          |
-| `GET`    | `/health/ready`                                | readiness: database and sandbox drivers                           |
+| `GET`    | `/health/ready`                                | readiness: database, migrations, worker heartbeat, drivers        |
 | `GET`    | `/api/bootstrap`                               | → `bootstrapSchema`                                               |
 | `GET`    | `/api/stream`                                  | SSE of `workspaceHintSchema`; not resumable                       |
 | `GET`    | `/api/bots`                                    | → `{ bots: Bot[] }`; archived bots are hidden                     |

@@ -45,6 +45,12 @@ export interface Worker {
   abandon(): Promise<void>;
   /** Jobs currently running in this worker. */
   readonly activeJobs: number;
+  /**
+   * When the job loop last finished a claim pass; null before `start()` and
+   * after a stop. A stale value means the loop is stuck or the database is
+   * failing, so readiness checks use it as the worker's heartbeat.
+   */
+  readonly lastPollAt: Date | null;
 }
 
 export function createWorker(
@@ -71,6 +77,7 @@ export function createWorker(
   let pumping = false;
   let again = false;
   let crashing = false;
+  let lastPollAt: Date | null = null;
 
   const abortWhere = (
     match: (job: ClaimedJob) => boolean,
@@ -159,6 +166,7 @@ export function createWorker(
           if (jobs.length === 0) break;
         }
       } while (again && !stopping);
+      if (!stopping) lastPollAt = new Date();
     } catch (error) {
       ctx.logger.warn("Claiming jobs failed; retrying at the next poll", {
         error: errorMessage(error),
@@ -276,6 +284,7 @@ export function createWorker(
     stopping = true;
     crashing = reason === "crash";
     started = false;
+    lastPollAt = null;
     for (const timer of timers.splice(0)) clearInterval(timer);
     for (const unsubscribe of unsubscribers.splice(0))
       await unsubscribe().catch(() => {});
@@ -288,6 +297,9 @@ export function createWorker(
   return {
     get activeJobs() {
       return active.size;
+    },
+    get lastPollAt() {
+      return lastPollAt;
     },
     async start() {
       if (started) return;

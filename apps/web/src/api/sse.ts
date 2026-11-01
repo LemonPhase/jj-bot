@@ -39,8 +39,10 @@ export type SseConnect = (
 /** The part of `EventSource` the client uses, so tests can provide their own. */
 export interface EventSourceLike {
   readonly readyState: number;
-  onopen: ((event: Event) => unknown) | null;
-  onerror: ((event: Event) => unknown) | null;
+  // The client ignores the event argument. `never` lets both the DOM's
+  // EventSource and Node's (whose error event is an ErrorEvent) fit.
+  onopen: ((event: never) => unknown) | null;
+  onerror: ((event: never) => unknown) | null;
   addEventListener(type: string, listener: (event: MessageEvent) => void): void;
   close(): void;
 }
