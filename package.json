@@ -11,7 +11,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "concurrently --kill-others -n api,web,worker -c cyan,green,yellow \"npm run dev -w @jj/api\" \"npm run dev -w @jj/web\" \"npm run dev -w @jj/worker\"",
+    "dev": "concurrently --kill-others -n api,web -c cyan,green \"npm run dev -w @jj/api\" \"npm run dev -w @jj/web\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "biome check .",
     "format": "biome check --write .",
@@ -23,7 +23,8 @@
     "smoke:tool": "node --import tsx --env-file=.env scripts/smoke.ts tool",
     "smoke:backend": "node --import tsx --env-file=.env scripts/backend-smoke.ts",
     "smoke:runtime": "node --import tsx --env-file-if-exists=.env scripts/smoke-runtime.ts",
-    "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base"
+    "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base",
+    "dev:worker": "npm run dev -w @jj/worker"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
