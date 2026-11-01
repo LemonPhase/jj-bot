@@ -105,6 +105,12 @@ function delegateTool(
         );
       const written = textArg(args.brief);
       if (!written) return refuse("Give the teammate a brief.");
+      // A delegation after complete_task would hold the completion back and
+      // then drop it silently: refuse it instead.
+      if (rc.session.completionRequested)
+        return refuse(
+          "You already called complete_task: the task completes when this turn ends, so no new work can start. If more work is needed, delegate it before you complete.",
+        );
       // The tool gets what the model wrote; what it stores (the session's
       // brief, the chat message, the assignee's inbox) is redacted.
       const brief = rc.redact(written);

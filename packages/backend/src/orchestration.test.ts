@@ -351,6 +351,91 @@ describe("orchestration", () => {
     expect(second?.inputs[1]).toContain(`Result from ${bob} (session`);
   });
 
+  it("refuses a delegation after complete_task in the same turn, and completes", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(ada, (view) =>
+        said.turns(view) === 0
+          ? {
+              calls: [
+                { name: "complete_task", args: { result: "all done" } },
+                { name: "delegate", args: { bot: bob, brief: "one more" } },
+              ],
+            }
+          : { text: "Done." },
+      )
+      .brain(bob, () => ({ text: "bob done" }));
+    const { task } = await engine.tasks.create({
+      goal: "Complete, then delegate",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "waiting",
+    );
+    expect(view.task.status).toBe("completed");
+    expect(view.task.result).toBe("all done");
+    expect(view.sessions).toHaveLength(1);
+    const page = await engine.tasks.events(task.id);
+    const delegated = page.events.find(
+      (e) => e.type === "tool.finished" && e.payload.tool === "delegate",
+    );
+    expect(delegated?.payload).toMatchObject({
+      ok: false,
+      output: expect.stringContaining("You already called complete_task"),
+    });
+  });
+
+  it("refuses complete_task after a delegation in the same turn, and completes once it reports", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(ada, (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [
+              { name: "delegate", args: { bot: bob, brief: "one more" } },
+              { name: "complete_task", args: { result: "too early" } },
+            ],
+          };
+        if (!said.heard(view, `Result from ${bob} (session`))
+          return { text: "" };
+        if (
+          lastResult(view)?.name === "complete_task" &&
+          !lastResult(view)?.isError
+        )
+          return { text: "Done." };
+        return {
+          calls: [{ name: "complete_task", args: { result: "with bob" } }],
+        };
+      })
+      .brain(bob, () => ({ text: "bob done" }));
+    const { task } = await engine.tasks.create({
+      goal: "Delegate, then complete",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    expect(view.task.result).toBe("with bob");
+    expect(view.sessions).toHaveLength(2);
+    const page = await engine.tasks.events(task.id);
+    const completions = page.events.flatMap((e) =>
+      e.type === "tool.finished" && e.payload.tool === "complete_task"
+        ? [e.payload.ok]
+        : [],
+    );
+    expect(completions).toEqual([false, true]);
+  });
+
   it("does not deadlock when waiting parents would fill every slot", async () => {
     const { engine, executor } = await setup({ config: { concurrency: 1 } });
     const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
