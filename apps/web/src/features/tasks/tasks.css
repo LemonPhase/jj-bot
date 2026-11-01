@@ -534,23 +534,32 @@
 }
 
 /* ── Graph (SPEC §5.3) ─────────────────────────────────────────────────── */
+/* Scrolls both ways when the tree is wider or taller than the panel allows. */
 .graph-canvas {
+  position: relative;
   flex: none;
+  max-height: min(72vh, 720px);
   padding: 18px 12px;
   border: 1px solid var(--line-subtle);
   border-radius: var(--r-lg);
   background-color: var(--bg-app);
   background-image: radial-gradient(var(--graph-dot) 1px, transparent 1.3px);
   background-size: 12px 12px;
-  overflow-x: auto;
+  background-attachment: local;
+  overflow: auto;
 }
 
-/* Wide enough for every leaf; a wider tree than the panel scrolls sideways. */
+/*
+ * At least the panel's width, so a small tree is centred, and otherwise the
+ * layout's width, all of it right of the start edge, so nothing is ever cut
+ * off where scrolling cannot reach.
+ */
 .graph-tree {
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-width: calc(var(--leaves, 1) * var(--leaf-px, 152px));
+  width: var(--tree-px, 100%);
+  min-width: 100%;
 }
 
 .graph-empty {
@@ -591,11 +600,16 @@
   padding: 8px 12px 8px 8px;
 }
 
+/* A node in a column leaves a 6px gutter on each side. */
+.graph-branch > .graph-node--pill {
+  max-width: min(calc(100% - 12px), 280px);
+}
+
 .graph-node--card {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  width: 100%;
+  width: calc(100% - 12px);
   max-width: 240px;
   padding: 10px;
 }
@@ -657,7 +671,7 @@
   position: relative;
   display: flex;
   align-self: stretch;
-  justify-content: center;
+  justify-content: safe center;
   margin: 0;
   padding: calc(var(--stem) + var(--drop)) 0 0;
   list-style: none;
@@ -678,15 +692,14 @@
   border-left: 2px solid var(--graph-edge);
 }
 
-/* Branches share the row in proportion to the leaves under them. */
+/* Each branch takes exactly its layout column, so children fill their parent's. */
 .graph-branch {
   position: relative;
   display: flex;
-  flex: var(--leaves, 1) 1 0;
+  flex: none;
   flex-direction: column;
   align-items: center;
-  min-width: calc(var(--leaves, 1) * var(--leaf-px, 152px));
-  padding: 0 6px;
+  width: var(--slot-px);
 }
 
 .graph-branch::before,

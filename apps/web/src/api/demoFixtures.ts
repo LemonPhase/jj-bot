@@ -5,6 +5,7 @@
  * the demo builds them by playing its task script, so their events and views
  * agree by construction.
  */
+
 import {
   type BotAppearance,
   type Capabilities,
@@ -15,6 +16,7 @@ import {
   sandboxSpecSchema,
   z,
 } from "@jj/contracts";
+import type { ScriptHost, Step } from "./demoScript";
 
 /** Minutes before the demo's start time, as an ISO timestamp. */
 export type Ago = (minutes: number) => string;
@@ -229,8 +231,11 @@ export interface DemoTaskSeed {
   startedMinutesAgo: number;
   /** Scripted steps already played at load; `"all"` plays it to the end. */
   playedSteps: number | "all";
-  /** `ask`: the coordinator asks the user a question and waits. */
-  script: "team" | "ask";
+  /**
+   * `ask`: the coordinator asks the user a question and waits. A function is
+   * a custom script, for test fixtures (src/test/graphFixtures.ts).
+   */
+  script: "team" | "ask" | ((host: ScriptHost) => Step[]);
   /** Keeps advancing on the demo timer after load. */
   autoplay: boolean;
 }

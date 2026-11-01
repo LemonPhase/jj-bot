@@ -17,6 +17,9 @@ import {
   defaultSelection,
   flattenTree,
   formatToolCall,
+  GRAPH_LEAF_PX,
+  type GraphLayout,
+  graphLayout,
   headingFor,
   mentionSegments,
   participantMood,
@@ -178,6 +181,95 @@ describe("session tree (the execution graph)", () => {
   it("is empty before any session exists", () => {
     expect(sessionTree(view([]))).toEqual([]);
     expect(treeShape([])).toEqual({ depth: 0, width: 0, leaves: 0 });
+  });
+});
+
+describe("graph layout", () => {
+  const L = GRAPH_LEAF_PX;
+  const slot = (layout: GraphLayout, id: string) => {
+    const found = layout.slots.get(id);
+    if (!found) throw new Error(`no slot for ${id}`);
+    return found;
+  };
+
+  /** Every column is inside the tree, and each node's children fill it exactly. */
+  function expectContained(
+    layout: GraphLayout,
+    roots: ReturnType<typeof sessionTree>,
+  ) {
+    for (const node of flattenTree(roots)) {
+      const own = slot(layout, node.session.id);
+      expect(own.left).toBeGreaterThanOrEqual(0);
+      expect(own.left + own.width).toBeLessThanOrEqual(layout.width);
+      expect(own.center).toBe(own.left + own.width / 2);
+      if (node.children.length === 0) continue;
+      const first = slot(layout, node.children[0]?.session.id ?? "");
+      const last = slot(layout, node.children.at(-1)?.session.id ?? "");
+      expect(first.left).toBe(own.left);
+      expect(last.left + last.width).toBe(own.left + own.width);
+    }
+  }
+
+  it("gives a root with seven delegations room for every child, centred over them, nothing left of 0", () => {
+    const children = ["c1", "c2", "c3", "c4", "c5", "c6", "c7"];
+    const roots = sessionTree(
+      view([
+        session("root", null),
+        ...children.map((id) => session(id, "root")),
+        session("c2-helper", "c2"),
+      ]),
+    );
+    const layout = graphLayout(roots);
+    expect(layout.width).toBe(7 * L);
+    expect(layout.depth).toBe(3);
+    expect(layout.rootCenter).toBe(layout.width / 2);
+    expect(slot(layout, "root")).toEqual({
+      left: 0,
+      width: 7 * L,
+      center: 3.5 * L,
+    });
+    expect(children.map((id) => slot(layout, id).left)).toEqual(
+      children.map((_, index) => index * L),
+    );
+    // A child with a helper of its own is centred over it.
+    expect(slot(layout, "c2-helper")).toEqual(slot(layout, "c2"));
+    expectContained(layout, roots);
+  });
+
+  it("keeps a deep tree inside its columns at every level", () => {
+    // Each level has a finished leaf and a session that delegates again.
+    const sessions = [session("root", null)];
+    let parent = "root";
+    for (let level = 1; level <= 8; level += 1) {
+      sessions.push(session(`leaf${level}`, parent));
+      sessions.push(session(`next${level}`, parent));
+      parent = `next${level}`;
+    }
+    const roots = sessionTree(view(sessions));
+    const layout = graphLayout(roots);
+    expect(layout.depth).toBe(9);
+    expect(layout.width).toBe(9 * L);
+    expect(slot(layout, "root").center).toBe(layout.rootCenter);
+    for (let level = 1; level <= 8; level += 1) {
+      expect(slot(layout, `leaf${level}`)).toEqual({
+        left: (level - 1) * L,
+        width: L,
+        center: (level - 0.5) * L,
+      });
+      expect(slot(layout, `next${level}`).left).toBe(level * L);
+    }
+    expectContained(layout, roots);
+  });
+
+  it("lays out several roots side by side, and nothing before any session", () => {
+    const roots = sessionTree(
+      view([session("r1", null), session("r2", null), session("r2a", "r2")]),
+    );
+    const layout = graphLayout(roots);
+    expect(layout.width).toBe(2 * L);
+    expect(slot(layout, "r2").left).toBe(L);
+    expectContained(layout, roots);
+    expect(graphLayout([])).toMatchObject({ width: 0, depth: 0 });
   });
 });
 
