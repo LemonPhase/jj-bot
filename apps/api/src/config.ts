@@ -6,6 +6,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFromEnv, type EngineConfigInput } from "@jj/backend";
 import { nodeDataDirectory } from "@jj/db";
+import { parseSubnetPool } from "@jj/sandbox";
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -37,6 +38,8 @@ export interface ServicesConfig {
   /** Container and volume name prefix of the `docker` driver. */
   dockerNamespace: string;
   dockerAllowInsecureTcp: boolean;
+  /** Where the `docker` driver's allowlist networks take their subnets; unset uses the driver's default. */
+  dockerEgressSubnetPool?: string;
   /** Registers the keyless `scripted/team` test model. */
   enableScripted: boolean;
   engine: EngineConfigInput;
@@ -135,6 +138,15 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     );
   }
   const sandboxRoot = text(env, "JJ_SANDBOX_ROOT");
+  const egressPool = text(env, "JJ_DOCKER_EGRESS_SUBNET_POOL");
+  if (egressPool !== undefined)
+    try {
+      parseSubnetPool(egressPool);
+    } catch (error) {
+      throw new ConfigError(
+        `JJ_DOCKER_EGRESS_SUBNET_POOL: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   return {
     database,
     drivers: driverList(env),
@@ -142,6 +154,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     ...(sandboxRoot ? { localRoot: fromRoot(sandboxRoot) } : {}),
     dockerNamespace: text(env, "JJ_DOCKER_NAMESPACE") ?? "jj-sandbox",
     dockerAllowInsecureTcp: flag(env, "JJ_DOCKER_ALLOW_INSECURE_TCP", false),
+    ...(egressPool ? { dockerEgressSubnetPool: egressPool } : {}),
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),
     engine,
   };

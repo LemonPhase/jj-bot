@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import {
   type AcquireRequest,
@@ -24,6 +24,7 @@ import {
 } from "../contract";
 import {
   type AttachedExec,
+  DockerApiError,
   DockerEngine,
   DockerOutputLimitError,
   describeEndpoint,
@@ -97,6 +98,32 @@ const PROXY_NANO_CPUS = 500_000_000;
 const PROXY_START_MS = 15_000;
 /** Keeps the bridge of an allowlist network without an address on the host. */
 const INHIBIT_IPV4 = "com.docker.network.bridge.inhibit_ipv4";
+/**
+ * Where allowlist networks take their subnets, one /28 each (the proxy and
+ * the sandbox need two addresses): never Docker's default pools, so they
+ * cannot run out for other networks on the daemon (compose's included).
+ */
+export const DEFAULT_EGRESS_SUBNET_POOL = "10.213.0.0/16";
+const EGRESS_SUBNET_PREFIX = 28;
+/** How many taken subnets an acquire skips over before it gives up. */
+const EGRESS_SUBNET_ATTEMPTS = 256;
+/**
+ * The upstream DNS server an allowlist sandbox's embedded resolver is given.
+ * Docker resolves a configured upstream from the container's own network
+ * namespace, which has no route to it, so no name leaves the sandbox even on
+ * engines that forward external names for internal networks
+ * (CVE-2024-29018). Outside every pool the driver accepts.
+ */
+const EGRESS_SANDBOX_DNS = "198.51.100.53";
+/** Private ranges an egress subnet pool must lie in. */
+const PRIVATE_POOLS: ReadonlyArray<readonly [number, number]> = [
+  [ipv4Number([10, 0, 0, 0]), 8],
+  [ipv4Number([172, 16, 0, 0]), 12],
+  [ipv4Number([192, 168, 0, 0]), 16],
+  [ipv4Number([100, 64, 0, 0]), 10],
+];
+/** Subnets this process's allowlist networks hold, across driver instances. */
+const SUBNETS_IN_USE = new Set<string>();
 const KILL_GRACE_MS = 2_000;
 /** Once a stop is verified, how long output may drain before the stream is dropped. */
 const DRAIN_MS = 250;
@@ -115,7 +142,6 @@ const READ_SLACK_BYTES = 64 * 1024;
 const PROCESS_INSTANCE = randomUUID();
 const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,511}$/;
-const IPV4_SUBNET = /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/;
 const ENV_NAME = /^[^=\0]+$/;
 
 /** Labels the driver owns; extra labels may not override them. */
@@ -253,6 +279,13 @@ export interface DockerDriverOptions {
    * lack node. Default `jj-sandbox:base-1`.
    */
   egressProxyImage?: string;
+  /**
+   * The private IPv4 range allowlist networks take their /28 subnets from,
+   * as `a.b.c.d/n` (n from 8 to 28) inside 10/8, 172.16/12, 192.168/16 or
+   * 100.64/10. Keep it clear of Docker's default address pools. Default
+   * `10.213.0.0/16` (4096 networks).
+   */
+  egressSubnetPool?: string;
   /** Prefix of container and volume names; separates installs sharing a daemon. Default `jj-sandbox`. */
   namespace?: string;
   /** Extra labels on every container and volume the driver creates. */
@@ -280,6 +313,109 @@ const delay = (ms: number) =>
 
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
+
+// --- Egress networking ------------------------------------------------------
+
+function ipv4Number(bytes: readonly number[]): number {
+  return (
+    (((bytes[0] ?? 0) << 24) |
+      ((bytes[1] ?? 0) << 16) |
+      ((bytes[2] ?? 0) << 8) |
+      (bytes[3] ?? 0)) >>>
+    0
+  );
+}
+
+const ipv4Text = (value: number) =>
+  [value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join(
+    ".",
+  );
+
+const prefixMask = (prefix: number) =>
+  prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+
+export interface SubnetPool {
+  base: number;
+  prefix: number;
+}
+
+/**
+ * Parses an egress subnet pool: an aligned IPv4 `a.b.c.d/n`, n from 8 to 28,
+ * inside one of the private ranges. Throws with the reason otherwise.
+ */
+export function parseSubnetPool(cidr: string): SubnetPool {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(
+    cidr,
+  );
+  const bytes = match ? match.slice(1, 5).map(Number) : [];
+  const prefix = Number(match?.[5]);
+  const invalid = (why: string) =>
+    new Error(`Invalid egress subnet pool ${JSON.stringify(cidr)}: ${why}`);
+  if (!match || bytes.some((byte) => byte > 255))
+    throw invalid("expected an IPv4 range such as 10.213.0.0/16");
+  if (prefix < 8 || prefix > EGRESS_SUBNET_PREFIX)
+    throw invalid(`the prefix must be between /8 and /${EGRESS_SUBNET_PREFIX}`);
+  const base = ipv4Number(bytes);
+  if ((base & prefixMask(prefix)) >>> 0 !== base)
+    throw invalid(`its address is not the start of a /${prefix}`);
+  const inside = PRIVATE_POOLS.some(
+    ([network, bits]) =>
+      bits <= prefix && (base & prefixMask(bits)) >>> 0 === network,
+  );
+  if (!inside)
+    throw invalid("it must lie in 10/8, 172.16/12, 192.168/16 or 100.64/10");
+  return { base, prefix };
+}
+
+/** The `index`th /28 of a pool. */
+const subnetAt = (pool: SubnetPool, index: number) =>
+  `${ipv4Text(pool.base + index * 2 ** (32 - EGRESS_SUBNET_PREFIX))}/${EGRESS_SUBNET_PREFIX}`;
+
+/** What `GET /networks/{id}` says about an allowlist network. */
+export interface EgressNetworkInfo {
+  Internal?: boolean;
+  EnableIPv6?: boolean;
+  Options?: Record<string, string> | null;
+  IPAM?: {
+    Config?: Array<{ Subnet?: string; Gateway?: string }> | null;
+  } | null;
+}
+
+/**
+ * Why an allowlist network as Docker created it would not isolate the
+ * sandbox, or undefined when it does. Docker gives the host's side of a
+ * bridge the network's IPAM gateway address; with `inhibit_ipv4` honoured it
+ * allocates none, so a gateway in the IPAM configuration means the Docker
+ * host is reachable on that network. Merely reading the option back proves
+ * nothing: Docker echoes any option, honoured or not.
+ */
+export function egressNetworkProblem(
+  info: EgressNetworkInfo,
+  subnet: string,
+): string | undefined {
+  if (info.Internal !== true) return "it is not internal";
+  if (info.EnableIPv6 === true) return "it has IPv6 enabled";
+  const configs = info.IPAM?.Config ?? [];
+  if (configs.length !== 1 || configs[0]?.Subnet !== subnet)
+    return `its address range is ${JSON.stringify(configs.map((config) => config.Subnet))}, not ${subnet}`;
+  const gateway = configs[0]?.Gateway;
+  if (gateway)
+    return `Docker gave the host's side of its bridge the address ${gateway} (${INHIBIT_IPV4} is not honoured), so the Docker host would be reachable`;
+  return undefined;
+}
+
+/**
+ * The interfaces with IPv6 addresses in a `/proc/net/if_inet6` listing,
+ * loopback aside. An empty or missing listing means none.
+ */
+export function ipv6Interfaces(listing: string): string[] {
+  const found = new Set<string>();
+  for (const line of listing.split("\n")) {
+    const name = line.trim().split(/\s+/).at(-1);
+    if (name && name !== "lo") found.add(name);
+  }
+  return [...found];
+}
 
 const inside = (root: string, path: string) =>
   path === root || path.startsWith(`${root}/`);
@@ -472,6 +608,8 @@ interface RunningCommand {
 interface EgressResources {
   proxyName: string;
   networkName: string;
+  /** The /28 the network holds, once created; given back when it is removed. */
+  subnet?: string;
 }
 
 const removeContainer = (engine: DockerEngine, name: string) =>
@@ -508,6 +646,7 @@ async function removeEgress(
 ): Promise<void> {
   await removeContainer(engine, egress.proxyName);
   await removeNetwork(engine, egress.networkName);
+  if (egress.subnet) SUBNETS_IN_USE.delete(egress.subnet);
 }
 
 interface SandboxSetup {
@@ -619,6 +758,24 @@ class DockerSandbox implements Sandbox {
           `readiness check exited with ${result.exitCode}`
         }. Use a Debian- or Ubuntu-based image such as ${DOCKER_BASE_IMAGE}.`,
       );
+  }
+
+  /**
+   * Interfaces of the sandbox, loopback aside, that have an IPv6 address
+   * (including link-local), from its `/proc/net/if_inet6`; none on a kernel
+   * without IPv6.
+   */
+  async ipv6Interfaces(): Promise<string[]> {
+    // A kernel without IPv6 has no listing; one that cannot be read fails.
+    const result = await this.helper(
+      "[ ! -e /proc/net/if_inet6 ] || cat /proc/net/if_inet6",
+      [],
+    );
+    if (result.exitCode !== 0)
+      throw new Error(
+        `Could not read the sandbox's IPv6 addresses: ${result.stderr.toString("utf8").trim()}`,
+      );
+    return ipv6Interfaces(result.stdout.toString("utf8"));
   }
 
   private async fsCall(
@@ -1087,6 +1244,7 @@ export class DockerSandboxDriver implements SandboxDriver {
   private readonly namespace: string;
   private readonly defaultImage: string;
   private readonly egressProxyImage: string;
+  private readonly egressSubnetPool: SubnetPool;
   private readonly extraLabels: Record<string, string>;
   private readonly images = new Map<string, Promise<void>>();
   private readonly maxFileBytes: number;
@@ -1110,6 +1268,9 @@ export class DockerSandboxDriver implements SandboxDriver {
       throw new Error(
         `Invalid egress proxy image ${JSON.stringify(this.egressProxyImage)}`,
       );
+    this.egressSubnetPool = parseSubnetPool(
+      options.egressSubnetPool ?? DEFAULT_EGRESS_SUBNET_POOL,
+    );
     this.extraLabels = { ...options.labels };
     const reserved = new Set<string>(Object.values(LABELS));
     for (const name of Object.keys(this.extraLabels))
@@ -1323,6 +1484,8 @@ export class DockerSandboxDriver implements SandboxDriver {
           : spec.network.mode === "none"
             ? "none"
             : "bridge",
+        // See EGRESS_SANDBOX_DNS: names are resolved by the proxy only.
+        ...(egress ? { Dns: [EGRESS_SANDBOX_DNS] } : {}),
         PidsLimit:
           processes ?? this.options.defaultPidsLimit ?? DEFAULT_PIDS_LIMIT,
         ...(memory === undefined ? {} : { Memory: memory, MemorySwap: memory }),
@@ -1375,6 +1538,8 @@ export class DockerSandboxDriver implements SandboxDriver {
         CapAdd: [],
         SecurityOpt: ["no-new-privileges:true"],
         NetworkMode: "bridge",
+        // It joins two networks; it must never route between them.
+        Sysctls: { "net.ipv4.ip_forward": "0" },
         ReadonlyRootfs: true,
         PidsLimit: PROXY_PIDS_LIMIT,
         Memory: PROXY_MEMORY_BYTES,
@@ -1390,10 +1555,80 @@ export class DockerSandboxDriver implements SandboxDriver {
   }
 
   /**
+   * Creates the internal network on a free /28 of the egress subnet pool,
+   * records the subnet in `egress`, and returns it. A subnet another network
+   * on the daemon already overlaps is skipped. Then checks the network Docker
+   * actually made (`egressNetworkProblem`) and refuses a network that would
+   * not isolate the sandbox.
+   */
+  private async createEgressNetwork(
+    engine: DockerEngine,
+    egress: EgressResources,
+    labels: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const pool = this.egressSubnetPool;
+    const count = 2 ** (EGRESS_SUBNET_PREFIX - pool.prefix);
+    const start = randomInt(count);
+    let skipped = 0;
+    for (
+      let step = 0;
+      step < count && skipped < EGRESS_SUBNET_ATTEMPTS;
+      step++
+    ) {
+      const subnet = subnetAt(pool, (start + step) % count);
+      if (SUBNETS_IN_USE.has(subnet)) continue;
+      SUBNETS_IN_USE.add(subnet);
+      try {
+        await engine.json("POST", "/networks/create", {
+          body: {
+            Name: egress.networkName,
+            Driver: "bridge",
+            // No route out and no forwarded DNS; with inhibit_ipv4 the host's
+            // bridge gets no address, so the host is unreachable through it.
+            Internal: true,
+            EnableIPv6: false,
+            Attachable: false,
+            IPAM: { Driver: "default", Config: [{ Subnet: subnet }] },
+            Options: { [INHIBIT_IPV4]: "true" },
+            Labels: { ...labels, [LABELS.role]: "egress-network" },
+          },
+          signal,
+        });
+      } catch (error) {
+        SUBNETS_IN_USE.delete(subnet);
+        // Taken by a network this process does not know of: try the next.
+        if (error instanceof DockerApiError && /overlap/i.test(error.message)) {
+          skipped++;
+          continue;
+        }
+        throw error;
+      }
+      egress.subnet = subnet;
+      const info = await engine.json<EgressNetworkInfo>(
+        "GET",
+        `/networks/${encodeURIComponent(egress.networkName)}`,
+        { signal },
+      );
+      const problem = egressNetworkProblem(info, subnet);
+      if (problem)
+        throw new SandboxCapabilityError(
+          this.id,
+          `network.mode="allowlist": this Docker Engine created ${egress.networkName}, but ${problem}`,
+        );
+      return subnet;
+    }
+    throw new Error(
+      `No free /${EGRESS_SUBNET_PREFIX} left in the egress subnet pool ${ipv4Text(pool.base)}/${pool.prefix} ` +
+        "(the docker driver's egressSubnetPool, JJ_DOCKER_EGRESS_SUBNET_POOL): release allowlist sandboxes or use a larger pool",
+    );
+  }
+
+  /**
    * Creates the internal network and starts the egress proxy on it, and
-   * returns the proxy's address there. Fails closed: a network Docker did
-   * not create as asked, or a proxy that does not start listening, fails the
-   * acquire. The caller removes `egress` on failure.
+   * returns the proxy's address there. Fails closed: a network that would
+   * not isolate the sandbox, or a proxy that exits or does not start
+   * listening, fails the acquire. The caller removes `egress` on failure.
    */
   private async startEgress(
     engine: DockerEngine,
@@ -1402,42 +1637,14 @@ export class DockerSandboxDriver implements SandboxDriver {
     labels: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<string> {
-    const network = encodeURIComponent(egress.networkName);
-    const proxy = encodeURIComponent(egress.proxyName);
-    await engine.json("POST", "/networks/create", {
-      body: {
-        Name: egress.networkName,
-        Driver: "bridge",
-        // No route out and no forwarded DNS; with inhibit_ipv4 the host's
-        // bridge gets no address, so the host is unreachable through it too.
-        Internal: true,
-        EnableIPv6: false,
-        Attachable: false,
-        Options: { [INHIBIT_IPV4]: "true" },
-        Labels: { ...labels, [LABELS.role]: "egress-network" },
-      },
+    const subnet = await this.createEgressNetwork(
+      engine,
+      egress,
+      labels,
       signal,
-    });
-    const info = await engine.json<{
-      Internal?: boolean;
-      EnableIPv6?: boolean;
-      Options?: Record<string, string> | null;
-      IPAM?: { Config?: Array<{ Subnet?: string }> | null };
-    }>("GET", `/networks/${network}`, { signal });
-    const subnet = info.IPAM?.Config?.map((config) => config.Subnet).find(
-      (value): value is string =>
-        typeof value === "string" && IPV4_SUBNET.test(value),
     );
-    if (
-      info.Internal !== true ||
-      info.EnableIPv6 === true ||
-      info.Options?.[INHIBIT_IPV4] !== "true" ||
-      !subnet
-    )
-      throw new SandboxCapabilityError(
-        this.id,
-        `network.mode="allowlist": Docker did not create ${egress.networkName} as an internal IPv4 network without a host address`,
-      );
+    const proxy = encodeURIComponent(egress.proxyName);
+    const needsNode = `its image ${this.egressProxyImage} needs node 22 or later`;
     await engine.json("POST", "/containers/create", {
       query: { name: egress.proxyName },
       body: this.proxyConfig(hosts, subnet, {
@@ -1446,16 +1653,37 @@ export class DockerSandboxDriver implements SandboxDriver {
       }),
       signal,
     });
-    await engine.json("POST", `/networks/${network}/connect`, {
-      body: { Container: egress.proxyName },
-      signal,
-    });
-    await engine.json("POST", `/containers/${proxy}/start`, { signal });
-    const state = await engine.json<{
-      NetworkSettings?: {
-        Networks?: Record<string, { IPAddress?: string }> | null;
-      };
-    }>("GET", `/containers/${proxy}/json`, { signal });
+    await engine.json(
+      "POST",
+      `/networks/${encodeURIComponent(egress.networkName)}/connect`,
+      { body: { Container: egress.proxyName }, signal },
+    );
+    await engine
+      .json("POST", `/containers/${proxy}/start`, { signal })
+      .catch((error: unknown) => {
+        if (error instanceof DockerApiError)
+          throw new Error(
+            `Egress proxy ${egress.proxyName} could not start (${needsNode}): ${error.message}`,
+          );
+        throw error;
+      });
+    const inspectProxy = () =>
+      engine.json<{
+        State?: { Running?: boolean; ExitCode?: number };
+        NetworkSettings?: {
+          Networks?: Record<string, { IPAddress?: string }> | null;
+        };
+      }>("GET", `/containers/${proxy}/json`, { signal });
+    // An image without node exits at once, possibly before it has an address.
+    const exited = (state: Awaited<ReturnType<typeof inspectProxy>>) =>
+      state.State?.Running === true
+        ? undefined
+        : new Error(
+            `Egress proxy ${egress.proxyName} exited as it started (exit code ${state.State?.ExitCode ?? "unknown"}); ${needsNode}`,
+          );
+    const state = await inspectProxy();
+    const early = exited(state);
+    if (early) throw early;
     const address =
       state.NetworkSettings?.Networks?.[egress.networkName]?.IPAddress;
     if (!address)
@@ -1479,13 +1707,16 @@ export class DockerSandboxDriver implements SandboxDriver {
         ),
       signal,
     );
-    if (ready.exitCode !== 0)
+    if (ready.exitCode !== 0) {
+      const late = exited(await inspectProxy().catch(() => ({})));
+      if (late) throw late;
       throw new Error(
-        `Egress proxy ${egress.proxyName} did not start listening (its image ${this.egressProxyImage} needs node 22 or later)` +
+        `Egress proxy ${egress.proxyName} did not start listening (${needsNode})` +
           (ready.stderr.length > 0
             ? `: ${ready.stderr.toString("utf8").trim().slice(0, 500)}`
             : ""),
       );
+    }
     return address;
   }
 
@@ -1533,7 +1764,13 @@ export class DockerSandboxDriver implements SandboxDriver {
     }
     // Networks last: a network cannot go while a container is attached.
     const networks = await engine.json<
-      Array<{ Id: string; Name?: string; Labels?: Record<string, string> }>
+      Array<
+        EgressNetworkInfo & {
+          Id: string;
+          Name?: string;
+          Labels?: Record<string, string>;
+        }
+      >
     >("GET", "/networks", {
       query: {
         filters: JSON.stringify({
@@ -1551,6 +1788,8 @@ export class DockerSandboxDriver implements SandboxDriver {
       try {
         await removeNetwork(engine, network.Id);
         removed.push(name);
+        for (const config of network.IPAM?.Config ?? [])
+          if (config.Subnet) SUBNETS_IN_USE.delete(config.Subnet);
       } catch (error) {
         failed.push(`network ${name} (${errorMessage(error)})`);
       }
@@ -1672,6 +1911,18 @@ export class DockerSandboxDriver implements SandboxDriver {
         maxListEntries: this.maxListEntries,
       });
       await sandbox.checkReady(image);
+      if (egress) {
+        // Some engines leave IPv6 link-local addresses on interfaces of
+        // IPv4-only networks (CVE-2024-32473), which reach the host and other
+        // containers on the bridge whatever the proxy does: verify, not trust.
+        const leaking = await sandbox.ipv6Interfaces();
+        if (leaking.length > 0)
+          throw new SandboxCapabilityError(
+            this.id,
+            `network.mode="allowlist": the sandbox has IPv6 addresses on ${leaking.join(", ")} although its network has IPv6 off; ` +
+              "this Docker Engine does not disable IPv6 on IPv4-only networks (CVE-2024-32473, 26.0.0 and 26.0.1): upgrade it",
+          );
+      }
       signal?.throwIfAborted();
       return sandbox;
     } catch (error) {

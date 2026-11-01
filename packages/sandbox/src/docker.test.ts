@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -16,7 +17,13 @@ import {
   SandboxRequestError,
   type SandboxSpecInput,
 } from "./contract";
-import { DOCKER_BASE_IMAGE, DockerSandboxDriver } from "./drivers/docker";
+import {
+  DOCKER_BASE_IMAGE,
+  DockerSandboxDriver,
+  egressNetworkProblem,
+  ipv6Interfaces,
+  parseSubnetPool,
+} from "./drivers/docker";
 import {
   DockerEngine,
   DockerOutputLimitError,
@@ -277,6 +284,72 @@ describe("docker engine client", () => {
     expect(() => spec({ env: { "A=B": "x" } })).toThrow(SandboxRequestError);
     expect(() => spec({ image: "bad image" })).toThrow(SandboxRequestError);
     expect(() => spec({ driver: "local" })).toThrow(SandboxRequestError);
+  });
+
+  it("takes egress subnet pools only from aligned private ranges", () => {
+    expect(parseSubnetPool("10.213.0.0/16")).toEqual({
+      base: (10 << 24) + (213 << 16),
+      prefix: 16,
+    });
+    expect(parseSubnetPool("172.29.16.0/20").prefix).toBe(20);
+    expect(parseSubnetPool("100.64.0.0/28").prefix).toBe(28);
+    for (const bad of [
+      "10.213.0.0",
+      "10.213.0.1/16",
+      "10.0.0.0/7",
+      "10.0.0.0/29",
+      "8.8.0.0/16",
+      "172.32.0.0/16",
+      "192.169.0.0/16",
+      "300.1.0.0/16",
+      "fd00::/64",
+    ])
+      expect(() => parseSubnetPool(bad), bad).toThrow(/egress subnet pool/);
+    expect(
+      () => new DockerSandboxDriver({ egressSubnetPool: "8.8.8.0/24" }),
+    ).toThrow(/must lie in 10\/8/);
+  });
+
+  it("accepts an allowlist network only when Docker gave the host no address on it", () => {
+    const subnet = "10.213.4.16/28";
+    const made = {
+      Internal: true,
+      EnableIPv6: false,
+      Options: { "com.docker.network.bridge.inhibit_ipv4": "true" },
+      IPAM: { Config: [{ Subnet: subnet }] },
+    };
+    expect(egressNetworkProblem(made, subnet)).toBeUndefined();
+    // Docker echoes any option, so the option alone proves nothing; a
+    // gateway means the host's side of the bridge has that address.
+    expect(
+      egressNetworkProblem(
+        {
+          ...made,
+          IPAM: { Config: [{ Subnet: subnet, Gateway: "10.213.4.17" }] },
+        },
+        subnet,
+      ),
+    ).toMatch(/host's side of its bridge the address 10\.213\.4\.17/);
+    expect(egressNetworkProblem({ ...made, Internal: false }, subnet)).toMatch(
+      /not internal/,
+    );
+    expect(egressNetworkProblem({ ...made, EnableIPv6: true }, subnet)).toMatch(
+      /IPv6/,
+    );
+    expect(
+      egressNetworkProblem({ ...made, IPAM: { Config: [] } }, subnet),
+    ).toMatch(/address range/);
+    expect(egressNetworkProblem({ ...made, IPAM: null }, subnet)).toMatch(
+      /address range/,
+    );
+  });
+
+  it("finds IPv6 addresses on interfaces other than loopback", () => {
+    const lo = "00000000000000000000000000000001 01 80 10 80       lo";
+    const eth0 = "fe800000000000001c2a3bfffe4d5e6f 02 40 20 80     eth0";
+    expect(ipv6Interfaces("")).toEqual([]);
+    expect(ipv6Interfaces(`${lo}\n`)).toEqual([]);
+    expect(ipv6Interfaces(`${lo}\n${eth0}\n${eth0}\n`)).toEqual(["eth0"]);
   });
 
   it("reports an unreachable daemon as unhealthy", async () => {
@@ -764,6 +837,7 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           EnableIPv6: boolean;
           Options: Record<string, string>;
           Labels: Record<string, string>;
+          IPAM: { Config: Array<{ Subnet: string; Gateway?: string }> };
         }>("GET", `/networks/${networkName}`);
         expect(network).toMatchObject({
           Internal: true,
@@ -774,6 +848,11 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
             "jj.sandbox.role": "egress-network",
           },
         });
+        // A /28 of the driver's own pool, with no gateway: the host's side
+        // of the bridge has no address.
+        expect(network?.IPAM.Config).toEqual([
+          { Subnet: expect.stringMatching(/^10\.213\.\d+\.\d+\/28$/) },
+        ]);
 
         const proxy = await inspect(proxyContainerName);
         const host = proxy.HostConfig;
@@ -793,6 +872,14 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         expect(
           Object.keys(proxy.NetworkSettings.Networks ?? {}).sort(),
         ).toEqual(["bridge", networkName].sort());
+        // On two networks, it never routes between them.
+        expect(host.Sysctls).toEqual({ "net.ipv4.ip_forward": "0" });
+        const forwarding = await engine?.run(proxyContainerName, {
+          Cmd: ["cat", "/proc/sys/net/ipv4/ip_forward"],
+          Env: [],
+          User: "1000:1000",
+        });
+        expect(forwarding?.stdout.toString().trim()).toBe("0");
         // Its own configuration is all it gets, besides the image's environment.
         const imageEnv = new Set(
           (
@@ -815,6 +902,14 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         expect(Object.keys(container.NetworkSettings.Networks ?? {})).toEqual([
           networkName,
         ]);
+        // Its embedded resolver's upstream is resolved from its own network
+        // namespace, which has no route to it: no name leaves the sandbox,
+        // even on engines that forward for internal networks (CVE-2024-29018).
+        expect(container.HostConfig.Dns).toEqual(["198.51.100.53"]);
+        const dns = await sandbox.exec(
+          "getent hosts example.com || echo no-name; grep -c '^nameserver 127.0.0.11$' /etc/resolv.conf",
+        );
+        expect(dns.stdout.split("\n").slice(0, 2)).toEqual(["no-name", "1"]);
         const proxyAddress =
           proxy.NetworkSettings.Networks?.[networkName]?.IPAddress;
         const url = `http://${proxyAddress}:3128`;
@@ -1122,6 +1217,210 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           engine?.json("GET", `/networks/${mine.networkName}`),
         ).resolves.toBeDefined();
         expect(await current.reapOrphans()).toEqual({ removed: [] });
+      });
+
+      /** The containers and networks carrying a task's label. */
+      const ownedBy = async (taskId: string) => {
+        const filters = JSON.stringify({
+          label: [`jj.sandbox.task=${taskId}`],
+        });
+        return {
+          containers:
+            (await engine?.json<unknown[]>("GET", "/containers/json", {
+              query: { all: true, filters },
+            })) ?? [],
+          networks:
+            (await engine?.json<unknown[]>("GET", "/networks", {
+              query: { filters },
+            })) ?? [],
+        };
+      };
+      const subnetOf = async (sandbox: DockerSandbox) =>
+        (
+          await engine?.json<{ IPAM: { Config: Array<{ Subnet: string }> } }>(
+            "GET",
+            `/networks/${sandbox.networkName}`,
+          )
+        )?.IPAM.Config[0]?.Subnet;
+
+      it("takes networks from its own pool, so many never exhaust Docker's default pools", async () => {
+        // Docker's default pools hold about 30 networks; well past that.
+        const count = 40;
+        const sandboxes: DockerSandbox[] = [];
+        for (let batch = 0; batch < count; batch += 8)
+          sandboxes.push(
+            ...(await Promise.all(
+              Array.from({ length: Math.min(8, count - batch) }, () =>
+                acquire(allowlist("example.com")),
+              ),
+            )),
+          );
+        const subnets = await Promise.all(sandboxes.map(subnetOf));
+        expect(new Set(subnets).size).toBe(count);
+        for (const subnet of subnets)
+          expect(subnet).toMatch(/^10\.213\.\d+\.\d+\/28$/);
+        // Docker's own pools are untouched: a network that takes from them
+        // (compose's, say) can still be made.
+        const fromDefaults = `${namespace}-default-pool`;
+        await engine?.json("POST", "/networks/create", {
+          body: { Name: fromDefaults, Labels: labels },
+        });
+        await engine?.json("DELETE", `/networks/${fromDefaults}`);
+        await Promise.all(sandboxes.map((sandbox) => sandbox.release()));
+        for (const sandbox of sandboxes)
+          await gone("networks", sandbox.networkName);
+      }, 300_000);
+
+      it("skips subnets other networks hold, and says so when its pool is full", async () => {
+        // Two /28s; another network already holds the first.
+        const small = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+          egressSubnetPool: "10.214.0.0/27",
+        });
+        const blocker = `${namespace}-blocker`;
+        await engine?.json("POST", "/networks/create", {
+          body: {
+            Name: blocker,
+            Internal: true,
+            IPAM: { Config: [{ Subnet: "10.214.0.0/28" }] },
+            Labels: labels,
+          },
+        });
+        try {
+          const first = (await small.acquire(
+            request(allowlist("example.com")),
+          )) as DockerSandbox;
+          live.push(first);
+          expect(await subnetOf(first)).toBe("10.214.0.16/28");
+          const taskId = `full-${Math.random().toString(36).slice(2)}`;
+          await expect(
+            small.acquire(
+              request(allowlist("example.com"), uniqueKey("full"), { taskId }),
+            ),
+          ).rejects.toThrow(
+            /No free \/28 left in the egress subnet pool 10\.214\.0\.0\/27/,
+          );
+          expect(await ownedBy(taskId)).toEqual({
+            containers: [],
+            networks: [],
+          });
+          // Released, its subnet is free again.
+          await first.release();
+          const again = (await small.acquire(
+            request(allowlist("example.com")),
+          )) as DockerSandbox;
+          live.push(again);
+          expect(await subnetOf(again)).toBe("10.214.0.16/28");
+        } finally {
+          await Promise.all(
+            live.splice(0).map((sandbox) => sandbox.release().catch(() => {})),
+          );
+          await engine?.json("DELETE", `/networks/${blocker}`).catch(() => {});
+        }
+      });
+
+      it("refuses, and removes, a sandbox that has IPv6 addresses", async (context) => {
+        // Engines with CVE-2024-32473 leave IPv6 link-local addresses on
+        // IPv4-only interfaces. Here the sandbox gets them from a second,
+        // IPv6 network joined right after it starts, before the driver checks.
+        if (!existsSync("/proc/net/if_inet6")) {
+          if (process.env.CI)
+            throw new Error("CI runners have IPv6; this check must run there");
+          return context.skip(
+            "this machine's kernel has no IPv6, so no sandbox can have an IPv6 address",
+          );
+        }
+        if (!engine) throw new Error("no engine");
+        const v6 = `${namespace}-v6`;
+        await engine.json("POST", "/networks/create", {
+          body: {
+            Name: v6,
+            Internal: true,
+            EnableIPv6: true,
+            IPAM: {
+              Config: [
+                { Subnet: "10.215.0.0/28" },
+                { Subnet: "fd6a:6a00:6a00::/64" },
+              ],
+            },
+            Labels: labels,
+          },
+        });
+        const leaky = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+        });
+        const leakyEngine = (leaky as unknown as { engine: DockerEngine })
+          .engine;
+        const json = leakyEngine.json.bind(leakyEngine);
+        leakyEngine.json = (async (
+          method: string,
+          path: string,
+          init?: Parameters<DockerEngine["json"]>[2],
+        ) => {
+          const result = await json(method, path, init);
+          const started = /^\/containers\/([0-9a-f]{64})\/start$/.exec(path);
+          if (method === "POST" && started)
+            await json("POST", `/networks/${v6}/connect`, {
+              body: { Container: started[1] },
+            });
+          return result;
+        }) as DockerEngine["json"];
+        const taskId = `ipv6-${Math.random().toString(36).slice(2)}`;
+        try {
+          await expect(
+            leaky.acquire(
+              request(allowlist("example.com"), uniqueKey("ipv6"), { taskId }),
+            ),
+          ).rejects.toThrow(/IPv6 addresses on (eth0, )?eth1 .*CVE-2024-32473/);
+          expect(await ownedBy(taskId)).toEqual({
+            containers: [],
+            networks: [],
+          });
+        } finally {
+          await engine.json("DELETE", `/networks/${v6}`).catch(() => {});
+        }
+      });
+
+      it("explains that the egress proxy's image needs node, and leaves nothing behind", async () => {
+        if (!engine) throw new Error("no engine");
+        // An image with nothing in it: an empty archive, imported.
+        const empty = `jj-test-empty:${runId}`;
+        await engine.json("POST", "/images/create", {
+          query: { fromSrc: "-", repo: "jj-test-empty", tag: runId },
+          body: Buffer.alloc(1024),
+          contentType: "application/x-tar",
+        });
+        try {
+          const nodeless = new DockerSandboxDriver({
+            namespace,
+            labels,
+            egressProxyImage: empty,
+          });
+          const taskId = `nodeless-${Math.random().toString(36).slice(2)}`;
+          await expect(
+            nodeless.acquire(
+              request(allowlist("example.com"), uniqueKey("nodeless"), {
+                taskId,
+              }),
+            ),
+          ).rejects.toThrow(
+            new RegExp(
+              `(exited as it started|could not start) .*its image ${empty} needs node 22 or later`,
+            ),
+          );
+          expect(await ownedBy(taskId)).toEqual({
+            containers: [],
+            networks: [],
+          });
+        } finally {
+          await engine
+            .json("DELETE", `/images/${empty}`, { query: { force: true } })
+            .catch(() => {});
+        }
       });
     });
   });

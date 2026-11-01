@@ -96,6 +96,9 @@ export function sandboxDrivers(config: ServicesConfig): DriverEntry[] {
         driver: new DockerSandboxDriver({
           namespace: config.dockerNamespace,
           allowInsecureTcp: config.dockerAllowInsecureTcp,
+          ...(config.dockerEgressSubnetPool
+            ? { egressSubnetPool: config.dockerEgressSubnetPool }
+            : {}),
         }),
         label: "Docker",
       };
