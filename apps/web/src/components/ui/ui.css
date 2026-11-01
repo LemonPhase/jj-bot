@@ -940,7 +940,8 @@ button.ui-tooltip__trigger {
 .ui-wordmark {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-5);
+  /* A third to a half of the mark's width: 10px (--sp-5) at 24, 15px at 36. */
+  gap: calc(var(--wordmark-mark, 24px) * 5 / 12);
   color: var(--ink);
   font-family: var(--font-pixel);
   font-size: var(--fs-wordmark);

@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { PixelIcon } from "../sprite/PixelIcon";
 import { cx } from "./cx";
 import "./ui.css";
@@ -14,7 +15,10 @@ export interface WordmarkProps {
  */
 export function Wordmark({ markSize = 24, className }: WordmarkProps) {
   return (
-    <span className={cx("ui-wordmark", className)}>
+    <span
+      className={cx("ui-wordmark", className)}
+      style={{ "--wordmark-mark": `${markSize}px` } as CSSProperties}
+    >
       <PixelIcon name="brand" size={markSize} />
       <span>JJ BOT</span>
     </span>
