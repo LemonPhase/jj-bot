@@ -114,6 +114,33 @@ export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
   };
 }
 
+/**
+ * Counts bus subscriptions opened from now on and not yet closed. The engine
+ * holds the same bus object, so every stream's subscription is counted.
+ */
+export function countSubscriptions(database: Services["database"]) {
+  const bus = database.bus;
+  const original = bus.subscribe.bind(bus);
+  let open = 0;
+  bus.subscribe = (async (channel, handler) => {
+    const unsubscribe = await original(channel, handler);
+    open += 1;
+    let closed = false;
+    return async () => {
+      if (!closed) {
+        closed = true;
+        open -= 1;
+      }
+      await unsubscribe();
+    };
+  }) as typeof bus.subscribe;
+  return {
+    get open() {
+      return open;
+    },
+  };
+}
+
 export const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 

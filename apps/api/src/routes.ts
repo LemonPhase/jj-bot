@@ -36,19 +36,11 @@ export function apiRoutes({
     eventStream(c, {
       ...stream,
       label: "The workspace stream",
-      async start(write) {
-        // Hints arrive synchronously; write them one at a time, in order.
-        let queue = Promise.resolve();
-        const unsubscribe = await engine.subscribeHints((hint) => {
-          queue = queue
-            .then(() => write({ event: hint.type, data: JSON.stringify(hint) }))
-            .catch(() => {});
-        });
-        return async () => {
-          await unsubscribe();
-          await queue;
-        };
-      },
+      // Subscribed before the response starts, so no hint is lost on (re)connect.
+      listen: (send) =>
+        engine.subscribeHints((hint) =>
+          send({ event: hint.type, data: JSON.stringify(hint) }),
+        ),
     }),
   );
 

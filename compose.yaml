@@ -40,6 +40,9 @@ services:
       # loopback: publishing beyond loopback requires API_TOKEN.
       API_ALLOW_UNAUTHENTICATED: "true"
       API_TOKEN: ${API_TOKEN:-}
+      # Without a token, /api answers only loopback Host values (a browser on
+      # the host) and these; in-network clients such as http://app:3001 need it.
+      API_ALLOWED_HOSTS: ${API_ALLOWED_HOSTS:-}
       # The isolating docker driver only, so the default profile is docker.
       # Never enable `local` here: its commands would run in this container,
       # next to the model keys and the Docker socket.

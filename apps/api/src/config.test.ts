@@ -1,6 +1,7 @@
 // Settings: defaults, the loopback-without-token refusal (in the loader and
 // as a real process exit), and the PostgreSQL requirement for a separate worker.
 import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +11,8 @@ import {
   loadWorkerConfig,
   REPO_ROOT,
 } from "./config";
+import { startServer } from "./server";
+import { quietLogger } from "./testing";
 
 describe("isLoopbackHost", () => {
   it("accepts only loopback addresses", () => {
@@ -124,6 +127,15 @@ describe("loadServerConfig", () => {
     ).toBe("t");
   });
 
+  it("listens on [::1] without the brackets, and reads API_ALLOWED_HOSTS", () => {
+    expect(loadServerConfig({ API_HOST: "[::1]" }).host).toBe("::1");
+    expect(loadServerConfig({}).allowedHosts).toEqual([]);
+    expect(
+      loadServerConfig({ API_ALLOWED_HOSTS: " jj.example.com, proxy:8443 ,," })
+        .allowedHosts,
+    ).toEqual(["jj.example.com", "proxy:8443"]);
+  });
+
   it("refuses a separate worker on PGlite, and malformed settings", () => {
     expect(() => loadServerConfig({ JJ_EMBED_WORKER: "false" })).toThrow(
       /needs PostgreSQL/,
@@ -216,5 +228,31 @@ describe("the API process", () => {
       child.kill("SIGTERM");
     }
     expect(await exited).toBe(0);
+  });
+});
+
+const ipv6Loopback = await new Promise<boolean>((resolve) => {
+  const probe = createServer()
+    .once("error", () => resolve(false))
+    .listen(0, "::1", () => probe.close(() => resolve(true)));
+});
+
+describe.skipIf(!ipv6Loopback)("API_HOST=[::1]", () => {
+  it("listens on the IPv6 loopback", async () => {
+    const server = await startServer({
+      logger: quietLogger,
+      env: {
+        API_HOST: "[::1]",
+        API_PORT: "0",
+        JJ_DATABASE_PATH: "memory://",
+        JJ_SANDBOX_DRIVERS: "local",
+      },
+    });
+    try {
+      expect(server.url).toMatch(/^http:\/\/\[::1\]:\d+$/);
+      expect((await fetch(`${server.url}/health`)).status).toBe(200);
+    } finally {
+      await server.close();
+    }
   });
 });

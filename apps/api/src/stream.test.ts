@@ -4,6 +4,7 @@
 import { apiErrorSchema, parseTaskEvent } from "@jj/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  countSubscriptions,
   createBots,
   OPEN_TIMEOUT,
   SseReader,
@@ -15,11 +16,19 @@ import {
 
 let t: TestApp;
 let bots: Record<string, string>;
+let subscriptions: ReturnType<typeof countSubscriptions>;
 
 beforeAll(async () => {
   t = await testApp({ app: { heartbeatMs: 100 } });
+  subscriptions = countSubscriptions(t.database);
   bots = await createBots(t, ["Ada", "Grace", "Linus"]);
 }, OPEN_TIMEOUT);
+
+/** Nothing left open: no registered stream and no bus subscription from one. */
+const allClosed = (what: string) =>
+  until(() => t.app.openStreams === 0 && subscriptions.open === 0, {
+    what,
+  });
 afterAll(async () => {
   await t?.dispose();
 });
@@ -142,18 +151,54 @@ describe("task stream", () => {
     expect(reader.raw).toContain(": heartbeat\n\n");
   });
 
-  it("closes the engine subscription when the client disconnects", async () => {
+  it("closes its bus subscription when the client disconnects", async () => {
     const view = await finishedTask("Disconnect check");
-    const before = t.app.openStreams;
+    await allClosed("earlier streams to close");
     const reader = new SseReader(
       await open(`/api/tasks/${view.task.id}/stream`),
     );
     await reader.until((r) => r.frames.length > 0);
-    expect(t.app.openStreams).toBe(before + 1);
+    expect(t.app.openStreams).toBe(1);
+    expect(subscriptions.open).toBe(1);
     await reader.close();
-    await until(() => t.app.openStreams === before, {
-      what: "the stream to close",
+    await allClosed("the stream and its subscription to close");
+  });
+
+  it("answers HEAD with the headers and subscribes to nothing", async () => {
+    const view = await finishedTask("HEAD check");
+    await allClosed("earlier streams to close");
+    for (let index = 0; index < 20; index += 1)
+      for (const path of [`/api/tasks/${view.task.id}/stream`, "/api/stream"]) {
+        const response = await t.app.request(path, { method: "HEAD" });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Content-Type")).toContain(
+          "text/event-stream",
+        );
+        expect(await response.text()).toBe("");
+      }
+    expect(t.app.openStreams).toBe(0);
+    expect(subscriptions.open).toBe(0);
+    const missing = await t.app.request("/api/tasks/task_missing/stream", {
+      method: "HEAD",
     });
+    expect(missing.status).toBe(404);
+  });
+
+  it("ends streams whose client stopped reading on shutdown", async () => {
+    const view = await finishedTask("Stalled check");
+    await allClosed("earlier streams to close");
+    // Bodies never read: the replay stalls once the stream's buffer is full.
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        open(`/api/tasks/${view.task.id}/stream`),
+      ),
+    );
+    await until(() => t.app.openStreams === 5 && subscriptions.open === 5, {
+      what: "five open streams",
+    });
+    t.app.endStreams();
+    await allClosed("stalled streams to end");
+    for (const response of responses) await response.body?.cancel();
   });
 
   it("answers an unknown task or a bad cursor before opening a stream", async () => {
@@ -221,15 +266,34 @@ describe("workspace stream", () => {
   });
 
   it("heartbeats while idle and closes its subscription on disconnect", async () => {
-    const before = t.app.openStreams;
+    await allClosed("earlier streams to close");
     const reader = new SseReader(await open("/api/stream"));
     await reader.until((r) => r.comments.includes("heartbeat"), {
       what: "a heartbeat",
     });
-    expect(t.app.openStreams).toBe(before + 1);
+    expect(t.app.openStreams).toBe(1);
+    expect(subscriptions.open).toBe(1);
     await reader.close();
-    await until(() => t.app.openStreams === before, {
-      what: "the stream to close",
-    });
+    await allClosed("the stream and its subscription to close");
+  });
+
+  it("is subscribed before the response starts, so an early hint is not lost", async () => {
+    await allClosed("earlier streams to close");
+    const response = await open("/api/stream");
+    // Subscribed already: nothing has been read from the response yet.
+    expect(subscriptions.open).toBe(1);
+    const created = await t.call("POST", "/api/bots", { name: "Early" });
+    const reader = new SseReader(response);
+    await reader.until(
+      (r) =>
+        r.frames.some(
+          (frame) =>
+            frame.event === "bots.changed" &&
+            JSON.parse(frame.data).botId === created.body.bot.id,
+        ),
+      { what: "the hint sent before reading began" },
+    );
+    await reader.close();
+    await allClosed("the stream to close");
   });
 });
