@@ -3,7 +3,11 @@ import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
 import { ModelRegistry } from "./models";
-import { SCRIPTED_MODEL_REF, scriptedNotesFile } from "./scripted";
+import {
+  SCRIPTED_MODEL_REF,
+  scriptedCommands,
+  scriptedNotesFile,
+} from "./scripted";
 import { budgets, localSandbox, recordingHooks } from "./test-support";
 import type { CollabTool, ExecutorEvent, PiMessage, RunOutcome } from "./types";
 
@@ -195,6 +199,31 @@ describe("scripted test model", () => {
     )?.[1];
     expect(file).toBeDefined();
     expect(await workspace.sandbox.fs.stat(file ?? "")).toBeDefined();
+  });
+
+  it("runs the commands a brief quotes after run, once each, after writing its notes", async () => {
+    expect(
+      scriptedCommands("Run `echo one` first, then run `echo two`; `ls`."),
+    ).toEqual(["echo one", "echo two"]);
+    const { run, events } = harness();
+    const brief =
+      "Part 1 of 1: run `echo one > one.txt` and run `cat one.txt`, then write notes-bob.md.";
+    const outcome = await run("Bob", [brief], []);
+    expect(outcome.kind).toBe("ended");
+    const tools = events.flatMap((event) =>
+      event.type === "tool.finished" ? [`${event.tool} ${event.summary}`] : [],
+    );
+    expect(tools).toEqual([
+      "write notes-bob.md",
+      "bash echo one > one.txt",
+      "bash cat one.txt",
+      "bash ls -la",
+    ]);
+    // A later run resumes the transcript and repeats none of them.
+    await run("Bob", ["Thanks."], []);
+    expect(
+      events.filter((event) => event.type === "tool.finished"),
+    ).toHaveLength(4);
   });
 
   it("credits results by the engine header only, in any order", async () => {

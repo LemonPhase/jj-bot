@@ -8,6 +8,7 @@ import type { Logger } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
 import { apiLogger, createApp, type JJApp } from "./app";
 import { type Env, loadServerConfig, type ServerConfig } from "./config";
+import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
 import { openServices, type Services } from "./wiring";
 
 export interface StartOptions {
@@ -20,6 +21,8 @@ export interface RunningServer {
   /** `http://host:port`, with the port actually bound (API_PORT=0 picks one). */
   url: string;
   config: ServerConfig;
+  /** The bearer token in force, and where it came from. */
+  auth: ApiAuth;
   services: Services;
   app: JJApp;
   /** Graceful shutdown. Idempotent. */
@@ -52,7 +55,7 @@ export async function startServer(
 ): Promise<RunningServer> {
   const env = options.env ?? process.env;
   const logger = options.logger ?? apiLogger;
-  // Refuses a non-loopback host without a token before anything opens.
+  // Settings that cannot work fail here, before anything opens.
   const config = loadServerConfig(env);
 
   const proxy = configureOutboundProxy(env);
@@ -67,11 +70,12 @@ export async function startServer(
   const { engine, database } = services;
   let server: ServerType | undefined;
   try {
+    const auth = await resolveApiToken(config, database.db);
     const app = createApp({
       engine,
       logger,
       config: {
-        ...(config.apiToken ? { apiToken: config.apiToken } : {}),
+        ...(auth.kind === "none" ? {} : { apiToken: auth.token }),
         allowedHosts: config.allowedHosts,
         workerEmbedded: config.embedWorker,
         webDist: config.webDist,
@@ -95,10 +99,16 @@ export async function startServer(
         `worker ${config.embedWorker ? "embedded" : "separate"}`,
         `drivers ${drivers.map((info) => `${info.id}${info.available ? "" : " (unavailable)"}`).join(", ")}`,
         `models ${providers.length > 0 ? providers.join(", ") : "none configured"}`,
-        `auth ${config.apiToken ? "bearer token" : "none (loopback only)"}`,
+        `auth ${describeAuth(auth)}`,
         `web ${config.webDist ? "served" : "not built"}`,
       ].join(" · "),
     );
+    // The one line that carries a generated token: the user opens it once,
+    // and the web app keeps the token and drops it from the address bar.
+    if (auth.kind === "generated")
+      logger.info(
+        `Open JJ Bot: ${config.publicUrl ?? `http://127.0.0.1:${listening.address.port}`}/?token=${auth.token}`,
+      );
 
     const http = server;
     let closing: Promise<void> | undefined;
@@ -125,7 +135,7 @@ export async function startServer(
       })();
       return closing;
     };
-    return { url, config, services, app, close };
+    return { url, config, auth, services, app, close };
   } catch (error) {
     server?.close();
     await engine.worker.stop().catch(() => {});

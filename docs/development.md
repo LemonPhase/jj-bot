@@ -2,7 +2,7 @@
 
 ## Prerequisites and start
 
-Use Node.js 24 (minimum 22.12) and npm. Docker is optional: it runs PostgreSQL and the `docker` sandbox driver. From the repository root:
+Use Node.js 24 (minimum 22.12) and npm. Docker is optional: it runs PostgreSQL and the `docker` sandbox driver, or the whole product (see [Docker Compose](#docker-compose)). From the repository root:
 
 ```sh
 npm ci
@@ -18,6 +18,33 @@ For PostgreSQL, run `docker compose up -d postgres` and set `DATABASE_URL=postgr
 One process serves everything in production: `npm run build -w @jj/web`, then `npm run start -w @jj/api` serves the built app from `apps/web/dist` on the API port, with client routes falling back to `index.html`.
 
 To run the worker separately, set `DATABASE_URL` and `JJ_EMBED_WORKER=false` for the API and start `npm run dev:worker` (or `npm run start -w @jj/worker`). The worker refuses to start without `DATABASE_URL`, and the API refuses `JJ_EMBED_WORKER=false` on PGlite.
+
+## Docker Compose
+
+`compose.yaml` runs the whole product on one Docker host:
+
+```sh
+cp .env.example .env    # then set one model provider key in .env
+docker compose up -d --build --wait
+docker compose logs app | grep "Open JJ Bot"
+```
+
+Open the printed link, `http://127.0.0.1:3001/?token=…` (`JJ_PORT` changes the host port). The web app keeps the token in the browser and removes it from the address bar. Compose reads `.env` only to fill the variables `compose.yaml` names (provider keys, `JJ_DEFAULT_MODEL`, `JJ_ENABLE_SCRIPTED_MODEL`, `API_TOKEN`, the proxy variables, the engine limits, `JJ_PORT`, `JJ_POSTGRES_PORT`, `JJ_DOCKER_NAMESPACE`, `JJ_DOCKER_SOCKET`); other settings in `.env`, such as `API_HOST`, never reach the container. `docker compose up -d postgres` alone still starts just the database for `npm run dev`.
+
+| Service         | What it is                                                                                                                                                                                                        |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `postgres`      | PostgreSQL 17 with a healthcheck; data in the volume `jj-bot_jj_postgres`.                                                                                                                                        |
+| `app`           | The root `Dockerfile`: the API serving the built web app, with the worker embedded, on PostgreSQL. Starts once `postgres` is healthy and `sandbox-image` has exited; healthy itself while `/health/ready` is 200. |
+| `sandbox-image` | Builds `jj-sandbox:base-1` from `packages/sandbox/images/base` on the host's daemon, where the docker driver looks for it, and exits at once. The app needs the image, not a running container.                   |
+
+- **Image.** A multi-stage build: `npm ci` and the web bundle in one stage, the API's and worker's production dependencies in another, and a Node 24 slim runtime that runs `node --import tsx apps/api/src/index.ts` from `/app`. The code is owned by root and read-only to the app. `.dockerignore` keeps `.env` files, `.npmrc`, keys and certificates, `.jj-data` and `.git` out of the build context at every depth. Behind a TLS-intercepting proxy, pass its CA bundle as the build secret `build_ca` (`docker build --secret id=build_ca,src=ca.pem .`, or `build.secrets` in a compose override); it is never stored in a layer. Compose builds through buildx bake, which refuses a secret file outside the project directory until it is allowed: `docker compose build` with `BUILDX_BAKE_ENTITLEMENTS_FS=0`, or `docker buildx bake --allow fs.read=<dir>`.
+- **Authentication.** Inside the container the API listens on `0.0.0.0`, so it always requires a bearer token. `API_TOKEN` sets one. Without it, the API generates a random token (32 bytes, base64url) on its first boot, keeps it in the database (`instance_settings`), reuses it on every later boot, and prints it only in the line `Open JJ Bot: <API_PUBLIC_URL>/?token=<token>`, once per boot. Treat the logs as secret; `docker compose down -v` discards the token with the data, and deleting the `api_token` row of `instance_settings` makes the next boot generate a new one. The port is published on the host's loopback only; publish it further only behind HTTPS, so the token never crosses a network in the clear.
+- **Sandboxes.** Only the `docker` driver is registered (`JJ_SANDBOX_DRIVERS=docker`), so the default profile is the isolated docker sandbox. Never enable `local` in the container: its commands would run next to the model keys and the Docker socket. Sandboxes are sibling containers on the host's daemon, on Docker's default bridge network rather than the compose network, so they cannot reach the app or PostgreSQL by service name or container address; without the token they could not use the API even where they reach it (on Docker Desktop, through `host.docker.internal`). Their namespace (`JJ_DOCKER_NAMESPACE`) defaults to the compose project name, `jj-bot`, so separate projects on one daemon never reap each other's sandboxes. The one-worker-per-namespace constraint below applies: the compose app is that namespace's worker.
+- **The Docker socket.** The host's socket is mounted at `/var/run/docker.sock` (`JJ_DOCKER_SOCKET` picks another host path, such as a rootless daemon's). It is root-equivalent on the host: whoever controls the app container controls the host. The driver never passes it into a sandbox, never starts privileged containers and never bind-mounts host paths ([Sandbox boundary](architecture.md#sandbox-boundary)). The mount pins the socket as it was when the container started: if the daemon restarts underneath a running app (with `live-restore`), the old socket is gone, the driver reports unavailable and the app turns unhealthy until `docker compose restart app`.
+- **No root.** The entrypoint (`docker/entrypoint.sh`) starts as root only to read the group id of the socket (following a symlink), which differs per host. It adds that group to the user `jj` (uid 10001) only when the group can read and write the socket, then drops to `jj` with `setpriv` and `no_new_privs`, emptying the capability bounding set when it may; the app holds no capabilities. A socket its group cannot use is reported in the log, and the driver then reports unavailable: make the socket group-accessible, or reach the daemon through a socket proxy by setting `DOCKER_HOST` in a compose override (plain `tcp://` beyond loopback also needs `JJ_DOCKER_ALLOW_INSECURE_TCP=true`). An image started with `--user` skips the switch, so give that user the socket's group with `group_add`. The container also runs with a read-only root filesystem, a `/tmp` tmpfs, `no-new-privileges` and every capability dropped except `SETUID` and `SETGID` (the entrypoint) and `KILL` (init forwarding stop signals).
+- **Proxy.** `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` pass through for model calls. `127.0.0.1` inside the container is the container itself; a proxy on the host is `host.docker.internal`.
+- **Restarts.** `docker compose restart app` or `stop` sends SIGTERM and allows 30 s, more than the API's own 20 s shutdown limit, so running sessions are handed back and resume from their last completed turn when the app starts again; a command cut short is reported as interrupted, never re-run, and the task workspace keeps its files.
+- **Data.** `docker compose down -v` removes the PostgreSQL volume, but not the sandboxes' task workspaces, which are Docker volumes named `<namespace>-task-<taskId>` and labelled `jj.sandbox.namespace=<namespace>`. With the default namespace, `docker volume ls -q --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker volume rm` removes them.
 
 ## Workspace ownership
 
@@ -44,29 +71,32 @@ The API's composition root is `apps/api/src/server.ts` (`startServer`). It confi
 
 Settings are environment variables, read from `.env` at the repository root by the dev and start scripts. Relative paths resolve against the repository root. A setting that cannot work stops the process at startup with a message naming it.
 
-| Variable                                | Purpose                                                                                                                                                |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `API_HOST`                              | Listener address, default `127.0.0.1`. A non-loopback address requires `API_TOKEN`; the server refuses to start without it.                            |
-| `API_PORT`                              | Listener port, default `3001`; `0` picks a free one.                                                                                                   |
-| `API_TOKEN`                             | Bearer token required on `/api/*` when set. The web app reads it once from `?token=` and keeps it in localStorage.                                     |
-| `API_ALLOWED_HOSTS`                     | Without `API_TOKEN`, `Host` values besides loopback that `/api/*` answers, comma-separated: a hostname (any port) or `host:port`. For reverse proxies. |
-| `DATABASE_URL`                          | PostgreSQL connection string. When set, the API and worker use PostgreSQL.                                                                             |
-| `JJ_DATABASE_PATH`                      | PGlite data directory when `DATABASE_URL` is unset, default `.jj-data`; `memory://` keeps nothing (bootstrap reports no persistence).                  |
-| `JJ_EMBED_WORKER`                       | `true` (default) runs the job loop in the API; `false` leaves it to `apps/worker` and needs PostgreSQL.                                                |
-| `JJ_ENABLE_SCRIPTED_MODEL`              | `true` registers the keyless scripted test model `scripted/team`. The web app labels it "Scripted model".                                              |
-| Provider keys                           | One variable per provider, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; `GET /api/models` lists every provider with its `envVars`.                 |
-| `JJ_DEFAULT_MODEL`                      | `provider/model` for bots without a model, when that provider is configured; otherwise a cheap model of the first configured provider.                 |
-| `JJ_CONCURRENCY`                        | Jobs (session runs and chat replies) one worker runs at once, default `4`.                                                                             |
-| `JJ_MAX_SESSIONS_PER_TASK`              | Sessions a task may create, default `16`.                                                                                                              |
-| `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                   |
-| `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                        |
-| `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                         |
-| `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.      |
-| `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it.  |
-| `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                         |
-| `DOCKER_HOST`                           | Docker Engine API address, default `/var/run/docker.sock`. Plain-HTTP `tcp://` beyond loopback needs `JJ_DOCKER_ALLOW_INSECURE_TCP=true`.              |
-| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Outbound proxy for model provider calls (either case; lowercase wins). A proxy's CA goes in `NODE_EXTRA_CA_CERTS`.                                     |
-| `JJ_POSTGRES_PORT`                      | Host port of the compose PostgreSQL service, default `5433`.                                                                                           |
+| Variable                                | Purpose                                                                                                                                                             |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `API_HOST`                              | Listener address, default `127.0.0.1`. Beyond loopback the API always requires a token: `API_TOKEN`, else one it generates on first boot and keeps in the database. |
+| `API_PORT`                              | Listener port, default `3001`; `0` picks a free one.                                                                                                                |
+| `API_TOKEN`                             | Bearer token required on `/api/*` when set. The web app reads it once from `?token=`, keeps it in localStorage and removes it from the address bar.                 |
+| `API_PUBLIC_URL`                        | Where users open the app, for the `Open JJ Bot` line that carries a generated token; default `http://127.0.0.1:<API_PORT>`.                                         |
+| `API_ALLOWED_HOSTS`                     | Without `API_TOKEN`, `Host` values besides loopback that `/api/*` answers, comma-separated: a hostname (any port) or `host:port`. For reverse proxies.              |
+| `DATABASE_URL`                          | PostgreSQL connection string. When set, the API and worker use PostgreSQL.                                                                                          |
+| `JJ_DATABASE_PATH`                      | PGlite data directory when `DATABASE_URL` is unset, default `.jj-data`; `memory://` keeps nothing (bootstrap reports no persistence).                               |
+| `JJ_EMBED_WORKER`                       | `true` (default) runs the job loop in the API; `false` leaves it to `apps/worker` and needs PostgreSQL.                                                             |
+| `JJ_ENABLE_SCRIPTED_MODEL`              | `true` registers the keyless scripted test model `scripted/team`. The web app labels it "Scripted model".                                                           |
+| Provider keys                           | One variable per provider, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; `GET /api/models` lists every provider with its `envVars`.                              |
+| `JJ_DEFAULT_MODEL`                      | `provider/model` for bots without a model, when that provider is configured; otherwise a cheap model of the first configured provider.                              |
+| `JJ_CONCURRENCY`                        | Jobs (session runs and chat replies) one worker runs at once, default `4`.                                                                                          |
+| `JJ_MAX_SESSIONS_PER_TASK`              | Sessions a task may create, default `16`.                                                                                                                           |
+| `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                                |
+| `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                                     |
+| `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                                      |
+| `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.                   |
+| `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it.               |
+| `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                                      |
+| `DOCKER_HOST`                           | Docker Engine API address, default `/var/run/docker.sock`. Plain-HTTP `tcp://` beyond loopback needs `JJ_DOCKER_ALLOW_INSECURE_TCP=true`.                           |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Outbound proxy for model provider calls (either case; lowercase wins). A proxy's CA goes in `NODE_EXTRA_CA_CERTS`.                                                  |
+| `JJ_POSTGRES_PORT`                      | Host port of the compose PostgreSQL service (loopback), default `5433`.                                                                                             |
+| `JJ_PORT`                               | Host port of the compose app (loopback), default `3001`.                                                                                                            |
+| `JJ_DOCKER_SOCKET`                      | Host path of the Docker socket compose mounts into the app, default `/var/run/docker.sock`.                                                                         |
 
 Schema: opening the database applies the SQL migrations in `packages/db/migrations`, so there is no separate migration step; processes opening one PostgreSQL database at once serialize on an advisory lock. To change the schema, edit `packages/db/src/schema.ts`, run `npm run db:generate -w @jj/db` and commit the generated migration. Never edit a migration that has been applied. The store's contract is in `packages/db/README.md`.
 
@@ -97,7 +127,7 @@ The route table and every shape are in [the contract changelog](contract-changel
 | `GET`  | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |
 
 - **Errors.** Every non-2xx JSON answer is `{ error: { code, message, details? } }` with a contract code and its status (`VALIDATION_FAILED` 400, `UNAUTHORIZED` 401, `NOT_FOUND` 404, `CONFLICT` and the other refusals 409, `MODEL_NOT_CONFIGURED`, `PROFILE_UNSUPPORTED` and `VERIFICATION_UNAVAILABLE` 422, `RATE_LIMITED` 429). A body that is not JSON is `VALIDATION_FAILED`, one over 1 MiB is `VALIDATION_FAILED` with 413, an unknown route is `NOT_FOUND`. Anything unexpected is `500 INTERNAL` with no detail; the stack goes to the server log.
-- **Browser protection.** Every `/api/*` request with `Sec-Fetch-Site: cross-site` is refused with 403. Without `API_TOKEN`, only loopback `Host` values (`localhost`, `127.0.0.1`, `[::1]`, any port) and `API_ALLOWED_HOSTS` are answered; any other `Host`, such as a DNS-rebinding page's own name, gets 403. POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise), so a cross-origin write always needs a CORS preflight, and the API sends no CORS headers. The Vite dev proxy keeps the browser's `Host` (`127.0.0.1:5173`), and a container whose port is published on the host's loopback receives `127.0.0.1:<port>` or `localhost:<port>`; both pass. With a token, the bearer check replaces the `Host` check.
+- **Browser protection.** Every `/api/*` request with `Sec-Fetch-Site: cross-site` is refused with 403. Without `API_TOKEN`, only loopback `Host` values (`localhost`, `127.0.0.1`, `[::1]`, any port) and `API_ALLOWED_HOSTS` are answered; any other `Host`, such as a DNS-rebinding page's own name, gets 403. POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise), so a cross-origin write always needs a CORS preflight, and the API sends no CORS headers. The Vite dev proxy keeps the browser's `Host` (`127.0.0.1:5173`), so it passes. With a token, configured or generated, the bearer check replaces the `Host` check.
 - **Validation.** The engine parses every request body with its contract schema. Path ids, `after`, `limit` and `Last-Event-ID` are checked in the API.
 - **Task stream.** One frame per event: `id:` the sequence, `event:` the type, `data:` the event JSON. It replays events after `Last-Event-ID`, else after `?after=`, else from the start, then streams new ones; each event is sent once, in order. An unknown task answers 404 before the stream opens. The stream stays open after the task finishes, since a message can continue it.
 - **Workspace stream.** One frame per hint, `event:` its type and `data:` the hint JSON, without ids: it is not resumable, so clients refetch on (re)connect.
@@ -106,7 +136,7 @@ The route table and every shape are in [the contract changelog](contract-changel
 - **Readiness** reports `database` (a query), `migrations` (none pending), `worker` (the embedded job loop polled within 30 s; skipped when the worker runs elsewhere) and `drivers` (at least one available). `/health` and `/health/ready` are unauthenticated and report states and counts only.
 - **Static files.** When `apps/web/dist` exists, other paths serve its files, and page routes without a file extension fall back to `index.html`. They never answer `/api` or `/health`.
 
-Task execution is owned by the worker, not by an HTTP request or an open stream: closing the browser does not stop a task. The only access control is the optional shared bearer token, plus the browser protection above; there is no per-user identity, so keep the API on loopback unless a token is set.
+Task execution is owned by the worker, not by an HTTP request or an open stream: closing the browser does not stop a task. The only access control is the optional shared bearer token, plus the browser protection above; there is no per-user identity, so keep the API on loopback (in compose, its published port) unless a token is set.
 
 ## Checks
 
@@ -117,12 +147,15 @@ npm run format        # format and safe lint/import fixes
 npm run test
 npm run typecheck
 npm run smoke:e2e     # the whole server over HTTP on PGlite, the local driver and the scripted model
+JJ_SMOKE_BASE_URL=http://127.0.0.1:3001 npm run smoke:e2e   # the same against a running stack, on the docker driver
 npm run smoke:runtime # one live pi tool cycle in a local sandbox; JJ_SMOKE_MODEL (default openai/gpt-6-luna) and its key
 ```
 
 `smoke:e2e` boots the API in-process on a temporary PGlite directory, creates three bots and a task with all of them, follows the task stream to completion, checks that two workers ran in parallel and that every artifact downloads intact, and stops a second task; it exits non-zero on any failure. `JJ_SMOKE_MODEL=<provider/model> npm run smoke:e2e` runs the same flow on a real model whose key is set.
 
-CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`. After `npm ci` it builds the sandbox base image, then runs lint, typecheck, tests, the web build and `smoke:e2e` (scripted model only). Every step must pass, and each runs even when an earlier one fails, so one run reports every failure. A newer run on the same ref cancels the superseded one.
+With `JJ_SMOKE_BASE_URL` it boots nothing and drives the server at that URL; `JJ_SMOKE_TOKEN` is its bearer token (for the compose stack, the one in its `Open JJ Bot` line). It then also checks that `docker` is the only driver and the default profile is the available, isolated docker sandbox, that the workers' commands ran as the sandbox user in `/workspace`, and that a sandbox cannot open a TCP connection to any `JJ_SMOKE_UNREACHABLE` target (comma-separated `host:port`, default `app:3001,postgres:5432`). `JJ_SMOKE_RESTART_COMMAND` adds restart survival: a third task's workers are caught running a slow command, the command (such as `docker compose restart app`) restarts the server, and the task must still complete, with the same token, the cut-short commands reported as stopped, the runs handed back and resumed, the files written before the restart still in the workspace, no finished tool call run again, and the stream replayed across the restart folding into the same view a reload returns.
+
+CI (`.github/workflows/ci.yml`) runs on every push and pull request, on the Node version in `.nvmrc`, in two parallel jobs. The first, after `npm ci`, builds the sandbox base image, then runs lint, typecheck, tests, the web build and `smoke:e2e` (scripted model only). Every step must pass, and each runs even when an earlier one fails, so one run reports every failure. The second, "Compose stack", runs `docker compose build` (the app image and the sandbox image), starts the stack with the scripted model and no `API_TOKEN` (`up --wait`, until `/health/ready` passes), reads the generated token from the `Open JJ Bot` line and the app's and PostgreSQL's container addresses, and runs `smoke:e2e` against the stack through the published loopback port with `JJ_SMOKE_RESTART_COMMAND="docker compose restart app"`. It then checks that the logs carry the token only in one `Open JJ Bot` line per boot, the same before and after the restart. On failure it prints the stack's logs, and it always ends with `docker compose down -v` and removes the sandboxes' containers and volumes. A newer run on the same ref cancels the superseded one.
 
 Some tests need external services and skip when those services are missing. CI provides both, so there these tests run instead of skipping:
 

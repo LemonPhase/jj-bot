@@ -1,6 +1,9 @@
-# Local PostgreSQL. Run with `docker compose up -d postgres` and set
-# DATABASE_URL=postgresql://jj:jj_local@localhost:5433/jj_bot; without
-# DATABASE_URL the API uses embedded PGlite and needs no Docker.
+# JJ Bot in one command. Put one model provider key in .env
+# (`cp .env.example .env`), run `docker compose up -d --build --wait`, then
+# open the link `docker compose logs app | grep "Open JJ Bot"` prints. Compose
+# reads .env only to fill the variables below. `docker compose up -d postgres`
+# alone starts just the database for `npm run dev`. Details:
+# docs/development.md, "Docker Compose".
 name: jj-bot
 
 services:
@@ -19,5 +22,91 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # The API, serving the web app, with the worker embedded. Its sandboxes are
+  # sibling containers on the host's daemon, started through the socket below.
+  app:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Not a running service: this only makes sure the sandbox image exists.
+      sandbox-image:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://jj:jj_local@postgres:5432/jj_bot
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      # Listening on 0.0.0.0, the API always requires a token: API_TOKEN, or
+      # one it generates on first boot and keeps in the database. The startup
+      # line "Open JJ Bot: <API_PUBLIC_URL>/?token=…" carries it.
+      API_TOKEN: ${API_TOKEN:-}
+      API_PUBLIC_URL: http://127.0.0.1:${JJ_PORT:-3001}
+      # The isolating docker driver only, so the default profile is docker.
+      # Never enable `local` here: its commands would run in this container,
+      # next to the model keys and the Docker socket.
+      JJ_SANDBOX_DRIVERS: docker
+      # One worker per namespace on a daemon, so each compose project has its own.
+      JJ_DOCKER_NAMESPACE: ${JJ_DOCKER_NAMESPACE:-${COMPOSE_PROJECT_NAME:-jj-bot}}
+      JJ_ENABLE_SCRIPTED_MODEL: ${JJ_ENABLE_SCRIPTED_MODEL:-false}
+      JJ_DEFAULT_MODEL: ${JJ_DEFAULT_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      # Outbound proxy for model calls. 127.0.0.1 here is the container itself;
+      # reach a proxy on the host as host.docker.internal.
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      JJ_CONCURRENCY: ${JJ_CONCURRENCY:-}
+      JJ_MAX_SESSIONS_PER_TASK: ${JJ_MAX_SESSIONS_PER_TASK:-}
+      JJ_MAX_DELEGATION_DEPTH: ${JJ_MAX_DELEGATION_DEPTH:-}
+      JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
+      JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
+    ports:
+      # Loopback only. The token is required either way; publish wider only
+      # behind HTTPS, so the token never crosses a network in the clear.
+      - "127.0.0.1:${JJ_PORT:-3001}:3001"
+    volumes:
+      # Root-equivalent on the host. The app uses it to run sandboxes and never
+      # passes it into one. Rootless Docker: set JJ_DOCKER_SOCKET to its socket.
+      - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The entrypoint joins the socket's group and drops to uid 10001 (SETUID,
+    # SETGID), and init forwards stop signals to the app (KILL). The app
+    # itself runs with no capabilities.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    # Longer than the API's own 20 s shutdown limit, so running sessions are
+    # handed back cleanly on `docker compose stop` or `restart`.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Builds the sandbox base image on the host's daemon, where the docker
+  # driver looks for it. The container does nothing and exits at once; the app
+  # waits for that exit only so that the image exists (and `up --wait` passes).
+  sandbox-image:
+    image: jj-sandbox:base-1
+    build:
+      context: packages/sandbox/images/base
+    entrypoint: ["true"]
+    network_mode: none
+    restart: "no"
+
 volumes:
   jj_postgres:

@@ -78,7 +78,7 @@ describe.each(targets)("openDatabase on $name", (target) => {
   }, OPEN_TIMEOUT);
 
   it("applies every migration to a fresh database", async () => {
-    expect(expectedTables).toHaveLength(16);
+    expect(expectedTables).toHaveLength(17);
     expect(await publicTables(database)).toEqual(expectedTables);
     expect(await appliedMigrations(database)).toBe(await journalLength());
   });

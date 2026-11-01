@@ -34,6 +34,7 @@ Both modes take an optional `onError` for errors that have no caller: pool clien
 - `tasks.created_from_message_id` and `task_messages.relayed_from_message_id` record the conversation message whose reply created the task or relayed the message. They are unique per creating bot and per task, so a chat reply that runs again after a hand-off or crash repeats neither.
 - `tasks.sandbox_holder` and `sandbox_holder_until` name the worker holding the task's ephemeral sandbox and how long that claim lasts; the holder refreshes it and clears it on release.
 - `artifacts.content` holds the bytes. Select columns explicitly when listing artifacts.
+- `instance_settings` holds instance-wide values the server creates for itself, by key, such as the generated API token (`api_token`). It has no owner. `instanceSetting(exec, key, initial)` returns the stored value, creating it with `initial()` once; concurrent first calls, across processes too, agree on one value.
 
 To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`, and commit the new SQL in `migrations/` together with `migrations/meta`. Never edit a migration that has been applied; add a new one. All pending migrations apply in one transaction.
 

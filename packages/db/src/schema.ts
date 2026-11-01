@@ -614,6 +614,18 @@ export type NewUsage = typeof usage.$inferInsert;
 export type JobRow = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 
+/**
+ * Instance-wide values the server creates for itself, by key, such as the API
+ * token generated on first boot. Infrastructure, like `jobs`: no owner.
+ */
+export const instanceSettings = pgTable("instance_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  createdAt: createdAt(),
+});
+
+export type InstanceSettingRow = typeof instanceSettings.$inferSelect;
+
 /** Every table, for `drizzle(client, { schema: tables })` and the `Db` type. */
 export const tables = {
   runtimeProfiles,
@@ -632,4 +644,5 @@ export const tables = {
   artifacts,
   usage,
   jobs,
+  instanceSettings,
 };

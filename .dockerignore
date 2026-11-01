@@ -1,0 +1,36 @@
+# Build context of the app image (Dockerfile): sources and manifests only.
+# Secrets and local state are excluded at every depth.
+**/.env
+**/.env.*
+**/.npmrc
+**/.yarnrc*
+**/.netrc
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.ssh
+**/.aws
+**/.docker
+**/.jj-data
+**/jj-sandbox
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+**/.git
+**/.DS_Store
+.github
+.claude
+compose*.yaml
+Dockerfile
+.dockerignore
+**/*.test.ts
+**/*.test.tsx
+**/__snapshots__
+docs
+packages/sandbox/images

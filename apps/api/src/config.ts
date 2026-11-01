@@ -46,7 +46,10 @@ export interface ServerConfig extends ServicesConfig {
   /** The listen address, without IPv6 brackets. */
   host: string;
   port: number;
+  /** `API_TOKEN`. Without it, a listener beyond loopback uses a generated token. */
   apiToken?: string;
+  /** Where users open the app, for the startup line: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
+  publicUrl?: string;
   /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token. */
   allowedHosts: string[];
   /** Run the job loop inside the API process. */
@@ -144,7 +147,30 @@ export function loadServicesConfig(env: Env): ServicesConfig {
   };
 }
 
-/** The API's settings. Refuses to listen beyond loopback without `API_TOKEN`. */
+/** An absolute http(s) URL without a trailing slash. */
+function publicUrl(env: Env): string | undefined {
+  const value = text(env, "API_PUBLIC_URL");
+  if (value === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ConfigError(
+      `API_PUBLIC_URL must be an http(s) URL; got "${value}".`,
+    );
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.search || url.hash)
+    throw new ConfigError(
+      `API_PUBLIC_URL must be an http(s) URL without a query; got "${value}".`,
+    );
+  return url.toString().replace(/\/+$/, "");
+}
+
+/**
+ * The API's settings. Beyond loopback without `API_TOKEN`, the server
+ * generates a token on first boot (see `resolveApiToken`), so it never
+ * listens there unauthenticated.
+ */
 export function loadServerConfig(env: Env): ServerConfig {
   // `[::1]` names the address; listen() takes it without the brackets.
   const host = (text(env, "API_HOST") ?? "127.0.0.1").replace(
@@ -152,10 +178,7 @@ export function loadServerConfig(env: Env): ServerConfig {
     "$1",
   );
   const apiToken = text(env, "API_TOKEN");
-  if (!isLoopbackHost(host) && !apiToken)
-    throw new ConfigError(
-      `API_HOST=${host} is reachable from other machines, so API_TOKEN is required. Set API_TOKEN to a long random value, or listen on 127.0.0.1.`,
-    );
+  const url = publicUrl(env);
   const services = loadServicesConfig(env);
   const embedWorker = flag(env, "JJ_EMBED_WORKER", true);
   if (!embedWorker && services.database.mode === "pglite")
@@ -167,6 +190,7 @@ export function loadServerConfig(env: Env): ServerConfig {
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
+    ...(url ? { publicUrl: url } : {}),
     allowedHosts: (text(env, "API_ALLOWED_HOSTS") ?? "")
       .split(",")
       .map((entry) => entry.trim())

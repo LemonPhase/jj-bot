@@ -1,6 +1,6 @@
-// Settings: defaults, the loopback-without-token refusal (in the loader and
-// as a real process exit), and the PostgreSQL requirement for a separate worker.
-import { spawnSync } from "node:child_process";
+// Settings: defaults, listeners beyond loopback, API_PUBLIC_URL, and the
+// PostgreSQL requirement for a separate worker. The generated token is in
+// token.test.ts.
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -86,14 +86,24 @@ describe("loadServerConfig", () => {
     ).toBe(true);
   });
 
-  it("refuses to listen beyond loopback without API_TOKEN", () => {
+  it("listens beyond loopback with or without API_TOKEN", () => {
+    // Without one, the server generates a token at boot (token.test.ts).
     for (const host of ["0.0.0.0", "::", "192.168.1.10"])
-      expect(() => loadServerConfig({ API_HOST: host })).toThrow(
-        /API_TOKEN is required/,
-      );
+      expect(loadServerConfig({ API_HOST: host }).apiToken).toBeUndefined();
     expect(
       loadServerConfig({ API_HOST: "0.0.0.0", API_TOKEN: "t" }),
     ).toMatchObject({ host: "0.0.0.0", apiToken: "t" });
+  });
+
+  it("reads API_PUBLIC_URL without its trailing slash, and refuses a malformed one", () => {
+    expect(loadServerConfig({}).publicUrl).toBeUndefined();
+    expect(
+      loadServerConfig({ API_PUBLIC_URL: "http://127.0.0.1:3101/" }).publicUrl,
+    ).toBe("http://127.0.0.1:3101");
+    for (const value of ["127.0.0.1:3001", "ftp://host", "http://h/?a=1"])
+      expect(() => loadServerConfig({ API_PUBLIC_URL: value })).toThrow(
+        /API_PUBLIC_URL/,
+      );
   });
 
   it("listens on [::1] without the brackets, and reads API_ALLOWED_HOSTS", () => {
@@ -129,29 +139,6 @@ describe("loadWorkerConfig", () => {
       loadWorkerConfig({ DATABASE_URL: "postgresql://localhost/jj" }).database
         .mode,
     ).toBe("postgres");
-  });
-});
-
-describe("the API process", () => {
-  it("exits with a clear message instead of listening beyond loopback without a token", () => {
-    const result = spawnSync(
-      process.execPath,
-      ["--import", "tsx", join(REPO_ROOT, "apps/api/src/index.ts")],
-      {
-        env: {
-          PATH: process.env.PATH,
-          API_HOST: "0.0.0.0",
-          API_PORT: "0",
-          JJ_DATABASE_PATH: "memory://",
-        },
-        encoding: "utf8",
-        timeout: 30_000,
-      },
-    );
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("API_HOST=0.0.0.0");
-    expect(result.stderr).toContain("API_TOKEN is required");
-    expect(result.stdout).not.toContain("listening");
   });
 });
 
