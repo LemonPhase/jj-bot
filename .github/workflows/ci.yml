@@ -83,3 +83,64 @@ jobs:
       - name: Smoke (end to end)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run smoke:e2e
+
+  compose:
+    # The product as `docker compose up` ships it: the app image, PostgreSQL and
+    # the docker driver on the runner's daemon, driven over HTTP from outside.
+    name: Compose stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      JJ_ENABLE_SCRIPTED_MODEL: "true"
+      JJ_DEFAULT_MODEL: scripted/team
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The smoke script runs on the runner and imports the workspace packages.
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Builds the app image and, through the sandbox-image service, jj-sandbox:base-1.
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack
+        run: docker compose up -d
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:3001/health/ready; then exit 0; fi
+            sleep 2
+          done
+          echo "The app did not become ready." >&2
+          exit 1
+
+      # Through the published loopback port, as a browser on the host would.
+      # Includes restart survival across `docker compose restart app`.
+      - name: Smoke against the stack (docker driver, restart survival)
+        env:
+          JJ_SMOKE_BASE_URL: http://127.0.0.1:3001
+          JJ_SMOKE_RESTART_COMMAND: docker compose restart app
+        run: npm run smoke:e2e
+
+      - name: Show the stack's state and logs
+        if: ${{ failure() }}
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --timestamps
+
+      - name: Stop the stack and remove its volumes
+        if: ${{ always() }}
+        run: |
+          docker compose down -v --remove-orphans
+          docker volume ls -q --filter label=jj.sandbox.namespace=jj | xargs -r docker volume rm
