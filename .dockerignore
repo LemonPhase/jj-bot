@@ -1,15 +1,31 @@
-# Build context of the app image (Dockerfile). Only sources and manifests go in.
+# Build context of the app image (Dockerfile): sources and manifests only.
+# Secrets and local state are excluded at every depth.
+**/.env
+**/.env.*
+**/.npmrc
+**/.yarnrc*
+**/.netrc
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/.ssh
+**/.aws
+**/.docker
+**/.jj-data
+**/jj-sandbox
 **/node_modules
 **/dist
 **/coverage
 **/*.tsbuildinfo
 **/*.log
-.git
+**/.git
+**/.DS_Store
 .github
 .claude
-.jj-data
-.env
-.env.*
 compose*.yaml
 Dockerfile
 .dockerignore
