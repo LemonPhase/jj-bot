@@ -82,7 +82,7 @@ A direct message to a bot runs a lightweight pi session with the bot's persona a
 
 ## Visibility is separate from activation
 
-Each task message is persisted once, with attribution and intent. Every participating bot can read the task history. Separately, a message names the bots it activates. A notification or informational message never launches work by itself. This prevents acknowledgement loops and unbounded reply chains.
+Each task message is persisted once, with attribution and intent. The user sees the whole task history; a bot sees only what reaches its session's inbox: its brief, results, steering, and messages addressed to it or to everyone (a message with no recipient goes to every other active session of the task). Separately, a message names the bots it activates. A notification or informational message never launches work by itself. This prevents acknowledgement loops and unbounded reply chains.
 
 Message intents: discussion, assignment, result, steering and notification.
 

@@ -495,6 +495,112 @@ describe("orchestration", () => {
     ).toBe(2);
   });
 
+  it("delivers a broadcast to every other active session without activating any", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const [ada, bob, cy] = team.names as [string, string, string];
+    const broadcast = `Message from ${bob} to everyone:\nFYI the API changed`;
+    executor
+      .brain(ada, (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [
+              { name: "delegate", args: { bot: bob, brief: "work" } },
+              { name: "delegate", args: { bot: cy, brief: "more work" } },
+            ],
+          };
+        if (reported(view, [bob, cy]).length < 2) return { text: "" };
+        if (lastResult(view)?.name === "complete_task")
+          return { text: "Done." };
+        return {
+          calls: [
+            {
+              name: "complete_task",
+              args: { result: `ada heard: ${said.heard(view, broadcast)}` },
+            },
+          ],
+        };
+      })
+      .brain(bob, (view) => {
+        switch (said.turns(view)) {
+          case 0:
+            return { calls: [{ name: "gate", args: { name: "start" } }] };
+          case 1:
+            return {
+              calls: [
+                { name: "message", args: { text: "FYI the API changed" } },
+              ],
+            };
+          case 2:
+            return { calls: [{ name: "gate", args: { name: "note" } }] };
+          default:
+            return { text: `bob heard: ${said.heard(view, broadcast)}` };
+        }
+      })
+      .brain(cy, (view) =>
+        said.turns(view) === 0
+          ? { calls: [{ name: "gate", args: { name: "cy" } }] }
+          : { text: `cy heard: ${said.heard(view, broadcast)}` },
+      );
+    const { task } = await engine.tasks.create({
+      goal: "Broadcast",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await executor.gate("start").reached;
+    await executor.gate("cy").reached;
+    await untilTask(
+      engine,
+      task.id,
+      (view) =>
+        view.sessions.find((s) => s.parentSessionId === null)?.status ===
+        "waiting",
+      "the coordinator to wait",
+    );
+    executor.gate("start").open();
+    await executor.gate("note").reached;
+    const view = await engine.tasks.get(task.id);
+    expect(
+      view.messages.find((m) => m.text === "FYI the API changed"),
+    ).toMatchObject({ intent: "discussion", recipientBotIds: [] });
+    const root = view.sessions.find((s) => s.parentSessionId === null);
+    // The waiting coordinator got it in its inbox but was not launched.
+    expect(root).toMatchObject({ status: "waiting", runCount: 1 });
+    const pending = await db.database.db
+      .select()
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.sessionId, root?.id as string),
+          inArray(jobs.status, ["queued", "running"]),
+        ),
+      );
+    expect(pending).toEqual([]);
+    const page = await engine.tasks.events(task.id);
+    const sent = page.events.find(
+      (e) => e.type === "tool.finished" && e.payload.tool === "message",
+    );
+    expect(sent?.type === "tool.finished" && sent.payload.output).toBe(
+      "Posted, and sent to 2 active session(s) on the task.",
+    );
+    executor.gate("cy").open();
+    executor.gate("note").open();
+    const done = await untilTask(engine, task.id, finished("completed"));
+    const resultOf = (name: string) =>
+      done.sessions.find((s) => s.botId === team.byName[name])?.result;
+    // The running worker read it at its next turn; the sender did not get it back.
+    expect(resultOf(cy)).toBe("cy heard: true");
+    expect(resultOf(bob)).toBe("bob heard: false");
+    // The coordinator read it with the results that woke it.
+    expect(done.task.result).toBe("ada heard: true");
+    expect(done.sessions).toHaveLength(3);
+    expect(
+      done.sessions
+        .filter((s) => s.parentSessionId !== null)
+        .map((s) => s.runCount),
+    ).toEqual([1, 1]);
+  });
+
   it("routes a third bot through the same paths", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob", "Cy", "Dee"]);

@@ -4,7 +4,7 @@
 // never exceptions.
 import { isFinishedStatus } from "@jj/contracts";
 import { type SessionRow, sessions } from "@jj/db";
-import { and, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import type { CollabTool, CollabToolResult } from "../ports";
 import { deliver, postMessage } from "../services/messages";
 import {
@@ -22,6 +22,13 @@ export interface Teammate extends RosterMember {
 }
 
 const refuse = (text: string): CollabToolResult => ({ text, isError: true });
+
+/** Sessions that can still read their inbox. */
+const ACTIVE: ("running" | "waiting" | "queued")[] = [
+  "running",
+  "waiting",
+  "queued",
+];
 
 const describeTeam = (team: readonly Teammate[]) =>
   team
@@ -174,7 +181,7 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
   const { ctx } = rc.deps;
   return {
     name: "message",
-    description: `Post a message to the task chat, optionally addressed to one teammate. It is delivered to that teammate's running or waiting session and never starts new work. Teammates:\n${describeTeam(team)}`,
+    description: `Post a message to the task chat. Addressed to a teammate, it is delivered to that teammate's active session; with no \`to\`, to every other active session on the task. Recipients read it at their next turn; it never starts new work. Teammates:\n${describeTeam(team)}`,
     parameters: {
       type: "object",
       properties: {
@@ -182,7 +189,8 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         to: {
           type: "string",
           enum: team.map((member) => member.name),
-          description: "The teammate it is for; omit to address everyone.",
+          description:
+            "The teammate it is for; omit to send it to every other active session on the task.",
         },
       },
       required: ["text"],
@@ -213,7 +221,37 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           },
           attributionOf(rc),
         );
-        if (!to) return { text: "Posted to the task chat." };
+        if (!to) {
+          // A broadcast reaches every other active session as a notification.
+          const targets = await tx
+            .select()
+            .from(sessions)
+            .where(
+              and(
+                eq(sessions.taskId, rc.task.id),
+                ne(sessions.id, rc.session.id),
+                inArray(sessions.status, ACTIVE),
+              ),
+            )
+            .orderBy(asc(sessions.createdAt), asc(sessions.id));
+          for (const target of targets)
+            await deliver(
+              tx,
+              target,
+              {
+                kind: "message",
+                text: `Message from ${rc.bot.name} to everyone:\n${text}`,
+                sourceMessageId: message.id,
+              },
+              { wake: false, ctx },
+            );
+          return {
+            text:
+              targets.length > 0
+                ? `Posted, and sent to ${targets.length} active session(s) on the task.`
+                : "Posted to the task chat. No other session on the task is active, so no bot receives it.",
+          };
+        }
         const [target] = await tx
           .select()
           .from(sessions)
@@ -221,14 +259,14 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             and(
               eq(sessions.taskId, rc.task.id),
               eq(sessions.botId, to.botId),
-              inArray(sessions.status, ["running", "waiting", "queued"]),
+              inArray(sessions.status, ACTIVE),
             ),
           )
           .orderBy(desc(sessions.createdAt))
           .limit(1);
         if (!target)
           return {
-            text: `Posted. ${to.name} has no active session on this task, so it will see the message in the task history.`,
+            text: `Posted to the task chat, but ${to.name} has no active session on this task, so it does not receive the message. Delegate to ${to.name} if it should act on it.`,
           };
         await deliver(
           tx,
