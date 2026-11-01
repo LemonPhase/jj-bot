@@ -334,10 +334,12 @@ export class FakeExecutor implements RunExecutor {
         return { text: "done" };
       }
       case "write": {
-        await sandbox.fs.write(
-          String(call.args.path),
-          String(call.args.content),
-        );
+        // `fails` makes the call fail without writing anything.
+        if (!call.args.fails)
+          await sandbox.fs.write(
+            String(call.args.path),
+            String(call.args.content),
+          );
         // `holdAt` holds the call at a gate between the write and its result,
         // where a real tool's result is still being recorded.
         if (
@@ -346,6 +348,10 @@ export class FakeExecutor implements RunExecutor {
         ) {
           await finish({ ok: false, interrupted: "yes", truncated: false });
           return { text: "interrupted", isError: true };
+        }
+        if (call.args.fails) {
+          await finish({ ok: false, output: "write failed", truncated: false });
+          return { text: "write failed", isError: true };
         }
         await finish({ ok: true, truncated: false });
         return { text: `Wrote ${String(call.args.path)}` };

@@ -118,6 +118,8 @@ export async function hasArtifact(
 export interface ChangedFile {
   path: string;
   content: Uint8Array;
+  /** Modification time (ms) as of no earlier than the read of `content`. */
+  modifiedAt: number;
 }
 
 /** A workspace-relative POSIX path for an entry a driver listed. */
@@ -166,9 +168,21 @@ export async function* changedFiles(
       const info = await sandbox.fs.stat(path).catch(() => undefined);
       if (!info || info.kind !== "file") continue;
       if (info.size > limits.maxFileBytes) continue;
-      if (new Date(info.modifiedAt).getTime() < since.getTime()) continue;
+      const modifiedAt = new Date(info.modifiedAt).getTime();
+      if (modifiedAt < since.getTime()) continue;
       const content = await sandbox.fs.read(path).catch(() => undefined);
-      if (content) yield { path, content: new Uint8Array(content) };
+      if (!content) continue;
+      // Looked at again after the read, so a write that landed between the
+      // two is not reported with the older time.
+      const after = await sandbox.fs.stat(path).catch(() => undefined);
+      yield {
+        path,
+        content: new Uint8Array(content),
+        modifiedAt: Math.max(
+          modifiedAt,
+          after ? new Date(after.modifiedAt).getTime() : 0,
+        ),
+      };
     }
   }
 }
