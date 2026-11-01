@@ -393,7 +393,7 @@ a { color: var(--ride); }
     { k: "Own brief and own transcript", today: ["y", "y", "n"], A: ["y", "y", "n"] },
     { k: "Workers' results", today: ["y", "n", "n"], A: ["y", "p", "n"], how: { A: "read_report / task_log" } },
     { k: "Teammates' messages", today: ["y", "y", "n"], note: "only while the recipient's session is still active; otherwise never read", A: ["y", "y", "n"], how: { A: "history via task_log; a finished recipient → error" } },
-    { k: "Decisions made by other bots", today: ["n", "n", "n"], A: ["n", "n", "n"], B: ["y", "y", "n"], how: { B: "decision-log titles each turn; full text on request" } },
+    { k: "Choices other bots made while working (an interface, a naming rule, an assumption)", note: "today: only in that bot's private transcript, implied by its files, or in its report to its parent session if it chose to mention it", today: ["n", "n", "n"], A: ["n", "n", "n"], B: ["y", "y", "n"], how: { B: "decision-log titles each turn; full text on request" } },
     { k: "Other sessions' private reasoning", today: ["n", "n", "n"], A: ["n", "n", "n"], note: "kept private by design: reports, not transcripts" },
     { k: "This bot's earlier work in the task", today: ["y", "n", "n"], A: ["y", "p", "n"], C: ["y", "y", "n"], how: { A: "read_report on own past session", C: "handoff note in the new brief" } },
     { k: "Workspace files", today: ["p", "p", "n"], note: "coding tools: read, grep, ls" },
