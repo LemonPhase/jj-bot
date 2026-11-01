@@ -1,0 +1,437 @@
+<title>JJ Bot Context Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~880px) of numbered "panels", each pairing a short explanation with one interactive figure. */
+:root {
+  --bg: #f3f4f1;
+  --panel: #ffffff;
+  --ink: #1d2427;
+  --muted: #5d686d;
+  --rule: #d9ddd8;
+  --sys: #8a7fd1;      /* system prompt */
+  --tools: #b9b1ea;    /* tool declarations */
+  --tx: #2f8f83;       /* transcript */
+  --wake: #d9822b;     /* wakes a session */
+  --ride: #3c86c4;     /* rides along */
+  --lost: #c2483d;     /* never read */
+  --yes: #2f8f83; --part: #d9822b; --no: #c2483d;
+  --chip-bg: #eef0ec;
+  --display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", sans-serif;
+  --body: "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #14181a; --panel: #1c2225; --ink: #e6ebe8; --muted: #9aa6a9; --rule: #2e373a;
+  --sys: #9d93e6; --tools: #5b5491; --tx: #46b3a5; --wake: #eb9a47; --ride: #5ea6e0; --lost: #e0675b;
+  --yes: #46b3a5; --part: #eb9a47; --no: #e0675b; --chip-bg: #252d30; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #14181a; --panel: #1c2225; --ink: #e6ebe8; --muted: #9aa6a9; --rule: #2e373a;
+  --sys: #9d93e6; --tools: #5b5491; --tx: #46b3a5; --wake: #eb9a47; --ride: #5ea6e0; --lost: #e0675b;
+  --yes: #46b3a5; --part: #eb9a47; --no: #e0675b; --chip-bg: #252d30; color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.55; }
+.wrap { max-width: 920px; margin: 0 auto; padding-block: 40px 80px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+header h1 { font-family: var(--display); font-weight: 700; font-size: clamp(2rem, 5vw, 3.1rem); line-height: 1.05; margin: 6px 0 12px; text-wrap: balance; letter-spacing: -0.01em; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+header p { max-width: 64ch; color: var(--muted); margin: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; font-size: 13px; color: var(--muted); }
+.sw { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+section.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 14px; padding-block: 24px; padding-inline: clamp(16px, 4vw, 30px); display: grid; gap: 14px; min-width: 0; }
+.panel h2 { font-family: var(--display); font-weight: 700; font-size: 1.45rem; margin: 0; line-height: 1.2; text-wrap: balance; }
+.panel h2 .n { font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--muted); margin-right: 10px; vertical-align: 3px; }
+.panel > p, .lede { margin: 0; max-width: 68ch; }
+.note { font-size: 13px; color: var(--muted); margin: 0; max-width: 72ch; }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.fig { overflow-x: auto; min-width: 0; }
+svg text { fill: var(--ink); font-family: var(--body); }
+svg .lbl { font-size: 12px; fill: var(--muted); }
+svg .num { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+
+/* segmented controls */
+.seg { display: inline-flex; flex-wrap: wrap; gap: 4px; background: var(--chip-bg); padding: 4px; border-radius: 10px; }
+.seg button { font: 500 13px var(--body); color: var(--ink); background: transparent; border: 0; padding: 6px 12px; border-radius: 7px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,.15); }
+button:focus-visible { outline: 2px solid var(--ride); outline-offset: 2px; }
+.btn { font: 500 13px var(--body); color: var(--ink); background: var(--chip-bg); border: 1px solid var(--rule); padding: 7px 14px; border-radius: 8px; cursor: pointer; }
+.btn:disabled { opacity: .4; cursor: default; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+/* anatomy readout */
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { border-left: 3px solid var(--rule); padding: 2px 0 2px 10px; }
+.stat b { display: block; font-family: var(--mono); font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 12.5px; color: var(--muted); }
+
+/* playback */
+.play { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 720px) { .play { grid-template-columns: 1fr; } }
+.caption { background: var(--chip-bg); border-radius: 10px; padding: 14px 16px; min-height: 140px; }
+.caption .step { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.caption h3 { margin: 4px 0 6px; font-family: var(--display); font-size: 1.1rem; }
+.caption p { margin: 0; font-size: 14.5px; }
+.inbox { display: grid; gap: 6px; margin-top: 12px; }
+.inbox div { font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+.tag { font-family: var(--mono); font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.tag.wake { color: var(--wake); } .tag.ride { color: var(--ride); } .tag.lost { color: var(--lost); }
+.node rect { fill: var(--panel); stroke: var(--rule); stroke-width: 1.5; transition: stroke .3s, fill .3s; }
+.node.on rect { stroke: var(--ink); stroke-width: 2; }
+.node .st { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+.edge { stroke: var(--rule); stroke-width: 2; fill: none; transition: stroke .3s, opacity .3s; }
+.edge.wake { stroke: var(--wake); stroke-width: 3; }
+.edge.ride { stroke: var(--ride); stroke-width: 3; stroke-dasharray: 6 5; }
+.edge.lost { stroke: var(--lost); stroke-width: 3; stroke-dasharray: 2 5; }
+@media (prefers-reduced-motion: no-preference) {
+  .edge.wake, .edge.ride { animation: flow 1.2s linear infinite; }
+  .edge.wake { stroke-dasharray: 10 6; }
+  @keyframes flow { to { stroke-dashoffset: -32; } }
+}
+
+/* matrix */
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; font-size: 12.5px; color: var(--muted); }
+td.c { text-align: center; white-space: nowrap; }
+.dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; }
+.dot::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.dot.y { color: var(--yes); } .dot.p { color: var(--part); } .dot.n { color: var(--no); }
+td.changed { background: color-mix(in srgb, var(--ride) 12%, transparent); }
+.how { font-size: 12px; color: var(--muted); display: block; margin-top: 2px; }
+
+/* options */
+.opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.opt { border: 1px solid var(--rule); border-radius: 12px; padding: 16px; display: grid; gap: 8px; align-content: start; }
+.opt.rec { border-color: var(--tx); border-width: 2px; }
+.opt h3 { margin: 0; font-family: var(--display); font-size: 1.1rem; }
+.opt .badge { justify-self: start; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--chip-bg); color: var(--muted); }
+.opt.rec .badge { background: var(--tx); color: var(--panel); }
+.opt ul { margin: 0; padding-left: 18px; font-size: 14px; }
+.opt .pc { font-size: 13px; color: var(--muted); }
+
+/* evidence */
+.ev { display: grid; gap: 10px; }
+.ev div { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px; font-size: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 10px; }
+@media (max-width: 560px) { .ev div { grid-template-columns: 1fr; gap: 2px; } }
+.ev b { font-weight: 600; }
+.src { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--chip-bg); color: var(--muted); margin-left: 6px; }
+footer { font-size: 13px; color: var(--muted); }
+a { color: var(--ride); }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">JJ Bot · issue #68 · research, not a decision</div>
+  <h1>What each bot sees, and how work moves between them</h1>
+  <p>An interactive guide to how JJ Bot builds context for each model call today, measured on the real engine with the scripted test model, and what the proposed designs would change. The token figures are lower bounds: the scripted model writes tiny files, while a real model reads and runs far more.</p>
+  <div class="legend">
+    <span><i class="sw" style="background:var(--sys)"></i>System prompt</span>
+    <span><i class="sw" style="background:var(--tools)"></i>Tool definitions</span>
+    <span><i class="sw" style="background:var(--tx)"></i>Transcript</span>
+    <span><i class="sw" style="background:var(--wake)"></i>Wakes a session</span>
+    <span><i class="sw" style="background:var(--ride)"></i>Waits for the next turn</span>
+    <span><i class="sw" style="background:var(--lost)"></i>Never read</span>
+  </div>
+</header>
+
+<!-- 1. Anatomy -->
+<section class="panel" id="anatomy">
+  <h2><span class="n">1</span>Every model call resends the whole stack</h2>
+  <p>A model call does not remember the previous one. Each call sends the system prompt, every tool definition and the session's entire transcript again. Click a bar to see what one call contained.</p>
+  <div class="row">
+    <div class="seg" role="group" aria-label="Scenario">
+      <button type="button" data-sc="followups" aria-pressed="true">Task + 2 follow-ups</button>
+      <button type="button" data-sc="baseline" aria-pressed="false">Task only</button>
+    </div>
+  </div>
+  <div class="fig"><svg id="bars" role="img" aria-label="Stacked bars of estimated input tokens per model call"></svg></div>
+  <div class="readout" id="readout"></div>
+  <p class="note">Tokens are estimated as characters ÷ 4 of exactly what the engine hands to the provider (<span class="mono">harness.ts</span>). The fixed part, system prompt plus tool definitions, is about 2,000 tokens and makes up 68–97% of each call here. It is cheap only if the provider can cache it, which requires those bytes to stay identical.</p>
+</section>
+
+<!-- 2. Playback -->
+<section class="panel" id="flow">
+  <h2><span class="n">2</span>Play a task: who wakes, and what reaches whom</h2>
+  <p>Every input for a bot lands in its session's <b>inbox</b>. Briefs, results and the user's messages <b style="color:var(--wake)">wake</b> the session. A teammate's message <b style="color:var(--ride)">waits</b> until something else wakes it, and it is <b style="color:var(--lost)">never read</b> if the recipient's session has already finished.</p>
+  <div class="play">
+    <div class="fig"><svg id="net" viewBox="0 0 520 380" role="img" aria-label="Diagram of the user, coordinator, two workers, the workspace and the task chat"></svg></div>
+    <div>
+      <div class="caption" aria-live="polite">
+        <div class="step" id="stepNo"></div>
+        <h3 id="stepTitle"></h3>
+        <p id="stepText"></p>
+        <div class="inbox" id="stepInbox"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button type="button" class="btn" id="prev">← Back</button>
+        <button type="button" class="btn" id="next">Next →</button>
+        <button type="button" class="btn" id="auto">Play</button>
+      </div>
+    </div>
+  </div>
+  <p class="note">Source: <span class="mono">services/messages.ts:139-173</span> (delivery and waking), <span class="mono">worker/collab-tools.ts</span> (delegate, message), <span class="mono">worker/outcomes.ts:252-289</span> (results).</p>
+</section>
+
+<!-- 3. Visibility -->
+<section class="panel" id="vis">
+  <h2><span class="n">3</span>Who can see what, today and under each option</h2>
+  <p>Switch between the options. Changed cells are highlighted. Option A is the progressive-disclosure direction from #68: everything in the task is <em>available</em> to a bot through a tool, but it is not pushed into its context.</p>
+  <div class="seg" role="group" aria-label="Design option">
+    <button type="button" data-opt="today" aria-pressed="true">Today</button>
+    <button type="button" data-opt="A" aria-pressed="false">A · task tools</button>
+    <button type="button" data-opt="B" aria-pressed="false">B · + decision log</button>
+    <button type="button" data-opt="C" aria-pressed="false">C · + warm re-delegation</button>
+  </div>
+  <div class="fig"><table id="matrix"></table></div>
+  <div class="legend" style="margin-top:0">
+    <span class="dot y">In context</span><span class="dot p">On request (a tool call)</span><span class="dot n">Unreachable</span>
+  </div>
+</section>
+
+<!-- 4. Options -->
+<section class="panel" id="options">
+  <h2><span class="n">4</span>Three design options</h2>
+  <div class="opts">
+    <div class="opt rec">
+      <span class="badge">Recommended base</span>
+      <h3>A · Task tools</h3>
+      <ul>
+        <li><span class="mono">task_log</span>, <span class="mono">read_entry</span>, <span class="mono">read_report</span>: read-only lookups any bot in the task can call</li>
+        <li>Structured briefs, with the files a worker owns and what to report</li>
+        <li>Results point to files and are clipped; the full text is one call away</li>
+        <li>A message to a finished session becomes an error</li>
+      </ul>
+      <p class="pc">+ Smallest contract change; matches progressive disclosure.<br>− Only works if the bot decides to look (E1 tests this).</p>
+    </div>
+    <div class="opt">
+      <span class="badge">Decide after E3</span>
+      <h3>B · + Decision log</h3>
+      <ul>
+        <li><span class="mono">note(text, kind)</span> appends a decision, interface, todo or risk</li>
+        <li>The latest titles reach every session at its next turn</li>
+        <li>Replaces most peer-to-peer messages</li>
+      </ul>
+      <p class="pc">+ Makes the decisions behind an action explicit (Cognition's main failure mode).<br>− Adds a record type; a plain <span class="mono">NOTES.md</span> file may do as well.</p>
+    </div>
+    <div class="opt">
+      <span class="badge">Take C2 with A</span>
+      <h3>C · + Warm re-delegation</h3>
+      <ul>
+        <li><b>C1</b>: reopen the bot's finished session with the new brief</li>
+        <li><b>C2</b>: start a fresh session whose brief includes the bot's previous brief and report</li>
+      </ul>
+      <p class="pc">+ C2 closes the "cold re-delegation" gap for a few hundred tokens.<br>− C1 grows transcripts and depends on #62 compaction.</p>
+    </div>
+  </div>
+  <p class="note">These apply whatever option is chosen: keep the system prompt byte-stable (move the goal version into the inbox), and clear old tool results before #62 compaction runs.</p>
+</section>
+
+<!-- 5. Evidence -->
+<section class="panel" id="evidence">
+  <h2><span class="n">5</span>What other systems teach</h2>
+  <div class="ev">
+    <div><b>Orchestrator / worker</b><span>Anthropic's research system uses about 15× the tokens of chat; token usage alone explains 80% of performance variance. Subagents return 1–2k-token summaries and write large outputs to files. <span class="src">opened</span></span></div>
+    <div><b>Peer chatter</b><span>Early versions of that system had subagents "distracting each other with excessive updates". AgentPrune and S²-MAD remove most inter-agent messages at little or no loss in accuracy. <span class="src">opened / search</span></span></div>
+    <div><b>Shared decisions</b><span>Cognition: "actions carry implicit decisions"; keep writes single-threaded, and use reviewers that start with a clean context. <span class="src">search</span></span></div>
+    <div><b>Buffered broadcast</b><span>AutoGen's SelectorGroupChat holds a broadcast for each agent until that agent next speaks, the same as JJ's "wait for the next turn". AG2 later moved to a hub with typed channels. <span class="src">repo</span></span></div>
+    <div><b>Just-in-time context</b><span>Skills load a one-line index first and the full content on demand. Anthropic's context editing (clearing old tool results) cut tokens by 84% on a 100-turn eval. <span class="src">opened</span></span></div>
+    <div><b>Failure modes</b><span>MAST: information withholding and ignoring another agent's input are their own inter-agent failure categories, and verification is a third. <span class="src">repo</span></span></div>
+  </div>
+  <p class="note">"search" means the primary page could not be opened from this environment; see <span class="mono">02-survey.md</span>.</p>
+</section>
+
+<!-- 6. Experiments -->
+<section class="panel" id="exp">
+  <h2><span class="n">6</span>Experiments awaiting approval</h2>
+  <div class="fig"><svg id="cost" role="img" aria-label="Estimated cost range per experiment"></svg></div>
+  <p class="note">Model: <span class="mono">openai/gpt-6-luna</span> ($0.10 per million input tokens, $0.50 per million output tokens). Three repeats per variant. Session budget: $3. Nothing has been spent yet.</p>
+</section>
+
+<footer>Branch <span class="mono">research/context-management</span> · <span class="mono">research/context-management/</span> 01–04 · Issue #68</footer>
+</div>
+
+<script>
+(() => {
+  // ---------- 1. Anatomy: measured per-call estimates [session, system, tools, transcript] ----------
+  const DATA = {
+    followups: [["Ada/c",478,1536,69],["Ada/c",478,1536,543],["Grace/w",295,1427,112],["Linus/w",295,1427,112],["Grace/w",295,1427,280],["Linus/w",295,1427,280],["Grace/w",295,1427,382],["Linus/w",295,1427,382],["Ada/c",478,1536,748],["Ada/c",478,1536,934],["Ada/c",478,1536,1260],["Ada/c",478,1536,1621]],
+    baseline: [["Ada/c",478,1536,69],["Ada/c",478,1536,543],["Grace/w",295,1427,112],["Linus/w",295,1427,112],["Linus/w",295,1427,280],["Grace/w",295,1427,280],["Linus/w",295,1427,382],["Grace/w",295,1427,382],["Ada/c",478,1536,748],["Ada/c",478,1536,934]]
+  };
+  const NOTES = {
+    followups: { 10: "Follow-up 1 from the user", 11: "Follow-up 2 from the user" },
+    baseline: {}
+  };
+  const who = (s) => { const [n, r] = s.split("/"); return `${n} (${r === "c" ? "coordinator" : "worker"})`; };
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+  let scenario = "followups", picked = 11;
+
+  function drawBars() {
+    const rows = DATA[scenario];
+    const svg = document.getElementById("bars");
+    svg.innerHTML = "";
+    const W = 820, H = 300, L = 46, R = 10, T = 16, B = 62;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.style.minWidth = "560px"; svg.style.width = "100%";
+    const max = 4000;
+    const y = (v) => T + (H - T - B) * (1 - v / max);
+    for (let t = 0; t <= max; t += 1000) {
+      el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "var(--rule)", "stroke-width": 1 }, svg);
+      const tx = el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end", class: "num" }, svg); tx.textContent = t === 0 ? "0" : `${t / 1000}k`;
+    }
+    const slot = (W - L - R) / rows.length, bw = Math.min(46, slot * 0.66);
+    rows.forEach((r, i) => {
+      const [s, sys, tools, tx] = r;
+      const x = L + i * slot + (slot - bw) / 2;
+      const g = el("g", { tabindex: 0, role: "button", "aria-label": `Call ${i + 1}, ${who(s)}, about ${sys + tools + tx} tokens`, style: "cursor:pointer" }, svg);
+      let base = 0;
+      for (const [v, c] of [[sys, "var(--sys)"], [tools, "var(--tools)"], [tx, "var(--tx)"]]) {
+        el("rect", { x, width: bw, y: y(base + v), height: y(base) - y(base + v), fill: c }, g);
+        base += v;
+      }
+      if (i === picked) el("rect", { x: x - 3, width: bw + 6, y: y(base) - 3, height: y(0) - y(base) + 3, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, rx: 3 }, g);
+      const t1 = el("text", { x: x + bw / 2, y: H - B + 16, "text-anchor": "middle", class: "lbl" }, svg); t1.textContent = s.split("/")[0];
+      const t2 = el("text", { x: x + bw / 2, y: H - B + 30, "text-anchor": "middle", class: "num" }, svg); t2.textContent = `#${i + 1}`;
+      if (NOTES[scenario][i]) {
+        const t3 = el("text", { x: x + bw / 2, y: y(base) - 8, "text-anchor": "middle", class: "num", style: "fill:var(--wake)" }, svg); t3.textContent = i === 10 ? "follow-up 1" : "follow-up 2";
+      }
+      const pick = () => { picked = i; drawBars(); };
+      g.addEventListener("click", pick);
+      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+    });
+    const ax = el("text", { x: L, y: H - 12, class: "lbl" }, svg); ax.textContent = "Model calls in time order · y axis: estimated input tokens per call";
+    const [s, sys, tools, tx] = rows[picked];
+    const total = sys + tools + tx;
+    const cum = rows.reduce((a, r) => a + r[1] + r[2] + r[3], 0);
+    document.getElementById("readout").innerHTML = `
+      <div class="stat" style="border-color:var(--ink)"><b>#${picked + 1}</b><span>${who(s)}</span></div>
+      <div class="stat" style="border-color:var(--sys)"><b>${sys}</b><span>system prompt tokens</span></div>
+      <div class="stat" style="border-color:var(--tools)"><b>${tools}</b><span>tool definition tokens</span></div>
+      <div class="stat" style="border-color:var(--tx)"><b>${tx}</b><span>transcript tokens</span></div>
+      <div class="stat"><b>${Math.round(((sys + tools) / total) * 100)}%</b><span>fixed part of this call</span></div>
+      <div class="stat"><b>${(cum / 1000).toFixed(1)}k</b><span>total input across all ${rows.length} calls</span></div>`;
+  }
+  document.querySelectorAll("[data-sc]").forEach((b) => b.addEventListener("click", () => {
+    scenario = b.dataset.sc; picked = DATA[scenario].length - 1;
+    document.querySelectorAll("[data-sc]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    drawBars();
+  }));
+  drawBars();
+
+  // ---------- 2. Playback ----------
+  const N = {
+    user: { x: 20, y: 20, w: 120, label: "User" },
+    chat: { x: 380, y: 20, w: 120, label: "Task chat (UI)" },
+    ada: { x: 200, y: 130, w: 120, label: "Ada · coordinator" },
+    grace: { x: 60, y: 270, w: 120, label: "Grace · worker" },
+    linus: { x: 340, y: 270, w: 120, label: "Linus · worker" },
+  };
+  const H_ = 52;
+  const mid = (n) => ({ x: N[n].x + N[n].w / 2, y: N[n].y + H_ / 2 });
+  const EDGES = { "user-ada": ["user", "ada"], "ada-grace": ["ada", "grace"], "ada-linus": ["ada", "linus"], "grace-ada": ["grace", "ada"], "linus-ada": ["linus", "ada"], "grace-linus": ["grace", "linus"], "linus-grace": ["linus", "grace"], "ada-chat": ["ada", "chat"] };
+  const net = document.getElementById("net");
+  // workspace band
+  el("rect", { x: 20, y: 345, width: 480, height: 28, rx: 6, fill: "var(--chip-bg)" }, net);
+  const ws = el("text", { x: 260, y: 364, "text-anchor": "middle", class: "lbl" }, net); ws.textContent = "Shared workspace (files): every bot reads and writes here";
+  const edgeEls = {};
+  for (const [k, [a, b]] of Object.entries(EDGES)) {
+    const p = mid(a), q = mid(b);
+    const bend = k.includes("grace-linus") ? -26 : k.includes("linus-grace") ? 26 : k.startsWith("grace-ada") || k.startsWith("linus-ada") ? 14 : -14;
+    const mx = (p.x + q.x) / 2 + (q.y - p.y) / 200 * bend, my = (p.y + q.y) / 2 + bend;
+    edgeEls[k] = el("path", { d: `M${p.x},${p.y} Q${mx},${my} ${q.x},${q.y}`, class: "edge", opacity: 0.35 }, net);
+  }
+  const nodeEls = {};
+  for (const [k, n] of Object.entries(N)) {
+    const g = el("g", { class: "node" }, net);
+    el("rect", { x: n.x, y: n.y, width: n.w, height: H_, rx: 9 }, g);
+    const t = el("text", { x: n.x + 10, y: n.y + 21, style: "font-size:13px;font-weight:600" }, g); t.textContent = n.label;
+    const st = el("text", { x: n.x + 10, y: n.y + 39, class: "st" }, g);
+    nodeEls[k] = { g, st };
+  }
+  const STEPS = [
+    { t: "The user creates a task", x: "The goal becomes the coordinator's first input, along with a system prompt holding its persona, memory, the goal (with its version), the team and the rules.", e: { "user-ada": "wake" }, on: ["ada"], st: { ada: "running", grace: "", linus: "" }, inbox: [["wake", "Ada ← goal (task start)"]] },
+    { t: "Ada delegates two pieces", x: "Each `delegate` creates a fresh child session. The brief is the only thing the worker starts with: it does not see the user's words, Ada's reasoning or the other worker's brief.", e: { "ada-grace": "wake", "ada-linus": "wake", "ada-chat": "ride" }, on: ["grace", "linus"], st: { ada: "waiting", grace: "running", linus: "running" }, inbox: [["wake", "Grace ← brief"], ["wake", "Linus ← brief"]] },
+    { t: "Grace messages Linus", x: "A `message` never wakes anyone. It sits in Linus's inbox until his next turn boundary. If Linus has already decided, it arrives too late.", e: { "grace-linus": "ride" }, on: ["linus"], st: { ada: "waiting", grace: "running", linus: "running" }, inbox: [["ride", "Linus ← 'use snake_case' (read at his next turn)"]] },
+    { t: "Linus finishes first", x: "A worker's result is its last assistant text, with no size limit. It is posted to the task chat and delivered to Ada's inbox, which wakes her. It stays in her transcript permanently.", e: { "linus-ada": "wake", "ada-chat": "ride" }, on: ["ada"], st: { ada: "running", grace: "running", linus: "completed" }, inbox: [["wake", "Ada ← result from Linus + open delegations"]] },
+    { t: "Grace replies to Linus, too late", x: "Linus's session has finished. The message is posted to the chat for the user to see, but no model will ever read it.", e: { "grace-linus": "lost" }, on: [], st: { ada: "running", grace: "running", linus: "completed" }, inbox: [["lost", "Linus ← 'ok?' (session finished, never read)"]] },
+    { t: "Grace reports; Ada completes", x: "Ada resumes from her full transcript with both results and calls `complete_task`. The task's result goes to the task chat, but not back to the user's direct chat with Ada.", e: { "grace-ada": "wake", "ada-chat": "ride" }, on: ["ada"], st: { ada: "completed", grace: "completed", linus: "completed" }, inbox: [["wake", "Ada ← result from Grace"]] },
+    { t: "The user follows up", x: "The follow-up reopens the task and appends to Ada's same, ever-growing transcript. Delegating to Grace again starts a new, cold session that knows nothing of her first one.", e: { "user-ada": "wake", "ada-grace": "wake" }, on: ["ada", "grace"], st: { ada: "running", grace: "running (new)", linus: "completed" }, inbox: [["wake", "Ada ← follow-up (task reopened)"], ["wake", "Grace ← new brief, no memory of the first"]] },
+  ];
+  let step = 0, timer = null;
+  function showStep() {
+    const s = STEPS[step];
+    for (const [k, e] of Object.entries(edgeEls)) { const kind = s.e[k]; e.setAttribute("class", "edge" + (kind ? " " + kind : "")); e.setAttribute("opacity", kind ? 1 : 0.35); }
+    for (const [k, n] of Object.entries(nodeEls)) { n.g.classList.toggle("on", s.on.includes(k)); n.st.textContent = s.st[k] ?? ""; }
+    document.getElementById("stepNo").textContent = `Step ${step + 1} of ${STEPS.length}`;
+    document.getElementById("stepTitle").textContent = s.t;
+    document.getElementById("stepText").innerHTML = s.x.replace(/`([^`]+)`/g, '<code>$1</code>');
+    document.getElementById("stepInbox").innerHTML = s.inbox.map(([k, t]) => `<div><span class="tag ${k}">${k === "wake" ? "wakes" : k === "ride" ? "waits" : "lost"}</span><span>${t}</span></div>`).join("");
+    document.getElementById("prev").disabled = step === 0;
+    document.getElementById("next").disabled = step === STEPS.length - 1;
+  }
+  const stop = () => { clearInterval(timer); timer = null; document.getElementById("auto").textContent = "Play"; };
+  document.getElementById("prev").onclick = () => { stop(); step = Math.max(0, step - 1); showStep(); };
+  document.getElementById("next").onclick = () => { stop(); step = Math.min(STEPS.length - 1, step + 1); showStep(); };
+  document.getElementById("auto").onclick = () => {
+    if (timer) return stop();
+    if (step === STEPS.length - 1) step = 0;
+    showStep(); document.getElementById("auto").textContent = "Pause";
+    timer = setInterval(() => { if (step >= STEPS.length - 1) return stop(); step++; showStep(); }, 3200);
+  };
+  showStep();
+
+  // ---------- 3. Visibility matrix ----------
+  // y = in context, p = on request (tool), n = unreachable; [coordinator, worker, direct chat]
+  const ROWS = [
+    { k: "Goal and the user's task messages", today: ["y", "n", "n"], A: ["y", "p", "n"], how: { A: "task_log(kind: steering)" } },
+    { k: "Own brief and own transcript", today: ["y", "y", "n"], A: ["y", "y", "n"] },
+    { k: "Workers' results", today: ["y", "n", "n"], A: ["y", "p", "n"], how: { A: "read_report / task_log" } },
+    { k: "Teammates' messages", today: ["y", "y", "n"], note: "only while the recipient's session is still active; otherwise never read", A: ["y", "y", "n"], how: { A: "history via task_log; a finished recipient → error" } },
+    { k: "Decisions made by other bots", today: ["n", "n", "n"], A: ["n", "n", "n"], B: ["y", "y", "n"], how: { B: "decision-log titles each turn; full text on request" } },
+    { k: "Other sessions' private reasoning", today: ["n", "n", "n"], A: ["n", "n", "n"], note: "kept private by design: reports, not transcripts" },
+    { k: "This bot's earlier work in the task", today: ["y", "n", "n"], A: ["y", "p", "n"], C: ["y", "y", "n"], how: { A: "read_report on own past session", C: "handoff note in the new brief" } },
+    { k: "Workspace files", today: ["p", "p", "n"], note: "coding tools: read, grep, ls" },
+    { k: "Finished tasks (from direct chat)", today: ["n", "n", "n"], A: ["n", "n", "p"], how: { A: "recent finished tasks listed + read_task" } },
+  ];
+  const label = { y: "In context", p: "On request", n: "Unreachable" };
+  function drawMatrix(opt) {
+    const t = document.getElementById("matrix");
+    const pick = (r) => (opt === "today" ? r.today : (r[opt] ?? r.A ?? r.today));
+    t.innerHTML = `<thead><tr><th>Information</th><th class="c">Coordinator</th><th class="c">Worker</th><th class="c">Direct chat</th></tr></thead><tbody>` +
+      ROWS.map((r) => {
+        const cur = pick(r);
+        const how = opt !== "today" ? (r.how?.[opt] ?? (opt !== "A" ? r.how?.A : undefined)) : undefined;
+        return `<tr><td>${r.k}${r.note ? `<span class="how">${r.note}</span>` : ""}${how ? `<span class="how">→ ${how}</span>` : ""}</td>` +
+          cur.map((v, i) => `<td class="c${v !== r.today[i] ? " changed" : ""}"><span class="dot ${v}">${label[v]}</span></td>`).join("") + "</tr>";
+      }).join("") + "</tbody>";
+  }
+  document.querySelectorAll("[data-opt]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-opt]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    drawMatrix(b.dataset.opt);
+  }));
+  drawMatrix("today");
+
+  // ---------- 6. Cost ranges ----------
+  const EXP = [["E0 · calibration run", 0.02, 0.02], ["E1 · push vs pull context", 0.3, 0.6], ["E2 · fresh vs warm re-delegation", 0.2, 0.4], ["E3 · message vs notes file vs hub", 0.3, 0.5], ["E4 · offline replay", 0, 0]];
+  const cs = document.getElementById("cost");
+  const W = 820, rowH = 34, L = 250, R = 60, T = 10;
+  const H = T + EXP.length * rowH + 34;
+  cs.setAttribute("viewBox", `0 0 ${W} ${H}`); cs.style.minWidth = "520px"; cs.style.width = "100%";
+  const x = (v) => L + (W - L - R) * (v / 1.0);
+  for (let v = 0; v <= 1.0001; v += 0.25) {
+    el("line", { x1: x(v), x2: x(v), y1: T, y2: H - 28, stroke: "var(--rule)" }, cs);
+    const tt = el("text", { x: x(v), y: H - 10, "text-anchor": "middle", class: "num" }, cs); tt.textContent = `$${v.toFixed(2)}`;
+  }
+  EXP.forEach(([name, lo, hi], i) => {
+    const cy = T + i * rowH + rowH / 2;
+    const tl = el("text", { x: L - 12, y: cy + 4, "text-anchor": "end", style: "font-size:13px" }, cs); tl.textContent = name;
+    if (hi === 0) { const f = el("text", { x: x(0) + 6, y: cy + 4, class: "num" }, cs); f.textContent = "free"; return; }
+    el("rect", { x: x(lo), y: cy - 7, width: Math.max(4, x(hi) - x(lo)), height: 14, rx: 7, fill: "var(--tx)" }, cs);
+    const vt = el("text", { x: x(hi) + 8, y: cy + 4, class: "num" }, cs); vt.textContent = lo === hi ? `~$${hi.toFixed(2)}` : `$${lo.toFixed(2)}–${hi.toFixed(2)}`;
+  });
+})();
+</script>
