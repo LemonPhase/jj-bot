@@ -1,14 +1,12 @@
-import {
-  BOT_COLOURS,
-  type BotAppearance,
-  type BotBody,
-  type BotColour,
-  type BotFace,
-  type BotGait,
-  type BotShape,
-  type BotTopper,
+import type {
+  BotAppearance,
+  BotBody,
+  BotColour,
+  BotFace,
+  BotGait,
+  BotShape,
+  BotTopper,
 } from "@jj/contracts";
-import { COLOUR_RAMPS } from "./colour";
 
 /**
  * UI labels, notes and presets for the Bot Studio appearance enums (design
@@ -189,27 +187,3 @@ export function appearanceSummary(appearance: BotAppearance): string {
     GAIT_LABELS[appearance.gait],
   ].join(" · ");
 }
-
-/** Position of the colour in `BOT_COLOURS`, for indexed tokens such as `--bot-3`. */
-export const colourIndex = (colour: BotColour): number =>
-  BOT_COLOURS.indexOf(colour);
-
-/** Fill tone of each bot colour (design appearance.json); the same in both themes. */
-export const BOT_COLOUR_HEX: Readonly<Record<BotColour, string>> =
-  Object.fromEntries(
-    BOT_COLOURS.map((colour) => [colour, COLOUR_RAMPS[colour].f]),
-  ) as Record<BotColour, string>;
-
-export const colourHex = (colour: BotColour): string => BOT_COLOUR_HEX[colour];
-
-/** The pre-sprite avatar glyph drawn for each appearance face. */
-export type BotGlyph = "visor" | "radar" | "pixel" | "prism";
-
-const FACE_GLYPHS: Record<BotFace, BotGlyph> = {
-  visor: "visor",
-  dots: "radar",
-  screen: "pixel",
-  mono: "prism",
-};
-
-export const faceGlyph = (face: BotFace): BotGlyph => FACE_GLYPHS[face];

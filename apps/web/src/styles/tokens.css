@@ -8,9 +8,8 @@
  *   no data-theme              follows prefers-color-scheme (light by default)
  * `useTheme()` in src/lib/theme.ts owns the attribute.
  *
- * Selectors carry specificity 0-1-1 or 0-2-0 on purpose: the legacy `:root`
- * block in styles.css redefines a few of the same names and is imported after
- * this file, and these values must win until that block is deleted.
+ * Selectors carry specificity 0-1-1 or 0-2-0, so a stray `:root` block in a
+ * component stylesheet cannot override a token by import order.
  *
  * The dark values appear twice (explicit choice and the system default). The
  * unit test src/styles/tokens.test.ts fails if the two copies drift or if a

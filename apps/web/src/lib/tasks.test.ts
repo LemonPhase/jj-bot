@@ -1,7 +1,6 @@
-import { BOT_COLOURS, taskSummarySchema } from "@jj/contracts";
+import { taskSummarySchema } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
 import { createDemoApi } from "../api/demoApi";
-import { colourHex, colourIndex } from "./appearance";
 import {
   rootSession,
   sessionLine,
@@ -33,14 +32,5 @@ describe("task view helpers", () => {
       "delegate Vesper",
       "complete_task",
     ]);
-  });
-
-  it("indexes and colours every appearance colour", () => {
-    expect(BOT_COLOURS.map(colourIndex)).toEqual(
-      BOT_COLOURS.map((_, index) => index),
-    );
-    expect(
-      BOT_COLOURS.every((colour) => /^#[0-9A-F]{6}$/.test(colourHex(colour))),
-    ).toBe(true);
   });
 });

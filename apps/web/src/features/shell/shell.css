@@ -1,0 +1,245 @@
+/*
+ * App shell (SPEC §2–§3): no top bar; a 240px sidebar and the routed screen.
+ * The app fills the viewport and each pane scrolls on its own; below 760px
+ * the panes stack and the page scrolls (SPEC §2 DECIDE: fixed columns).
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.shell {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-app);
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+/* 255px including the border: what the C2 boards render at 1440 wide. */
+.shell-sidebar {
+  display: flex;
+  flex: 0 0 255px;
+  flex-direction: column;
+  gap: var(--sp-8);
+  width: 255px;
+  min-height: 0;
+  padding: 16px 12px;
+  border-right: 1px solid var(--line-subtle);
+  background: var(--bg-sidebar);
+}
+
+.shell-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: 2px 6px;
+}
+
+.shell-brand {
+  display: inline-flex;
+  border-radius: var(--r-xs);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.shell-brand:hover {
+  color: var(--ink);
+}
+
+.shell-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-height: 0;
+  /* Room for the focus outline of the rows inside the scroller. */
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+}
+
+.shell-list__label {
+  padding: 0 10px 6px;
+}
+
+.shell-list__note {
+  margin: 0;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.shell-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: 0 6px;
+}
+
+.shell-footer__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.shell-footer .ui-badge {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Participant sprites on a task row. */
+.task-list__bots {
+  display: flex;
+  flex: none;
+  gap: var(--sp-2);
+}
+
+/* ── Main area and screens ─────────────────────────────────────────────── */
+.shell-main {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Workspace errors float over the screen so nothing shifts under the reader. */
+.shell-alert {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 20;
+  width: min(680px, calc(100% - 48px));
+  transform: translateX(-50%);
+  box-shadow: var(--shadow-composer);
+  border-radius: var(--r-lg);
+}
+
+.screen {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.screen--center,
+.screen-body--center {
+  align-items: center;
+  justify-content: center;
+}
+
+.screen-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 24px 24px;
+  overflow-y: auto;
+}
+
+/* The main column header (SPEC §2). */
+.screen-header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  padding: 14px 24px;
+}
+
+.screen-header__lead {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.screen-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.screen-title {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-body);
+}
+
+/* Next to a sprite (Bots) the h1 is 14px. */
+.screen-title--bot {
+  font-size: var(--fs-body);
+}
+
+.screen-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+
+.screen-back:hover {
+  color: var(--ink);
+}
+
+/* A button that reads as a link (mono, underlined; the About links). */
+.text-link {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-3);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.text-link:hover {
+  color: var(--ink);
+}
+
+/* ── Narrow viewports: stack the panes, scroll the page ────────────────── */
+@media (max-width: 759px) {
+  body {
+    overflow: auto;
+  }
+
+  .shell {
+    flex-direction: column;
+    height: auto;
+    min-height: 100%;
+  }
+
+  .shell-sidebar {
+    flex: none;
+    width: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-subtle);
+  }
+
+  .shell-list {
+    max-height: 40vh;
+  }
+
+  .shell-main {
+    min-height: 100vh;
+  }
+}

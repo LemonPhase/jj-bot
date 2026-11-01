@@ -62,6 +62,10 @@ Internal packages export TypeScript source. The API and worker run with `tsx`; `
 
 The API's composition root is `apps/api/src/server.ts` (`startServer`). It configures the outbound proxy, opens the database (applying migrations), registers the sandbox drivers, builds the model registry, executor and chat responder and the engine, listens, and then starts the embedded worker, so a port clash fails before any run is claimed. `createApp({ engine, config })` in `apps/api/src/app.ts` is the HTTP app alone, so tests drive it with `app.request`. `apps/api/src/wiring.ts` (`openServices`) is shared with `apps/worker`.
 
+### Web app structure
+
+`apps/web/src` keeps screens in feature folders (`features/shell`, `bots`, `tasks`, `office`, `studio`, `settings`), the design-system kit in `components/ui` and `components/sprite`, pure helpers in `lib`, and the backend seam in `api` (`JJApi`) with workspace state in `state`. Screens are addressed by URL hash, so every view is linkable and survives a reload: `#/bots/:botId`, `#/tasks/:taskId`, `#/studio` (new bot) or `#/studio/:botId`, and `#/settings`. `features/shell/router.ts` parses and formats them and `useRoute()`/`navigate()` bind them to the window; a list route without an id opens the first item. The dev-only kit gallery is at `?gallery=1`, and `?demo` forces demo data.
+
 ## Configuration
 
 Settings are environment variables, read from `.env` at the repository root by the dev and start scripts. Relative paths resolve against the repository root. A setting that cannot work stops the process at startup with a message naming it.
