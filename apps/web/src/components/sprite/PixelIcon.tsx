@@ -1,9 +1,11 @@
+import { COLOUR_RAMPS } from "../../lib/colour";
 import "./sprite.css";
 
 /**
- * The design's non-bot pixel icons (sprites.json `ui`). Colours come from
- * tokens, so they follow the theme:
- *   brand  JJ Bot mark, body in --ink; the eyes are holes that show the ground
+ * The design's non-bot pixel icons. Colours come from tokens, so they follow
+ * the theme; the brand's antenna tip is bot coral, the same in both:
+ *   brand  JJ Bot mark, the 12×12 sprite grid: head in --ink, a bot-coral
+ *          antenna tip, and eyes that are holes showing the ground
  *   gate   verification gate, frame --gate-frame, tick --status-completed
  *   play   / pause  Office replay controls, in currentColor (use on a primary circle)
  */
@@ -17,20 +19,24 @@ interface IconData {
 
 const ICONS: Readonly<Record<PixelIconName, IconData>> = {
   brand: {
-    viewBox: "0 0 10 10",
+    // 12×12, the sprite grid. Head in --ink; the eyes are holes that show the ground.
+    // The antenna tip is bot coral, the same in both themes.
+    viewBox: "0 0 12 12",
     grid: [
-      "....a.....",
-      "....a.....",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      ".aa.aa.aa.",
-      ".aa.aa.aa.",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      "..........",
+      ".....tt.....",
+      ".....aa.....",
+      "..aaaaaaaa..",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      ".aa..aa..aa.",
+      ".aa..aa..aa.",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      "..aaaaaaaa..",
+      "............",
     ],
-    fills: { a: "var(--ink)" },
+    fills: { a: "var(--ink)", t: COLOUR_RAMPS.coral.f },
   },
   gate: {
     // The design draws it in a "-1 -1 12 12" viewBox; this grid includes that margin.
@@ -92,7 +98,7 @@ function runs(grid: readonly string[], char: string): string {
 
 export interface PixelIconProps {
   name: PixelIconName;
-  /** Width in CSS px (brand: 20 in the sidebar; gate: 24; play/pause: 12). */
+  /** Width in CSS px (brand: 24 in the sidebar; 36 on the System sheet; gate: 24; play/pause: 12). */
   size?: number;
   /** Accessible name. Without it the icon is decorative. */
   label?: string;
@@ -101,7 +107,7 @@ export interface PixelIconProps {
 
 export function PixelIcon({
   name,
-  size = 20,
+  size = 24,
   label,
   className,
 }: PixelIconProps) {
