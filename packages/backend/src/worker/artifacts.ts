@@ -1,12 +1,21 @@
-// The artifact snapshot after a run: files changed in the task workspace
-// become `file` artifacts, deduplicated by path and content across the task.
-// A run is credited only with paths its own write and edit tools touched.
-// Anything else the scan finds (bash output files, a teammate's bash writes)
-// is stored at task level, with no session or run, because the shared
-// workspace cannot say who wrote it.
+// Artifact snapshots: files changed in the task workspace become `file`
+// artifacts, deduplicated by path and content across the task. Every run
+// starts with `snapshot_pending` set, and a snapshot that records its files
+// clears it. A run's snapshot covers it and its session's earlier pending runs
+// (handed back by a graceful stop, or cut off by a crash), from the earliest
+// one's start. When the task finishes, a final snapshot from its sandbox
+// covers whatever is still pending (sessions that never ran again). A file is
+// credited to the run whose write or edit tool last touched it, among the
+// covered runs and the task's other finished runs still pending; anything else
+// the scan finds (bash output files, a teammate's bash writes) is stored at
+// task level, with no session or run, because the shared workspace cannot say
+// who wrote it.
 import { isAbsolute, posix, relative } from "node:path";
 import { runs, type Tx, taskEvents } from "@jj/db";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import type { Sandbox } from "@jj/sandbox/contract";
+import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import type { EngineContext } from "../context";
+import type { Attribution } from "../events";
 import {
   changedFiles,
   hasArtifact,
@@ -14,12 +23,24 @@ import {
   storeArtifact,
 } from "../services/artifacts";
 import { lockTask } from "../services/sessions";
-import { attributionOf, type RunContext, writeRun } from "./run-context";
+import { type RunContext, writeRun } from "./run-context";
 import type { SandboxHold } from "./sandboxes";
 
-/** Clock skew allowed between the worker and the sandbox when finding changed files. */
+/**
+ * Clock skew allowed between the sandbox and the workers whose run starts
+ * bound the scan (a run may have started on another worker).
+ */
 const SNAPSHOT_SKEW_MS = 2_000;
 const FILE_TOOLS = ["write", "edit"];
+const TASK_LEVEL: Attribution = { botId: null, sessionId: null, runId: null };
+
+/** A transaction runner: lease-fenced for a run, worker-fenced for a final snapshot. */
+export type Write = <T>(fn: (tx: Tx) => Promise<T>) => Promise<T>;
+
+interface PendingRun {
+  id: string;
+  startedAt: Date;
+}
 
 /** A tool's path argument as a workspace-relative POSIX path, or undefined outside the workspace. */
 export function workspaceRelative(
@@ -35,16 +56,25 @@ export function workspaceRelative(
   return normal.replace(/^\.\//, "");
 }
 
-/** Paths written or edited by successful tool calls of these runs. */
+/**
+ * Paths written or edited by successful tool calls of these runs, each with
+ * the attribution of the call that touched it last.
+ */
 async function toolPaths(
   tx: Tx,
   taskId: string,
   runIds: string[],
   workspaceDir: string,
-): Promise<Set<string>> {
-  if (runIds.length === 0) return new Set();
+): Promise<Map<string, Attribution>> {
+  const paths = new Map<string, Attribution>();
+  if (runIds.length === 0) return paths;
   const rows = await tx
-    .select({ payload: taskEvents.payload })
+    .select({
+      botId: taskEvents.botId,
+      sessionId: taskEvents.sessionId,
+      runId: taskEvents.runId,
+      payload: taskEvents.payload,
+    })
     .from(taskEvents)
     .where(
       and(
@@ -54,67 +84,179 @@ async function toolPaths(
         sql`${taskEvents.payload}->>'tool' in ('write', 'edit')`,
         sql`(${taskEvents.payload}->>'ok')::boolean`,
       ),
-    );
-  const paths = new Set<string>();
+    )
+    .orderBy(asc(taskEvents.sequence));
   for (const row of rows)
     if (FILE_TOOLS.includes(String(row.payload.tool))) {
       const path = workspaceRelative(workspaceDir, String(row.payload.summary));
-      if (path) paths.add(path);
+      if (path)
+        paths.set(path, {
+          botId: row.botId,
+          sessionId: row.sessionId,
+          runId: row.runId,
+        });
     }
   return paths;
 }
 
-/** Records files changed since the run started, one transaction per artifact. */
-export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
-  const { ctx } = rc.deps;
-  const since = new Date(rc.startedAt.getTime() - SNAPSHOT_SKEW_MS);
-  const files = await changedFiles(hold.sandbox, since, ctx.config.artifacts);
-  if (files.length === 0) return;
-  const workspaceDir = hold.sandbox.workspaceDir;
-  const { own, othersActive } = await writeRun(rc, async (tx) => {
-    const active = await tx
-      .select({ id: runs.id })
-      .from(runs)
-      .where(
-        and(
-          eq(runs.taskId, rc.task.id),
-          eq(runs.status, "running"),
-          ne(runs.id, rc.run.id),
-        ),
-      );
-    return {
-      own: await toolPaths(tx, rc.task.id, [rc.run.id], workspaceDir),
-      othersActive: await toolPaths(
-        tx,
-        rc.task.id,
-        active.map((run) => run.id),
-        workspaceDir,
+/**
+ * Who gets each path: the last toucher among the covered runs and the task's
+ * finished runs still pending a snapshot; and the paths of runs still
+ * running elsewhere (other than `self`), which credit them when they end.
+ */
+async function credits(
+  tx: Tx,
+  taskId: string,
+  covered: string[],
+  self: string | undefined,
+  workspaceDir: string,
+) {
+  const open = await tx
+    .select({ id: runs.id, status: runs.status })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.taskId, taskId),
+        or(eq(runs.status, "running"), eq(runs.snapshotPending, true)),
       ),
-    };
-  });
-  for (const file of files) {
-    const credited = own.has(file.path);
+    );
+  const pending = open.filter((run) => run.status !== "running");
+  const running = open.filter(
+    (run) => run.status === "running" && run.id !== self,
+  );
+  return {
+    credit: await toolPaths(
+      tx,
+      taskId,
+      [...new Set([...covered, ...pending.map((run) => run.id)])],
+      workspaceDir,
+    ),
+    active: await toolPaths(
+      tx,
+      taskId,
+      running.map((run) => run.id),
+      workspaceDir,
+    ),
+  };
+}
+
+/**
+ * Stores the files changed since the earliest covered run started, one
+ * transaction each, until `maxFilesPerRun` new artifacts (files already
+ * stored or left to a running teammate do not count).
+ */
+async function recordChanges(
+  ctx: EngineContext,
+  write: Write,
+  taskId: string,
+  sandbox: Sandbox,
+  covered: PendingRun[],
+  self?: string,
+): Promise<void> {
+  const from = Math.min(...covered.map((run) => run.startedAt.getTime()));
+  const since = new Date(from - SNAPSHOT_SKEW_MS);
+  let who: Awaited<ReturnType<typeof credits>> | undefined;
+  let stored = 0;
+  for await (const file of changedFiles(sandbox, since, ctx.config.artifacts)) {
+    who ??= await write((tx) =>
+      credits(
+        tx,
+        taskId,
+        covered.map((run) => run.id),
+        self,
+        sandbox.workspaceDir,
+      ),
+    );
+    const credit = who.credit.get(file.path);
     // A teammate still running wrote this with its own tools: it is credited when that run ends.
-    if (!credited && othersActive.has(file.path)) continue;
+    if (!credit && who.active.has(file.path)) continue;
     const digest = sha256(file.content);
-    await writeRun(rc, async (tx) => {
-      // The task lock first, so two runs snapshotting one file cannot both store it.
-      await lockTask(tx, rc.task.id);
-      if (await hasArtifact(tx, rc.task.id, file.path, digest)) return;
+    const added = await write(async (tx) => {
+      // The task lock first, so two snapshots of one file cannot both store it.
+      await lockTask(tx, taskId);
+      if (await hasArtifact(tx, taskId, file.path, digest)) return false;
       await storeArtifact(
         tx,
         ctx,
         {
-          taskId: rc.task.id,
+          taskId,
           kind: "file",
           path: file.path,
           name: file.path.split("/").pop() || file.path,
           content: file.content,
         },
-        credited
-          ? attributionOf(rc)
-          : { botId: null, sessionId: null, runId: null },
+        credit ?? TASK_LEVEL,
       );
+      return true;
     });
+    if (added && ++stored >= ctx.config.artifacts.maxFilesPerRun) return;
   }
 }
+
+/**
+ * A run's snapshot: covers the run and its session's earlier runs still
+ * pending, whose flags it clears (`finishRun` clears the run's own).
+ */
+export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
+  const write: Write = (fn) => writeRun(rc, fn);
+  const earlier = await write((tx) =>
+    tx
+      .select({ id: runs.id, startedAt: runs.startedAt })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.sessionId, rc.session.id),
+          eq(runs.snapshotPending, true),
+          ne(runs.id, rc.run.id),
+        ),
+      ),
+  );
+  await recordChanges(
+    rc.deps.ctx,
+    write,
+    rc.task.id,
+    hold.sandbox,
+    [...earlier, { id: rc.run.id, startedAt: rc.startedAt }],
+    rc.run.id,
+  );
+  if (earlier.length > 0) await write((tx) => clearPending(tx, earlier));
+}
+
+/**
+ * The task finished: records, from the sandbox about to be released, the
+ * files of its finished runs still pending (sessions handed back or cut off
+ * that never ran again), and clears their flags.
+ */
+export async function snapshotFinishedTask(
+  ctx: EngineContext,
+  write: Write,
+  taskId: string,
+  sandbox: Sandbox,
+): Promise<void> {
+  const pending = await write((tx) =>
+    tx
+      .select({ id: runs.id, startedAt: runs.startedAt })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.taskId, taskId),
+          eq(runs.snapshotPending, true),
+          ne(runs.status, "running"),
+        ),
+      ),
+  );
+  if (pending.length === 0) return;
+  await recordChanges(ctx, write, taskId, sandbox, pending);
+  await write((tx) => clearPending(tx, pending));
+}
+
+const clearPending = (tx: Tx, done: PendingRun[]) =>
+  tx
+    .update(runs)
+    .set({ snapshotPending: false })
+    .where(
+      inArray(
+        runs.id,
+        done.map((run) => run.id),
+      ),
+    );

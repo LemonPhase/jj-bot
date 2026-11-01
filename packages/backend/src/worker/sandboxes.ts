@@ -1,7 +1,7 @@
 // One sandbox per task, shared by all of the task's sessions in this worker.
 // Acquired with the coordinator's profile and `workspaceKey = taskId`, held
 // while runs use it, released when the task finishes (here or on another
-// worker) or after it idles.
+// worker, after the `onFinished` hook's final look at it) or after it idles.
 import { isFinishedStatus, type TaskStatus } from "@jj/contracts";
 import { tasks } from "@jj/db";
 import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
@@ -82,6 +82,10 @@ export class TaskSandboxes {
   private readonly statuses: TaskStatusLookup;
 
   private readonly onRelease?: (taskId: string, spec: SandboxSpec) => void;
+  private readonly onFinished?: (
+    taskId: string,
+    sandbox: Sandbox,
+  ) => Promise<void>;
 
   constructor(
     private readonly ctx: EngineContext,
@@ -89,10 +93,13 @@ export class TaskSandboxes {
       statuses?: TaskStatusLookup;
       /** Called when a sandbox is released (its holder record is cleared). */
       onRelease?: (taskId: string, spec: SandboxSpec) => void;
+      /** Runs before the sandbox of a finished task is released (a final snapshot). */
+      onFinished?: (taskId: string, sandbox: Sandbox) => Promise<void>;
     } = {},
   ) {
     this.statuses = options.statuses ?? dbStatuses(ctx);
     this.onRelease = options.onRelease;
+    this.onFinished = options.onFinished;
   }
 
   /** Tasks whose ephemeral sandbox this worker holds live. */
@@ -192,7 +199,8 @@ export class TaskSandboxes {
         released = true;
         held.refs -= 1;
         held.idleSince = Date.now();
-        if (held.refs === 0 && held.finishing) this.releaseEntry(taskId, held);
+        if (held.refs === 0 && held.finishing)
+          this.releaseEntry(taskId, held, true);
       },
     };
   }
@@ -202,7 +210,7 @@ export class TaskSandboxes {
     const entry = this.entries.get(taskId);
     if (!entry) return;
     entry.finishing = true;
-    if (entry.refs === 0) this.releaseEntry(taskId, entry);
+    if (entry.refs === 0) this.releaseEntry(taskId, entry, true);
   }
 
   /**
@@ -219,9 +227,13 @@ export class TaskSandboxes {
     for (const [taskId, entry] of unused) {
       if (entry.refs > 0 || this.entries.get(taskId) !== entry) continue;
       const status = statuses.get(taskId);
-      const finished = status === undefined || isFinishedStatus(status);
-      if (finished || now - entry.idleSince >= this.ctx.config.sandboxIdleMs)
-        this.releaseEntry(taskId, entry);
+      const finished = status !== undefined && isFinishedStatus(status);
+      if (
+        finished ||
+        status === undefined ||
+        now - entry.idleSince >= this.ctx.config.sandboxIdleMs
+      )
+        this.releaseEntry(taskId, entry, finished);
     }
   }
 
@@ -229,17 +241,27 @@ export class TaskSandboxes {
   async releaseAll(): Promise<void> {
     for (const [taskId, entry] of this.entries) {
       if (!entry.sandbox) entry.controller.abort(new Error("worker stopping"));
-      this.releaseEntry(taskId, entry);
+      this.releaseEntry(taskId, entry, false);
     }
     await Promise.all([...this.releasing]);
   }
 
-  private releaseEntry(taskId: string, entry: Entry): void {
+  /** `finished`: the task finished, so `onFinished` sees the sandbox first. */
+  private releaseEntry(taskId: string, entry: Entry, finished: boolean): void {
     if (this.entries.get(taskId) === entry) this.entries.delete(taskId);
     if (entry.spec.workspace === "ephemeral") this.discarded.add(taskId);
     this.onRelease?.(taskId, entry.spec);
     const done = entry.acquiring
-      .then((sandbox) => sandbox.release())
+      .then(async (sandbox) => {
+        if (finished && this.onFinished)
+          await this.onFinished(taskId, sandbox).catch((error: unknown) =>
+            this.ctx.logger.warn(
+              `The final artifact snapshot of ${taskId} failed`,
+              { error: errorMessage(error) },
+            ),
+          );
+        await sandbox.release();
+      })
       .catch((error: unknown) => {
         if (entry.controller.signal.aborted) return;
         this.ctx.logger.warn(`Releasing the sandbox of ${taskId} failed`, {

@@ -343,6 +343,12 @@ export const runs = pgTable(
       .notNull()
       .defaultNow(),
     finishedAt: optionalTime("finished_at"),
+    /**
+     * True from the run's start until a snapshot has recorded its files. It
+     * stays true for a run handed back by a graceful stop, cut off by a crash,
+     * or whose last snapshot failed, so a later snapshot covers it.
+     */
+    snapshotPending: boolean("snapshot_pending").notNull().default(false),
   },
   (t) => [
     unique("runs_session_number").on(t.sessionId, t.number),

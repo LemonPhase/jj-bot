@@ -29,6 +29,13 @@
       "when": 1793497808967,
       "tag": "0003_instance_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793501982440,
+      "tag": "0004_run_snapshots",
+      "breakpoints": true
     }
   ]
 }

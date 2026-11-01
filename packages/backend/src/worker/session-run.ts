@@ -206,6 +206,7 @@ async function startRun(
         reason,
         status: "running",
         startedAt: now,
+        snapshotPending: true,
       })
       .returning();
     if (!run) throw new Error("The run insert returned no row.");
@@ -367,7 +368,13 @@ export async function runSessionJob(
       call = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;
-      await finishRun(rc, { kind: "error", error: errorMessage(error) }, false);
+      // Nothing ran, so there is nothing to snapshot.
+      await finishRun(
+        rc,
+        { kind: "error", error: errorMessage(error) },
+        false,
+        true,
+      );
       return;
     }
     // Each executor call takes the inbox; input that arrives as a call ends
@@ -395,14 +402,28 @@ export async function runSessionJob(
           ? { kind: "aborted", reason: "signal" }
           : { kind: "error", error: errorMessage(error) };
       }
+      // A stop hands the run back with its snapshot pending (a crash cannot
+      // snapshot): the session's next snapshot, or the task's final one,
+      // covers it.
+      let snapshotted = false;
       if (!rc.control.fenced && rc.control.reason !== "shutdown")
-        await snapshotArtifacts(rc, hold).catch((error: unknown) => {
-          if (error instanceof LeaseLostError) throw error;
-          ctx.logger.warn(`Snapshotting artifacts of run ${rc.run.id} failed`, {
-            error: errorMessage(error),
-          });
-        });
-      const next = await finishRun(rc, outcome, calls < MAX_CONTINUATIONS);
+        snapshotted = await snapshotArtifacts(rc, hold).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof LeaseLostError) throw error;
+            ctx.logger.warn(
+              `Snapshotting artifacts of run ${rc.run.id} failed`,
+              { error: errorMessage(error) },
+            );
+            return false;
+          },
+        );
+      const next = await finishRun(
+        rc,
+        outcome,
+        calls < MAX_CONTINUATIONS,
+        snapshotted,
+      );
       if (next !== "continue") return;
     }
   } catch (error) {

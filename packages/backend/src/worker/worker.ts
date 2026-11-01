@@ -16,6 +16,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import type { ChatResponder, RunExecutor } from "../ports";
+import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
 import { handleExhausted } from "./recovery";
@@ -59,6 +60,17 @@ export function createWorker(
   chat: ChatResponder,
 ): Worker {
   const sandboxes = new TaskSandboxes(ctx, {
+    // A crash writes nothing, the final snapshot included.
+    onFinished: (taskId, sandbox) =>
+      snapshotFinishedTask(
+        ctx,
+        (fn) =>
+          crashing
+            ? Promise.reject(new Error("The worker stopped like a crash."))
+            : ctx.db.transaction(fn),
+        taskId,
+        sandbox,
+      ),
     onRelease: (taskId, spec) => {
       if (spec.workspace !== "ephemeral") return;
       void releaseHolder(ctx, taskId).catch((error: unknown) =>

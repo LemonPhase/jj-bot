@@ -145,19 +145,35 @@ describe("orchestration", () => {
         calls: [{ name: "complete_task", args: { result: "both parts" } }],
       };
     };
+    const gated =
+      (gate: string, text: string): Brain =>
+      (view) =>
+        said.turns(view) === 0
+          ? { calls: [{ name: "gate", args: { name: gate } }] }
+          : { text };
     executor
       .brain(ada, coordinator)
-      .brain(bob, writingWorker(bob))
-      .brain(cy, (view) =>
-        said.turns(view) === 0
-          ? { calls: [{ name: "gate", args: { name: "slow" } }] }
-          : { text: "slow part done" },
-      );
+      .brain(bob, gated("quick", "quick part done"))
+      .brain(cy, gated("slow", "slow part done"));
     const { task } = await engine.tasks.create({
       goal: "Two parts",
       coordinatorBotId: team.byName[ada] as string,
       participantBotIds: team.ids,
     });
+    // Bob reports only once the coordinator's first run has ended: a result
+    // landing while that run is still ending continues it instead.
+    const first = await untilTask(
+      engine,
+      task.id,
+      (view) =>
+        view.sessions.find((s) => s.botId === team.byName[ada])?.status ===
+        "waiting",
+      "the coordinator's first wait",
+    );
+    expect(
+      first.sessions.find((s) => s.botId === team.byName[ada]),
+    ).toMatchObject({ waitingFor: "delegations", runCount: 1 });
+    executor.gate("quick").open();
     await until(
       () =>
         executor.executed.some(

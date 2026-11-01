@@ -97,6 +97,8 @@ export interface TestEngineOptions {
   registry?: DriverRegistry;
   workspaceRoot?: string;
   start?: boolean;
+  /** The engine's clock (run starts, record timestamps); the database clock still drives leases. */
+  clock?: () => Date;
 }
 
 export async function testEngine(
@@ -126,6 +128,7 @@ export async function testEngine(
     chat,
     models: options.models ?? new FakeModels(),
     logger: quietLogger,
+    clock: options.clock,
     config: {
       pollIntervalMs: 25,
       leaseMs: 5_000,
