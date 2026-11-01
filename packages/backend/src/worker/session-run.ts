@@ -9,7 +9,6 @@ import {
   complete,
   enqueue,
   heartbeat,
-  jobs,
   type RunReason,
   runs,
   type SessionRow,
@@ -18,7 +17,7 @@ import {
   taskParticipants,
 } from "@jj/db";
 import type { SandboxSpec } from "@jj/sandbox/contract";
-import { and, asc, count, eq, gt, ne, sql } from "drizzle-orm";
+import { asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
 import type { RunExecutor, RunOutcome } from "../ports";
@@ -34,6 +33,7 @@ import {
 import { settleCancellation } from "../services/tasks";
 import { snapshotArtifacts } from "./artifacts";
 import { sessionTools, type Teammate } from "./collab-tools";
+import { claimHolder, heldByAnotherWorker } from "./holders";
 import { finishRun } from "./outcomes";
 import { sessionPrompt } from "./prompts";
 import {
@@ -82,23 +82,6 @@ async function taskSandboxSpec(
     .where(eq(bots.id, task.coordinatorBotId));
   const profile = await profileFor(tx, coordinator?.profileId ?? null);
   return profile ? profileSettings(profile).sandbox : undefined;
-}
-
-/** Another live worker is running a job of this task, so it may hold the task's sandbox. */
-async function heldElsewhere(tx: Tx, taskId: string, workerId: string) {
-  const [row] = await tx
-    .select({ id: jobs.id })
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.taskId, taskId),
-        eq(jobs.status, "running"),
-        ne(jobs.leaseOwner, workerId),
-        gt(jobs.leaseUntil, sql`now()`),
-      ),
-    )
-    .limit(1);
-  return row !== undefined;
 }
 
 /** The start transaction: launch guard, stale-run cleanup, run row and `run.started`. */
@@ -185,8 +168,8 @@ async function startRun(
       .from(runs)
       .where(eq(runs.taskId, task.id));
     // An ephemeral workspace exists only in the sandbox that created it. If an
-    // earlier run of the task had one and this worker does not hold it, wait
-    // for the worker that may (it is running the task), or fail truthfully.
+    // earlier run of the task had one and this worker does not hold it, hand
+    // the session back while the holder's lease is live, or fail truthfully.
     const spec = await taskSandboxSpec(tx, task);
     let unavailable: string | undefined;
     if (!spec)
@@ -197,7 +180,7 @@ async function startRun(
       (prior?.value ?? 0) > 0 &&
       !deps.sandboxes.holds(task.id)
     ) {
-      if (await heldElsewhere(tx, task.id, ctx.config.workerId)) {
+      if (await heldByAnotherWorker(tx, task.id, ctx.config.workerId)) {
         await complete(tx, job.lease);
         await enqueue(tx, {
           kind: "session.run",
@@ -210,7 +193,7 @@ async function startRun(
       }
       unavailable = deps.sandboxes.wasDiscarded(task.id)
         ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished, stopped or sat idle), so this session cannot continue its work."
-        : "The task's ephemeral workspace is not on this worker: a worker restart discarded it, or another worker that is not running this task holds it. Ephemeral workspaces cannot move between workers.";
+        : "The task's ephemeral workspace is not on this worker: a worker restart discarded it, or the worker that held it stopped. Ephemeral workspaces cannot move between workers.";
     }
     const now = ctx.clock();
     const [run] = await tx
@@ -379,6 +362,8 @@ export async function runSessionJob(
         start.spec,
         rc.control.controller.signal,
       );
+      if (start.spec.workspace === "ephemeral")
+        await claimHolder(ctx, rc.task.id);
       call = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;

@@ -382,7 +382,7 @@ describe("review regressions", () => {
   });
 
   it("R5: a session of an ephemeral task waits for the worker that holds the workspace", async () => {
-    const a = await engineOn({ config: { concurrency: 2 } });
+    const a = await engineOn({ config: { concurrency: 1 } });
     const { profile } = await a.engine.profiles.create({
       name: `Ephemeral ${Date.now()}`,
       sandbox: {
@@ -412,15 +412,36 @@ describe("review regressions", () => {
         ? { calls: [{ name: "read", args: { path: "plan.md" } }] }
         : { text: `bob read ${lastResult(view)?.text.trim()}` };
     a.executor.brain(ada, coord).brain(bob, worker);
-    const b = await engineOn();
-    b.executor.brain(ada, coord).brain(bob, worker);
     const { task } = await a.engine.tasks.create({
       goal: "E",
       coordinatorBotId: team.byName[ada] as string,
       participantBotIds: [team.byName[bob] as string],
     });
     await a.executor.gate("hold").reached;
-    const view = await untilTask(a.engine, task.id, (v) =>
+    // A second worker (no restart anywhere) is the only one with a free slot.
+    const b = await engineOn();
+    b.executor.brain(ada, coord).brain(bob, worker);
+    const child = () =>
+      a.engine.tasks
+        .get(task.id)
+        .then((v) => v.sessions.find((s) => s.role === "worker"));
+    await until(
+      async () =>
+        (
+          await db.database.db
+            .select()
+            .from(jobs)
+            .where(eq(jobs.taskId, task.id))
+        ).filter(
+          (job) =>
+            job.leaseOwner === b.engine.context.config.workerId &&
+            job.status === "done",
+        ).length >= 2,
+      { what: "the other worker to hand the child back" },
+    );
+    expect((await child())?.status).toBe("queued");
+    a.executor.gate("hold").open(); // the holder frees its slot and takes the child
+    const done = await untilTask(a.engine, task.id, (v) =>
       v.sessions.some(
         (s) =>
           s.role === "worker" &&
@@ -428,13 +449,10 @@ describe("review regressions", () => {
           s.status !== "running",
       ),
     );
-    a.executor.gate("hold").open();
-    const child = view.sessions.find((s) => s.role === "worker");
-    expect(child).toMatchObject({
+    expect(done.sessions.find((s) => s.role === "worker")).toMatchObject({
       status: "completed",
       result: "bob read plan",
     });
-    // It ran where the workspace lives; the other worker only handed it back.
     expect(b.executor.inputs).toEqual([]);
   });
 

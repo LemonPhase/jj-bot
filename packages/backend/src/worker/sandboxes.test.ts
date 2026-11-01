@@ -23,7 +23,7 @@ function manager(
     logger: quietLogger,
   } as unknown as EngineContext;
   return {
-    sandboxes: new TaskSandboxes(ctx, async () => statuses),
+    sandboxes: new TaskSandboxes(ctx, { statuses: async () => statuses }),
     counts: counting.counts,
   };
 }

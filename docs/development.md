@@ -40,28 +40,28 @@ The API's composition root is `apps/api/src/server.ts` (`startServer`). It confi
 
 Settings are environment variables, read from `.env` at the repository root by the dev and start scripts. Relative paths resolve against the repository root. A setting that cannot work stops the process at startup with a message naming it.
 
-| Variable                                | Purpose                                                                                                                                           |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `API_HOST`                              | Listener address, default `127.0.0.1`. A non-loopback address requires `API_TOKEN`; the server refuses to start without it.                       |
-| `API_PORT`                              | Listener port, default `3001`; `0` picks a free one.                                                                                              |
-| `API_TOKEN`                             | Bearer token required on `/api/*` when set. The web app reads it once from `?token=` and keeps it in localStorage.                                |
-| `DATABASE_URL`                          | PostgreSQL connection string. When set, the API and worker use PostgreSQL.                                                                        |
-| `JJ_DATABASE_PATH`                      | PGlite data directory when `DATABASE_URL` is unset, default `.jj-data`; `memory://` keeps nothing (bootstrap reports no persistence).             |
-| `JJ_EMBED_WORKER`                       | `true` (default) runs the job loop in the API; `false` leaves it to `apps/worker` and needs PostgreSQL.                                           |
-| `JJ_ENABLE_SCRIPTED_MODEL`              | `true` registers the keyless scripted test model `scripted/team`. The web app labels it "Scripted model".                                         |
-| Provider keys                           | One variable per provider, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; `GET /api/models` lists every provider with its `envVars`.            |
-| `JJ_DEFAULT_MODEL`                      | `provider/model` for bots without a model, when that provider is configured; otherwise a cheap model of the first configured provider.            |
-| `JJ_CONCURRENCY`                        | Jobs (session runs and chat replies) one worker runs at once, default `4`.                                                                        |
-| `JJ_MAX_SESSIONS_PER_TASK`              | Sessions a task may create, default `16`.                                                                                                         |
-| `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                              |
-| `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                   |
-| `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                    |
-| `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable. |
-| `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `sandbox` under the data directory (`JJ_DATABASE_PATH`, else `.jj-data`). The operator clears it.   |
-| `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                    |
-| `DOCKER_HOST`                           | Docker Engine API address, default `/var/run/docker.sock`. Plain-HTTP `tcp://` beyond loopback needs `JJ_DOCKER_ALLOW_INSECURE_TCP=true`.         |
-| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Outbound proxy for model provider calls (either case; lowercase wins). A proxy's CA goes in `NODE_EXTRA_CA_CERTS`.                                |
-| `JJ_POSTGRES_PORT`                      | Host port of the compose PostgreSQL service, default `5433`.                                                                                      |
+| Variable                                | Purpose                                                                                                                                               |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `API_HOST`                              | Listener address, default `127.0.0.1`. A non-loopback address requires `API_TOKEN`; the server refuses to start without it.                           |
+| `API_PORT`                              | Listener port, default `3001`; `0` picks a free one.                                                                                                  |
+| `API_TOKEN`                             | Bearer token required on `/api/*` when set. The web app reads it once from `?token=` and keeps it in localStorage.                                    |
+| `DATABASE_URL`                          | PostgreSQL connection string. When set, the API and worker use PostgreSQL.                                                                            |
+| `JJ_DATABASE_PATH`                      | PGlite data directory when `DATABASE_URL` is unset, default `.jj-data`; `memory://` keeps nothing (bootstrap reports no persistence).                 |
+| `JJ_EMBED_WORKER`                       | `true` (default) runs the job loop in the API; `false` leaves it to `apps/worker` and needs PostgreSQL.                                               |
+| `JJ_ENABLE_SCRIPTED_MODEL`              | `true` registers the keyless scripted test model `scripted/team`. The web app labels it "Scripted model".                                             |
+| Provider keys                           | One variable per provider, such as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; `GET /api/models` lists every provider with its `envVars`.                |
+| `JJ_DEFAULT_MODEL`                      | `provider/model` for bots without a model, when that provider is configured; otherwise a cheap model of the first configured provider.                |
+| `JJ_CONCURRENCY`                        | Jobs (session runs and chat replies) one worker runs at once, default `4`.                                                                            |
+| `JJ_MAX_SESSIONS_PER_TASK`              | Sessions a task may create, default `16`.                                                                                                             |
+| `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                  |
+| `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                       |
+| `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                        |
+| `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.     |
+| `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it. |
+| `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                        |
+| `DOCKER_HOST`                           | Docker Engine API address, default `/var/run/docker.sock`. Plain-HTTP `tcp://` beyond loopback needs `JJ_DOCKER_ALLOW_INSECURE_TCP=true`.             |
+| `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Outbound proxy for model provider calls (either case; lowercase wins). A proxy's CA goes in `NODE_EXTRA_CA_CERTS`.                                    |
+| `JJ_POSTGRES_PORT`                      | Host port of the compose PostgreSQL service, default `5433`.                                                                                          |
 
 Schema: opening the database applies the SQL migrations in `packages/db/migrations`, so there is no separate migration step; processes opening one PostgreSQL database at once serialize on an advisory lock. To change the schema, edit `packages/db/src/schema.ts`, run `npm run db:generate -w @jj/db` and commit the generated migration. Never edit a migration that has been applied. The store's contract is in `packages/db/README.md`.
 
@@ -130,8 +130,8 @@ Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to
 ## Constraints
 
 - PGlite is single-process. Its data directory is locked to the process that opens it and a second process is refused. A separate worker, or more than one API process, requires PostgreSQL.
-- The `docker` driver removes its namespace's containers that another process started (`reapOrphans`) when a worker starts. Run one live worker per `JJ_DOCKER_NAMESPACE` on a Docker daemon.
-- The `local` driver is not an isolation boundary: commands run as the server's user and can read its files, `.env` included, and its environment. Its default root sits inside the repository checkout, so a `git` command in a workspace without its own repository reaches this one. Use `docker`, or point `JJ_SANDBOX_ROOT` elsewhere, for anything but trusted development.
+- One worker per `JJ_DOCKER_NAMESPACE` on a Docker daemon. At start a worker removes every container of its namespace that another process started (`reapOrphans`), so two live workers in one namespace remove each other's sandboxes; an API with `JJ_EMBED_WORKER=true` counts as a worker. Task volumes are named by namespace (`<namespace>-task-<taskId>`), so workers in separate namespaces do not share task workspaces either. Scaling workers needs a shared-namespace design ([#45](https://github.com/LemonPhase/jj-bot/issues/45)).
+- The `local` driver is not an isolation boundary: commands run as the server's user and can read its files, `.env` included, and its environment. Use `docker` for anything but trusted development. Its commands get `GIT_CEILING_DIRECTORIES` set to the driver root, so git in a workspace never finds a repository above the root.
 - Writes serialize per task and per bot (sequence allocation row-locks that task or bot), never globally. Job claims use `FOR UPDATE SKIP LOCKED`, and at most one run per session and one chat reply per bot is ever active.
 - Pooled PostgreSQL connections set `lock_timeout` (10 s) and `idle_in_transaction_session_timeout` (60 s), so a statement stuck waiting on a lock, or a transaction left open, fails instead of hanging.
 - Job leases prevent duplicate execution by competing workers, but they do not make external tool effects exactly-once. Reconcile ambiguous effects before retrying after a crash.

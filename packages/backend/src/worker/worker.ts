@@ -17,6 +17,7 @@ import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import type { ChatResponder, RunExecutor } from "../ports";
 import { runChatJob } from "./chat-reply";
+import { refreshHolders, releaseHolder } from "./holders";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
 import { TaskSandboxes } from "./sandboxes";
@@ -57,7 +58,16 @@ export function createWorker(
   executor: RunExecutor,
   chat: ChatResponder,
 ): Worker {
-  const sandboxes = new TaskSandboxes(ctx);
+  const sandboxes = new TaskSandboxes(ctx, {
+    onRelease: (taskId, spec) => {
+      if (spec.workspace !== "ephemeral") return;
+      void releaseHolder(ctx, taskId).catch((error: unknown) =>
+        ctx.logger.warn(`Clearing the sandbox holder of ${taskId} failed`, {
+          error: errorMessage(error),
+        }),
+      );
+    },
+  });
   const deps = { ctx, sandboxes };
   const active = new Map<string, ActiveJob>();
   const timers: NodeJS.Timeout[] = [];
@@ -169,6 +179,7 @@ export function createWorker(
   /** Extends every lease, and stops runs whose task or parent is gone (durable cancellation). */
   async function tick() {
     if (stopping) return;
+    await refreshHolders(ctx, sandboxes.heldEphemeral()).catch(() => {});
     for (const entry of [...active.values()]) {
       const held = await heartbeat(
         ctx.db,

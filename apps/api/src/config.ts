@@ -32,8 +32,8 @@ export interface ServicesConfig {
   database: DatabaseSetting;
   /** Sandbox drivers to register, in order. */
   drivers: readonly SandboxDriverId[];
-  /** Workspace root of the `local` driver. */
-  localRoot: string;
+  /** Workspace root of the `local` driver; unset uses the driver's default (`<os.tmpdir()>/jj-sandbox`). */
+  localRoot?: string;
   /** Container and volume name prefix of the `docker` driver. */
   dockerNamespace: string;
   dockerAllowInsecureTcp: boolean;
@@ -107,13 +107,6 @@ export function databaseSetting(env: Env): DatabaseSetting {
   return { mode: "pglite", path: directory ? fromRoot(directory) : path };
 }
 
-/** The data directory: PGlite's directory, else `.jj-data` (PostgreSQL, or PGlite in memory). */
-function dataDirectory(database: DatabaseSetting): string {
-  const directory =
-    database.mode === "pglite" ? nodeDataDirectory(database.path) : undefined;
-  return directory ?? fromRoot(".jj-data");
-}
-
 function driverList(env: Env): SandboxDriverId[] {
   const raw = text(env, "JJ_SANDBOX_DRIVERS") ?? SANDBOX_DRIVER_IDS.join(",");
   const ids = raw
@@ -144,19 +137,12 @@ export function loadServicesConfig(env: Env): ServicesConfig {
   return {
     database,
     drivers: driverList(env),
-    localRoot: sandboxRoot
-      ? fromRoot(sandboxRoot)
-      : join(dataDirectory(database), "sandbox"),
+    // Outside any checkout by default, so a workspace never sits in a repository.
+    ...(sandboxRoot ? { localRoot: fromRoot(sandboxRoot) } : {}),
     dockerNamespace: text(env, "JJ_DOCKER_NAMESPACE") ?? "jj-sandbox",
     dockerAllowInsecureTcp: flag(env, "JJ_DOCKER_ALLOW_INSECURE_TCP", false),
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),
-    engine: {
-      ...engine,
-      // In-memory PGlite keeps nothing across restarts; bootstrap says so.
-      persistence: !(
-        database.mode === "pglite" && !nodeDataDirectory(database.path)
-      ),
-    },
+    engine,
   };
 }
 

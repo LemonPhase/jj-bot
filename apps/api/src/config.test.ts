@@ -44,11 +44,12 @@ describe("loadServerConfig", () => {
       embedWorker: true,
       database: { mode: "pglite", path: join(REPO_ROOT, ".jj-data") },
       drivers: ["docker", "local"],
-      localRoot: join(REPO_ROOT, ".jj-data", "sandbox"),
       dockerNamespace: "jj-sandbox",
       enableScripted: false,
     });
     expect(config.apiToken).toBeUndefined();
+    // The local driver's own default, outside the repository.
+    expect(config.localRoot).toBeUndefined();
     expect(config.engine.persistence).toBe(true);
   });
 
@@ -70,10 +71,16 @@ describe("loadServerConfig", () => {
     });
   });
 
-  it("reports an in-memory database as not persistent", () => {
+  it("reports an in-memory database as not persistent, and PostgreSQL as persistent", () => {
     const config = loadServerConfig({ JJ_DATABASE_PATH: "memory://" });
     expect(config.database).toEqual({ mode: "pglite", path: "memory://" });
     expect(config.engine.persistence).toBe(false);
+    expect(
+      loadServerConfig({
+        DATABASE_URL: "postgresql://localhost/jj",
+        JJ_DATABASE_PATH: "memory://",
+      }).engine.persistence,
+    ).toBe(true);
   });
 
   it("refuses to listen beyond loopback without API_TOKEN", () => {

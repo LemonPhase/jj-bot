@@ -13,6 +13,7 @@ import {
   sha256,
   storeArtifact,
 } from "../services/artifacts";
+import { lockTask } from "../services/sessions";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import type { SandboxHold } from "./sandboxes";
 
@@ -97,6 +98,8 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
     if (!credited && othersActive.has(file.path)) continue;
     const digest = sha256(file.content);
     await writeRun(rc, async (tx) => {
+      // The task lock first, so two runs snapshotting one file cannot both store it.
+      await lockTask(tx, rc.task.id);
       if (await hasArtifact(tx, rc.task.id, file.path, digest)) return;
       await storeArtifact(
         tx,
