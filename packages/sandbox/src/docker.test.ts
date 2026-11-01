@@ -612,26 +612,30 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
       expect(await second.reapOrphans()).toEqual({ removed: [] });
     });
 
-    it.runIf(image === DOCKER_BASE_IMAGE)(
-      "ships the tools the base image promises",
-      async () => {
-        const sandbox = await acquire();
-        const result = await sandbox.exec(
-          "id -un; stat -c %U /workspace; git --version; python3 --version; rg --version; curl --version; node --version",
+    it("ships the tools the base image promises", async (context) => {
+      // Only the real build is checked: an image merely tagged
+      // jj-sandbox:base-1 locally, or the node fallback, lacks the tools. CI
+      // builds it and sets JJ_SANDBOX_TEST_IMAGE, so this runs there.
+      if (requestedImage !== DOCKER_BASE_IMAGE)
+        return context.skip(
+          `checks the real ${DOCKER_BASE_IMAGE}: run npm run sandbox:image and set JJ_SANDBOX_TEST_IMAGE=${DOCKER_BASE_IMAGE}`,
         );
-        expect(result.exitCode).toBe(0);
-        const lines = result.stdout.split("\n");
-        expect(lines.slice(0, 2)).toEqual(["sandbox", "sandbox"]);
-        for (const pattern of [
-          /git version/,
-          /Python 3/,
-          /ripgrep/,
-          /curl/,
-          /v22\./,
-        ])
-          expect(result.stdout).toMatch(pattern);
-      },
-    );
+      const sandbox = await acquire();
+      const result = await sandbox.exec(
+        "id -un; stat -c %U /workspace; git --version; python3 --version; rg --version; curl --version; node --version",
+      );
+      expect(result.exitCode).toBe(0);
+      const lines = result.stdout.split("\n");
+      expect(lines.slice(0, 2)).toEqual(["sandbox", "sandbox"]);
+      for (const pattern of [
+        /git version/,
+        /Python 3/,
+        /ripgrep/,
+        /curl/,
+        /v22\./,
+      ])
+        expect(result.stdout).toMatch(pattern);
+    });
 
     it("reaches the daemon through a tcp:// DOCKER_HOST, such as a socket proxy", async (context) => {
       const endpoint = engine?.endpoint;

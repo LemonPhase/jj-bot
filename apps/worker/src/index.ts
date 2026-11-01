@@ -1,39 +1,62 @@
-import { BackendService } from "@jj/backend";
-import { openStore } from "@jj/db";
-import { GeminiSessionExecutor } from "@jj/runtime";
+// The standalone worker: the API's wiring without HTTP. It claims and runs
+// jobs from PostgreSQL next to an API started with JJ_EMBED_WORKER=false.
+// PGlite is single-process, so it is refused.
+import { ConfigError, loadWorkerConfig } from "@jj/api/config";
+import { openServices } from "@jj/api/wiring";
+import { configureOutboundProxy } from "@jj/runtime";
 
-if (process.env.JJ_EMBED_WORKER !== "false") {
+const SHUTDOWN_TIMEOUT_MS = 20_000;
+
+async function main() {
+  const env = process.env;
+  const config = loadWorkerConfig(env);
+  const proxy = configureOutboundProxy(env);
+  const { engine, database } = await openServices(config, env);
+  await engine.worker.start();
+  const { drivers } = await engine.drivers();
   console.info(
-    "Worker runs inside the API by default. Set JJ_EMBED_WORKER=false to use this separate PostgreSQL worker.",
+    `[worker] JJ Bot worker running · database postgres · drivers ${drivers
+      .map((info) => `${info.id}${info.available ? "" : " (unavailable)"}`)
+      .join(", ")} · concurrency ${engine.context.config.concurrency}`,
   );
-} else {
-  if (process.env.JJ_DATABASE_MODE === "pglite")
-    throw new Error(
-      "Separate workers require PostgreSQL; embedded PGlite has one owning process.",
-    );
-  const store = await openStore({
-    mode: "postgres",
-    connectionString:
-      process.env.DATABASE_URL ??
-      "postgresql://jj:jj_local@localhost:5433/jj_bot",
-  });
-  const service = new BackendService({
-    store,
-    executor: new GeminiSessionExecutor({
-      apiKey: process.env.GEMINI_API_KEY ?? "",
-      model: process.env.GEMINI_MODEL ?? "",
-    }),
-    concurrency: Number(process.env.JJ_CONCURRENCY ?? 3),
-  });
-  service.start();
-  console.info("JJ PostgreSQL worker started.");
+
   let stopping = false;
-  async function stop() {
-    if (stopping) return;
+  const shutdown = (signal: string) => {
+    if (stopping) {
+      console.error(`[worker] ${signal} again: exiting now.`);
+      process.exit(1);
+    }
     stopping = true;
-    await service.stop();
-    await store.close();
-  }
-  process.once("SIGINT", () => void stop());
-  process.once("SIGTERM", () => void stop());
+    console.info(
+      `[worker] ${signal}: handing running work back and shutting down.`,
+    );
+    setTimeout(() => {
+      console.error("[worker] Shutdown timed out: exiting.");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+    (async () => {
+      await engine.worker.stop();
+      await database.close();
+      await proxy?.restore();
+    })().then(
+      () => process.exit(0),
+      (error: unknown) => {
+        console.error("[worker] Shutdown failed:", error);
+        process.exit(1);
+      },
+    );
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
+
+main().catch((error: unknown) => {
+  if (error instanceof ConfigError)
+    console.error(`JJ Bot worker: ${error.message}`);
+  else
+    console.error(
+      "JJ Bot worker failed to start:",
+      error instanceof Error ? error.message : error,
+    );
+  process.exit(1);
+});

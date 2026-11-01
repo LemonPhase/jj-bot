@@ -78,3 +78,8 @@ jobs:
       - name: Build web
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build -w @jj/web
+
+      # The whole server over HTTP: PGlite, the local driver and the scripted model.
+      - name: Smoke (end to end)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run smoke:e2e

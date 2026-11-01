@@ -264,6 +264,22 @@ describe("recovery", () => {
     expect(engine.executor.inputs).toEqual([]);
   });
 
+  it("reports the job loop's last poll while running, and none once stopped", async () => {
+    const engine = await worker({ start: false });
+    expect(engine.engine.worker.lastPollAt).toBeNull();
+    await engine.engine.worker.start();
+    const first = engine.engine.worker.lastPollAt;
+    expect(first).toBeInstanceOf(Date);
+    await until(
+      () =>
+        (engine.engine.worker.lastPollAt?.getTime() ?? 0) >
+        (first?.getTime() ?? 0),
+      { what: "a later poll" },
+    );
+    await engine.engine.worker.stop();
+    expect(engine.engine.worker.lastPollAt).toBeNull();
+  });
+
   it("reaps driver orphans once at start and treats a failure as a warning", async () => {
     let reaped = 0;
     const local = new LocalSandboxDriver();

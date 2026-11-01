@@ -130,15 +130,18 @@ export function configFromEnv(
       throw new RangeError(`${name} must be a positive integer.`);
     return value;
   };
-  const mode = env.JJ_DATABASE_MODE?.trim() || "postgres";
-  const path = env.JJ_DATABASE_PATH?.trim();
+  // PostgreSQL when DATABASE_URL is set, else PGlite at JJ_DATABASE_PATH,
+  // where `memory://` keeps nothing across restarts.
+  const inMemory =
+    !env.DATABASE_URL?.trim() &&
+    (env.JJ_DATABASE_PATH?.trim() ?? "").startsWith("memory://");
   return {
     concurrency: int("JJ_CONCURRENCY"),
     maxSessionsPerTask: int("JJ_MAX_SESSIONS_PER_TASK"),
     maxDelegationDepth: int("JJ_MAX_DELEGATION_DEPTH"),
     tasksPerBotPerHour: int("JJ_TASKS_PER_BOT_PER_HOUR"),
     outputCapBytes: int("JJ_OUTPUT_CAP_BYTES"),
-    persistence: !(mode === "pglite" && path?.startsWith("memory://")),
+    persistence: !inMemory,
   };
 }
 
