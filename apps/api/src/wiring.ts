@@ -10,7 +10,7 @@ import {
   type Engine,
   type Logger,
 } from "@jj/backend";
-import { type Database, openDatabase } from "@jj/db";
+import { type Database, openDatabase, readInstanceSetting } from "@jj/db";
 import { ChatResponder, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import { DockerSandboxDriver, LocalSandboxDriver } from "@jj/sandbox";
 import {
@@ -19,12 +19,50 @@ import {
   redactUrl,
   type ServicesConfig,
 } from "./config";
+import { GENERATED_TOKEN_KEY } from "./token";
 
 export interface Services {
   database: Database;
   drivers: DriverRegistry;
   models: ModelRegistry;
   engine: Engine;
+  /**
+   * The server's secret values the engine redacts from what runs persist.
+   * The API adds a token it generates after opening the services.
+   */
+  secrets: Set<string>;
+}
+
+/** The database password from a PostgreSQL URL, as written and decoded. */
+export function databasePassword(connectionString: string): string[] {
+  try {
+    const { password } = new URL(connectionString);
+    if (!password) return [];
+    return [...new Set([password, decodeURIComponent(password)])];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Secret values known when the services open: the provider keys in `env`,
+ * `API_TOKEN`, a token generated on an earlier boot, and the database password.
+ */
+async function knownSecrets(
+  config: ServicesConfig,
+  env: Env,
+  database: Database,
+  models: ModelRegistry,
+): Promise<Set<string>> {
+  const values = [
+    ...models.secretValues(),
+    env.API_TOKEN?.trim(),
+    await readInstanceSetting(database.db, GENERATED_TOKEN_KEY),
+    ...(config.database.mode === "postgres"
+      ? databasePassword(config.database.connectionString)
+      : []),
+  ];
+  return new Set(values.filter((value): value is string => Boolean(value)));
 }
 
 /** The registered sandbox drivers. Docker stays registered without a daemon; its probe says so. */
@@ -91,6 +129,7 @@ export async function openServices(
       env,
       enableScripted: config.enableScripted,
     });
+    const secrets = await knownSecrets(config, env, database, models);
     const outputCapBytes = config.engine.outputCapBytes;
     const engine = await createEngine({
       db: database,
@@ -100,8 +139,9 @@ export async function openServices(
       models,
       config: config.engine,
       logger,
+      secrets: () => secrets,
     });
-    return { database, drivers, models, engine };
+    return { database, drivers, models, engine, secrets };
   } catch (error) {
     await database.close().catch(() => {});
     throw error;

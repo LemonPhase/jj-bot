@@ -21,6 +21,7 @@ import { REPO_ROOT } from "./config";
 import { type RunningServer, startServer } from "./server";
 import { OPEN_TIMEOUT } from "./testing";
 import { GENERATED_TOKEN_KEY } from "./token";
+import { databasePassword } from "./wiring";
 
 let dir: string;
 beforeAll(async () => {
@@ -114,6 +115,8 @@ describe("beyond loopback without API_TOKEN", () => {
         `Open JJ Bot: http://127.0.0.1:${new URL(server.url).port}/?token=${token}`,
       ]);
       expect(first.lines.join("\n")).toContain("generated now");
+      // The engine redacts it from what runs persist.
+      expect(server.services.secrets.has(token)).toBe(true);
       await server.close();
       servers.length = 0;
       vi.restoreAllMocks();
@@ -135,6 +138,7 @@ describe("beyond loopback without API_TOKEN", () => {
         `Open JJ Bot: http://127.0.0.1:3101/?token=${token}`,
       ]);
       expect(second.lines.join("\n")).toContain("generated on first boot");
+      expect(again.services.secrets.has(token)).toBe(true);
     },
     OPEN_TIMEOUT,
   );
@@ -234,6 +238,26 @@ describe("API_TOKEN and loopback", () => {
   );
 
   it(
+    "hands the engine API_TOKEN and the provider keys to redact",
+    async () => {
+      const { logger } = capture();
+      const server = await boot(
+        {
+          API_TOKEN: "configured-token",
+          OPENAI_API_KEY: "sk-test-provider-key",
+          JJ_DATABASE_PATH: "memory://",
+        },
+        logger,
+      );
+      expect([...server.services.secrets].sort()).toEqual([
+        "configured-token",
+        "sk-test-provider-key",
+      ]);
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
     "keeps loopback without a token unauthenticated, behind the Host check",
     async () => {
       const { lines, logger } = capture();
@@ -252,4 +276,18 @@ describe("API_TOKEN and loopback", () => {
     },
     OPEN_TIMEOUT,
   );
+});
+
+describe("databasePassword", () => {
+  it("returns the password as written and decoded, or nothing", () => {
+    expect(databasePassword("postgresql://jj:p%40ss-word@db:5432/jj")).toEqual([
+      "p%40ss-word",
+      "p@ss-word",
+    ]);
+    expect(databasePassword("postgresql://jj:jj_local@db/jj")).toEqual([
+      "jj_local",
+    ]);
+    expect(databasePassword("postgresql://jj@db/jj")).toEqual([]);
+    expect(databasePassword("not a url")).toEqual([]);
+  });
 });

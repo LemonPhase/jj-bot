@@ -198,6 +198,13 @@ export class ModelRegistry {
     }));
   }
 
+  /** The provider keys set in the registry's env, for redaction. */
+  secretValues(): string[] {
+    return this.entries
+      .flatMap((entry) => entry.envVars.map((name) => this.env[name]))
+      .filter(isSet);
+  }
+
   /** `GET /api/models`. */
   view(): ModelsView {
     return { defaultModel: this.defaultModel(), providers: this.providers() };

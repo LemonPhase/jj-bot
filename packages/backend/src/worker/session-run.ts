@@ -20,7 +20,7 @@ import type { SandboxSpec } from "@jj/sandbox/contract";
 import { asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
-import type { RunExecutor, RunOutcome } from "../ports";
+import type { CollabToolContext, RunExecutor, RunOutcome } from "../ports";
 import { profileSettings } from "../records";
 import { memoryText } from "../services/bots";
 import { profileFor } from "../services/profiles";
@@ -301,12 +301,17 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   return async (inputs: string[]): Promise<RunOutcome> => {
-    // Per call: a continuation sees the delegations still open now.
+    // Per call: a continuation sees the delegations still open now. What a
+    // model passes a collaboration tool is persisted, so it is redacted first.
     const tools = sessionTools(
       rc,
       others,
       await openChildren(ctx.db, rc.session),
-    );
+    ).map((tool) => ({
+      ...tool,
+      execute: (args: Record<string, unknown>, context: CollabToolContext) =>
+        tool.execute(ctx.redact(args), context),
+    }));
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -336,7 +341,9 @@ async function prepare(
       signal: rc.control.controller.signal,
       hooks: runHooks(rc),
     });
-    return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;
+    return rc.control.reason
+      ? { kind: "aborted", reason: "signal" }
+      : ctx.redact(outcome);
   };
 }
 

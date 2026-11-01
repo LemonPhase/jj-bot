@@ -99,6 +99,8 @@ export interface TestEngineOptions {
   start?: boolean;
   /** The engine's clock (run starts, record timestamps); the database clock still drives leases. */
   clock?: () => Date;
+  /** Secret values the engine redacts. */
+  secrets?: string[];
 }
 
 export async function testEngine(
@@ -129,6 +131,7 @@ export async function testEngine(
     models: options.models ?? new FakeModels(),
     logger: quietLogger,
     clock: options.clock,
+    secrets: () => options.secrets ?? [],
     config: {
       pollIntervalMs: 25,
       leaseMs: 5_000,

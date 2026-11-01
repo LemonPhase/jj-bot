@@ -43,6 +43,7 @@ import type {
   ModelCatalog,
   RunExecutor,
 } from "./ports";
+import { createRedactor } from "./redact";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
@@ -68,6 +69,12 @@ export interface EngineOptions {
   clock?: () => Date;
   ids?: (kind: IdKind) => string;
   logger?: Logger;
+  /**
+   * The server's secret values (provider keys, the API token, the database
+   * password), read on each use so values learned later count. They are
+   * replaced with `[redacted]` in everything a run persists.
+   */
+  secrets?: () => Iterable<string | undefined>;
 }
 
 export interface Engine {
@@ -156,6 +163,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger: options.logger ?? consoleLogger,
+    redact: createRedactor(options.secrets ?? (() => [])),
   };
   await profileService.seedDefaultProfiles(ctx);
   const worker = createWorker(ctx, options.executor, options.chat);

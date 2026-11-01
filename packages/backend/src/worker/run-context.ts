@@ -312,11 +312,15 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
   }
 }
 
+/** The executor's hooks. What they persist is redacted first (see redact.ts). */
 export function runHooks(rc: RunContext): RunHooks {
+  const { redact } = rc.deps.ctx;
   return {
-    onEvent: (event) => writeRun(rc, (tx) => recordEvent(tx, rc, event)),
-    onTurnComplete: async (entries) => {
-      if (entries.length === 0) return;
+    onEvent: (event) =>
+      writeRun(rc, (tx) => recordEvent(tx, rc, redact(event))),
+    onTurnComplete: async (raw) => {
+      if (raw.length === 0) return;
+      const entries = redact(raw);
       await writeRun(rc, async (tx) => {
         await tx.insert(sessionEntries).values(
           entries.map((entry, index) => ({
@@ -333,6 +337,6 @@ export function runHooks(rc: RunContext): RunHooks {
     },
     drainInbox: () => takeInbox(rc),
     spillOutput: (text, label) =>
-      writeRun(rc, (tx) => spill(tx, rc, text, label)),
+      writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
   };
 }
