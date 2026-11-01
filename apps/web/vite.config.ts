@@ -1,11 +1,15 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+// The extension keeps the config loadable by Vite's native config loader.
+import { closeClientWithUpstream } from "./devProxy.ts";
 
 /**
  * `/api` and `/health` go to the API on loopback (`API_PORT`, default 3001).
  * Server-sent event streams (`/api/stream`, `/api/tasks/:id/stream`) pass
- * through unbuffered, and the upstream request is aborted when the browser
- * closes the stream so the API does not keep writing to a dead socket.
+ * through unbuffered. The upstream request is aborted when the browser closes
+ * the stream, so the API does not keep writing to a dead socket, and the
+ * browser's stream is destroyed when the upstream one closes or aborts, so an
+ * API restart makes the UI reconnect instead of freezing silently.
  */
 const apiProxy = (target: string): ProxyOptions => ({
   target,
@@ -24,6 +28,7 @@ const apiProxy = (target: string): ProxyOptions => ({
       proxyRes.headers["cache-control"] = "no-cache, no-transform";
       proxyRes.headers["x-accel-buffering"] = "no";
       res.on("pipe", () => res.flushHeaders());
+      closeClientWithUpstream(proxyRes, res);
     });
   },
 });

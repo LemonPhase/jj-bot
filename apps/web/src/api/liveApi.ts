@@ -4,7 +4,7 @@
  * every failure becomes an `ApiError` built from the contract error envelope.
  */
 import {
-  apiErrorSchema,
+  apiErrorCodeSchema,
   type Bootstrap,
   bootstrapSchema,
   botMemorySchema,
@@ -80,6 +80,56 @@ const NOT_JSON = "not-json";
 const errorText = (reason: unknown) =>
   reason instanceof Error ? reason.message : String(reason);
 
+/**
+ * The error envelope without the code enum: a newer server may send codes
+ * this client does not know, and its message is still worth showing.
+ */
+const errorEnvelopeSchema = z.object({
+  error: z.object({
+    code: z.string().min(1),
+    message: z.string(),
+    details: z.unknown().optional(),
+  }),
+});
+
+/** The ApiError for a non-2xx answer, from its body (already parsed, or null). */
+function responseError(
+  response: Response,
+  data: unknown,
+  what: string,
+): ApiError {
+  const envelope = errorEnvelopeSchema.safeParse(data);
+  if (envelope.success) {
+    const { code, message, details } = envelope.data.error;
+    const known = apiErrorCodeSchema.safeParse(code);
+    return new ApiError(
+      known.success
+        ? known.data
+        : response.status === 401
+          ? "UNAUTHORIZED"
+          : "UNRECOGNIZED_ERROR",
+      message,
+      details,
+      response.status,
+      code,
+    );
+  }
+  return new ApiError(
+    response.status === 401 ? "UNAUTHORIZED" : "INVALID_RESPONSE",
+    `${what} failed with HTTP ${response.status}`,
+    data,
+    response.status,
+  );
+}
+
+const parseJson = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
 /** Validates a command the way the server will, so mistakes fail before the request. */
 function command<Schema extends z.ZodType>(
   schema: Schema,
@@ -150,19 +200,8 @@ export function createHttp({
         json = false;
       }
     }
-    if (!response.ok) {
-      const envelope = apiErrorSchema.safeParse(data);
-      if (envelope.success) {
-        const { code, message, details } = envelope.data.error;
-        throw new ApiError(code, message, details, response.status);
-      }
-      throw new ApiError(
-        response.status === 401 ? "UNAUTHORIZED" : "INVALID_RESPONSE",
-        `${method} /api${path} failed with HTTP ${response.status}`,
-        data,
-        response.status,
-      );
-    }
+    if (!response.ok)
+      throw responseError(response, data, `${method} /api${path}`);
     if (!schema) return undefined;
     if (!json)
       throw new ApiError(
@@ -182,7 +221,28 @@ export function createHttp({
     return parsed.data;
   }
 
-  return { request, doFetch, authorization, baseUrl };
+  /** `GET` raw content (an artifact) with the same headers and error handling. */
+  async function download(path: string): Promise<Blob> {
+    let response: Response;
+    try {
+      response = await doFetch(`${baseUrl}/api${path}`, {
+        headers: authorization,
+        cache: "no-store",
+      });
+    } catch (reason) {
+      throw new ApiError(
+        "NETWORK_ERROR",
+        `Can't reach the JJ Bot API: ${errorText(reason)}`,
+      );
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw responseError(response, parseJson(text), `GET /api${path}`);
+    }
+    return response.blob();
+  }
+
+  return { request, download, doFetch, authorization, baseUrl };
 }
 
 /** The mode chip for a connected backend (decision: frontend brief). */
@@ -403,6 +463,15 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
       }),
     artifactUrl: (taskId, artifactId) =>
       `${http.baseUrl}/api/tasks/${id(taskId)}/artifacts/${id(artifactId)}/content`,
+    // A link cannot carry the bearer token, so with one the UI fetches instead.
+    ...(options.token
+      ? {
+          fetchArtifact: (taskId: string, artifactId: string) =>
+            http.download(
+              `/tasks/${id(taskId)}/artifacts/${id(artifactId)}/content`,
+            ),
+        }
+      : {}),
   };
 }
 

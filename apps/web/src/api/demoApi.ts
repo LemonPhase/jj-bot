@@ -69,6 +69,7 @@ import {
   followConversation,
   followTask,
   type OpenTaskEvents,
+  stripToolOutput,
   type TaskEventHandlers,
 } from "./follow";
 
@@ -135,15 +136,6 @@ export function titleFromGoal(goal: string): string {
   const space = cut.lastIndexOf(" ");
   return `${(space > 30 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
-
-/** Snapshot events drop `tool.finished` output previews, as the live API does. */
-const withoutOutputs = (events: TaskEvent[]): TaskEvent[] =>
-  events.map((event) => {
-    if (event.type !== "tool.finished" || event.payload.output === undefined)
-      return event;
-    const { output: _output, ...payload } = event.payload;
-    return { ...event, payload };
-  });
 
 const isGreetingOrQuestion = (text: string) =>
   /^\s*(hi|hello|hey|yo|thanks|thank you|good (morning|afternoon|evening))\b/i.test(
@@ -566,7 +558,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
 
   const getTask = async (taskId: string): Promise<TaskView> => {
     const { view } = getState(taskId);
-    return clone({ ...view, events: withoutOutputs(view.events) });
+    // Snapshot events drop `tool.finished` output previews, as the live API does.
+    return clone({ ...view, events: view.events.map(stripToolOutput) });
   };
   const getConversation = async (botId: string) => {
     getBotRecord(botId);
@@ -816,7 +809,11 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         );
       const before = botState();
       const { message, reopened } = userMessage(state.host, parsed);
-      if (reopened) state.steps.push(...continueScript(state.host));
+      if (reopened) {
+        state.steps.push(...continueScript(state.host));
+        // Seeded tasks start paused; one the user continued must move on its own.
+        state.autoplay = true;
+      }
       notify({ type: "tasks.changed", taskId });
       if (botState() !== before) notify({ type: "bots.changed" });
       schedule(state);

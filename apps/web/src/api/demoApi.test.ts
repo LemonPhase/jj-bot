@@ -25,15 +25,6 @@ const demo = (options: Parameters<typeof createDemoApi>[0] = {}) =>
   createDemoApi({ now: () => NOW, autoplay: false, replyMs: 0, ...options });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const withoutOutputs = (view: TaskView): TaskView => ({
-  ...view,
-  events: view.events.map((event) => {
-    if (event.type !== "tool.finished") return event;
-    const { output: _output, ...payload } = event.payload;
-    return { ...event, payload };
-  }),
-});
-
 /** Follows a task the way the UI does and drives it to the end of its script. */
 async function runToEnd(api: JJApi, taskId: string) {
   const views: TaskView[] = [];
@@ -173,8 +164,9 @@ describe("demo API", () => {
     expect(final.artifacts).toHaveLength(1);
     expect(final.usage.total.modelCalls).toBeGreaterThan(0);
 
-    // The client's fold equals the server's view: snapshot n + events n+1..m = view m.
-    expect(withoutOutputs(final)).toEqual(await api.getTask("task-101"));
+    // The client's fold equals the server's view: snapshot n + events n+1..m =
+    // view m, exactly, because streamed tool output previews are dropped too.
+    expect(final).toEqual(await api.getTask("task-101"));
     expect(api.artifactUrl("task-101", final.artifacts[0]?.id ?? "")).toMatch(
       /^data:text\/markdown/,
     );
@@ -397,6 +389,22 @@ describe("demo API", () => {
     await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
   });
 
+  it("keeps a reopened seeded task moving on its own", async () => {
+    // Seeded task-103 waits for an answer with autoplay off.
+    const api = demo({ autoplay: true, stepMs: 2 });
+    const statuses: string[] = [];
+    const unsubscribe = api.subscribeTask("task-103", (view) =>
+      statuses.push(view.task.status),
+    );
+    await flush();
+    expect(statuses).toEqual(["waiting"]);
+    await api.postTaskMessage("task-103", { text: "Keep a fallback." });
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe("completed"), {
+      timeout: 3000,
+    });
+    unsubscribe();
+  });
+
   it("advances on a timer when autoplay is on", async () => {
     const api = demo({ autoplay: true, stepMs: 2 });
     const statuses: string[] = [];
@@ -421,9 +429,7 @@ describe("demo API", () => {
     await api.advanceDemoTask?.("task-101");
     stop();
     stopLate();
-    expect(withoutOutputs(late.at(-1) as TaskView)).toEqual(
-      withoutOutputs(early.at(-1) as TaskView),
-    );
+    expect(late.at(-1)).toEqual(early.at(-1));
     // Folding is idempotent: replaying an applied event changes nothing.
     const last = early.at(-1) as TaskView;
     const replayed = last.events.at(-1);
