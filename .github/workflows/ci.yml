@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   verify:
-    # Same steps as `npm run verify`. Every step must pass.
+    # Same steps as `npm run verify`, plus the sandbox image the Docker tests use. Every step must pass.
     name: Lint, typecheck, test, build
     # Runs on the runner VM itself (no job container) so tests reach its Docker daemon.
     runs-on: ubuntu-latest
@@ -54,6 +54,11 @@ jobs:
       - name: Check Docker daemon
         run: docker version
 
+      # The docker driver tests run against the real base image (JJ_SANDBOX_TEST_IMAGE below).
+      - name: Build sandbox base image
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run sandbox:image
+
       # The checks below run even when an earlier one fails, so one run reports every failure.
       - name: Lint
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -67,6 +72,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         env:
           JJ_TEST_DATABASE_URL: postgresql://jj:jj@127.0.0.1:5432/jj_test
+          JJ_SANDBOX_TEST_IMAGE: jj-sandbox:base-1
         run: npm test
 
       - name: Build web

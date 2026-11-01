@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cx } from "./cx";
+import { Tooltip } from "./Tooltip";
 import "./ui.css";
 
 export interface IconButtonProps
@@ -7,7 +8,7 @@ export interface IconButtonProps
     ButtonHTMLAttributes<HTMLButtonElement>,
     "aria-label" | "aria-pressed" | "children"
   > {
-  /** Accessible name; also the hover title. Required: the button has no text. */
+  /** Accessible name (`aria-label`). Required: the button has no text. */
   label: string;
   /** The icon, usually `<Icon name="plus" />` or `<PixelIcon name="play" />`. */
   icon: ReactNode;
@@ -24,6 +25,11 @@ export interface IconButtonProps
   pressed?: boolean;
   /** Marks the button as the current page (`aria-current`), like New bot while on Studio. */
   current?: boolean;
+  /**
+   * Hover and focus hint. Defaults to `label`, shown with Tooltip (never the
+   * native `title`). Pass other text to add a description, or `false` for none.
+   */
+  tooltip?: ReactNode | false;
 }
 
 /**
@@ -42,10 +48,10 @@ export function IconButton({
   current,
   className,
   type = "button",
-  title,
+  tooltip,
   ...rest
 }: IconButtonProps) {
-  return (
+  const button = (
     <button
       type={type}
       className={cx(
@@ -56,12 +62,19 @@ export function IconButton({
         className,
       )}
       aria-label={label}
-      title={title ?? label}
       aria-pressed={pressed}
       aria-current={current ? "page" : undefined}
       {...rest}
     >
       {icon}
     </button>
+  );
+  if (tooltip === false) return button;
+  const hint = tooltip ?? label;
+  return (
+    // The default hint repeats the accessible name, so it does not also describe.
+    <Tooltip content={hint} placement="auto" describe={hint !== label}>
+      {button}
+    </Tooltip>
   );
 }

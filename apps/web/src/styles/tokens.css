@@ -120,6 +120,8 @@ html:root {
   --line-strong: #d2d2d8;
   --line-chip-on: #c4c4cc;
   --line-steer: #9a9aa4;
+  /* Not designed: form-field borders, ≥3:1 on the field and every ground (WCAG 1.4.11). */
+  --line-field: #86868f;
   --rail: #dcdce2;
   --graph-edge: #c4c4cc;
   --graph-dot: #d8d8de;
@@ -161,10 +163,10 @@ html:root {
 
   /* @mention text (brief decision 3; computed by mentionColour() in src/lib/colour.ts). */
   --mention-coral: #b8412f;
-  --mention-amber: #36280f;
-  --mention-lime: #24330c;
-  --mention-green: #0b2e22;
-  --mention-teal: #0a2f2a;
+  --mention-amber: #8d6118;
+  --mention-lime: #4f7416;
+  --mention-green: #117852;
+  --mention-teal: #0d776b;
   --mention-blue: #2f5fc0;
   --mention-violet: #6a4bc9;
   --mention-pink: #b23b7a;
@@ -195,6 +197,7 @@ html:root {
   --line-strong: #2a2a30;
   --line-chip-on: #3a3a44;
   --line-steer: #5a5a64;
+  --line-field: #6b6b74;
   --rail: #1f1f25;
   --graph-edge: #3a3a44;
   --graph-dot: #22222a;
@@ -262,6 +265,7 @@ html:root {
     --line-strong: #2a2a30;
     --line-chip-on: #3a3a44;
     --line-steer: #5a5a64;
+    --line-field: #6b6b74;
     --rail: #1f1f25;
     --graph-edge: #3a3a44;
     --graph-dot: #22222a;

@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f7f7f8" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#0b0b0d" media="(prefers-color-scheme: dark)" />
+    <script>
+      // Applies the saved theme before the first paint, so it never flashes.
+      // Keep the key and colours in sync with src/lib/theme.ts (tested there),
+      // which owns the attribute once the app loads. No saved choice: CSS
+      // follows prefers-color-scheme and the media-specific metas above apply.
+      (function () {
+        var colours = { light: "#f7f7f8", dark: "#0b0b0d" };
+        var theme = null;
+        try {
+          theme = window.localStorage.getItem("jj.theme");
+        } catch (error) {
+          theme = null;
+        }
+        if (theme !== "light" && theme !== "dark") return;
+        document.documentElement.setAttribute("data-theme", theme);
+        var metas = document.querySelectorAll('meta[name="theme-color"]');
+        for (var i = 0; i < metas.length; i += 1)
+          metas[i].setAttribute("content", colours[theme]);
+      })();
+    </script>
     <title>JJ Bot</title>
   </head>
   <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>

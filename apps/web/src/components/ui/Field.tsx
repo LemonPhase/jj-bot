@@ -73,14 +73,20 @@ function FieldShell({
   );
 }
 
-function useFieldIds(explicitId: string | undefined, props: FieldProps) {
+function useFieldIds(
+  explicitId: string | undefined,
+  props: FieldProps,
+  callerDescribedBy: string | undefined,
+) {
   const generated = useId();
   const id = explicitId ?? generated;
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
+  // The caller's own descriptions come first, then the hint and the error.
   const describedBy =
-    [props.hint && hintId, props.error && errorId].filter(Boolean).join(" ") ||
-    undefined;
+    [callerDescribedBy, props.hint && hintId, props.error && errorId]
+      .filter(Boolean)
+      .join(" ") || undefined;
   return { id, hintId, errorId, describedBy };
 }
 
@@ -106,10 +112,11 @@ export function Input({
   error,
   className,
   id: explicitId,
+  "aria-describedby": callerDescribedBy,
   ...rest
 }: InputProps) {
   const field = { label, hideLabel, note, hint, error, className };
-  const ids = useFieldIds(explicitId, field);
+  const ids = useFieldIds(explicitId, field, callerDescribedBy);
   return (
     <FieldShell {...shellProps(field)} {...ids}>
       <input
@@ -136,10 +143,11 @@ export function Textarea({
   error,
   className,
   id: explicitId,
+  "aria-describedby": callerDescribedBy,
   ...rest
 }: TextareaProps) {
   const field = { label, hideLabel, note, hint, error, className };
-  const ids = useFieldIds(explicitId, field);
+  const ids = useFieldIds(explicitId, field, callerDescribedBy);
   return (
     <FieldShell {...shellProps(field)} {...ids}>
       <textarea
@@ -179,13 +187,14 @@ export function Select<Value extends string>({
   error,
   className,
   id: explicitId,
+  "aria-describedby": callerDescribedBy,
   options,
   value,
   onChange,
   ...rest
 }: SelectProps<Value>) {
   const field = { label, hideLabel, note, hint, error, className };
-  const ids = useFieldIds(explicitId, field);
+  const ids = useFieldIds(explicitId, field, callerDescribedBy);
   return (
     <FieldShell {...shellProps(field)} {...ids}>
       <span className="ui-select-wrap">

@@ -44,6 +44,7 @@ export function BotList({ labelledBy }: { labelledBy: string }) {
               data-list-item=""
               tabIndex={index === stop ? 0 : -1}
               selected={bot.id === selectedBotId}
+              aria-current={bot.id === selectedBotId ? "page" : undefined}
               onClick={() => navigate({ name: "bots", botId: bot.id })}
               leading={
                 <Avatar

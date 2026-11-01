@@ -213,6 +213,18 @@
   margin-bottom: calc(var(--sp-2) * -1);
 }
 
+.inspector-look {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.inspector-look__summary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
 .inspector-actions {
   display: flex;
   flex-wrap: wrap;
