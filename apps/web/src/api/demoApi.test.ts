@@ -190,7 +190,8 @@ describe("demo API", () => {
   it.each([
     [["bot-kite"], 0],
     [["bot-kite", "bot-moss"], 1],
-    [["bot-kite", "bot-moss", "bot-vesper", "bot-juno"], 2],
+    // A third teammate becomes the first worker's helper, two levels down.
+    [["bot-kite", "bot-moss", "bot-vesper", "bot-juno"], 3],
   ])(
     "completes a new task with participants %j",
     async (participants, workers) => {
@@ -209,6 +210,13 @@ describe("demo API", () => {
       expect(final.sessions.filter((s) => s.role === "worker")).toHaveLength(
         workers,
       );
+      const parents = new Map(final.sessions.map((s) => [s.id, s]));
+      const depthOf = (id: string | null): number =>
+        id ? 1 + depthOf(parents.get(id)?.parentSessionId ?? null) : -1;
+      expect(Math.max(...final.sessions.map((s) => depthOf(s.id)))).toBe(
+        workers === 3 ? 2 : Math.min(workers, 1),
+      );
+      expect(final.sessions.every((s) => s.depth === depthOf(s.id))).toBe(true);
     },
   );
 

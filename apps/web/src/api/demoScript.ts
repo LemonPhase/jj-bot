@@ -365,16 +365,55 @@ const workPlans = (title: string): WorkPlan[] => [
   },
 ];
 
-/** The coordinator delegates to up to two workers, waits for their results, then completes the task. */
+/** What a second-level helper does for the first worker (tasks with four or more bots). */
+const helperPlan = (title: string): WorkPlan => ({
+  brief: `Check the edge cases for “${title}” and report anything the main checks miss.`,
+  phases: [
+    (ops, w) => {
+      ops.modelFinished(w.sessionId);
+      w.call = ops.toolStarted(w.sessionId, "find", "**/*.test.ts");
+    },
+    (ops, w) => {
+      if (w.call)
+        ops.toolFinished(w.sessionId, w.call, {
+          ok: true,
+          output: "Demo output: 3 test files (simulated).",
+        });
+      w.call = ops.toolStarted(w.sessionId, "bash", "npm test -- --run edge");
+    },
+    (ops, w) => {
+      if (w.call)
+        ops.toolFinished(w.sessionId, w.call, {
+          ok: true,
+          exitCode: 0,
+          output: "Demo output: 4 edge cases passed (simulated).",
+        });
+      ops.modelStarted(w.sessionId);
+    },
+  ],
+  result: "Edge cases pass; nothing extra to report (simulated).",
+});
+
+/**
+ * The coordinator delegates to up to two workers, waits for their results,
+ * then completes the task. With a third teammate, the first worker delegates
+ * a helper session of its own, so the execution graph is two levels deep.
+ */
 export function teamScript(host: ScriptHost): Step[] {
   const ops = new Ops(host);
   const { task } = host.view();
   const coordinatorId = task.coordinatorBotId;
   const plans = workPlans(task.title);
-  const workers: Worker[] = task.participantBotIds
-    .filter((botId) => botId !== coordinatorId)
+  const teammates = task.participantBotIds.filter(
+    (botId) => botId !== coordinatorId,
+  );
+  const workers: Worker[] = teammates
     .slice(0, 2)
     .map((botId) => ({ botId, sessionId: "", call: null }));
+  const helperId = teammates[2];
+  const helper: Worker | null = helperId
+    ? { botId: helperId, sessionId: "", call: null }
+    : null;
   let coordinator = "";
   let call: ToolCall | null = null;
   const steps: Step[] = [];
@@ -449,11 +488,59 @@ export function teamScript(host: ScriptHost): Step[] {
         ops.modelStarted(worker.sessionId);
       }
     });
+    const lead = workers[0];
+    if (helper && lead) {
+      const plan = helperPlan(task.title);
+      steps.push(() => {
+        const delegation = ops.toolStarted(
+          lead.sessionId,
+          "delegate",
+          host.botName(helper.botId),
+        );
+        helper.sessionId = ops.createSession({
+          botId: helper.botId,
+          parentSessionId: lead.sessionId,
+          role: "worker",
+          brief: plan.brief,
+          depth: 2,
+        });
+        ops.post({
+          authorKind: "bot",
+          authorBotId: lead.botId,
+          sessionId: lead.sessionId,
+          intent: "assignment",
+          text: `@${host.botName(helper.botId)} ${plan.brief}`,
+          recipientBotIds: [helper.botId],
+        });
+        ops.toolFinished(lead.sessionId, delegation, {
+          ok: true,
+          output: `Delegated to ${host.botName(helper.botId)}`,
+        });
+        ops.startRun(helper.sessionId, "start");
+        ops.modelStarted(helper.sessionId);
+      });
+    }
     for (let phase = 0; phase < 3; phase += 1)
       steps.push(() => {
         workers.forEach((worker, index) => {
           plans[index]?.phases[phase]?.(ops, worker);
         });
+        if (helper?.sessionId)
+          helperPlan(task.title).phases[phase]?.(ops, helper);
+      });
+    if (helper && lead)
+      steps.push(() => {
+        const result = helperPlan(task.title).result;
+        ops.modelFinished(helper.sessionId);
+        ops.post({
+          authorKind: "bot",
+          authorBotId: helper.botId,
+          sessionId: helper.sessionId,
+          intent: "result",
+          text: result,
+          recipientBotIds: [lead.botId],
+        });
+        ops.finishRun(helper.sessionId, "completed", { result });
       });
     workers.forEach((worker, index) => {
       steps.push(() => {

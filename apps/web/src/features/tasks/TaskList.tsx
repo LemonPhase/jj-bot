@@ -11,6 +11,7 @@ import { useWorkspace } from "../../state/WorkspaceContext";
 import { tabStopIndex, useListKeyboard } from "../shell/listNavigation";
 import { useShell } from "../shell/ShellContext";
 import { navigate } from "../shell/useRoute";
+import "./tasks.css";
 
 /**
  * A participant's mood in a task: its latest session's when the task's view
@@ -28,6 +29,9 @@ function participantMood(
   if (session) return moodForStatus(session);
   return botId === task.coordinatorBotId ? moodForStatus(task) : "idle";
 }
+
+/** Sprites shown per row, as designed; more participants read "+N". */
+const MAX_SPRITES = 3;
 
 /** The sidebar task list (SPEC §3): title, status · version, participant sprites. */
 export function TaskList({ labelledBy }: { labelledBy: string }) {
@@ -78,7 +82,7 @@ export function TaskList({ labelledBy }: { labelledBy: string }) {
                   role="img"
                   aria-label={participants.map((bot) => bot.name).join(", ")}
                 >
-                  {participants.map((bot) => (
+                  {participants.slice(0, MAX_SPRITES).map((bot) => (
                     <Avatar
                       key={bot.id}
                       appearance={bot.appearance}
@@ -88,6 +92,11 @@ export function TaskList({ labelledBy }: { labelledBy: string }) {
                       decorative
                     />
                   ))}
+                  {participants.length > MAX_SPRITES && (
+                    <span className="task-list__more">
+                      +{participants.length - MAX_SPRITES}
+                    </span>
+                  )}
                 </span>
               }
             />
