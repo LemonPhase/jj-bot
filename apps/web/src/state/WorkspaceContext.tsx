@@ -193,6 +193,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  const refreshProfiles = useCallback(
+    async () => setProfiles(await api.listProfiles()),
+    [api],
+  );
+
   const applyTaskList = useCallback((summaries: TaskSummary[]) => {
     // An open task's streamed view may be newer than the list it raced with.
     setTasks(
