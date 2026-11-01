@@ -248,6 +248,16 @@ a { color: var(--ride); }
 <!-- 6. Experiments -->
 <section class="panel" id="exp">
   <h2><span class="n">6</span>Experiments awaiting approval</h2>
+  <p><b>None has run yet.</b> Each needs a real model, which costs money, so each waits for the owner's approval. Sections 1–3 come from the free scripted model, a fake that follows fixed rules: it can measure what a call contains, but not whether a design makes bots behave better.</p>
+  <div class="fig"><table>
+    <thead><tr><th>Experiment</th><th>Question</th><th>How it runs</th><th>Decides</th></tr></thead>
+    <tbody>
+      <tr><td><b>E0</b></td><td>What do real tasks cost?</td><td>Run today's demo task and its two follow-ups once each on a real model.</td><td>The real numbers behind sections 1–3</td></tr>
+      <tr><td><b>E1</b></td><td>Give workers more context, or let them look it up?</td><td>A worker needs a user rule and a sibling's fact. Brief only (today) vs task summary pushed into the brief vs lookup tools.</td><td>Option A</td></tr>
+      <tr><td><b>E2</b></td><td>Should a bot given more work continue where it left off?</td><td>Follow-up edits: new empty session (today) vs reopen the old session vs new session plus a handoff note.</td><td>Option C (C1 or C2)</td></tr>
+      <tr><td><b>E3</b></td><td>How should two workers agree on an interface?</td><td><code>message</code> (today) vs a shared <code>NOTES.md</code> vs the coordinator as hub. Pass means the code compiles.</td><td>Option B; keep <code>message</code>?</td></tr>
+      <tr><td><b>E4</b></td><td>What would trimming old tool results save?</td><td>Replay the transcripts from E0–E2 offline through a calculator. No model calls.</td><td>The tool-result clearing item</td></tr>
+    </tbody></table></div>
   <div class="fig"><svg id="cost" role="img" aria-label="Estimated cost range per experiment"></svg></div>
   <p class="note">Model: <span class="mono">openai/gpt-6-luna</span> ($0.10 per million input tokens, $0.50 per million output tokens). Three repeats per variant. Session budget: $3. Nothing has been spent yet.</p>
 </section>
