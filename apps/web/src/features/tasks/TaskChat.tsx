@@ -1,5 +1,17 @@
-import type { Bot, TaskMessage, TaskView } from "@jj/contracts";
-import { useLayoutEffect, useRef, useState } from "react";
+import type {
+  Bot,
+  ExecutionSession,
+  TaskMessage,
+  TaskView,
+} from "@jj/contracts";
+import {
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { ApiError } from "../../api/client";
 import {
   Avatar,
@@ -19,7 +31,9 @@ import {
   type ActivityLine,
   activityLines,
   botName,
-  mentionSegments,
+  createMentionMatcher,
+  type MentionSegment,
+  statusAnnouncements,
   type TimelineEntry,
   taskTimeline,
 } from "./taskModel";
@@ -42,8 +56,16 @@ export function TaskChat({ view }: { view: TaskView }) {
   const open = acceptsMessages(task);
   const stopping =
     Boolean(task.cancelRequestedAt) && task.status !== "cancelled";
-  const timeline = taskTimeline(view);
-  const lines = activityLines(view);
+  const { messages, events, sessions } = view;
+  const timeline = useMemo(
+    () => taskTimeline({ ...view, messages, events }),
+    [messages, events],
+  );
+  const lines = useMemo(
+    () => activityLines({ ...view, sessions }),
+    [task.status, sessions],
+  );
+  const mention = useMemo(() => createMentionMatcher(bots), [bots]);
   const activityKey = lines
     .map((line) => `${line.session.id}:${line.text}`)
     .join("|");
@@ -91,7 +113,7 @@ export function TaskChat({ view }: { view: TaskView }) {
               <TimelineItem
                 key={entry.kind === "notice" ? entry.id : entry.message.id}
                 entry={entry}
-                bots={bots}
+                mention={mention}
                 getBot={getBot}
               />
             ))}
@@ -109,8 +131,8 @@ export function TaskChat({ view }: { view: TaskView }) {
               </p>
             )}
           </div>
-          {/* Always mounted, so changes to the rows are announced. */}
-          <ActivityList lines={lines} getBot={getBot} />
+          {lines.length > 0 && <ActivityList lines={lines} getBot={getBot} />}
+          <StatusAnnouncer sessions={sessions} getBot={getBot} />
         </div>
       </div>
       {sendError && (
@@ -163,11 +185,11 @@ export function TaskChat({ view }: { view: TaskView }) {
 
 function TimelineItem({
   entry,
-  bots,
+  mention,
   getBot,
 }: {
   entry: TimelineEntry;
-  bots: Bot[];
+  mention: (text: string) => MentionSegment[];
   getBot: (botId: string) => Bot | undefined;
 }) {
   if (entry.kind === "notice")
@@ -190,11 +212,11 @@ function TimelineItem({
         }
       />
     );
-  return <BotMessage message={message} bots={bots} getBot={getBot} />;
+  return <BotMessage message={message} mention={mention} getBot={getBot} />;
 }
 
-/** A user message: meta above, then the bubble (dashed when it steers). */
-function UserBubble({
+/** A user message: meta above, then the bubble (dashed when it steers). Memoised. */
+const UserBubble = memo(function UserBubble({
   text,
   label,
   createdAt,
@@ -239,7 +261,7 @@ function UserBubble({
       </p>
     </div>
   );
-}
+});
 
 const SHOWS_INTENT = new Set<TaskMessage["intent"]>([
   "assignment",
@@ -249,17 +271,17 @@ const SHOWS_INTENT = new Set<TaskMessage["intent"]>([
 ]);
 
 /** A bot message: sprite, name and `{intent} · {time}`, then the text with @mentions. */
-function BotMessage({
+const BotMessage = memo(function BotMessage({
   message,
-  bots,
+  mention,
   getBot,
 }: {
   message: TaskMessage;
-  bots: Bot[];
+  mention: (text: string) => MentionSegment[];
   getBot: (botId: string) => Bot | undefined;
 }) {
   const author = message.authorBotId ? getBot(message.authorBotId) : undefined;
-  const segments = mentionSegments(message.text, bots);
+  const segments = mention(message.text);
   const mentioned = new Set(
     segments.flatMap((segment) => (segment.bot ? [segment.bot.id] : [])),
   );
@@ -302,7 +324,7 @@ function BotMessage({
       </p>
     </article>
   );
-}
+});
 
 /**
  * One row per bot still at work: sprite, name and what it is doing
@@ -317,34 +339,58 @@ function ActivityList({
   getBot: (botId: string) => Bot | undefined;
 }) {
   return (
-    <div className="task-activity" aria-live="polite">
-      {lines.length > 0 && (
-        <ul
-          className="task-activity__list"
-          aria-label="What the bots are doing"
-        >
-          {lines.map(({ session, text, working }) => {
-            const bot = getBot(session.botId);
-            return (
-              <li key={session.id} className="task-activity__row">
-                <Avatar
-                  appearance={bot?.appearance}
-                  name={botName(bot)}
-                  mood={working ? "working" : moodForStatus(session)}
-                  size={24}
-                  decorative
-                />
-                <span className="task-activity__name">{botName(bot)}</span>
-                <span className="task-activity__text clamp1" title={text}>
-                  <ActivityText text={text} />
-                </span>
-                {working && <TypingDots />}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
+    <ul className="task-activity__list" aria-label="What the bots are doing">
+      {lines.map(({ session, text, working }) => {
+        const bot = getBot(session.botId);
+        return (
+          <li key={session.id} className="task-activity__row">
+            <Avatar
+              appearance={bot?.appearance}
+              name={botName(bot)}
+              mood={working ? "working" : moodForStatus(session)}
+              size={24}
+              decorative
+            />
+            <span className="task-activity__name">{botName(bot)}</span>
+            <span className="task-activity__text clamp1" title={text}>
+              <ActivityText text={text} />
+            </span>
+            {working && <TypingDots />}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Announces only the transitions that matter (a bot waiting, finished,
+ * failed or stopped), from an always-mounted status region, instead of every
+ * "Thinking…" or "Running…" line the rows above show.
+ */
+function StatusAnnouncer({
+  sessions,
+  getBot,
+}: {
+  sessions: readonly ExecutionSession[];
+  getBot: (botId: string) => Bot | undefined;
+}) {
+  const seen = useRef<Map<string, ExecutionSession["status"]> | null>(null);
+  const [said, setSaid] = useState("");
+  useEffect(() => {
+    const previous = seen.current;
+    seen.current = new Map(sessions.map((s) => [s.id, s.status]));
+    // The first view sets the baseline; nothing has changed yet.
+    if (!previous) return;
+    const lines = statusAnnouncements(previous, sessions, (botId) =>
+      botName(getBot(botId)),
+    );
+    if (lines.length) setSaid(`${lines.join(". ")}.`);
+  }, [sessions, getBot]);
+  return (
+    <p className="visually-hidden" role="status" aria-live="polite">
+      {said}
+    </p>
   );
 }
 

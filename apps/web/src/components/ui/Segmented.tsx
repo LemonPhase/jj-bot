@@ -30,6 +30,8 @@ export interface SegmentedProps<Value extends string> {
    * one gets `aria-current="page"`.
    */
   kind?: "choice" | "nav";
+  /** Ids of hint or error text describing a `choice` group (`aria-describedby`). */
+  describedBy?: string;
   className?: string;
 }
 
@@ -49,6 +51,7 @@ export function Segmented<Value extends string>({
   label,
   variant = "default",
   kind = "choice",
+  describedBy,
   className,
 }: SegmentedProps<Value>) {
   const items = useRef<Array<HTMLButtonElement | null>>([]);
@@ -106,7 +109,12 @@ export function Segmented<Value extends string>({
   }
 
   return (
-    <div className={classes} role="radiogroup" aria-label={label}>
+    <div
+      className={classes}
+      role="radiogroup"
+      aria-label={label}
+      aria-describedby={describedBy}
+    >
       {options.map((option, index) => {
         const active = option.value === value;
         return (

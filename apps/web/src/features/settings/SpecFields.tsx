@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { Input, Segmented, Textarea } from "../../components/ui";
 import type {
   ChoiceOption,
@@ -178,6 +179,14 @@ function ChoiceView({
   const shown = unsupported
     ? [...options, { value, label: `${value} (not supported)`, disabled: true }]
     : options;
+  const id = useId();
+  const hintId = `${id}-hint`;
+  const unsupportedId = `${id}-unsupported`;
+  const errorId = `${id}-error`;
+  const describedBy =
+    [hint && hintId, unsupported && unsupportedId, error && errorId]
+      .filter(Boolean)
+      .join(" ") || undefined;
   return (
     <div className="ui-field settings-choice">
       <div className="ui-field__head">
@@ -192,15 +201,24 @@ function ChoiceView({
         value={value}
         onChange={onChange}
         options={shown}
+        describedBy={describedBy}
       />
-      {hint && <p className="ui-field__hint">{hint}</p>}
+      {hint && (
+        <p id={hintId} className="ui-field__hint">
+          {hint}
+        </p>
+      )}
       {unsupported && (
-        <p className="ui-field__error">
+        <p id={unsupportedId} className="ui-field__error">
           This driver cannot enforce “{value}”. Pick another option, or the
           server will refuse the profile.
         </p>
       )}
-      {error && <p className="ui-field__error">{error}</p>}
+      {error && (
+        <p id={errorId} className="ui-field__error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

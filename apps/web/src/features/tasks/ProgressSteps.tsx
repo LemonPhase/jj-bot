@@ -1,8 +1,13 @@
 import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
-import { type CSSProperties, Fragment } from "react";
+import {
+  type CSSProperties,
+  Fragment,
+  memo,
+  type ReactNode,
+  useMemo,
+} from "react";
 import { Avatar, cx, StatusTag } from "../../components/ui";
 import { type Mood, moodForStatus } from "../../lib/status";
-import { sessionOrdinal } from "../../lib/tasks";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import {
@@ -11,9 +16,9 @@ import {
   flattenTree,
   formatToolCall,
   type SessionNode,
-  sessionToolCalls,
-  sessionTree,
+  type SessionTools,
 } from "./taskModel";
+import { useOrdinals, useSessionTools, useSessionTree } from "./useTaskModel";
 
 /**
  * The step list (SPEC §5.2): the coordinator, then every session in tree
@@ -21,6 +26,7 @@ import {
  * deeper delegations indent. The picked session (or, when none is, the
  * newest running one) opens into a card with its brief, tools and latest
  * activity or result. Verification is not shown: no task has a plan in 1.0.
+ * Rows are memoised: an event re-renders only the rows it changed.
  */
 export function ProgressSteps({
   view,
@@ -33,9 +39,16 @@ export function ProgressSteps({
 }) {
   const { getBot } = useWorkspace();
   const { task } = view;
-  const roots = sessionTree(view);
-  const nodes = flattenTree(roots);
-  const groupStarts = parallelGroupStarts(roots);
+  const roots = useSessionTree(view);
+  const { nodes, groupStarts } = useMemo(
+    () => ({
+      nodes: flattenTree(roots),
+      groupStarts: parallelGroupStarts(roots),
+    }),
+    [roots],
+  );
+  const ordinals = useOrdinals(view);
+  const toolsOf = useSessionTools(view);
   const open =
     nodes.find((node) => node.session.id === picked)?.session.id ??
     nodes.filter((node) => node.session.status === "running").at(-1)?.session
@@ -61,47 +74,20 @@ export function ProgressSteps({
       {nodes.length === 0 && (
         <li className="progress__empty">No sessions yet</li>
       )}
-      {nodes.map((node) => {
-        const { session } = node;
-        const bot = getBot(session.botId);
-        const parallel = groupStarts.has(session.id);
-        return (
-          <Fragment key={session.id}>
-            {parallel && (
-              <li
-                className="progress__group"
-                aria-hidden="true"
-                style={indent(node)}
-              >
-                In parallel
-              </li>
-            )}
-            <li className="progress__step">
-              <SpriteTile bot={bot} mood={moodForStatus(session)} />
-              <div className="progress__body" style={indent(node)}>
-                {open === session.id ? (
-                  <StepCard
-                    view={view}
-                    session={session}
-                    bot={bot}
-                    selected={picked === session.id}
-                    onPick={onPick}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="progress__item"
-                    aria-pressed={picked === session.id}
-                    onClick={() => onPick(session.id)}
-                  >
-                    <StepTitle view={view} session={session} bot={bot} />
-                  </button>
-                )}
-              </div>
-            </li>
-          </Fragment>
-        );
-      })}
+      {nodes.map((node) => (
+        <StepRow
+          key={node.session.id}
+          session={node.session}
+          bot={getBot(node.session.botId)}
+          ordinal={ordinals.get(node.session.id) ?? "s-?"}
+          tools={toolsOf(node.session.id)}
+          indent={Math.max(0, node.depth - 1)}
+          parallel={groupStarts.has(node.session.id)}
+          open={open === node.session.id}
+          selected={picked === node.session.id}
+          onPick={onPick}
+        />
+      ))}
     </ol>
   );
 }
@@ -118,9 +104,66 @@ function parallelGroupStarts(roots: readonly SessionNode[]): Set<string> {
   return starts;
 }
 
-/** Depth 1 lines up with the root, as in the design; deeper levels step in. */
-const indent = (node: SessionNode) =>
-  ({ "--step-indent": String(Math.max(0, node.depth - 1)) }) as CSSProperties;
+interface StepRowProps {
+  session: ExecutionSession;
+  bot: Bot | undefined;
+  ordinal: string;
+  tools: SessionTools;
+  /** Depth 1 lines up with the root, as in the design; deeper levels step in. */
+  indent: number;
+  parallel: boolean;
+  open: boolean;
+  selected: boolean;
+  onPick: (sessionId: string) => void;
+}
+
+const StepRow = memo(function StepRow({
+  session,
+  bot,
+  ordinal,
+  tools,
+  indent,
+  parallel,
+  open,
+  selected,
+  onPick,
+}: StepRowProps) {
+  const style = { "--step-indent": String(indent) } as CSSProperties;
+  const title = <StepTitle session={session} bot={bot} ordinal={ordinal} />;
+  return (
+    <Fragment>
+      {parallel && (
+        <li className="progress__group" aria-hidden="true" style={style}>
+          In parallel
+        </li>
+      )}
+      <li className="progress__step">
+        <SpriteTile bot={bot} mood={moodForStatus(session)} />
+        <div className="progress__body" style={style}>
+          {open ? (
+            <StepCard
+              session={session}
+              tools={tools}
+              selected={selected}
+              onPick={onPick}
+            >
+              {title}
+            </StepCard>
+          ) : (
+            <button
+              type="button"
+              className="progress__item"
+              aria-pressed={selected}
+              onClick={() => onPick(session.id)}
+            >
+              {title}
+            </button>
+          )}
+        </div>
+      </li>
+    </Fragment>
+  );
+});
 
 function SpriteTile({ bot, mood }: { bot: Bot | undefined; mood: Mood }) {
   return (
@@ -137,18 +180,18 @@ function SpriteTile({ bot, mood }: { bot: Bot | undefined; mood: Mood }) {
 }
 
 function StepTitle({
-  view,
   session,
   bot,
+  ordinal,
 }: {
-  view: TaskView;
   session: ExecutionSession;
   bot: Bot | undefined;
+  ordinal: string;
 }) {
   return (
     <span className="progress__text">
       <span className="progress__title clamp1" title={session.brief}>
-        {sessionOrdinal(view, session.id)} · {briefLine(session.brief, 60)}
+        {ordinal} · {briefLine(session.brief, 60)}
       </span>
       <StatusTag status={session} detail={botName(bot)} />
     </span>
@@ -157,19 +200,18 @@ function StepTitle({
 
 /** The open step: title and status, brief, tool line and what it is doing or produced. */
 function StepCard({
-  view,
   session,
-  bot,
+  tools,
   selected,
   onPick,
+  children,
 }: {
-  view: TaskView;
   session: ExecutionSession;
-  bot: Bot | undefined;
+  tools: SessionTools;
   selected: boolean;
   onPick: (sessionId: string) => void;
+  children: ReactNode;
 }) {
-  const tools = sessionToolCalls(view, session.id);
   const line = session.activity
     ? { label: "Now", text: session.activity.text }
     : session.error
@@ -184,7 +226,7 @@ function StepCard({
       aria-pressed={selected}
       onClick={() => onPick(session.id)}
     >
-      <StepTitle view={view} session={session} bot={bot} />
+      {children}
       <span className="progress__brief clamp3">{session.brief}</span>
       {tools.calls.length > 0 && (
         <span className="progress__tools clamp2">

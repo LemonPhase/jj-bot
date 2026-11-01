@@ -38,6 +38,20 @@ describe("hint refetches", () => {
     expect(applied).toEqual([1]);
   });
 
+  it("still fetches within the max wait while hints keep coming", async () => {
+    const { load } = controlledLoad();
+    const refetch = createRefetcher(load, () => {}, {
+      delayMs: 200,
+      maxWaitMs: 1000,
+    });
+    // A hint every 150 ms would push a plain debounce back forever.
+    for (let elapsed = 0; elapsed < 1000; elapsed += 150) {
+      refetch.schedule();
+      await vi.advanceTimersByTimeAsync(150);
+    }
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("applies only the newest answer when requests overlap", async () => {
     const { load, pending } = controlledLoad();
     const applied: number[] = [];

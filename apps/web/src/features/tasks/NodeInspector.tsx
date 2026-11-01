@@ -1,18 +1,12 @@
 import type { ExecutionSession, TaskView } from "@jj/contracts";
 import type { ReactNode } from "react";
 import { Card, StatusTag } from "../../components/ui";
-import { sessionOrdinal } from "../../lib/tasks";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import { ArtifactRows } from "./ArtifactList";
 import { usageDetail, usageLine } from "./format";
-import {
-  botName,
-  formatToolCall,
-  sessionToolCalls,
-  TASK_NODE,
-  type ToolCall,
-} from "./taskModel";
+import { botName, formatToolCall, TASK_NODE, type ToolCall } from "./taskModel";
+import { useOrdinals, useSessionTools } from "./useTaskModel";
 
 /**
  * The graph's inspector (SPEC §5.3 "Selected session"): the picked session's
@@ -47,14 +41,15 @@ function SessionInspector({
 }) {
   const { getBot } = useWorkspace();
   const bot = getBot(session.botId);
-  const tools = sessionToolCalls(view, session.id);
+  const tools = useSessionTools(view)(session.id);
+  const ordinal = useOrdinals(view).get(session.id) ?? "s-?";
   const usage = view.usage.bySession[session.id];
   const files = view.artifacts.filter((a) => a.sessionId === session.id);
   return (
     <Card as="section" aria-label="Selected session" className="inspector">
       <div className="inspector__head">
         <span className="inspector__title">
-          {sessionOrdinal(view, session.id)} · {botName(bot)}
+          {ordinal} · {botName(bot)}
           <span className="inspector__role"> · {session.role}</span>
         </span>
         <StatusTag status={session} />
@@ -130,6 +125,12 @@ function TaskInspector({ view }: { view: TaskView }) {
       <Line label="Usage">
         <span title={usageDetail(usage.total)}>{usageLine(usage.total)}</span>
       </Line>
+      {view.artifacts.length > 0 && (
+        <div className="inspector__files">
+          <span className="inspector__label">Files</span>
+          <ArtifactRows view={view} artifacts={view.artifacts} />
+        </div>
+      )}
     </Card>
   );
 }

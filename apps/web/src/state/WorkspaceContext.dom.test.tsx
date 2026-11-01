@@ -10,7 +10,7 @@ import {
   type TaskView,
   type WorkspaceHint,
 } from "@jj/contracts";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, configure, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiProvider } from "../api/ApiContext";
@@ -23,6 +23,9 @@ import {
 import { createDemoApi } from "../api/demoApi";
 import { followTask, type TaskEventHandlers } from "../api/follow";
 import { useWorkspace, WorkspaceProvider } from "./WorkspaceContext";
+
+// Whole-provider renders share CPU with the other suites in a full run.
+configure({ asyncUtilTimeout: 5000 });
 
 const T0 = "2026-10-31T12:00:00.000Z";
 const T1 = "2026-10-31T12:01:00.000Z";
@@ -142,6 +145,17 @@ function fakeApi(overrides: Partial<JJApi> = {}) {
   return { api, hints, tasks, hint };
 }
 
+/** Views land once per frame: deliver one and let the frame pass. */
+async function showView(
+  stream: { onView: (view: TaskView) => void } | undefined,
+  next: TaskView,
+) {
+  await act(async () => {
+    stream?.onView(next);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+}
+
 let workspace: ReturnType<typeof useWorkspace>;
 function Probe() {
   workspace = useWorkspace();
@@ -188,7 +202,7 @@ describe("WorkspaceContext: task load failures (a)", () => {
     expect(workspace.taskProblem?.terminal).toBe(false);
     act(() => workspace.retryTask());
     await waitFor(() => expect(api.subscribeTask).toHaveBeenCalledTimes(2));
-    act(() => tasks[1]?.onView(view([], 0)));
+    await showView(tasks[1], view([], 0));
     expect(workspace.taskProblem).toBeNull();
     expect(workspace.taskViews["task-1"]?.cursor).toBe(0);
   });
@@ -235,7 +249,7 @@ describe("WorkspaceContext: refetch amplification (f)", () => {
   it("debounces task-list hints and skips the streamed task's own", async () => {
     const { api, tasks, hint } = fakeApi();
     await mount(api);
-    act(() => tasks[0]?.onView(view([], 0)));
+    await showView(tasks[0], view([], 0));
     hint({ type: "tasks.changed", taskId: "task-1" });
     await new Promise((resolve) => setTimeout(resolve, 260));
     expect(api.listTasks).not.toHaveBeenCalled();
@@ -339,6 +353,27 @@ describe("WorkspaceContext: direct chat sends", () => {
   });
 });
 
+describe("WorkspaceContext: catching up", () => {
+  it("renders a burst of hundreds of views once, not once per event", async () => {
+    const { api, tasks } = fakeApi();
+    let renders = 0;
+    function Counter() {
+      useWorkspace();
+      renders += 1;
+      return null;
+    }
+    await mount(api, <Counter />);
+    const before = renders;
+    await act(async () => {
+      for (let cursor = 1; cursor <= 300; cursor += 1)
+        tasks[0]?.onView(view([message(1)], cursor));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(workspace.taskViews["task-1"]?.cursor).toBe(300);
+    expect(renders - before).toBeLessThanOrEqual(3);
+  });
+});
+
 describe("WorkspaceContext: optimistic updates (h)", () => {
   it("shows a posted message at once, once", async () => {
     const stored = { ...message(2, "Keep going"), authorKind: "user" as const };
@@ -346,7 +381,7 @@ describe("WorkspaceContext: optimistic updates (h)", () => {
       postTaskMessage: vi.fn(async () => stored),
     });
     await mount(api);
-    act(() => tasks[0]?.onView(view([message(1)], 1)));
+    await showView(tasks[0], view([message(1)], 1));
     let result: Awaited<ReturnType<typeof workspace.postTaskMessage>> | null =
       null;
     await act(async () => {
@@ -358,10 +393,10 @@ describe("WorkspaceContext: optimistic updates (h)", () => {
       "m2",
     ]);
     // An unrelated event arrives before message.posted: the message stays.
-    act(() => tasks[0]?.onView({ ...view([message(1)], 1), cursor: 2 }));
+    await showView(tasks[0], { ...view([message(1)], 1), cursor: 2 });
     expect(workspace.taskViews["task-1"]?.messages).toHaveLength(2);
     // The stream delivers it: still exactly one copy.
-    act(() => tasks[0]?.onView(view([message(1), stored], 3)));
+    await showView(tasks[0], view([message(1), stored], 3));
     expect(workspace.taskViews["task-1"]?.messages).toHaveLength(2);
   });
 
@@ -374,7 +409,7 @@ describe("WorkspaceContext: optimistic updates (h)", () => {
       }),
     });
     await mount(api);
-    act(() => tasks[0]?.onView(view([], 0)));
+    await showView(tasks[0], view([], 0));
     await act(async () => {
       await workspace.stopTask("task-1");
     });

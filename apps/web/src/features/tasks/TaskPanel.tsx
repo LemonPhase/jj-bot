@@ -26,8 +26,9 @@ const LANDMARKS: Record<PanelTab, string> = {
 /**
  * The right panel (SPEC §5.2–5.5): a Progress | Graph | Office tab list over
  * the chosen tab panel. Progress and Graph share the selected session, so
- * picking a step shows it in the graph. In the Office the tabs sit at the
- * start of the office's own header row, beside its 2D/3D switch.
+ * picking a step shows it in the graph. The tab list keeps one place in the
+ * DOM (so arrowing between tabs keeps focus); in the Office, CSS lays it
+ * over the start of the office's header row, beside its 2D/3D switch.
  */
 export function TaskPanel({
   view,
@@ -61,7 +62,7 @@ export function TaskPanel({
       className={cx("ui-panel", "task-panel", `task-panel--${tab}`)}
       aria-label={LANDMARKS[tab]}
     >
-      {tab !== "office" && tabs}
+      {tabs}
       <TabPanel id={panelId(tab)} className="task-panel__body">
         {tab === "progress" && (
           <>
@@ -83,12 +84,7 @@ export function TaskPanel({
           </>
         )}
         {tab === "office" && (
-          <TaskOffice
-            key={view.task.id}
-            view={view}
-            getBot={getBot}
-            headerStart={tabs}
-          />
+          <TaskOffice key={view.task.id} view={view} getBot={getBot} />
         )}
       </TabPanel>
     </aside>

@@ -35,8 +35,25 @@
 }
 
 .task-screen--office .task-panel {
+  position: relative;
   flex: 1 1 680px;
   width: auto;
+}
+
+/*
+ * In the Office the tabs share the office's header row (SPEC §5.4): the tab
+ * list stays where it is in the DOM and is laid over the start of that row,
+ * whose 2D/3D switch and chip sit at its end.
+ */
+.task-screen--office .task-panel > .ui-tabs {
+  position: absolute;
+  top: 16px;
+  left: 22px;
+  z-index: 1;
+}
+
+.task-screen--office .office__head {
+  min-height: 30px;
 }
 
 /* ── Header ────────────────────────────────────────────────────────────── */
@@ -265,11 +282,6 @@
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-/* Empty, the always-mounted live region takes no gap. */
-.task-activity:empty {
-  margin-top: calc(var(--sp-8) * -1);
 }
 
 .task-activity__row {

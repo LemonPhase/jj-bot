@@ -501,7 +501,7 @@
   cursor: pointer;
 }
 
-.studio-swatch[aria-pressed="true"] {
+.studio-swatch[aria-checked="true"] {
   box-shadow: var(--ring-selected);
 }
 
@@ -535,7 +535,7 @@
   color: var(--ink);
 }
 
-.studio-preset[aria-pressed="true"] {
+.studio-preset[aria-checked="true"] {
   border-color: var(--line-chip-on);
   background: var(--bg-active);
   color: var(--ink);
@@ -559,4 +559,16 @@
   .studio-subtitle {
     display: none;
   }
+}
+
+/* Part chips are radios: the kit chip's "on" look follows aria-checked. */
+.studio-chip[aria-checked="true"] {
+  border-color: var(--line-chip-on);
+  background: var(--bg-active);
+  color: var(--ink);
+}
+
+.studio-chip:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
 }

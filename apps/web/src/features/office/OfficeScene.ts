@@ -417,6 +417,8 @@ export class OfficeScene {
 
   private theme: OfficeTheme;
   private task: TaskView | null = null;
+  /** What sync() last painted; a theme change repaints on its own. */
+  private drawnKey = "";
   private queue: Beat[] = [];
   private current: Beat | null = null;
   private played = 0;
@@ -540,14 +542,21 @@ export class OfficeScene {
         if (desk) this.addActor(bot, desk);
       }
     }
+    const looks: string[] = [];
     for (const actor of this.actors.values()) {
       const session = sessionFor(task, actor.profile.id);
       const tone = session ? statusTone(session) : "idle";
       actor.desk.tone = tone;
       actor.working = session?.status === "running";
       actor.ring.material.color.set(STATUS[this.theme][tone]);
+      looks.push(`${actor.profile.id}:${actor.look}:${tone}:${actor.working}`);
     }
     for (const desk of this.desks) if (!desk.botId) desk.tone = null;
+    // Most task events change nothing the room draws; repaint only when the
+    // desks, their statuses or the board's goal version did.
+    const drawn = `${looks.join("|")}#v${task.task.goalVersion}`;
+    if (drawn === this.drawnKey) return;
+    this.drawnKey = drawn;
     this.paintDesks();
     this.drawBoard();
     this.drawMonitors();

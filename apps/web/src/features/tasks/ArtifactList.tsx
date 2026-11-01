@@ -2,10 +2,10 @@ import type { Artifact, TaskView } from "@jj/contracts";
 import { useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import { Button, buttonClass, SectionLabel } from "../../components/ui";
-import { sessionOrdinal } from "../../lib/tasks";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { formatBytes } from "./format";
 import { botName } from "./taskModel";
+import { useOrdinals } from "./useTaskModel";
 
 /** The task's files (SPEC: not designed; built in the panel's language). Hidden when there are none. */
 export function ArtifactList({ view }: { view: TaskView }) {
@@ -30,12 +30,13 @@ export function ArtifactRows({
   artifacts: readonly Artifact[];
 }) {
   const { getBot } = useWorkspace();
+  const ordinals = useOrdinals(view);
   return (
     <ul className="artifacts__list">
       {artifacts.map((artifact) => {
         const session = view.sessions.find((s) => s.id === artifact.sessionId);
         const producer = session
-          ? `${botName(getBot(session.botId))} · ${sessionOrdinal(view, session.id)}`
+          ? `${botName(getBot(session.botId))} · ${ordinals.get(session.id) ?? "s-?"}`
           : "task";
         return (
           <li key={artifact.id} className="artifact">

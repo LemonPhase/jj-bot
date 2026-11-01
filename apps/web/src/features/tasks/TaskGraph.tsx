@@ -1,19 +1,18 @@
-import type { Bot, TaskView } from "@jj/contracts";
-import type { CSSProperties } from "react";
+import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
+import { type CSSProperties, memo } from "react";
 import { Avatar, cx, StatusTag } from "../../components/ui";
 import { type Mood, moodForStatus, statusTone } from "../../lib/status";
-import { sessionOrdinal } from "../../lib/tasks";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import {
   botName,
   briefLine,
   type SessionNode,
-  sessionToolCalls,
-  sessionTree,
+  type SessionTools,
   TASK_NODE,
   toolCount,
   treeShape,
 } from "./taskModel";
+import { useOrdinals, useSessionTools, useSessionTree } from "./useTaskModel";
 
 /** Each branch is at least this wide per leaf below it (node plus gutter), in px. */
 const LEAF_PX = 152;
@@ -43,7 +42,9 @@ export function TaskGraph({
 }) {
   const { getBot } = useWorkspace();
   const { task } = view;
-  const roots = sessionTree(view);
+  const roots = useSessionTree(view);
+  const ordinals = useOrdinals(view);
+  const toolsOf = useSessionTools(view);
   const coordinator = getBot(task.coordinatorBotId);
   const coordinatorMood: Mood =
     task.status === "running" ? "working" : moodForStatus(task);
@@ -75,13 +76,14 @@ export function TaskGraph({
         </button>
         {roots.length > 0 ? (
           <GraphLevel
-            view={view}
             nodes={roots}
             label="Sessions"
             root
             selected={selected}
             onSelect={onSelect}
             getBot={getBot}
+            ordinals={ordinals}
+            toolsOf={toolsOf}
           />
         ) : (
           <p className="graph-empty">No sessions yet</p>
@@ -92,21 +94,23 @@ export function TaskGraph({
 }
 
 function GraphLevel({
-  view,
   nodes,
   label,
   root = false,
   selected,
   onSelect,
   getBot,
+  ordinals,
+  toolsOf,
 }: {
-  view: TaskView;
   nodes: readonly SessionNode[];
   label: string;
   root?: boolean;
   selected: string;
   onSelect: (nodeId: string) => void;
   getBot: (botId: string) => Bot | undefined;
+  ordinals: ReadonlyMap<string, string>;
+  toolsOf: (sessionId: string) => SessionTools;
 }) {
   return (
     <ul
@@ -131,20 +135,23 @@ function GraphLevel({
             }
           >
             <GraphNode
-              view={view}
-              node={node}
+              session={node.session}
+              depth={node.depth}
               bot={bot}
+              ordinal={ordinals.get(node.session.id) ?? "s-?"}
+              tools={toolsOf(node.session.id)}
               selected={selected === node.session.id}
               onSelect={onSelect}
             />
             {node.children.length > 0 && (
               <GraphLevel
-                view={view}
                 nodes={node.children}
                 label={`Delegated by ${botName(bot)}`}
                 selected={selected}
                 onSelect={onSelect}
                 getBot={getBot}
+                ordinals={ordinals}
+                toolsOf={toolsOf}
               />
             )}
           </li>
@@ -154,21 +161,24 @@ function GraphLevel({
   );
 }
 
-function GraphNode({
-  view,
-  node,
+/** A session node; memoised, so an event re-renders only the nodes it changed. */
+const GraphNode = memo(function GraphNode({
+  session,
+  depth,
   bot,
+  ordinal,
+  tools,
   selected,
   onSelect,
 }: {
-  view: TaskView;
-  node: SessionNode;
+  session: ExecutionSession;
+  depth: number;
   bot: Bot | undefined;
+  ordinal: string;
+  tools: SessionTools;
   selected: boolean;
   onSelect: (nodeId: string) => void;
 }) {
-  const { session } = node;
-  const ordinal = sessionOrdinal(view, session.id);
   const sprite = (
     <Avatar
       appearance={bot?.appearance}
@@ -179,7 +189,7 @@ function GraphNode({
     />
   );
   // Root sessions are compact pills, as in the design; delegations are cards.
-  if (node.depth === 0)
+  if (depth === 0)
     return (
       <button
         type="button"
@@ -216,9 +226,9 @@ function GraphNode({
         {ordinal} · {briefLine(session.brief, 90)}
       </span>
       <span className="graph-node__meta clamp1">
-        {botName(bot)} · {toolCount(sessionToolCalls(view, session.id))}
+        {botName(bot)} · {toolCount(tools)}
       </span>
       {outcome && <span className="graph-node__outcome clamp2">{outcome}</span>}
     </button>
   );
-}
+});

@@ -140,7 +140,6 @@ interface WorkspaceValue {
     changesGoal: boolean,
   ) => Promise<ActionResult>;
   stopTask: (taskId: string) => Promise<ActionResult>;
-  advanceDemoTask?: (taskId: string) => Promise<void>;
   /** Text of a bot-chat message being sent, keyed by bot id. */
   pendingBotTurns: Record<string, string>;
   /** Task-chat message awaiting acknowledgement, keyed by task id. */
@@ -156,6 +155,20 @@ const upsert = <Item extends { id: string }>(items: Item[], item: Item) =>
   items.some((existing) => existing.id === item.id)
     ? items.map((existing) => (existing.id === item.id ? item : existing))
     : [item, ...items];
+
+type Frame =
+  | { kind: "raf"; id: number }
+  | { kind: "timer"; id: ReturnType<typeof setTimeout> };
+
+/** Once per animation frame in browsers; a short timer elsewhere (tests, workers). */
+const requestFrame = (callback: () => void): Frame =>
+  typeof requestAnimationFrame === "function"
+    ? { kind: "raf", id: requestAnimationFrame(callback) }
+    : { kind: "timer", id: setTimeout(callback, 16) };
+const cancelFrame = (frame: Frame) => {
+  if (frame.kind === "raf") cancelAnimationFrame(frame.id);
+  else clearTimeout(frame.id);
+};
 
 const without = <Value,>(record: Record<string, Value>, key: string) => {
   const next = { ...record };
@@ -196,6 +209,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const selectedBotId = route.name === "bots" ? route.botId : null;
   const selectedTaskId = route.name === "tasks" ? route.taskId : null;
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // Stable while the lists are unchanged, so memoised rows and the office
+  // scene that take them skip renders on unrelated updates.
+  const getBot = useMemo(() => {
+    const byId = new Map(bots.map((bot) => [bot.id, bot]));
+    return (botId: string) => byId.get(botId);
+  }, [bots]);
+  const getTask = useMemo(() => {
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+    return (taskId: string) => byId.get(taskId);
+  }, [tasks]);
 
   const taskViews = useMemo(() => {
     const merged: Record<string, TaskView> = {};
@@ -359,22 +383,36 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!selectedTaskId) return;
     void taskReload;
     setTaskStreamState(null);
+    // Views are applied at most once per frame: catching up on hundreds of
+    // events (a reconnect, a slow tab) costs one render, not hundreds.
+    let latest: TaskView | null = null;
+    let frame: Frame | null = null;
+    const flush = () => {
+      frame = null;
+      const view = latest;
+      latest = null;
+      if (view) applyView(view);
+    };
+    const applyView = (view: TaskView) => {
+      setStreamedViews((current) => ({ ...current, [view.task.id]: view }));
+      setOverlays((current) => {
+        const overlay = current[view.task.id];
+        if (!overlay) return current;
+        const pending = pruneOverlay(view, overlay);
+        if (pending === overlay) return current;
+        if (!pending) return without(current, view.task.id);
+        return { ...current, [view.task.id]: pending };
+      });
+      setTasks((current) => upsert(current, summaryFromView(view)));
+      setProblem((current) =>
+        current?.taskId === view.task.id ? null : current,
+      );
+    };
     const unsubscribe = api.subscribeTask(
       selectedTaskId,
       (view) => {
-        setStreamedViews((current) => ({ ...current, [view.task.id]: view }));
-        setOverlays((current) => {
-          const overlay = current[view.task.id];
-          if (!overlay) return current;
-          const pending = pruneOverlay(view, overlay);
-          if (pending === overlay) return current;
-          if (!pending) return without(current, view.task.id);
-          return { ...current, [view.task.id]: pending };
-        });
-        setTasks((current) => upsert(current, summaryFromView(view)));
-        setProblem((current) =>
-          current?.taskId === view.task.id ? null : current,
-        );
+        latest = view;
+        frame ??= requestFrame(flush);
       },
       {
         onState: setTaskStreamState,
@@ -383,6 +421,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     );
     return () => {
       unsubscribe();
+      if (frame !== null) cancelFrame(frame);
       // A reload keeps showing the current view until the fresh snapshot lands.
       if (selectedTaskRef.current === selectedTaskId) return;
       setStreamedViews((current) => without(current, selectedTaskId));
@@ -427,8 +466,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       taskProblem: problem,
       retryTask: () => setTaskReload((count) => count + 1),
       memories,
-      getBot: (botId) => bots.find((b) => b.id === botId),
-      getTask: (taskId) => tasks.find((t) => t.id === taskId),
+      getBot,
+      getTask,
       selectedBotId,
       selectBot,
       selectedTaskId,
@@ -559,12 +598,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       },
       pendingBotTurns,
       pendingTaskSends,
-      advanceDemoTask: api.advanceDemoTask
-        ? (taskId) =>
-            run(async () => {
-              await api.advanceDemoTask?.(taskId);
-            })
-        : undefined,
     }),
     [
       api,

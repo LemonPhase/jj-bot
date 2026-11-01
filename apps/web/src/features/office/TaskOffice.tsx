@@ -4,6 +4,7 @@ import {
   type ReactNode,
   Suspense,
   useCallback,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -13,6 +14,7 @@ import { PixelIcon } from "../../components/sprite";
 import {
   Badge,
   Button,
+  buttonClass,
   Icon,
   IconButton,
   Segmented,
@@ -88,6 +90,7 @@ export function TaskOffice({
   const [paused, setPaused] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
   const [pickedBotId, setPickedBotId] = useState<string | null>(null);
+  const inspectId = useId();
   const viewRef = useRef<OfficeViewHandle | null>(null);
 
   const setMode = (next: OfficeMode) => {
@@ -233,6 +236,23 @@ export function TaskOffice({
             >
               reset view
             </Button>
+            {/* The keyboard path to the inspect card, which a click on a bot opens. */}
+            <label className="visually-hidden" htmlFor={inspectId}>
+              Inspect a bot
+            </label>
+            <select
+              id={inspectId}
+              className={buttonClass({ size: "sm", mono: true })}
+              value={pickedBotId ?? ""}
+              onChange={(event) => setPickedBotId(event.target.value || null)}
+            >
+              <option value="">inspect…</option>
+              {bots.map((bot) => (
+                <option key={bot.id} value={bot.id}>
+                  {bot.name}
+                </option>
+              ))}
+            </select>
           </div>
         )}
         {mode === "3d" && picked && (

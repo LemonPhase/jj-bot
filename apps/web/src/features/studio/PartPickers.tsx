@@ -8,10 +8,10 @@ import {
   type BotAppearance,
   type BotShape,
 } from "@jj/contracts";
-import { type ReactNode, useId } from "react";
+import { type KeyboardEvent, type ReactNode, useId, useRef } from "react";
 import { PixelSprite, spritePaths } from "../../components/sprite";
 import { SHAPES } from "../../components/sprite/parts";
-import { Chip } from "../../components/ui";
+import { rovingTabStop, rovingTarget } from "../../components/ui/roving";
 import {
   APPEARANCE_PRESETS,
   BODY_LABELS,
@@ -24,11 +24,7 @@ import {
   TOPPER_NOTES,
 } from "../../lib/appearance";
 import { COLOUR_RAMPS } from "../../lib/colour";
-import {
-  type AppearancePart,
-  matchingPreset,
-  sameAppearance,
-} from "./studioDraft";
+import { type AppearancePart, matchingPreset } from "./studioDraft";
 
 /** Every sprite character drawn in the chip's text colour. */
 const INK_PALETTE = {
@@ -62,29 +58,101 @@ function ShapeIcon({ shape }: { shape: BotShape }) {
   );
 }
 
-function PartGroup({
+/** What a radio item needs from its group: its checked state and roving focus. */
+interface RadioItemProps {
+  role: "radio";
+  "aria-checked": boolean;
+  tabIndex: 0 | -1;
+  ref: (element: HTMLButtonElement | null) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+  onClick: () => void;
+}
+
+/**
+ * One part as a radio group (the kit Segmented pattern): a single Tab stop,
+ * arrows move to and pick the neighbouring option (wrapping), Home and End
+ * jump to the ends. `checked` may be null (no preset matches): the first
+ * option is then the Tab stop.
+ */
+function PartGroup<Value extends string>({
   label,
   note,
-  children,
+  options,
+  checked,
+  onPick,
+  renderOption,
   layout = "chips",
 }: {
   label: string;
   note?: string;
-  children: ReactNode;
+  options: readonly Value[];
+  checked: Value | null;
+  onPick: (value: Value) => void;
+  renderOption: (value: Value, item: RadioItemProps) => ReactNode;
   /** `chips` and `swatches` wrap (gap 6 / 8); `presets` is the 4-column grid. */
   layout?: "chips" | "swatches" | "presets";
 }) {
   const id = useId();
+  const items = useRef<Array<HTMLButtonElement | null>>([]);
+  const disabled = options.map(() => false);
+  const tabStop = rovingTabStop(
+    disabled,
+    checked === null ? -1 : options.indexOf(checked),
+  );
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, from: number) => {
+    const target = rovingTarget(disabled, from, event.key, "both");
+    const value = target === null ? undefined : options[target];
+    if (target === null || value === undefined) return;
+    event.preventDefault();
+    items.current[target]?.focus();
+    if (value !== checked) onPick(value);
+  };
   return (
-    <div className="studio-part" role="group" aria-labelledby={id}>
+    <div className="studio-part">
       <div className="studio-part__head">
         <span id={id}>{label}</span>
         {note && <span className="studio-part__note">{note}</span>}
       </div>
-      <div className={`studio-part__items studio-part__items--${layout}`}>
-        {children}
+      <div
+        className={`studio-part__items studio-part__items--${layout}`}
+        role="radiogroup"
+        aria-labelledby={id}
+      >
+        {options.map((value, index) =>
+          renderOption(value, {
+            role: "radio",
+            "aria-checked": value === checked,
+            tabIndex: index === tabStop ? 0 : -1,
+            ref: (element) => {
+              items.current[index] = element;
+            },
+            onKeyDown: (event) => onKeyDown(event, index),
+            onClick: () => {
+              if (value !== checked) onPick(value);
+            },
+          }),
+        )}
       </div>
     </div>
+  );
+}
+
+/** A chip-styled radio (SPEC §11 chips), checked look on `aria-checked`. */
+function ChipRadio({
+  item,
+  leading,
+  children,
+}: {
+  item: RadioItemProps;
+  leading?: ReactNode;
+  children: ReactNode;
+}) {
+  const { ref, ...rest } = item;
+  return (
+    <button ref={ref} type="button" className="ui-chip studio-chip" {...rest}>
+      {leading}
+      {children}
+    </button>
   );
 }
 
@@ -106,98 +174,116 @@ export function PartPickers({
   const preset = matchingPreset(appearance);
   return (
     <section aria-label="Parts" className="studio-parts">
-      <PartGroup label="Shape">
-        {BOT_SHAPES.map((shape) => (
-          <Chip
+      <PartGroup
+        label="Shape"
+        options={BOT_SHAPES}
+        checked={appearance.shape}
+        onPick={(shape) => onPart("shape", shape)}
+        renderOption={(shape, item) => (
+          <ChipRadio
             key={shape}
-            selected={appearance.shape === shape}
+            item={item}
             leading={<ShapeIcon shape={shape} />}
-            onClick={() => onPart("shape", shape)}
           >
             {SHAPE_LABELS[shape]}
-          </Chip>
-        ))}
-      </PartGroup>
-      <PartGroup label="Face">
-        {BOT_FACES.map((face) => (
-          <Chip
-            key={face}
-            selected={appearance.face === face}
-            onClick={() => onPart("face", face)}
-          >
+          </ChipRadio>
+        )}
+      />
+      <PartGroup
+        label="Face"
+        options={BOT_FACES}
+        checked={appearance.face}
+        onPick={(face) => onPart("face", face)}
+        renderOption={(face, item) => (
+          <ChipRadio key={face} item={item}>
             {FACE_LABELS[face]}
-          </Chip>
-        ))}
-      </PartGroup>
-      <PartGroup label="Topper" note={TOPPER_NOTES[appearance.topper]}>
-        {BOT_TOPPERS.map((topper) => (
-          <Chip
-            key={topper}
-            selected={appearance.topper === topper}
-            onClick={() => onPart("topper", topper)}
-          >
+          </ChipRadio>
+        )}
+      />
+      <PartGroup
+        label="Topper"
+        note={TOPPER_NOTES[appearance.topper]}
+        options={BOT_TOPPERS}
+        checked={appearance.topper}
+        onPick={(topper) => onPart("topper", topper)}
+        renderOption={(topper, item) => (
+          <ChipRadio key={topper} item={item}>
             {TOPPER_LABELS[topper]}
-          </Chip>
-        ))}
-      </PartGroup>
+          </ChipRadio>
+        )}
+      />
       <PartGroup
         label="Colour"
         note={COLOUR_LABELS[appearance.colour]}
         layout="swatches"
-      >
-        {BOT_COLOURS.map((colour) => (
+        options={BOT_COLOURS}
+        checked={appearance.colour}
+        onPick={(colour) => onPart("colour", colour)}
+        renderOption={(colour, { ref, ...item }) => (
           <button
             key={colour}
+            ref={ref}
             type="button"
             className="studio-swatch"
             style={{ background: COLOUR_RAMPS[colour].f }}
             aria-label={COLOUR_LABELS[colour]}
-            title={COLOUR_LABELS[colour]}
-            aria-pressed={appearance.colour === colour}
-            onClick={() => onPart("colour", colour)}
+            {...item}
           />
-        ))}
-      </PartGroup>
-      <PartGroup label="Body">
-        {BOT_BODIES.map((body) => (
-          <Chip
-            key={body}
-            selected={appearance.body === body}
-            onClick={() => onPart("body", body)}
-          >
+        )}
+      />
+      <PartGroup
+        label="Body"
+        options={BOT_BODIES}
+        checked={appearance.body}
+        onPick={(body) => onPart("body", body)}
+        renderOption={(body, item) => (
+          <ChipRadio key={body} item={item}>
             {BODY_LABELS[body]}
-          </Chip>
-        ))}
-      </PartGroup>
-      <PartGroup label="Walk" note={GAIT_NOTES[appearance.gait]}>
-        {BOT_GAITS.map((gait) => (
-          <Chip
-            key={gait}
-            selected={appearance.gait === gait}
-            onClick={() => onPart("gait", gait)}
-          >
+          </ChipRadio>
+        )}
+      />
+      <PartGroup
+        label="Walk"
+        note={GAIT_NOTES[appearance.gait]}
+        options={BOT_GAITS}
+        checked={appearance.gait}
+        onPick={(gait) => onPart("gait", gait)}
+        renderOption={(gait, item) => (
+          <ChipRadio key={gait} item={item}>
             {GAIT_LABELS[gait]}
-          </Chip>
-        ))}
-      </PartGroup>
+          </ChipRadio>
+        )}
+      />
       <PartGroup
         label="Start from"
         note={preset ? preset.name : "Custom"}
         layout="presets"
-      >
-        {APPEARANCE_PRESETS.map((item) => (
-          <button
-            key={item.name}
-            type="button"
-            className="studio-preset"
-            aria-pressed={sameAppearance(item.appearance, appearance)}
-            onClick={() => onPreset(item.appearance)}
-          >
-            <PixelSprite appearance={item.appearance} size={36} />
-            <span className="studio-preset__name">{item.name}</span>
-          </button>
-        ))}
-      </PartGroup>
+        options={PRESET_NAMES}
+        checked={preset?.name ?? null}
+        onPick={(name) => {
+          const picked = APPEARANCE_PRESETS.find((item) => item.name === name);
+          if (picked) onPreset(picked.appearance);
+        }}
+        renderOption={(name, { ref, ...item }) => {
+          const look = APPEARANCE_PRESETS.find((p) => p.name === name);
+          return (
+            <button
+              key={name}
+              ref={ref}
+              type="button"
+              className="studio-preset"
+              {...item}
+            >
+              {look && <PixelSprite appearance={look.appearance} size={36} />}
+              <span className="studio-preset__name">{name}</span>
+            </button>
+          );
+        }}
+      />
     </section>
   );
 }
+
+const PRESET_NAMES: readonly string[] = APPEARANCE_PRESETS.map(
+  (item) => item.name,
+);

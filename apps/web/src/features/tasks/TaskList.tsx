@@ -1,4 +1,5 @@
-import type { TaskSummary, TaskView } from "@jj/contracts";
+import type { Bot, TaskSummary, TaskView } from "@jj/contracts";
+import { memo } from "react";
 import {
   Avatar,
   Button,
@@ -60,52 +61,74 @@ export function TaskList({ labelledBy }: { labelledBy: string }) {
   );
   return (
     <ul className="ui-list" aria-labelledby={labelledBy} onKeyDown={onKeyDown}>
-      {tasks.map((task, index) => {
-        const participants = task.participantBotIds.flatMap((botId) => {
-          const bot = getBot(botId);
-          return bot ? [bot] : [];
-        });
-        return (
-          <li key={task.id}>
-            <ListItem
-              data-list-item=""
-              layout="stack"
-              tabIndex={index === stop ? 0 : -1}
-              selected={task.id === selectedTaskId}
-              aria-current={task.id === selectedTaskId ? "page" : undefined}
-              muted={task.status === "completed"}
-              onClick={() => navigate({ name: "tasks", taskId: task.id })}
-              title={task.title}
-              subtitle={
-                <StatusTag status={task} detail={`v${task.goalVersion}`} />
-              }
-              trailing={
-                <span
-                  className="task-list__bots"
-                  role="img"
-                  aria-label={participants.map((bot) => bot.name).join(", ")}
-                >
-                  {participants.slice(0, MAX_SPRITES).map((bot) => (
-                    <Avatar
-                      key={bot.id}
-                      appearance={bot.appearance}
-                      name={bot.name}
-                      mood={participantMood(task, taskViews[task.id], bot.id)}
-                      size={24}
-                      decorative
-                    />
-                  ))}
-                  {participants.length > MAX_SPRITES && (
-                    <span className="task-list__more">
-                      +{participants.length - MAX_SPRITES}
-                    </span>
-                  )}
-                </span>
-              }
-            />
-          </li>
-        );
-      })}
+      {tasks.map((task, index) => (
+        <TaskRow
+          key={task.id}
+          task={task}
+          view={taskViews[task.id]}
+          getBot={getBot}
+          selected={task.id === selectedTaskId}
+          tabStop={index === stop}
+        />
+      ))}
     </ul>
   );
 }
+
+/** One task row; memoised, so a streamed event re-renders only its own task's row. */
+const TaskRow = memo(function TaskRow({
+  task,
+  view,
+  getBot,
+  selected,
+  tabStop,
+}: {
+  task: TaskSummary;
+  view: TaskView | undefined;
+  getBot: (botId: string) => Bot | undefined;
+  selected: boolean;
+  tabStop: boolean;
+}) {
+  const participants = task.participantBotIds.flatMap((botId) => {
+    const bot = getBot(botId);
+    return bot ? [bot] : [];
+  });
+  return (
+    <li>
+      <ListItem
+        data-list-item=""
+        layout="stack"
+        tabIndex={tabStop ? 0 : -1}
+        selected={selected}
+        aria-current={selected ? "page" : undefined}
+        muted={task.status === "completed"}
+        onClick={() => navigate({ name: "tasks", taskId: task.id })}
+        title={task.title}
+        subtitle={<StatusTag status={task} detail={`v${task.goalVersion}`} />}
+        trailing={
+          <span
+            className="task-list__bots"
+            role="img"
+            aria-label={participants.map((bot) => bot.name).join(", ")}
+          >
+            {participants.slice(0, MAX_SPRITES).map((bot) => (
+              <Avatar
+                key={bot.id}
+                appearance={bot.appearance}
+                name={bot.name}
+                mood={participantMood(task, view, bot.id)}
+                size={24}
+                decorative
+              />
+            ))}
+            {participants.length > MAX_SPRITES && (
+              <span className="task-list__more">
+                +{participants.length - MAX_SPRITES}
+              </span>
+            )}
+          </span>
+        }
+      />
+    </li>
+  );
+});

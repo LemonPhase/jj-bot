@@ -2,6 +2,7 @@
 import "../../test/dom";
 import {
   act,
+  configure,
   fireEvent,
   render,
   screen,
@@ -14,6 +15,9 @@ import { ApiProvider } from "../../api/ApiContext";
 import { ApiError, type JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
 import { WorkspaceProvider } from "../../state/WorkspaceContext";
+
+// Whole-provider renders share CPU with the other suites in a full run.
+configure({ asyncUtilTimeout: 5000 });
 
 /** The whole app over the in-memory demo API, as the browser runs it. */
 function renderApp(overrides: Partial<JJApi> = {}) {
@@ -29,8 +33,11 @@ function renderApp(overrides: Partial<JJApi> = {}) {
   return api;
 }
 
+/** The whole app renders in jsdom alongside other suites; give it time. */
+const SLOW = { timeout: 5000 };
+
 const heading = (name: string | RegExp) =>
-  screen.findByRole("heading", { level: 1, name });
+  screen.findByRole("heading", { level: 1, name }, SLOW);
 
 const primaryNav = () => screen.getByRole("navigation", { name: "Primary" });
 
@@ -71,6 +78,51 @@ describe("routing", () => {
     expect(window.location.hash).toBe("#/bots/bot-juno");
     act(() => window.history.forward());
     await heading("Kite");
+  });
+
+  it("switches sections without leaving an empty screen", async () => {
+    window.history.replaceState(null, "", "/#/bots/bot-kite");
+    renderApp();
+    await heading("Kite");
+    const nav = () => within(primaryNav());
+    // Bots → Tasks, with no task remembered: the first task opens.
+    click(nav().getByRole("button", { name: /^Tasks/ }));
+    await heading(/Check that the task stream resumes/);
+    expect(window.location.hash).toBe("#/tasks/task-101");
+    // Settings → Tasks.
+    act(() => {
+      window.location.hash = "#/settings";
+    });
+    await heading("Settings");
+    click(nav().getByRole("button", { name: /^Tasks/ }));
+    await heading(/Check that the task stream resumes/);
+    expect(window.location.hash).toBe("#/tasks/task-101");
+  });
+
+  it("opens the first bot from a task when no bot is remembered", async () => {
+    window.history.replaceState(null, "", "/#/tasks/task-102");
+    renderApp();
+    await heading(/Summarise what changed/);
+    click(within(primaryNav()).getByRole("button", { name: /^Bots/ }));
+    await heading("Juno");
+    expect(window.location.hash).toBe("#/bots/bot-juno");
+  });
+
+  it("leaves Studio opened directly by Cancel or the Bots link for a bot", async () => {
+    window.history.replaceState(null, "", "/#/studio/new");
+    renderApp();
+    await heading("Design a bot");
+    click(screen.getByRole("button", { name: "Cancel" }));
+    await heading("Juno");
+    expect(window.location.hash).toBe("#/bots/bot-juno");
+
+    act(() => {
+      window.location.hash = "#/studio/new";
+    });
+    await heading("Design a bot");
+    click(screen.getByRole("link", { name: "Bots" }));
+    await heading("Juno");
+    expect(window.location.hash).toBe("#/bots/bot-juno");
   });
 
   it("marks neither list as the current page on Studio or Settings", async () => {
@@ -116,6 +168,29 @@ describe("routing", () => {
     expect(screen.queryByText(/No bots yet/)).toBeNull();
     click(screen.getByRole("button", { name: "Retry" }));
     await heading("Juno");
+  });
+});
+
+describe("task panel", () => {
+  it("keeps focus on the tab list while arrowing through Progress, Graph and Office", async () => {
+    window.history.replaceState(null, "", "/#/tasks/task-102");
+    renderApp();
+    await heading(/Summarise what changed/);
+    const tab = (name: string) => screen.getByRole("tab", { name });
+    tab("Graph").focus();
+    fireEvent.keyDown(tab("Graph"), { key: "ArrowRight" });
+    await waitFor(() =>
+      expect(tab("Office").getAttribute("aria-selected")).toBe("true"),
+    );
+    expect(document.activeElement).toBe(tab("Office"));
+    fireEvent.keyDown(tab("Office"), { key: "ArrowLeft" });
+    await waitFor(() =>
+      expect(tab("Graph").getAttribute("aria-selected")).toBe("true"),
+    );
+    expect(document.activeElement).toBe(tab("Graph"));
+    expect(screen.getAllByRole("tablist", { name: "Task view" })).toHaveLength(
+      1,
+    );
   });
 });
 
