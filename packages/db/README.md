@@ -86,7 +86,3 @@ At most one `session.run` is queued and at most one is running per session, enfo
 ## Tests
 
 The store tests always run on PGlite. When `JJ_TEST_DATABASE_URL` is set, they also run on PostgreSQL, including the concurrency tests: concurrent migrators, competing claimers, wakers racing workers on one session and one bot, 50 concurrent appends, the cross-task lock checks, session timeouts and listener reconnects. Each PostgreSQL suite creates and drops its own database on that server, so the user needs the `CREATEDB` privilege.
-
-## Legacy store
-
-`openStore` (`src/legacy-store.ts`) is the earlier JSONB record store with a global write lock, still used by the current backend. Its tables (`jj_records`, `jj_events`, `jj_write_lock`) are separate from this schema. It is deleted when the engine rewrite lands, and new work should not use it.

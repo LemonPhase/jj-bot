@@ -19,12 +19,10 @@
     "build": "npm run typecheck && npm run build -w @jj/web",
     "verify": "npm run lint && npm run typecheck && npm run test && npm run build -w @jj/web",
     "check": "npm run verify",
-    "smoke:model": "node --import tsx --env-file=.env scripts/smoke.ts model",
-    "smoke:tool": "node --import tsx --env-file=.env scripts/smoke.ts tool",
-    "smoke:backend": "node --import tsx --env-file=.env scripts/backend-smoke.ts",
     "smoke:runtime": "node --import tsx --env-file-if-exists=.env scripts/smoke-runtime.ts",
     "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base",
-    "dev:worker": "npm run dev -w @jj/worker"
+    "dev:worker": "npm run dev -w @jj/worker",
+    "smoke:e2e": "node --import tsx --env-file-if-exists=.env scripts/smoke-e2e.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
