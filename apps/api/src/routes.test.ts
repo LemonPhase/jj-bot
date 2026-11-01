@@ -133,7 +133,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.0.1",
+      contractVersion: "1.0.2",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -380,6 +380,29 @@ describe("runtime profiles", () => {
       400,
       "VALIDATION_FAILED",
     );
+  });
+
+  it("refuses a malformed allowlist host as a field error", async () => {
+    const refused = expectError(
+      await t.call("POST", "/api/runtime-profiles", {
+        name: "Registry only",
+        sandbox: {
+          driver: "docker",
+          network: {
+            mode: "allowlist",
+            hosts: ["registry.npmjs.org", "https://pypi.org/simple"],
+          },
+        },
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(refused.error.message).toMatch(
+      /^sandbox\.network\.hosts\.1: Use a host such as registry\.npmjs\.org/,
+    );
+    expect(refused.error.details).toEqual([
+      expect.objectContaining({ path: ["sandbox", "network", "hosts", 1] }),
+    ]);
   });
 
   it("refuses to delete a profile a bot uses", async () => {

@@ -9,11 +9,62 @@ import { z } from "zod";
 
 export const networkModeSchema = z.enum(["none", "allowlist", "open"]);
 
+/**
+ * One `allowlist` entry: a host name (letters, digits, hyphens and dots; IPv4
+ * literals included), optionally prefixed with `*.` to match every subdomain
+ * of a name of at least two labels (not the name itself), optionally followed
+ * by `:port`. Without a port an entry allows ports 80 and 443. No scheme,
+ * path, whitespace, IPv6 literal or bare `*`. Case-insensitive; stored
+ * lowercase.
+ */
+export const NETWORK_HOST_PATTERN =
+  /^(?:\*\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?::[0-9]{1,5})?$/;
+
+const NETWORK_HOST_HINT =
+  "Use a host such as registry.npmjs.org or *.pythonhosted.org, optionally with :port; no scheme, path or spaces.";
+
+export const networkHostSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(260)
+  .regex(NETWORK_HOST_PATTERN, NETWORK_HOST_HINT)
+  .refine(
+    (entry) => {
+      const port = /:(\d+)$/.exec(entry)?.[1];
+      return (
+        port === undefined || (Number(port) >= 1 && Number(port) <= 65_535)
+      );
+    },
+    { message: "A port must be between 1 and 65535." },
+  )
+  .refine(
+    (entry) => {
+      const name = entry.replace(/:\d+$/, "");
+      return name.length <= 253 + (name.startsWith("*.") ? 2 : 0);
+    },
+    { message: "A host name has at most 253 characters." },
+  )
+  .refine(
+    (entry) =>
+      !entry.startsWith("*.") ||
+      entry.replace(/:\d+$/, "").split(".").length > 2,
+    {
+      message:
+        "A wildcard needs at least two labels after it, as in *.example.com.",
+    },
+  );
+
 export const networkPolicySchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("none") }),
   z.object({
     mode: z.literal("allowlist"),
-    hosts: z.array(z.string().min(1)).min(1).max(256),
+    /** Duplicates (after lowercasing) are dropped. */
+    hosts: z
+      .array(networkHostSchema)
+      .min(1)
+      .max(256)
+      .transform((hosts) => [...new Set(hosts)]),
   }),
   z.object({ mode: z.literal("open") }),
 ]);

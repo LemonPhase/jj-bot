@@ -31,6 +31,23 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.0.2 — 2026-11-01 — Validate network allowlist hosts
+
+**Changed by:** backend ([#63](https://github.com/LemonPhase/jj-bot/issues/63)) · **Compatibility:** clarifying
+
+- `networkPolicySchema` (`mode: "allowlist"`): each of `hosts` must be a host name (letters,
+  digits, hyphens and dots, IPv4 literals included), optionally prefixed with `*.` (every
+  subdomain of a name with at least two labels, not the name itself) and optionally followed by
+  `:port` (1–65535). No scheme, path, whitespace, IPv6 literal or bare `*`. Entries are trimmed,
+  lowercased and deduplicated; an invalid one is a field error at `sandbox.network.hosts.<index>`.
+  The pattern is exported as `NETWORK_HOST_PATTERN` and appears as the items' `pattern` in the
+  driver spec JSON Schema. A bare entry allows ports 80 and 443; `host:port` allows that port.
+- No stored profile is invalidated: no driver accepted `allowlist` before this version, so no
+  profile with one could be saved.
+
+**Action required (frontend):** none; the generated form checks each line against the pattern.
+**Action required (backend):** none.
+
 ## 1.0.1 — 2026-11-01 — Remove the legacy entry points
 
 **Changed by:** backend · **Compatibility:** clarifying
