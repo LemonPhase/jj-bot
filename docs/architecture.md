@@ -134,4 +134,4 @@ A session's pi transcript is persisted after every completed turn. After a crash
 - A driver refuses any spec it cannot enforce.
 - Sandboxes never receive the Docker socket, privileged mode or host bind mounts.
 - Every command and file change is attributed to a task, session and run.
-- The API listens on loopback unless an access token is configured.
+- The API listens on loopback unless an access token is configured. It refuses cross-site requests and non-JSON writes, and without a token it answers only loopback `Host` values and an explicit allowlist, so a web page cannot drive it through the user's browser.
