@@ -96,7 +96,7 @@ function runs(grid: readonly string[], char: string): string {
 
 export interface PixelIconProps {
   name: PixelIconName;
-  /** Width in CSS px (brand: 20 in the sidebar; gate: 24; play/pause: 12). */
+  /** Width in CSS px (brand: 24 in the sidebar; 36 on the System sheet; gate: 24; play/pause: 12). */
   size?: number;
   /** Accessible name. Without it the icon is decorative. */
   label?: string;

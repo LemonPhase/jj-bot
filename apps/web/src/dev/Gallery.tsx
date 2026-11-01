@@ -1050,11 +1050,11 @@ function FeedbackSection() {
             ))}
           </div>
           <div className="gl__row">
-            <PixelIcon name="brand" size={20} label="JJ Bot" />
-            <PixelIcon name="brand" size={30} />
+            <PixelIcon name="brand" size={24} label="JJ Bot" />
+            <PixelIcon name="brand" size={36} />
             <PixelIcon name="gate" size={24} />
             <Wordmark />
-            <Wordmark markSize={30} />
+            <Wordmark markSize={36} />
           </div>
         </div>
       </div>
@@ -1276,7 +1276,7 @@ export function Gallery() {
       <div className="gl__inner">
         <header className="gl__header">
           <div className="gl__title">
-            <PixelIcon name="brand" size={30} />
+            <PixelIcon name="brand" size={36} />
             <h1>Pixel Lite · UI kit</h1>
           </div>
           <div className="gl__row">
