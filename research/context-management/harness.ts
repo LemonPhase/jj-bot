@@ -7,7 +7,7 @@
 //
 // The model defaults to the scripted test model. A real model needs its key in
 // the environment; the report includes the provider-reported usage and cost.
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadServerConfig } from "@jj/api/config";
@@ -60,8 +60,7 @@ async function main() {
         if (message.role === "system") {
           systemChars += size;
           toolDecl += chars(message.toolsAdded ?? message.tools ?? []);
-        }
-        else byRole[message.role] = (byRole[message.role] ?? 0) + size;
+        } else byRole[message.role] = (byRole[message.role] ?? 0) + size;
       }
       const toolsChars = toolDecl + (context.tools ? chars(context.tools) : 0);
       calls.push({
@@ -150,9 +149,7 @@ async function main() {
     `${scenarioName}-${model.replace(/[^a-z0-9]+/gi, "_")}-${Date.now()}.json`,
   );
   await writeFile(file, JSON.stringify(report, null, 2));
-  console.log(
-    JSON.stringify({ ...report, calls: undefined, file }, null, 2),
-  );
+  console.log(JSON.stringify({ ...report, calls: undefined, file }, null, 2));
   await database.close();
   await rm(dir, { recursive: true, force: true });
   process.exit(0);

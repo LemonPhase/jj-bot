@@ -30,18 +30,27 @@ async function settle(engine: Engine, taskId: string, timeoutMs = 15 * 60_000) {
   }
 }
 
-async function settleChat(engine: Engine, botId: string, timeoutMs = 5 * 60_000) {
+async function settleChat(
+  engine: Engine,
+  botId: string,
+  timeoutMs = 5 * 60_000,
+) {
   const end = Date.now() + timeoutMs;
   for (;;) {
     const view = await engine.bots.conversation(botId);
-    if (!view.replying && view.messages.at(-1)?.role === "assistant") return view;
+    if (!view.replying && view.messages.at(-1)?.role === "assistant")
+      return view;
     if (view.lastReplyError && !view.replying) return view;
     if (Date.now() > end) throw new Error("chat did not settle");
     await sleep(250);
   }
 }
 
-async function team(engine: Engine, model: string, names = ["Ada", "Grace", "Linus"]) {
+async function team(
+  engine: Engine,
+  model: string,
+  names = ["Ada", "Grace", "Linus"],
+) {
   const ids: Record<string, string> = {};
   for (const name of names) {
     const { bot } = await engine.bots.create({ name, model } as never);

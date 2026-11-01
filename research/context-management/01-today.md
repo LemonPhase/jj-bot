@@ -8,12 +8,12 @@ Issue #68, part 1. Code references are to `main` at 428d945. Measurements come f
 
 A run is one `executor.run` call built in `prepare` (`packages/backend/src/worker/session-run.ts:282-341`). Each model request in that run carries, in order:
 
-| Part | Source | Notes |
-| --- | --- | --- |
-| System prompt | `sessionPrompt` (`worker/prompts.ts:66-127`) | Persona and instructions, the bot's memory note (`prompts.ts:41-55`), the goal **with its version number**, the roster, the workspace path, and role rules. Rebuilt on every executor call (`session-run.ts:312`). |
-| Tool declarations | coding tools from the bot's profile plus collaboration tools (`worker/collab-tools.ts:363-376`) | Folded into the leading system message by pi's `createInitialSystemMessage` (`runtime/src/loop.ts:436-443`). `delegate` and `message` embed the roster in their descriptions and enums; they are byte-stable across a session's runs on purpose (`collab-tools.ts:56-60`). |
-| Transcript | every `session_entries` row of this session (`worker/run-context.ts:117-127`, loaded at `session-run.ts:324`) | The whole pi transcript: user inputs, assistant messages, every tool call and tool result. Repaired, never trimmed (`runtime/src/transcript.ts:215-244`). There is no compaction or tool-result clearing (#62 is in flight). |
-| New inputs | undelivered inbox items (`run-context.ts:146-192`) | Each item becomes a separate user message (`runtime/src/executor.ts:57-59`). Mid-run, `getSteeringMessages` drains the inbox again at every turn boundary (`loop.ts:432`, `run-context.ts:341`). |
+| Part              | Source                                                                                                        | Notes                                                                                                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| System prompt     | `sessionPrompt` (`worker/prompts.ts:66-127`)                                                                  | Persona and instructions, the bot's memory note (`prompts.ts:41-55`), the goal **with its version number**, the roster, the workspace path, and role rules. Rebuilt on every executor call (`session-run.ts:312`).                                                         |
+| Tool declarations | coding tools from the bot's profile plus collaboration tools (`worker/collab-tools.ts:363-376`)               | Folded into the leading system message by pi's `createInitialSystemMessage` (`runtime/src/loop.ts:436-443`). `delegate` and `message` embed the roster in their descriptions and enums; they are byte-stable across a session's runs on purpose (`collab-tools.ts:56-60`). |
+| Transcript        | every `session_entries` row of this session (`worker/run-context.ts:117-127`, loaded at `session-run.ts:324`) | The whole pi transcript: user inputs, assistant messages, every tool call and tool result. Repaired, never trimmed (`runtime/src/transcript.ts:215-244`). There is no compaction or tool-result clearing (#62 is in flight).                                               |
+| New inputs        | undelivered inbox items (`run-context.ts:146-192`)                                                            | Each item becomes a separate user message (`runtime/src/executor.ts:57-59`). Mid-run, `getSteeringMessages` drains the inbox again at every turn boundary (`loop.ts:432`, `run-context.ts:341`).                                                                           |
 
 A worker's first input is its brief, `Assignment from <coordinator>:\n<brief>` (`collab-tools.ts:175-184`). It sees **nothing else from the task**: not the user's messages, not the coordinator's reasoning, not sibling results. The coordinator sees the user's goal and steering, and each result as it arrives.
 
@@ -33,13 +33,13 @@ Tool output that reaches the model is capped at 64 KiB per call (`TOOL_OUTPUT_PR
 
 All input goes through `deliver` (`services/messages.ts:139-173`), which inserts an inbox row and then:
 
-| Input | Kind | Wakes? | Where |
-| --- | --- | --- | --- |
-| Brief for a new child session | `brief` | yes | `collab-tools.ts:175-184` |
-| Worker result or failure for the parent | `result` | yes | `outcomes.ts:280-289`, `outcomes.ts:98-107` |
-| User steering, coordinator only | `steering` | yes | `messages.ts:306-311` |
-| Chat relay (`send_to_task`), coordinator only | `steering` | yes | `chat-reply.ts:355-364` |
-| Teammate `message`, addressed or broadcast | `message` | **no** | `collab-tools.ts:251-261`, `285-294` |
+| Input                                         | Kind       | Wakes? | Where                                       |
+| --------------------------------------------- | ---------- | ------ | ------------------------------------------- |
+| Brief for a new child session                 | `brief`    | yes    | `collab-tools.ts:175-184`                   |
+| Worker result or failure for the parent       | `result`   | yes    | `outcomes.ts:280-289`, `outcomes.ts:98-107` |
+| User steering, coordinator only               | `steering` | yes    | `messages.ts:306-311`                       |
+| Chat relay (`send_to_task`), coordinator only | `steering` | yes    | `chat-reply.ts:355-364`                     |
+| Teammate `message`, addressed or broadcast    | `message`  | **no** | `collab-tools.ts:251-261`, `285-294`        |
 
 - **Waking** enqueues a `session.run` job. If the session is running, a `jj_control` notify makes it drain at its next turn boundary (`messages.ts:156-171`).
 - **Messages** ride along on whatever run happens next. `hasContinuingInput` counts only briefs, results and steering (`worker/runs.ts:150-166`), and a coalesced wake that finds only messages is skipped (`session-run.ts:139-158`). Undelivered messages are capped at 20 per session; older ones collapse into one `[N earlier messages omitted]` line (`messages.ts:82-130`).
@@ -69,12 +69,12 @@ Harness runs on the scripted model; tokens are estimated as characters ÷ 4 of e
 
 **Baseline**: one coordinator and two parallel workers, the `smoke:e2e` penguin task. 10 model calls, about 22k input tokens in total.
 
-| Call | Session | System | Tool declarations | Transcript | Total |
-| --- | --- | --- | --- | --- | --- |
-| first | coordinator | ~480 | ~1,540 | ~70 | ~2,080 |
-| last | coordinator | ~480 | ~1,540 | ~930 | ~2,950 |
-| first | worker | ~300 | ~1,430 | ~110 | ~1,830 |
-| last | worker | ~300 | ~1,430 | ~380 | ~2,100 |
+| Call  | Session     | System | Tool declarations | Transcript | Total  |
+| ----- | ----------- | ------ | ----------------- | ---------- | ------ |
+| first | coordinator | ~480   | ~1,540            | ~70        | ~2,080 |
+| last  | coordinator | ~480   | ~1,540            | ~930       | ~2,950 |
+| first | worker      | ~300   | ~1,430            | ~110       | ~1,830 |
+| last  | worker      | ~300   | ~1,430            | ~380       | ~2,100 |
 
 **Follow-ups**: the baseline, then two user follow-ups on the finished task. The coordinator's per-call context grew 2.1k → 3.6k tokens, and its transcript grew from 10 to 16 entries. Nothing ever leaves it.
 

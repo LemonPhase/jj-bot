@@ -69,13 +69,13 @@ Metric: total input tokens and cost. This needs no model calls. It sizes the gai
 
 ## Budget
 
-| Item | Estimate |
-| --- | --- |
-| E0 | ~$0.02 |
-| E1 | $0.30–0.60 |
-| E2 | $0.20–0.40 |
-| E3 | $0.30–0.50 |
-| E4 | $0 |
+| Item      | Estimate                                    |
+| --------- | ------------------------------------------- |
+| E0        | ~$0.02                                      |
+| E1        | $0.30–0.60                                  |
+| E2        | $0.20–0.40                                  |
+| E3        | $0.30–0.50                                  |
+| E4        | $0                                          |
 | **Total** | **~$0.8–1.5**, within the $3 session budget |
 
 Each variant needs a small, flag-guarded prototype on this research branch, either tools or a brief digest. None of it goes to `main`.
