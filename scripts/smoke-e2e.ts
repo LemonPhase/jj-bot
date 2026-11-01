@@ -43,6 +43,19 @@ const timeoutMs = realModel ? 10 * 60_000 : remoteUrl ? 120_000 : 60_000;
 const SLOW_COMMAND = "sleep 300";
 /** Shows where commands run: the docker driver's sandbox user and workspace. */
 const WHERE_COMMAND = "id -un && pwd";
+/**
+ * host:port targets a sandbox must not reach, against a deployed server
+ * (JJ_SMOKE_UNREACHABLE, comma-separated; default the compose app and
+ * PostgreSQL by service name). CI adds their container addresses.
+ */
+const unreachable = (
+  setting("JJ_SMOKE_UNREACHABLE") ?? "app:3001,postgres:5432"
+)
+  .split(",")
+  .map((target) => target.trim())
+  .filter(Boolean);
+/** Tries each target with bash's /dev/tcp; prints `open <target>` for any it reaches. */
+const PROBE_COMMAND = `for t in ${unreachable.map((target) => target.replace(":", "/")).join(" ")}; do timeout 3 bash -c "</dev/tcp/$t" 2>/dev/null && echo "open $t"; done; echo probed`;
 
 if (restartCommand && !remoteUrl) {
   console.error(
@@ -202,17 +215,19 @@ async function main(): Promise<boolean> {
     // be the isolated docker sandbox.
     const dockerProfile = remoteUrl
       ? await step(
-          "the default profile is the isolated docker sandbox",
+          "docker is the only driver and the default, isolated profile",
           async () => {
             const { drivers } = await expectStatus(
               "GET",
               "/api/sandbox-drivers",
               200,
             );
-            const docker = drivers.find(
-              (driver: { id: string }) => driver.id === "docker",
+            const ids = drivers.map((driver: { id: string }) => driver.id);
+            check(
+              ids.length === 1 && ids[0] === "docker",
+              `registered drivers: ${ids.join(", ")}; expected docker alone`,
             );
-            check(docker?.available, "the docker driver is not available");
+            check(drivers[0].available, "the docker driver is not available");
             const { profiles } = (await expectStatus(
               "GET",
               "/api/runtime-profiles",
@@ -253,13 +268,16 @@ async function main(): Promise<boolean> {
     };
 
     // The scripted model runs each command a brief quotes after "run" once.
-    const goal = (directive: string) =>
-      `${directive}Write two short notes about penguins. Delegate one part to Grace${suffix} and one part to Linus${suffix} at the same time; each writes their notes to a markdown file in the workspace. Then complete the task with a one-paragraph summary.`;
+    // Its briefs quote the goal's first 300 characters, so directives lead.
+    const goal = (directive: string) => {
+      check(directive.length < 280, `directives too long: ${directive}`);
+      return `${directive}Write two short notes about penguins. Delegate one part to Grace${suffix} and one part to Linus${suffix} at the same time; each writes their notes to a markdown file in the workspace. Then complete the task with a one-paragraph summary.`;
+    };
     const { task } = await step("create a task with all three", () =>
       expectStatus("POST", "/api/tasks", 201, {
         goal: goal(
           remoteUrl
-            ? `After writing your notes, run \`${WHERE_COMMAND}\`. `
+            ? `After writing your notes, run \`${WHERE_COMMAND}\` and run \`${PROBE_COMMAND}\`. `
             : "",
         ),
         title: "Penguin notes",
@@ -317,6 +335,31 @@ async function main(): Promise<boolean> {
             check(
               output.output?.trim() === "sandbox\n/workspace",
               `\`${WHERE_COMMAND}\` printed ${JSON.stringify(output.output)}`,
+            );
+          }
+        },
+      );
+
+    if (remoteUrl && !realModel)
+      await step(
+        `a sandbox cannot reach ${unreachable.join(", ")}`,
+        async () => {
+          const probes = events.flatMap((event) =>
+            event.type === "tool.finished" &&
+            event.payload.summary === PROBE_COMMAND
+              ? [event.payload]
+              : [],
+          );
+          check(probes.length >= 2, `${probes.length} network probe(s)`);
+          for (const probe of probes) {
+            const output = probe.output ?? "";
+            check(
+              probe.ok && output.trim().endsWith("probed"),
+              `the probe did not run: ${JSON.stringify(probe)}`,
+            );
+            check(
+              !output.includes("open "),
+              `a sandbox reached ${output.trim()}`,
             );
           }
         },
@@ -477,6 +520,15 @@ async function restartSurvival(options: {
       `exited with ${result.status ?? result.signal ?? result.error?.message}`,
     );
     await untilReady(base, 120_000);
+    // The same token still opens the API: a generated one is kept, not renewed.
+    if (headers.Authorization) {
+      const anonymous = await fetch(`${base}/api/bootstrap`);
+      check(
+        anonymous.status === 401,
+        `no token after restart: ${anonymous.status}`,
+      );
+      await expectStatus("GET", "/api/bootstrap", 200);
+    }
   });
 
   const events = await step(
@@ -529,6 +581,39 @@ async function restartSurvival(options: {
       );
     }
   });
+
+  await step(
+    "files written before the restart are there after it",
+    async () => {
+      const written = events.filter(
+        (event) =>
+          event.type === "tool.finished" &&
+          event.payload.tool === "write" &&
+          event.payload.ok &&
+          event.sequence <= cut,
+      );
+      check(
+        written.length >= 2,
+        `${written.length} file(s) written before the restart`,
+      );
+      for (const write of written) {
+        if (write.type !== "tool.finished") continue;
+        const path = write.payload.summary;
+        const listing = events.find(
+          (event) =>
+            event.type === "tool.finished" &&
+            event.sessionId === write.sessionId &&
+            event.payload.summary === "ls -la" &&
+            event.sequence > cut,
+        );
+        check(
+          listing?.type === "tool.finished" &&
+            listing.payload.output?.includes(path),
+          `${path} is missing from the workspace after the restart: ${JSON.stringify(listing?.type === "tool.finished" ? listing.payload.output : null)}`,
+        );
+      }
+    },
+  );
 
   await step("no finished work ran again", async () => {
     const workers = fresh.sessions.filter(

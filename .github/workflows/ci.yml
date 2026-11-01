@@ -113,17 +113,22 @@ jobs:
       - name: Build images
         run: docker compose build
 
+      # --wait returns once the app is healthy (its HEALTHCHECK is /health/ready).
       - name: Start the stack
-        run: docker compose up -d
+        run: docker compose up -d --wait --wait-timeout 180
 
-      - name: Wait for readiness
+      # Without API_TOKEN the app generated a token and printed it in one line.
+      # The smoke reads it from there, as a user would, so CI covers the default.
+      # It also learns the app's and PostgreSQL's addresses, which sandboxes
+      # must not reach.
+      - name: Read the generated token and the stack's addresses
         run: |
-          for _ in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:3001/health/ready; then exit 0; fi
-            sleep 2
-          done
-          echo "The app did not become ready." >&2
-          exit 1
+          token=$(docker compose logs --no-color app | sed -n 's/.*Open JJ Bot: [^ ]*[?]token=\([A-Za-z0-9_-]*\).*/\1/p' | tail -n 1)
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "JJ_SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
+          address() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q "$1")" | cut -d' ' -f1; }
+          echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,$(address app):3001,$(address postgres):5432" >> "$GITHUB_ENV"
 
       # Through the published loopback port, as a browser on the host would.
       # Includes restart survival across `docker compose restart app`.
@@ -133,14 +138,28 @@ jobs:
           JJ_SMOKE_RESTART_COMMAND: docker compose restart app
         run: npm run smoke:e2e
 
+      # One "Open JJ Bot" line per boot (two, with the restart), all with the
+      # same token, and the token in no other line.
+      - name: Check the token is kept and printed only to open the app
+        run: |
+          logs=$(docker compose logs --no-color app)
+          carrying=$(grep -cF -- "$JJ_SMOKE_TOKEN" <<<"$logs" || true)
+          opening=$(grep -cF -- "Open JJ Bot: http://127.0.0.1:3001/?token=$JJ_SMOKE_TOKEN" <<<"$logs" || true)
+          echo "lines with the token: $carrying; Open JJ Bot lines: $opening"
+          test "$opening" -ge 2
+          test "$carrying" = "$opening"
+
       - name: Show the stack's state and logs
         if: ${{ failure() }}
         run: |
           docker compose ps -a
           docker compose logs --no-color --timestamps
 
+      # Sandboxes and their volumes belong to the driver, not to compose; the
+      # namespace is the project name. Containers go first, so no volume is in use.
       - name: Stop the stack and remove its volumes
         if: ${{ always() }}
         run: |
           docker compose down -v --remove-orphans
-          docker volume ls -q --filter label=jj.sandbox.namespace=jj | xargs -r docker volume rm
+          docker ps -aq --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker rm -f
+          docker volume ls -q --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker volume rm
