@@ -1,12 +1,26 @@
 // The artifact snapshot after a run: files changed in the task workspace
 // become `file` artifacts, deduplicated by path and content across the task.
-// A run is credited only with paths its own write and edit tools touched.
+// The scan also covers the session's earlier runs that ended without a
+// completed snapshot (handed back by a graceful stop, or cut off by a crash),
+// from the earliest one's start, so their files are not lost. A file is
+// credited to the covered run whose write or edit tool last touched it.
 // Anything else the scan finds (bash output files, a teammate's bash writes)
 // is stored at task level, with no session or run, because the shared
 // workspace cannot say who wrote it.
 import { isAbsolute, posix, relative } from "node:path";
 import { runs, type Tx, taskEvents } from "@jj/db";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  lt,
+  max,
+  ne,
+  sql,
+} from "drizzle-orm";
 import {
   changedFiles,
   hasArtifact,
@@ -35,16 +49,19 @@ export function workspaceRelative(
   return normal.replace(/^\.\//, "");
 }
 
-/** Paths written or edited by successful tool calls of these runs. */
+/**
+ * Paths written or edited by successful tool calls of these runs, each with
+ * the last run that touched it.
+ */
 async function toolPaths(
   tx: Tx,
   taskId: string,
   runIds: string[],
   workspaceDir: string,
-): Promise<Set<string>> {
-  if (runIds.length === 0) return new Set();
+): Promise<Map<string, string>> {
+  if (runIds.length === 0) return new Map();
   const rows = await tx
-    .select({ payload: taskEvents.payload })
+    .select({ runId: taskEvents.runId, payload: taskEvents.payload })
     .from(taskEvents)
     .where(
       and(
@@ -54,22 +71,66 @@ async function toolPaths(
         sql`${taskEvents.payload}->>'tool' in ('write', 'edit')`,
         sql`(${taskEvents.payload}->>'ok')::boolean`,
       ),
-    );
-  const paths = new Set<string>();
+    )
+    .orderBy(asc(taskEvents.sequence));
+  const paths = new Map<string, string>();
   for (const row of rows)
-    if (FILE_TOOLS.includes(String(row.payload.tool))) {
+    if (row.runId && FILE_TOOLS.includes(String(row.payload.tool))) {
       const path = workspaceRelative(workspaceDir, String(row.payload.summary));
-      if (path) paths.add(path);
+      if (path) paths.set(path, row.runId);
     }
   return paths;
 }
 
-/** Records files changed since the run started, one transaction per artifact. */
+/**
+ * The runs whose changes this snapshot covers: this run and, until one of its
+ * snapshots completes, the session's earlier runs after the last one that
+ * ended with its snapshot complete.
+ */
+async function coveredRuns(
+  rc: RunContext,
+): Promise<{ id: string; startedAt: Date }[]> {
+  const current = { id: rc.run.id, startedAt: rc.startedAt };
+  if (rc.snapshotted) return [current];
+  const earlier = await writeRun(rc, async (tx) => {
+    const [mark] = await tx
+      .select({ number: max(runs.number) })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.sessionId, rc.session.id),
+          lt(runs.number, rc.run.number),
+          isNotNull(runs.snapshottedAt),
+        ),
+      );
+    return tx
+      .select({ id: runs.id, startedAt: runs.startedAt })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.sessionId, rc.session.id),
+          lt(runs.number, rc.run.number),
+          gt(runs.number, mark?.number ?? 0),
+        ),
+      );
+  });
+  return [...earlier, current];
+}
+
+/**
+ * Records files changed in the runs it covers, one transaction per artifact,
+ * then sets `rc.snapshotted`.
+ */
 export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
   const { ctx } = rc.deps;
-  const since = new Date(rc.startedAt.getTime() - SNAPSHOT_SKEW_MS);
+  const covered = await coveredRuns(rc);
+  const from = Math.min(...covered.map((run) => run.startedAt.getTime()));
+  const since = new Date(from - SNAPSHOT_SKEW_MS);
   const files = await changedFiles(hold.sandbox, since, ctx.config.artifacts);
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    rc.snapshotted = true;
+    return;
+  }
   const workspaceDir = hold.sandbox.workspaceDir;
   const { own, othersActive } = await writeRun(rc, async (tx) => {
     const active = await tx
@@ -83,7 +144,12 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
         ),
       );
     return {
-      own: await toolPaths(tx, rc.task.id, [rc.run.id], workspaceDir),
+      own: await toolPaths(
+        tx,
+        rc.task.id,
+        covered.map((run) => run.id),
+        workspaceDir,
+      ),
       othersActive: await toolPaths(
         tx,
         rc.task.id,
@@ -93,9 +159,9 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
     };
   });
   for (const file of files) {
-    const credited = own.has(file.path);
+    const creditedRun = own.get(file.path);
     // A teammate still running wrote this with its own tools: it is credited when that run ends.
-    if (!credited && othersActive.has(file.path)) continue;
+    if (!creditedRun && othersActive.has(file.path)) continue;
     const digest = sha256(file.content);
     await writeRun(rc, async (tx) => {
       // The task lock first, so two runs snapshotting one file cannot both store it.
@@ -111,10 +177,11 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
           name: file.path.split("/").pop() || file.path,
           content: file.content,
         },
-        credited
-          ? attributionOf(rc)
+        creditedRun
+          ? { ...attributionOf(rc), runId: creditedRun }
           : { botId: null, sessionId: null, runId: null },
       );
     });
   }
+  rc.snapshotted = true;
 }

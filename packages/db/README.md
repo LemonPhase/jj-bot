@@ -33,6 +33,7 @@ Both modes take an optional `onError` for errors that have no caller: pool clien
 - `tasks.created_by_bot_id` is the bot that created the task from direct chat; it is null when the user created the task. The per-bot hourly limit counts it, using the `(created_by_bot_id, created_at)` index. To keep the count honest under concurrent requests, the engine locks the bot row (`SELECT … FOR UPDATE`) before it counts and inserts.
 - `tasks.created_from_message_id` and `task_messages.relayed_from_message_id` record the conversation message whose reply created the task or relayed the message. They are unique per creating bot and per task, so a chat reply that runs again after a hand-off or crash repeats neither.
 - `tasks.sandbox_holder` and `sandbox_holder_until` name the worker holding the task's ephemeral sandbox and how long that claim lasts; the holder refreshes it and clears it on release.
+- `runs.snapshotted_at` is set when a run ends with its artifact snapshot complete. It stays null for a run handed back by a graceful stop or cut off by a crash, whose files the session's next run snapshots.
 - `artifacts.content` holds the bytes. Select columns explicitly when listing artifacts.
 - `instance_settings` holds instance-wide values the server creates for itself, by key, such as the generated API token (`api_token`). It has no owner. `instanceSetting(exec, key, initial)` returns the stored value, creating it with `initial()` once; concurrent first calls, across processes too, agree on one value.
 

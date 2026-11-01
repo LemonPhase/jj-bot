@@ -343,6 +343,12 @@ export const runs = pgTable(
       .notNull()
       .defaultNow(),
     finishedAt: optionalTime("finished_at"),
+    /**
+     * Set when the run ended with its artifact snapshot complete. Null for a
+     * run handed back by a graceful stop, cut off by a crash, or whose last
+     * snapshot failed: the session's next snapshot reaches back to its start.
+     */
+    snapshottedAt: optionalTime("snapshotted_at"),
   },
   (t) => [
     unique("runs_session_number").on(t.sessionId, t.number),

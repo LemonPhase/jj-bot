@@ -7,6 +7,7 @@ import {
   bots,
   complete,
   enqueue,
+  runs,
   type SessionRow,
   type TaskRow,
   type Tx,
@@ -357,11 +358,17 @@ async function restorePrevious(tx: Tx, rc: RunContext, session: SessionRow) {
   );
 }
 
-/** Applies the outcome of a run (after any continuation) in one fenced transaction. */
+/**
+ * Applies the outcome of a run (after any continuation) in one fenced
+ * transaction. `snapshotted` says the artifact snapshot just before it
+ * completed; a run that ends that way is marked, so the session's next
+ * snapshot need not reach back past it.
+ */
 export async function finishRun(
   rc: RunContext,
   outcome: RunOutcome,
   mayContinue: boolean,
+  snapshotted = false,
 ): Promise<"done" | "continue"> {
   const reason = rc.control.reason;
   if (rc.control.fenced) return "done";
@@ -439,6 +446,11 @@ export async function finishRun(
       );
       if (failed.taskFinished) rc.taskFinished = true;
     }
+    if (snapshotted)
+      await tx
+        .update(runs)
+        .set({ snapshottedAt: ctx.clock() })
+        .where(eq(runs.id, rc.run.id));
     await complete(tx, rc.job.lease);
     return "done";
   });

@@ -1,3 +1,6 @@
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyTaskEvent,
   type TaskEvent,
@@ -6,8 +9,10 @@ import {
   taskEventSchema,
   taskViewSchema,
 } from "@jj/contracts";
+import { runs } from "@jj/db";
+import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { said } from "./testing/fake-executor";
+import { type Brain, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -25,23 +30,79 @@ import {
 } from "./testing/scenarios";
 
 let db: TestDatabase;
-let current: TestEngine | undefined;
+const engines: TestEngine[] = [];
+let root: string | undefined;
 
 beforeAll(async () => {
   db = await openTestDatabase();
 }, OPEN_TIMEOUT);
 afterEach(async () => {
-  await current?.dispose();
-  current = undefined;
+  for (const engine of engines.splice(0).reverse()) await engine.dispose();
+  if (root) await rm(root, { recursive: true, force: true });
+  root = undefined;
 });
 afterAll(async () => {
   await db?.close();
 });
 
 async function setup(options: Parameters<typeof testEngine>[1] = {}) {
-  current = await testEngine(db.database, options);
-  return current;
+  const engine = await testEngine(db.database, options);
+  engines.push(engine);
+  return engine;
 }
+
+/** Workers over one database and one workspace root, as across a restart. */
+async function worker(options: Parameters<typeof testEngine>[1] = {}) {
+  root ??= await mkdtemp(join(tmpdir(), "jj-artifacts-"));
+  return setup({ workspaceRoot: root, ...options });
+}
+
+/** The clock of a worker that resumes the work a minute later. */
+const aMinuteLater = () => new Date(Date.now() + 60_000);
+
+/** A run's reason, status and whether it ended with its snapshot complete. */
+const runSummary = (run?: typeof runs.$inferSelect) => [
+  run?.reason,
+  run?.status,
+  run?.snapshottedAt instanceof Date,
+];
+
+/** The task's runs in start order. */
+const runRows = (taskId: string) =>
+  db.database.db
+    .select()
+    .from(runs)
+    .where(eq(runs.taskId, taskId))
+    .orderBy(asc(runs.startedAt));
+
+/** File artifacts by path, with who they are credited to. */
+const fileCredits = (view: TaskView) =>
+  view.artifacts
+    .filter((a) => a.kind === "file")
+    .map((a) => ({ path: a.path, sessionId: a.sessionId, runId: a.runId }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+/**
+ * Writes one file with its own tool and one with bash, then waits at a gate
+ * (where the stop or crash lands), then completes.
+ */
+const writesThenHolds: Brain = (view) => {
+  switch (said.turns(view)) {
+    case 0:
+      return {
+        calls: [
+          { name: "write", args: { path: "notes.md", content: "# Notes\n" } },
+          { name: "bash", args: { command: "echo built > out.txt" } },
+        ],
+      };
+    case 1:
+      return { calls: [{ name: "gate", args: { name: "hold" } }] };
+    default:
+      return lastResult(view)?.name === "complete_task"
+        ? { text: "done" }
+        : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+  }
+};
 
 const completed = (view: { task: { status: string } }) =>
   view.task.status === "completed";
@@ -285,5 +346,205 @@ describe("artifacts", () => {
       fresh.sessions.map((s) => s.id).sort(),
     );
     expect(fresh.sessions.every((s) => s.activity === null)).toBe(true);
+  });
+});
+
+describe("artifacts of runs that ended without a snapshot", () => {
+  it("snapshots a run a graceful stop handed back once its session resumes", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    first.executor.brain(ada, writesThenHolds);
+    const { task } = await first.engine.tasks.create({
+      goal: "Hand off files",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    await first.engine.worker.stop();
+    // The stop stores nothing; the files are still in the workspace.
+    expect((await first.engine.tasks.get(task.id)).artifacts).toEqual([]);
+
+    const second = await worker({ clock: aMinuteLater });
+    second.executor.brain(ada, writesThenHolds);
+    const view = await untilTask(second.engine, task.id, completed);
+    const [handed, resumed] = await runRows(task.id);
+    expect([handed, resumed].map(runSummary)).toEqual([
+      ["start", "cancelled", false],
+      ["recovery", "completed", true],
+    ]);
+    expect(fileCredits(view)).toEqual([
+      { path: "notes.md", sessionId: handed?.sessionId, runId: handed?.id },
+      { path: "out.txt", sessionId: null, runId: null },
+    ]);
+  });
+
+  it("snapshots a run a crash cut off once its session is reclaimed", async () => {
+    const first = await worker({ config: { leaseMs: 1_000 } });
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    first.executor.brain(ada, writesThenHolds);
+    const { task } = await first.engine.tasks.create({
+      goal: "Crash with files",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    await first.engine.worker.abandon();
+
+    const second = await worker({
+      config: { leaseMs: 1_000 },
+      clock: aMinuteLater,
+    });
+    second.executor.brain(ada, writesThenHolds);
+    const view = await untilTask(
+      second.engine,
+      task.id,
+      completed,
+      "the recovered task",
+      20_000,
+    );
+    const [crashed, recovered] = await runRows(task.id);
+    expect([crashed, recovered].map(runSummary)).toEqual([
+      ["start", "failed", false],
+      ["recovery", "completed", true],
+    ]);
+    expect(fileCredits(view)).toEqual([
+      { path: "notes.md", sessionId: crashed?.sessionId, runId: crashed?.id },
+      { path: "out.txt", sessionId: null, runId: null },
+    ]);
+  });
+
+  it("stores nothing twice when the resumed snapshot reaches back over a teammate's files", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const coordinator: Brain = (view) => {
+      switch (said.turns(view)) {
+        case 0:
+          return {
+            calls: [
+              {
+                name: "write",
+                args: { path: "notes.md", content: "# Notes\n" },
+              },
+              {
+                name: "delegate",
+                args: { bot: bob, brief: "write the report" },
+              },
+            ],
+          };
+        case 1:
+          return { calls: [{ name: "gate", args: { name: "hold" } }] };
+        default:
+          if (!said.heard(view, `Result from ${bob} (session`))
+            return { text: "" };
+          return lastResult(view)?.name === "complete_task"
+            ? { text: "done" }
+            : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      }
+    };
+    const reporter: Brain = (view) =>
+      said.turns(view) === 0
+        ? {
+            calls: [
+              {
+                name: "write",
+                args: { path: "report.md", content: "# Report\n" },
+              },
+            ],
+          }
+        : { text: "report written" };
+    first.executor.brain(ada, coordinator).brain(bob, reporter);
+    const { task } = await first.engine.tasks.create({
+      goal: "Report",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await first.executor.gate("hold").reached;
+    // Bob finishes (and stores report.md) while Ada holds; then the worker stops.
+    const bobDone = await untilTask(first.engine, task.id, (view) =>
+      view.sessions.some(
+        (s) => s.botId === team.byName[bob] && s.status === "completed",
+      ),
+    );
+    expect(fileCredits(bobDone).map((file) => file.path)).toEqual([
+      "report.md",
+    ]);
+    await first.engine.worker.stop();
+
+    const second = await worker({ clock: aMinuteLater });
+    second.executor.brain(ada, coordinator).brain(bob, reporter);
+    const view = await untilTask(second.engine, task.id, completed);
+    const adaSession = view.sessions.find((s) => s.botId === team.byName[ada]);
+    const bobSession = view.sessions.find((s) => s.botId === team.byName[bob]);
+    const adaRuns = (await runRows(task.id)).filter(
+      (run) => run.sessionId === adaSession?.id,
+    );
+    const [bobRun] = (await runRows(task.id)).filter(
+      (run) => run.sessionId === bobSession?.id,
+    );
+    // The resumed run is a wake (Bob's result was already queued for Ada),
+    // not a recovery: the mark, not the reason, finds the handed-back run.
+    expect(adaRuns.map(runSummary)).toEqual([
+      ["start", "cancelled", false],
+      ["wake", "completed", true],
+    ]);
+    // Ada's next run reaches back to the handed-back run's start, which also
+    // covers report.md: it is already stored and keeps Bob's credit.
+    expect(fileCredits(view)).toEqual([
+      { path: "notes.md", sessionId: adaSession?.id, runId: adaRuns[0]?.id },
+      { path: "report.md", sessionId: bobSession?.id, runId: bobRun?.id },
+    ]);
+  });
+
+  it("still snapshots a run that ended normally only from its own start", async () => {
+    // The first run's records are a minute in the past, so a snapshot that
+    // reached back to it would see a change made between the runs.
+    let skew = -60_000;
+    const engine = await setup({
+      clock: () => new Date(Date.now() + skew),
+    });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    engine.executor.brain(ada, (view) => {
+      if (!said.heard(view, "one more"))
+        return said.turns(view) === 0
+          ? {
+              calls: [
+                { name: "write", args: { path: "a.txt", content: "one\n" } },
+              ],
+            }
+          : { text: "first pass" };
+      if (!said.results(view).some((r) => r.text === "Wrote b.txt"))
+        return {
+          calls: [{ name: "write", args: { path: "b.txt", content: "two\n" } }],
+        };
+      return lastResult(view)?.name === "complete_task"
+        ? { text: "done" }
+        : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+    });
+    const { task } = await engine.engine.tasks.create({
+      goal: "Two passes",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await untilTask(engine.engine, task.id, (view) =>
+      ["waiting", "completed"].includes(view.task.status),
+    );
+    skew = 0;
+    // Changed outside any run, before the second run's window.
+    const outside = join(engine.workspaceRoot, "task", task.id, "a.txt");
+    await writeFile(outside, "changed between runs\n");
+    const before = new Date(Date.now() - 30_000);
+    await utimes(outside, before, before);
+    await engine.engine.tasks.postMessage(task.id, { text: "one more" });
+    const view = await untilTask(engine.engine, task.id, completed);
+    const [firstRun, secondRun] = await runRows(task.id);
+    expect([firstRun, secondRun].map(runSummary)).toEqual([
+      ["start", "waiting", true],
+      ["wake", "completed", true],
+    ]);
+    expect(fileCredits(view)).toEqual([
+      { path: "a.txt", sessionId: firstRun?.sessionId, runId: firstRun?.id },
+      { path: "b.txt", sessionId: secondRun?.sessionId, runId: secondRun?.id },
+    ]);
   });
 });
