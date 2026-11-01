@@ -291,3 +291,8 @@
     box-shadow: var(--shadow-composer);
   }
 }
+
+/* The replying/working row's live region stays mounted; empty, it takes no gap. */
+.bot-chat__activity:empty {
+  margin-top: calc(var(--sp-9) * -1);
+}

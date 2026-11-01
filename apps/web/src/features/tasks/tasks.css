@@ -258,13 +258,18 @@
 }
 
 /* What each bot is doing now: one typing-row line per session in play. */
-.task-activity {
+.task-activity__list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* Empty, the always-mounted live region takes no gap. */
+.task-activity:empty {
+  margin-top: calc(var(--sp-8) * -1);
 }
 
 .task-activity__row {

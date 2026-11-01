@@ -1,6 +1,7 @@
 import {
   type Bot,
   type BotMemory,
+  type ConversationMessage,
   type ConversationView,
   type CreateBotCommand,
   emptyUsage,
@@ -25,10 +26,14 @@ import type { ApiError, StreamState } from "../api/client";
 import { toApiError } from "../api/follow";
 import { navigate, useRoute } from "../features/shell/useRoute";
 import { summaryFromView } from "../lib/tasks";
+import {
+  unknownTaskIds,
+  withStoredMessage,
+  withUnseenMessages,
+} from "./conversationState";
 import { createRefetcher } from "./refetch";
 import {
   applyOverlay,
-  conversationKey,
   hintNeedsTaskList,
   overlayMessage,
   overlayTask,
@@ -58,12 +63,17 @@ export interface NewTaskInput {
 
 interface WorkspaceValue {
   loading: boolean;
+  /** Why the workspace did not load (bootstrap failed); null once it has. */
+  loadError: string | null;
+  /** Tries the bootstrap again after `loadError`. */
+  retryLoad: () => void;
   error: string | null;
   dismissError: () => void;
 
   bots: Bot[];
   tasks: TaskSummary[];
   profiles: RuntimeProfile[];
+  /** The open bot's conversation (the last one seen for others). */
   conversations: Record<string, ConversationView>;
   /**
    * Full views of the tasks being followed (the open one), with the message a
@@ -101,13 +111,23 @@ interface WorkspaceValue {
   archiveBot: (botId: string) => Promise<void>;
   /** Refetches the runtime profiles, e.g. after Settings changed one. */
   refreshProfiles: () => Promise<void>;
+  /** Refetches the bots, e.g. after the server refused an action on stale state. */
+  refreshBots: () => Promise<void>;
   saveMemory: (botId: string, text: string) => Promise<BotMemory>;
   /** Creates the task and opens it. */
   createTask: (input: NewTaskInput) => Promise<Task>;
 
-  // Fire-and-forget actions report failures in `error`.
+  /** Loads a bot's memory; a failure lands in `memoryErrors`, not `error`. */
   loadMemory: (botId: string) => Promise<void>;
-  /** Resolves false when the message was not accepted (the error is in `error`). */
+  /** Why a bot's memory did not load, keyed by bot id, until it does. */
+  memoryErrors: Record<string, string>;
+
+  // Fire-and-forget actions report failures in `error`.
+  /**
+   * Resolves false when the message was not accepted (the error is in
+   * `error`). Once accepted, the stored message shows in the conversation at
+   * once, with the bot replying.
+   */
   sendBotMessage: (botId: string, text: string) => Promise<boolean>;
   /**
    * Posts to the task chat; `changesGoal` also replaces the goal against the
@@ -146,6 +166,8 @@ const without = <Value,>(record: Record<string, Value>, key: string) => {
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const api = useApi();
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [bots, setBots] = useState<Bot[]>([]);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
@@ -163,6 +185,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [problem, setProblem] = useState<TaskProblem | null>(null);
   const [taskReload, setTaskReload] = useState(0);
   const [memories, setMemories] = useState<Record<string, BotMemory>>({});
+  const [memoryErrors, setMemoryErrors] = useState<Record<string, string>>({});
   const [pendingBotTurns, setPendingBotTurns] = useState<
     Record<string, string>
   >({});
@@ -197,6 +220,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     async () => setProfiles(await api.listProfiles()),
     [api],
   );
+  const refreshBots = useCallback(
+    async () => setBots(await api.listBots()),
+    [api],
+  );
 
   const applyTaskList = useCallback((summaries: TaskSummary[]) => {
     // An open task's streamed view may be newer than the list it raced with.
@@ -212,9 +239,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Initial load.
+  // Initial load. A failure is its own state, so screens never mistake it
+  // for an empty workspace.
   useEffect(() => {
     let cancelled = false;
+    void loadAttempt;
+    setLoading(true);
+    setLoadError(null);
     (async () => {
       try {
         const boot = await api.bootstrap();
@@ -223,7 +254,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setTasks(boot.tasks);
         setProfiles(boot.profiles);
       } catch (reason) {
-        if (!cancelled) report(reason);
+        if (!cancelled) setLoadError(message(reason));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -231,7 +262,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [api, report]);
+  }, [api, loadAttempt]);
 
   // Workspace hints say what to refetch. Each kind of refetch is debounced so
   // a burst of hints costs one request, and only its newest answer lands.
@@ -278,22 +309,44 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
   }, [api, applyTaskList]);
 
-  // Every bot's conversation, for the list previews and the open chat. Keyed
-  // on the sorted ids, so reordering the list does not resubscribe.
-  const botIds = conversationKey(bots);
+  // The open bot's conversation only. Messages a send stored stay merged in
+  // until a fetched view includes them, and task cards the replies link to are
+  // filled in from the task itself instead of waiting for the list refetch.
+  const storedRef = useRef<Record<string, ConversationMessage[]>>({});
+  const seedingRef = useRef(new Set<string>());
   useEffect(() => {
-    if (!botIds) return;
-    const unsubscribes = botIds
-      .split("\n")
-      .map((botId) =>
-        api.subscribeConversation(botId, (view) =>
-          setConversations((current) => ({ ...current, [botId]: view })),
-        ),
-      );
-    return () => {
-      for (const unsubscribe of unsubscribes) unsubscribe();
+    if (!selectedBotId) return;
+    const botId = selectedBotId;
+    const seedTasks = (view: ConversationView) => {
+      const known = new Set([
+        ...tasksRef.current.map((task) => task.id),
+        ...seedingRef.current,
+      ]);
+      for (const taskId of unknownTaskIds(view, known)) {
+        seedingRef.current.add(taskId);
+        api
+          .getTask(taskId)
+          .then((taskView) =>
+            setTasks((current) =>
+              current.some((task) => task.id === taskId)
+                ? current
+                : [summaryFromView(taskView), ...current],
+            ),
+          )
+          .catch(() => {})
+          .finally(() => seedingRef.current.delete(taskId));
+      }
     };
-  }, [api, botIds]);
+    return api.subscribeConversation(botId, (fetched) => {
+      const { view, unseen } = withUnseenMessages(
+        fetched,
+        storedRef.current[botId] ?? [],
+      );
+      storedRef.current[botId] = unseen;
+      setConversations((current) => ({ ...current, [botId]: view }));
+      seedTasks(view);
+    });
+  }, [api, selectedBotId]);
 
   // The open task: its snapshot, then its event stream. A new task starts
   // with no graph node picked. `taskReload` restarts it from a fresh snapshot.
@@ -361,6 +414,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const value = useMemo<WorkspaceValue>(
     () => ({
       loading,
+      loadError,
+      retryLoad: () => setLoadAttempt((count) => count + 1),
       error,
       dismissError: () => setError(null),
       bots,
@@ -399,11 +454,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setMemories((current) => without(current, botId));
       },
       refreshProfiles,
-      loadMemory: (botId) =>
-        run(async () => {
+      refreshBots,
+      loadMemory: async (botId) => {
+        try {
           const memory = await api.getMemory(botId);
           setMemories((current) => ({ ...current, [botId]: memory }));
-        }),
+          setMemoryErrors((current) => without(current, botId));
+        } catch (reason) {
+          setMemoryErrors((current) => ({
+            ...current,
+            [botId]: message(reason),
+          }));
+        }
+      },
+      memoryErrors,
       saveMemory: async (botId, text) => {
         const memory = await api.putMemory(botId, { text });
         setMemories((current) => ({ ...current, [botId]: memory }));
@@ -413,18 +477,23 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setError(null);
         setPendingBotTurns((current) => ({ ...current, [botId]: text }));
         try {
-          await api.sendBotMessage(botId, { text });
+          const stored = await api.sendBotMessage(botId, { text });
+          // Shown in the same render that drops the pending bubble, so it
+          // never blinks out; the hint-driven refetch confirms it.
+          storedRef.current[botId] = [
+            ...(storedRef.current[botId] ?? []),
+            stored,
+          ];
+          setConversations((current) => ({
+            ...current,
+            [botId]: withStoredMessage(current[botId], stored),
+          }));
         } catch (reason) {
           report(reason);
           return false;
         } finally {
           setPendingBotTurns((current) => without(current, botId));
         }
-        // The message is stored; a failed refetch only delays showing it.
-        try {
-          const view = await api.getConversation(botId);
-          setConversations((current) => ({ ...current, [botId]: view }));
-        } catch {}
         return true;
       },
       createTask: async ({ goal, participantBotIds }) => {
@@ -509,6 +578,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       taskStreamState,
       problem,
       memories,
+      memoryErrors,
+      loadError,
       selectedBotId,
       selectedTaskId,
       selectedNodeId,
@@ -517,6 +588,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectTask,
       selectBot,
       refreshProfiles,
+      refreshBots,
       report,
       run,
     ],

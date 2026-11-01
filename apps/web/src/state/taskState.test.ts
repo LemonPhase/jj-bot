@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
 import {
   applyOverlay,
-  conversationKey,
   hintNeedsTaskList,
   overlayMessage,
   overlayTask,
@@ -79,15 +78,6 @@ describe("task load problems", () => {
 });
 
 describe("refetch amplification", () => {
-  it("keys conversation subscriptions on sorted bot ids", () => {
-    expect(conversationKey([{ id: "b" }, { id: "a" }])).toBe(
-      conversationKey([{ id: "a" }, { id: "b" }]),
-    );
-    expect(conversationKey([{ id: "a" }])).not.toBe(
-      conversationKey([{ id: "a" }, { id: "c" }]),
-    );
-  });
-
   it("skips task-list refetches for the task being streamed", () => {
     const hint = { type: "tasks.changed", taskId: "task-1" } as const;
     expect(hintNeedsTaskList(hint, "task-1")).toBe(false);

@@ -16,6 +16,27 @@
     text-size-adjust: 100%;
   }
 
+  /*
+   * The app fills the viewport and its panes scroll on their own; below 760px
+   * the panes stack and the page scrolls. The dev gallery is its own fixed
+   * scroller, so it scrolls either way.
+   */
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    overflow: hidden;
+  }
+
+  @media (max-width: 759px) {
+    body {
+      overflow: auto;
+    }
+  }
+
   body {
     margin: 0;
     font: var(--fw-regular) var(--fs-body) / var(--lh-body) var(--font-sans);

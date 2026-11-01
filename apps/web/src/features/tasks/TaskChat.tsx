@@ -109,7 +109,8 @@ export function TaskChat({ view }: { view: TaskView }) {
               </p>
             )}
           </div>
-          {lines.length > 0 && <ActivityList lines={lines} getBot={getBot} />}
+          {/* Always mounted, so changes to the rows are announced. */}
+          <ActivityList lines={lines} getBot={getBot} />
         </div>
       </div>
       {sendError && (
@@ -316,31 +317,34 @@ function ActivityList({
   getBot: (botId: string) => Bot | undefined;
 }) {
   return (
-    <ul
-      className="task-activity"
-      aria-label="What the bots are doing"
-      aria-live="polite"
-    >
-      {lines.map(({ session, text, working }) => {
-        const bot = getBot(session.botId);
-        return (
-          <li key={session.id} className="task-activity__row">
-            <Avatar
-              appearance={bot?.appearance}
-              name={botName(bot)}
-              mood={working ? "working" : moodForStatus(session)}
-              size={24}
-              decorative
-            />
-            <span className="task-activity__name">{botName(bot)}</span>
-            <span className="task-activity__text clamp1" title={text}>
-              <ActivityText text={text} />
-            </span>
-            {working && <TypingDots />}
-          </li>
-        );
-      })}
-    </ul>
+    <div className="task-activity" aria-live="polite">
+      {lines.length > 0 && (
+        <ul
+          className="task-activity__list"
+          aria-label="What the bots are doing"
+        >
+          {lines.map(({ session, text, working }) => {
+            const bot = getBot(session.botId);
+            return (
+              <li key={session.id} className="task-activity__row">
+                <Avatar
+                  appearance={bot?.appearance}
+                  name={botName(bot)}
+                  mood={working ? "working" : moodForStatus(session)}
+                  size={24}
+                  decorative
+                />
+                <span className="task-activity__name">{botName(bot)}</span>
+                <span className="task-activity__text clamp1" title={text}>
+                  <ActivityText text={text} />
+                </span>
+                {working && <TypingDots />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }
 

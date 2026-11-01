@@ -1,11 +1,17 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ErrorBanner, Spinner } from "../../components/ui";
+import { Button, ErrorBanner, Spinner } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { StudioScreen } from "../studio/StudioScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
-import { canonicalRoute, type Route, type Section, sectionOf } from "./router";
+import {
+  canonicalRoute,
+  type Route,
+  routeHref,
+  type Section,
+  sectionOf,
+} from "./router";
 import { type ShellActions, ShellContext } from "./ShellContext";
 import { Sidebar } from "./Sidebar";
 import { navigate, useRoute } from "./useRoute";
@@ -25,8 +31,16 @@ type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
  */
 export function AppShell() {
   const route = useRoute();
-  const { loading, bots, tasks, error, dismissError, selectedBotId } =
-    useWorkspace();
+  const {
+    loading,
+    loadError,
+    retryLoad,
+    bots,
+    tasks,
+    error,
+    dismissError,
+    selectedBotId,
+  } = useWorkspace();
   const [dialog, setDialog] = useState<OpenDialog>({ kind: "none" });
   const lastSection = useRef<Section>("bots");
   const lastIds = useRef<Record<Section, string | null>>({
@@ -53,6 +67,12 @@ export function AppShell() {
     const next = canonicalRoute(route, { bots: botIds, tasks: taskIds });
     if (next) navigate(next, { replace: true });
   }, [loading, route, listedKey]);
+  // A hash that parses but is not spelled canonically ("#bots", "#/studio",
+  // none at all) is rewritten in place, so it adds no history entry of its own.
+  useEffect(() => {
+    if (window.location.hash !== routeHref(route))
+      navigate(route, { replace: true });
+  }, [route]);
 
   const switchSection = (next: Section) => {
     const remembered = lastIds.current[next];
@@ -96,7 +116,13 @@ export function AppShell() {
               <ErrorBanner onDismiss={dismissError}>{error}</ErrorBanner>
             </div>
           )}
-          {loading ? <ShellLoading /> : <Screen route={route} />}
+          {loading ? (
+            <ShellLoading />
+          ) : loadError ? (
+            <ShellLoadFailed message={loadError} onRetry={retryLoad} />
+          ) : (
+            <Screen route={route} />
+          )}
         </div>
       </div>
       {dialog.kind === "task" && (
@@ -110,6 +136,24 @@ function ShellLoading({ label = "Loading workspace…" }: { label?: string }) {
   return (
     <main className="screen screen--center">
       <Spinner label={label} showLabel />
+    </main>
+  );
+}
+
+/** The bootstrap failed: say so, instead of showing an empty workspace. */
+function ShellLoadFailed({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="screen screen--center">
+      <div className="shell-failed">
+        <ErrorBanner word="Couldn't load">{message}</ErrorBanner>
+        <Button onClick={onRetry}>Retry</Button>
+      </div>
     </main>
   );
 }

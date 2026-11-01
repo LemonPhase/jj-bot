@@ -183,6 +183,9 @@ export function createHttp({
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
+        // Reads must reflect the server now: a hint-driven refetch served from
+        // the HTTP cache would undo the update it was meant to show.
+        ...(method === "GET" ? { cache: "no-store" as const } : {}),
       });
     } catch (reason) {
       throw new ApiError(

@@ -1,11 +1,12 @@
 import type { Bot, ConversationMessage } from "@jj/contracts";
 import { Fragment, useLayoutEffect, useRef } from "react";
+import { PixelSprite } from "../../components/sprite";
 import {
   Avatar,
   Composer,
   DayDivider,
   ErrorBanner,
-  WorkingIndicator,
+  TypingDots,
 } from "../../components/ui";
 import { formatMessageTime } from "../../lib/format";
 import { useWorkspace } from "../../state/WorkspaceContext";
@@ -31,9 +32,15 @@ export function BotConversation({
   const messages = conversation?.messages ?? [];
   const pending = pendingBotTurns[bot.id];
   const replying = Boolean(pending) || Boolean(conversation?.replying);
+  // A previous reply's failure is stale while a new message is on its way.
   const replyError =
-    conversation?.lastReplyError && !conversation.replying
+    conversation?.lastReplyError && !replying
       ? conversation.lastReplyError
+      : null;
+  const activity = replying
+    ? `${bot.name} is replying`
+    : bot.presence === "working"
+      ? `${bot.name} is working`
       : null;
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -82,17 +89,10 @@ export function BotConversation({
             )}
             {pending && <UserBubble text={pending} pending />}
           </div>
-          {replying ? (
-            <WorkingIndicator
-              name={bot.name}
-              appearance={bot.appearance}
-              label={`${bot.name} is replying`}
-            />
-          ) : (
-            bot.presence === "working" && (
-              <WorkingIndicator name={bot.name} appearance={bot.appearance} />
-            )
-          )}
+          {/* Always mounted, so screen readers announce each change of its text. */}
+          <div className="bot-chat__activity" role="status" aria-live="polite">
+            {activity && <ActivityRow bot={bot} label={activity} />}
+          </div>
           {replyError && (
             <ErrorBanner word="Reply failed">{replyError.message}</ErrorBanner>
           )}
@@ -109,6 +109,17 @@ export function BotConversation({
         }}
       />
     </>
+  );
+}
+
+/** The typing row (SPEC §4); its live region is the always-mounted parent. */
+function ActivityRow({ bot, label }: { bot: Bot; label: string }) {
+  return (
+    <div className="ui-working">
+      <PixelSprite appearance={bot.appearance} mood="working" size={24} />
+      <span>{label}</span>
+      <TypingDots />
+    </div>
   );
 }
 
@@ -155,6 +166,8 @@ function UserBubble({
     <div
       className="chat-msg chat-msg--user"
       data-pending={pending || undefined}
+      // Announced once, when the stored message replaces it in the log.
+      aria-hidden={pending || undefined}
     >
       <p className="chat-msg__bubble">
         <span className="visually-hidden">You: </span>

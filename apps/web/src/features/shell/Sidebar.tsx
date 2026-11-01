@@ -59,13 +59,18 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
         )}
       </div>
 
-      {/* On Settings neither item is current, so both lead back to a list. */}
-      <Segmented<Section | "settings">
+      {/* Only on a list screen is its item the current page; from Studio and
+          Settings both items lead back to a list. */}
+      <Segmented<Section | "elsewhere">
         kind="nav"
         label="Primary"
-        value={route.name === "settings" ? "settings" : section}
+        value={
+          route.name === "bots" || route.name === "tasks"
+            ? section
+            : "elsewhere"
+        }
         onChange={(next) => {
-          if (next !== "settings") onSwitchSection(next);
+          if (next !== "elsewhere") onSwitchSection(next);
         }}
         options={[
           { value: "bots", label: "Bots", count: bots.length },

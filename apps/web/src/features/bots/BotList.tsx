@@ -13,11 +13,12 @@ import { botActivity } from "./botActivity";
 
 /** The sidebar bot list (SPEC §3): 36px sprites in their mood, name and status line. */
 export function BotList({ labelledBy }: { labelledBy: string }) {
-  const { bots, tasks, loading, selectedBotId } = useWorkspace();
+  const { bots, tasks, loading, loadError, selectedBotId } = useWorkspace();
   const { openNewBot } = useShell();
   const onKeyDown = useListKeyboard();
 
   if (loading) return <p className="shell-list__note">Loading…</p>;
+  if (loadError) return <p className="shell-list__note">Not loaded.</p>;
   if (bots.length === 0)
     return (
       <EmptyState

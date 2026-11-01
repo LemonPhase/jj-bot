@@ -2,13 +2,7 @@
  * Pure pieces of the workspace's task state, kept out of the React provider
  * so they can be tested on their own.
  */
-import type {
-  Bot,
-  Task,
-  TaskMessage,
-  TaskView,
-  WorkspaceHint,
-} from "@jj/contracts";
+import type { Task, TaskMessage, TaskView, WorkspaceHint } from "@jj/contracts";
 import type { ApiError } from "../api/client";
 import { isTerminalTaskError } from "../api/follow";
 
@@ -25,16 +19,6 @@ export const taskProblem = (taskId: string, error: ApiError): TaskProblem => ({
   error,
   terminal: isTerminalTaskError(error),
 });
-
-/**
- * The key the conversation subscriptions are keyed on: the bot ids, sorted, so
- * a reordered bot list does not tear down and reopen every subscription.
- */
-export const conversationKey = (bots: readonly Pick<Bot, "id">[]): string =>
-  bots
-    .map((bot) => bot.id)
-    .sort()
-    .join("\n");
 
 /**
  * Whether a hint needs the task list refetched. A `tasks.changed` hint for the

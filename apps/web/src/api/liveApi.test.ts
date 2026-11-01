@@ -297,6 +297,8 @@ describe("live API requests", () => {
         (c) => (c.init.headers as Record<string, string>).Authorization,
       ),
     ).toEqual(["Bearer secret", "Bearer secret"]);
+    // Reads bypass the HTTP cache, so a hint-driven refetch sees the change.
+    expect(calls.map((c) => c.init.cache)).toEqual(["no-store", undefined]);
   });
 
   it("builds artifact URLs and badges from bootstrap", () => {

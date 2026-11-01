@@ -2,6 +2,8 @@
 import "../test/dom";
 import {
   type Bot,
+  type ConversationMessage,
+  type ConversationView,
   emptyUsage,
   type Task,
   type TaskMessage,
@@ -245,14 +247,18 @@ describe("WorkspaceContext: refetch amplification (f)", () => {
     expect(api.listTasks).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the newest bot list and conversation subscriptions across reorders", async () => {
+  it("keeps the newest bot list, and follows only the open bot's conversation", async () => {
+    window.location.hash = "#/bots/bot-a";
     const answers: ((bots: Bot[]) => void)[] = [];
     const listBots = vi.fn(
       () => new Promise<Bot[]>((resolve) => answers.push(resolve)),
     );
     const { api, hint } = fakeApi({ listBots });
     await mount(api);
-    expect(api.subscribeConversation).toHaveBeenCalledTimes(2);
+    expect(api.subscribeConversation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.subscribeConversation).mock.calls[0]?.[0]).toBe(
+      "bot-a",
+    );
     hint({ type: "bots.changed" });
     await waitFor(() => expect(listBots).toHaveBeenCalledTimes(1));
     hint({ type: "bots.changed" });
@@ -261,7 +267,75 @@ describe("WorkspaceContext: refetch amplification (f)", () => {
     await act(async () => answers[1]?.([bot("bot-b"), bot("bot-a")]));
     await act(async () => answers[0]?.([bot("bot-a")]));
     expect(workspace.bots.map((b) => b.id)).toEqual(["bot-b", "bot-a"]);
-    expect(api.subscribeConversation).toHaveBeenCalledTimes(2);
+    // Reloading the bot list never resubscribes; opening another bot does.
+    expect(api.subscribeConversation).toHaveBeenCalledTimes(1);
+    act(() => {
+      window.location.hash = "#/bots/bot-b";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() =>
+      expect(vi.mocked(api.subscribeConversation).mock.calls.at(-1)?.[0]).toBe(
+        "bot-b",
+      ),
+    );
+  });
+});
+
+describe("WorkspaceContext: direct chat sends", () => {
+  it("shows the stored message with the bot replying, and keeps it over stale views", async () => {
+    window.location.hash = "#/bots/bot-a";
+    const views: ((view: ConversationView) => void)[] = [];
+    const stored: ConversationMessage = {
+      id: "c2",
+      botId: "bot-a",
+      sequence: 2,
+      role: "user",
+      text: "Hello",
+      taskId: null,
+      createdAt: T0,
+    };
+    const first: ConversationMessage = {
+      ...stored,
+      id: "c1",
+      sequence: 1,
+      text: "Earlier",
+    };
+    const { api } = fakeApi({
+      subscribeConversation: vi.fn((_botId, onView) => {
+        views.push(onView);
+        return () => {};
+      }),
+      sendBotMessage: vi.fn(async () => stored),
+      getConversation: vi.fn(),
+    });
+    await mount(api);
+    const conversation = (
+      messages: ConversationMessage[],
+      replying = false,
+    ) => ({
+      botId: "bot-a",
+      messages,
+      replying,
+      lastReplyError: null,
+    });
+    act(() => views[0]?.(conversation([first])));
+    await act(async () => {
+      expect(await workspace.sendBotMessage("bot-a", "Hello")).toBe(true);
+    });
+    // In the same render that dropped the pending bubble.
+    expect(workspace.pendingBotTurns["bot-a"]).toBeUndefined();
+    expect(workspace.conversations["bot-a"]).toMatchObject({
+      replying: true,
+      messages: [{ id: "c1" }, { id: "c2" }],
+    });
+    // A view read before the send landed does not take the message away.
+    act(() => views[0]?.(conversation([first])));
+    expect(workspace.conversations["bot-a"]?.messages).toHaveLength(2);
+    // Once a fetched view has it, the fetched view is shown as is.
+    act(() => views[0]?.(conversation([first, stored], false)));
+    act(() => views[0]?.(conversation([first, stored], false)));
+    expect(workspace.conversations["bot-a"]).toMatchObject({ replying: false });
+    expect(api.getConversation).not.toHaveBeenCalled();
   });
 });
 

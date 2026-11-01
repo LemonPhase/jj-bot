@@ -3,16 +3,6 @@
  * The app fills the viewport and each pane scrolls on its own; below 760px
  * the panes stack and the page scrolls (SPEC §2 DECIDE: fixed columns).
  */
-html,
-body,
-#root {
-  height: 100%;
-}
-
-body {
-  overflow: hidden;
-}
-
 .shell {
   display: flex;
   height: 100%;
@@ -102,6 +92,20 @@ body {
   display: flex;
   flex: none;
   gap: var(--sp-2);
+}
+
+/* Bootstrap failure. */
+.shell-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-6);
+  width: min(520px, 100%);
+  padding: var(--sp-11);
+}
+
+.shell-failed .ui-error {
+  width: 100%;
 }
 
 /* ── Main area and screens ─────────────────────────────────────────────── */
@@ -218,10 +222,6 @@ body {
 
 /* ── Narrow viewports: stack the panes, scroll the page ────────────────── */
 @media (max-width: 759px) {
-  body {
-    overflow: auto;
-  }
-
   .shell {
     flex-direction: column;
     height: auto;

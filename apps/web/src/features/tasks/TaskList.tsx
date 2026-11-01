@@ -35,11 +35,13 @@ const MAX_SPRITES = 3;
 
 /** The sidebar task list (SPEC §3): title, status · version, participant sprites. */
 export function TaskList({ labelledBy }: { labelledBy: string }) {
-  const { tasks, loading, selectedTaskId, taskViews, getBot } = useWorkspace();
+  const { tasks, loading, loadError, selectedTaskId, taskViews, getBot } =
+    useWorkspace();
   const { openNewTask } = useShell();
   const onKeyDown = useListKeyboard();
 
   if (loading) return <p className="shell-list__note">Loading…</p>;
+  if (loadError) return <p className="shell-list__note">Not loaded.</p>;
   if (tasks.length === 0)
     return (
       <EmptyState
