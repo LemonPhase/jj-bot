@@ -119,6 +119,10 @@ td.changed { background: color-mix(in srgb, var(--ride) 12%, transparent); }
 @media (max-width: 560px) { .ev div { grid-template-columns: 1fr; gap: 2px; } }
 .ev b { font-weight: 600; }
 .src { font-family: var(--mono); font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--chip-bg); color: var(--muted); margin-left: 6px; }
+.exp-grid { display: grid; gap: 22px; }
+.exp-block h3 { margin: 0 0 2px; font-family: var(--display); font-size: 1.05rem; }
+.exp-block .q { margin: 0 0 6px; font-size: 14px; color: var(--muted); max-width: 70ch; }
+.exp-block .take { margin: 6px 0 0; font-size: 14px; max-width: 72ch; }
 footer { font-size: 13px; color: var(--muted); }
 a { color: var(--ride); }
 </style>
@@ -127,7 +131,7 @@ a { color: var(--ride); }
 <header>
   <div class="eyebrow">JJ Bot · issue #68 · research, not a decision</div>
   <h1>What each bot sees, and how work moves between them</h1>
-  <p>An interactive guide to how JJ Bot builds context for each model call today, measured on the real engine with the scripted test model, and what the proposed designs would change. The token figures are lower bounds: the scripted model writes tiny files, while a real model reads and runs far more.</p>
+  <p>An interactive guide to how JJ Bot builds context for each model call today, measured on the real engine, and what the proposed designs would change. Sections 1–3 explain the mechanics; section 6 has the results of 50 real-model runs (openai/gpt-6-luna, $0.15 in total).</p>
   <div class="legend">
     <span><i class="sw" style="background:var(--sys)"></i>System prompt</span>
     <span><i class="sw" style="background:var(--tools)"></i>Tool definitions</span>
@@ -144,10 +148,12 @@ a { color: var(--ride); }
   <p>A model call does not remember the previous one. Each call sends the system prompt, every tool definition and the session's entire transcript again. Click a bar to see what one call contained.</p>
   <div class="row">
     <div class="seg" role="group" aria-label="Scenario">
-      <button type="button" data-sc="followups" aria-pressed="true">Task + 2 follow-ups</button>
-      <button type="button" data-sc="baseline" aria-pressed="false">Task only</button>
+      <button type="button" data-sc="real" aria-pressed="true">Real model · task + 2 follow-ups</button>
+      <button type="button" data-sc="followups" aria-pressed="false">Scripted · task + 2 follow-ups</button>
+      <button type="button" data-sc="baseline" aria-pressed="false">Scripted · task only</button>
     </div>
   </div>
+  <p class="note" id="scNote"></p>
   <div class="fig"><svg id="bars" role="img" aria-label="Stacked bars of estimated input tokens per model call"></svg></div>
   <div class="readout" id="readout"></div>
   <p class="note">Tokens are estimated as characters ÷ 4 of exactly what the engine hands to the provider (<span class="mono">harness.ts</span>). The fixed part, system prompt plus tool definitions, is about 2,000 tokens and makes up 68–97% of each call here. It is cheap only if the provider can cache it, which requires those bytes to stay identical.</p>
@@ -198,25 +204,25 @@ a { color: var(--ride); }
   <h2><span class="n">4</span>Three design options</h2>
   <div class="opts">
     <div class="opt rec">
-      <span class="badge">Recommended base</span>
-      <h3>A · Task tools</h3>
+      <span class="badge">Recommended · digest pushed, tools on request</span>
+      <h3>A · Task context</h3>
       <ul>
         <li><span class="mono">task_log</span>, <span class="mono">read_entry</span>, <span class="mono">read_report</span>: read-only lookups any bot in the task can call</li>
         <li>Structured briefs, with the files a worker owns and what to report</li>
         <li>Results point to files and are clipped; the full text is one call away</li>
         <li>A message to a finished session becomes an error</li>
       </ul>
-      <p class="pc">+ Smallest contract change; matches progressive disclosure.<br>− Only works if the bot decides to look (E1 tests this).</p>
+      <p class="pc"><b>E1:</b> a short digest pushed into each brief cost no more than today and passed 5/5. Pull tools also passed 5/5, and workers did use them, but they cost 40% more tokens. So push the digest, and keep the tools for what a brief cannot anticipate.</p>
     </div>
     <div class="opt">
-      <span class="badge">Decide after E3</span>
+      <span class="badge">Downgraded by E3</span>
       <h3>B · + Decision log</h3>
       <ul>
         <li><span class="mono">note(text, kind)</span> appends a decision, interface, todo or risk</li>
         <li>The latest titles reach every session at its next turn</li>
         <li>Replaces most peer-to-peer messages</li>
       </ul>
-      <p class="pc">+ Makes the decisions behind an action explicit (Cognition's main failure mode).<br>− Adds a record type; a plain <span class="mono">NOTES.md</span> file may do as well.</p>
+      <p class="pc"><b>E3:</b> negotiating through a shared <span class="mono">NOTES.md</span> was the most expensive variant (5× the hub's tokens, 2.2 fix delegations per run). The coordinator simply deciding the interface up front was cheapest. Revisit only as a record of decisions, not as a channel.</p>
     </div>
     <div class="opt">
       <span class="badge">Take C2 with A</span>
@@ -225,10 +231,10 @@ a { color: var(--ride); }
         <li><b>C1</b>: reopen the bot's finished session with the new brief</li>
         <li><b>C2</b>: start a fresh session whose brief includes the bot's previous brief and report</li>
       </ul>
-      <p class="pc">+ C2 closes the "cold re-delegation" gap for a few hundred tokens.<br>− C1 grows transcripts and depends on #62 compaction.</p>
+      <p class="pc"><b>E2:</b> both warm variants used 20–30% fewer tokens than a fresh session, with the same success within noise (4/5 each). C1 was the only one that never got the codeword wrong. C2 needs no new session semantics.</p>
     </div>
   </div>
-  <p class="note">These apply whatever option is chosen: keep the system prompt byte-stable (move the goal version into the inbox), and clear old tool results before #62 compaction runs.</p>
+  <p class="note">Also from the experiments: the coordinator should fix shared interfaces and conventions in the briefs (E3). Context hygiene pays off most on the coordinator, which used 77% of all prompt tokens in E0. Keep the system prompt byte-stable, and clear old tool results before #62 compaction runs.</p>
 </section>
 
 <!-- 5. Evidence -->
@@ -245,41 +251,45 @@ a { color: var(--ride); }
   <p class="note">"search" means the primary page could not be opened from this environment; see <span class="mono">02-survey.md</span>.</p>
 </section>
 
-<!-- 6. Experiments -->
+<!-- 6. Results -->
 <section class="panel" id="exp">
-  <h2><span class="n">6</span>Experiments awaiting approval</h2>
-  <p><b>None has run yet.</b> Each needs a real model, which costs money, so each waits for the owner's approval. Sections 1–3 come from the free scripted model, a fake that follows fixed rules: it can measure what a call contains, but not whether a design makes bots behave better.</p>
-  <div class="fig"><table>
-    <thead><tr><th>Experiment</th><th>Question</th><th>How it runs</th><th>Decides</th></tr></thead>
-    <tbody>
-      <tr><td><b>E0</b></td><td>What do real tasks cost?</td><td>Run today's demo task and its two follow-ups once each on a real model.</td><td>The real numbers behind sections 1–3</td></tr>
-      <tr><td><b>E1</b></td><td>Give workers more context, or let them look it up?</td><td>A worker needs a user rule and a sibling's fact. Brief only (today) vs task summary pushed into the brief vs lookup tools.</td><td>Option A</td></tr>
-      <tr><td><b>E2</b></td><td>Should a bot given more work continue where it left off?</td><td>Follow-up edits: new empty session (today) vs reopen the old session vs new session plus a handoff note.</td><td>Option C (C1 or C2)</td></tr>
-      <tr><td><b>E3</b></td><td>How should two workers agree on an interface?</td><td><code>message</code> (today) vs a shared <code>NOTES.md</code> vs the coordinator as hub. Pass means the code compiles.</td><td>Option B; keep <code>message</code>?</td></tr>
-      <tr><td><b>E4</b></td><td>What would trimming old tool results save?</td><td>Replay the transcripts from E0–E2 offline through a calculator. No model calls.</td><td>The tool-result clearing item</td></tr>
-    </tbody></table></div>
-  <div class="fig"><svg id="cost" role="img" aria-label="Estimated cost range per experiment"></svg></div>
-  <p class="note">Model: <span class="mono">openai/gpt-6-luna</span> ($0.10 per million input tokens, $0.50 per million output tokens). Three repeats per variant. Session budget: $3. Nothing has been spent yet.</p>
+  <h2><span class="n">6</span>What the real-model experiments showed</h2>
+  <p>50 runs on <span class="mono">openai/gpt-6-luna</span>, 5 per variant. A script checked each final workspace; a bot's own claim never counted as a pass. With 5 runs, a one-run gap (4/5 against 5/5) is noise. The token and cost differences, and E3's large gaps, are the signal.</p>
+  <div class="readout">
+    <div class="stat" style="border-color:var(--tx)"><b>$0.15</b><span>spent of the $3 budget</span></div>
+    <div class="stat" style="border-color:var(--sys)"><b>77%</b><span>of prompt tokens used by the coordinator (E0)</span></div>
+    <div class="stat" style="border-color:var(--wake)"><b>3–5×</b><span>cost of workers agreeing peer-to-peer vs the coordinator deciding (E3)</span></div>
+    <div class="stat" style="border-color:var(--ride)"><b>−29%</b><span>tokens with a handoff note on re-delegation (E2)</span></div>
+  </div>
+  <div class="exp-grid" id="expCharts"></div>
+  <p class="note">Bars show mean prompt tokens per run (input plus cached). The chip shows runs that passed the check. Full tables, failure details and method are in <span class="mono">research/context-management/05-results.md</span>. Not run: E4, the offline replay of tool-result clearing, because the harness does not save full transcripts yet. Caveat: the provider reported 99.9% of prompt tokens as cache reads, which I have not verified; at uncached list price the whole batch would have cost $0.36.</p>
 </section>
 
-<footer>Branch <span class="mono">research/context-management</span> · <span class="mono">research/context-management/</span> 01–04 · Issue #68</footer>
+<footer>Branch <span class="mono">research/context-management</span> · <span class="mono">research/context-management/</span> 01–05 · Issue #68</footer>
 </div>
 
 <script>
 (() => {
   // ---------- 1. Anatomy: measured per-call estimates [session, system, tools, transcript] ----------
   const DATA = {
+    real: [["Ada/c",478,1536,69],["Ada/c",478,1536,465],["Grace/w",295,1427,56],["Linus/w",295,1427,61],["Grace/w",295,1427,193],["Linus/w",295,1427,218],["Ada/c",478,1536,524],["Ada/c",478,1536,737],["Ada/c",478,1536,938],["Ada/c",478,1536,1101],["Ada/c",478,1536,1220],["Ada/c",478,1536,1398],["Grace/w",295,1427,52],["Grace/w",295,1427,173],["Ada/c",478,1536,1523],["Grace/w",295,1427,311],["Ada/c",478,1536,1730],["Grace/w",295,1427,55],["Ada/c",478,1536,1896],["Ada/c",478,1536,2041],["Ada/c",478,1536,2122],["Grace/w",295,1427,241],["Ada/c",478,1536,2315],["Grace/w",295,1427,41],["Grace/w",295,1427,330],["Ada/c",478,1536,2598],["Ada/c",478,1536,2745],["Ada/c",478,1536,2943],["Linus/w",295,1427,71],["Ada/c",478,1536,3083],["Linus/w",295,1427,127],["Linus/w",295,1427,267],["Ada/c",478,1536,3227],["Linus/w",295,1427,535],["Ada/c",478,1536,3368],["Ada/c",478,1536,3619]],
     followups: [["Ada/c",478,1536,69],["Ada/c",478,1536,543],["Grace/w",295,1427,112],["Linus/w",295,1427,112],["Grace/w",295,1427,280],["Linus/w",295,1427,280],["Grace/w",295,1427,382],["Linus/w",295,1427,382],["Ada/c",478,1536,748],["Ada/c",478,1536,934],["Ada/c",478,1536,1260],["Ada/c",478,1536,1621]],
     baseline: [["Ada/c",478,1536,69],["Ada/c",478,1536,543],["Grace/w",295,1427,112],["Linus/w",295,1427,112],["Linus/w",295,1427,280],["Grace/w",295,1427,280],["Linus/w",295,1427,382],["Grace/w",295,1427,382],["Ada/c",478,1536,748],["Ada/c",478,1536,934]]
   };
+  const SC_NOTE = {
+    real: "One of the five E0 runs on openai/gpt-6-luna. Ada's transcript (green) climbs on every call, while each worker session starts near zero. A worker label that reappears after Ada's calls is a new session created by a follow-up.",
+    followups: "The scripted test model: deterministic, tiny outputs, so a lower bound.",
+    baseline: "The scripted test model on the smoke-test task alone."
+  };
   const NOTES = {
+    real: {},
     followups: { 10: "Follow-up 1 from the user", 11: "Follow-up 2 from the user" },
     baseline: {}
   };
   const who = (s) => { const [n, r] = s.split("/"); return `${n} (${r === "c" ? "coordinator" : "worker"})`; };
   const NS = "http://www.w3.org/2000/svg";
   const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
-  let scenario = "followups", picked = 11;
+  let scenario = "real", picked = 35;
 
   function drawBars() {
     const rows = DATA[scenario];
@@ -305,8 +315,9 @@ a { color: var(--ride); }
         base += v;
       }
       if (i === picked) el("rect", { x: x - 3, width: bw + 6, y: y(base) - 3, height: y(0) - y(base) + 3, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, rx: 3 }, g);
-      const t1 = el("text", { x: x + bw / 2, y: H - B + 16, "text-anchor": "middle", class: "lbl" }, svg); t1.textContent = s.split("/")[0];
-      const t2 = el("text", { x: x + bw / 2, y: H - B + 30, "text-anchor": "middle", class: "num" }, svg); t2.textContent = `#${i + 1}`;
+      const dense = rows.length > 14;
+      const t1 = el("text", { x: x + bw / 2, y: H - B + 16, "text-anchor": "middle", class: "lbl" }, svg); t1.textContent = dense ? s[0] : s.split("/")[0];
+      if (!dense || (i + 1) % 5 === 0) { const t2 = el("text", { x: x + bw / 2, y: H - B + 30, "text-anchor": "middle", class: "num" }, svg); t2.textContent = `#${i + 1}`; }
       if (NOTES[scenario][i]) {
         const t3 = el("text", { x: x + bw / 2, y: y(base) - 8, "text-anchor": "middle", class: "num", style: "fill:var(--wake)" }, svg); t3.textContent = i === 10 ? "follow-up 1" : "follow-up 2";
       }
@@ -315,6 +326,7 @@ a { color: var(--ride); }
       g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
     });
     const ax = el("text", { x: L, y: H - 12, class: "lbl" }, svg); ax.textContent = "Model calls in time order · y axis: estimated input tokens per call";
+    document.getElementById("scNote").textContent = SC_NOTE[scenario];
     const [s, sys, tools, tx] = rows[picked];
     const total = sys + tools + tx;
     const cum = rows.reduce((a, r) => a + r[1] + r[2] + r[3], 0);
@@ -427,23 +439,46 @@ a { color: var(--ride); }
   }));
   drawMatrix("today");
 
-  // ---------- 6. Cost ranges ----------
-  const EXP = [["E0 · calibration run", 0.02, 0.02], ["E1 · push vs pull context", 0.3, 0.6], ["E2 · fresh vs warm re-delegation", 0.2, 0.4], ["E3 · message vs notes file vs hub", 0.3, 0.5], ["E4 · offline replay", 0, 0]];
-  const cs = document.getElementById("cost");
-  const W = 820, rowH = 34, L = 250, R = 60, T = 10;
-  const H = T + EXP.length * rowH + 34;
-  cs.setAttribute("viewBox", `0 0 ${W} ${H}`); cs.style.minWidth = "520px"; cs.style.width = "100%";
-  const x = (v) => L + (W - L - R) * (v / 1.0);
-  for (let v = 0; v <= 1.0001; v += 0.25) {
-    el("line", { x1: x(v), x2: x(v), y1: T, y2: H - 28, stroke: "var(--rule)" }, cs);
-    const tt = el("text", { x: x(v), y: H - 10, "text-anchor": "middle", class: "num" }, cs); tt.textContent = `$${v.toFixed(2)}`;
+  // ---------- 6. Results (means of 5 runs, from results/summary.json) ----------
+  const EXPS = [
+    { id: "E1", title: "E1 · How a worker gets task context", q: "A user rule arrives after Grace has started, and Linus needs Grace's terms.",
+      rows: [["Today: brief only", 47.6, 4, "$0.0025"], ["Push: digest added to the brief", 45.1, 5, "$0.0022"], ["Pull: task_log / read_report tools", 66.9, 5, "$0.0027"]],
+      take: "Pushing a digest costs nothing extra. Pull works, and workers did call the tools, but it costs 40% more. In every variant the coordinator also relayed the late rule with message, about 3 times per run." },
+    { id: "E2", title: "E2 · Giving the same bot more work", q: "The follow-up needs the codeword Grace gave only in her first report.",
+      rows: [["Today: fresh session", 43.6, 4, "$0.0020"], ["C2: fresh + handoff note", 30.9, 4, "$0.0016"], ["C1: reopen her old session", 35.5, 4, "$0.0016"]],
+      take: "Warm variants are 20–30% cheaper with equal success. The worst failure was silent: a fresh session invented a new codeword (glacier instead of Frostvale), and the coordinator still reported 'done'." },
+    { id: "E3", title: "E3 · Two workers agreeing on an interface", q: "lib.ts and main.ts must fit together; pass means main.ts runs.",
+      rows: [["Hub: coordinator decides, puts it in both briefs", 19.4, 5, "$0.0014"], ["Today: peers use message (9.6 messages)", 59.6, 5, "$0.0026"], ["Peers use NOTES.md (2.2 fixes per run)", 98.4, 5, "$0.0039"]],
+      take: "Everything worked in the end, but peer agreement cost 3–5× more and needed repair delegations. Deciding up front is cheapest, fastest (12 s vs 18–24 s) and needs no fixes." },
+  ];
+  const host = document.getElementById("expCharts");
+  for (const e of EXPS) {
+    const block = document.createElement("div");
+    block.className = "exp-block";
+    block.innerHTML = `<h3>${e.title}</h3><p class="q">${e.q}</p>`;
+    const svg = el("svg", { role: "img", "aria-label": `${e.title}: prompt tokens and pass rate per variant` });
+    const W = 820, rowH = 34, L = 300, R = 150, T = 4;
+    const H = T + e.rows.length * rowH + 26;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.style.minWidth = "560px"; svg.style.width = "100%";
+    const max = 100, x = (v) => L + (W - L - R) * (v / max);
+    for (let v = 0; v <= max; v += 25) {
+      el("line", { x1: x(v), x2: x(v), y1: T, y2: H - 22, stroke: "var(--rule)" }, svg);
+      const tt = el("text", { x: x(v), y: H - 6, "text-anchor": "middle", class: "num" }, svg); tt.textContent = `${v}k`;
+    }
+    const best = Math.min(...e.rows.map((r) => r[1]));
+    e.rows.forEach(([name, k, pass, cost], i) => {
+      const cy = T + i * rowH + rowH / 2;
+      const tl = el("text", { x: L - 12, y: cy + 4, "text-anchor": "end", style: "font-size:13px" }, svg); tl.textContent = name;
+      el("rect", { x: x(0), y: cy - 8, width: x(k) - x(0), height: 16, rx: 4, fill: k === best ? "var(--tx)" : "var(--tools)" }, svg);
+      const vt = el("text", { x: x(k) + 8, y: cy + 4, class: "num", style: "fill:var(--ink)" }, svg); vt.textContent = `${k}k · ${cost}`;
+      const chipX = W - 46;
+      el("rect", { x: chipX, y: cy - 10, width: 40, height: 20, rx: 10, fill: "none", stroke: pass === 5 ? "var(--yes)" : "var(--part)", "stroke-width": 1.5 }, svg);
+      const pt = el("text", { x: chipX + 20, y: cy + 4, "text-anchor": "middle", class: "num", style: `fill:${pass === 5 ? "var(--yes)" : "var(--part)"}` }, svg); pt.textContent = `${pass}/5`;
+    });
+    const wrap = document.createElement("div"); wrap.className = "fig"; wrap.appendChild(svg);
+    block.appendChild(wrap);
+    const take = document.createElement("p"); take.className = "take"; take.textContent = e.take; block.appendChild(take);
+    host.appendChild(block);
   }
-  EXP.forEach(([name, lo, hi], i) => {
-    const cy = T + i * rowH + rowH / 2;
-    const tl = el("text", { x: L - 12, y: cy + 4, "text-anchor": "end", style: "font-size:13px" }, cs); tl.textContent = name;
-    if (hi === 0) { const f = el("text", { x: x(0) + 6, y: cy + 4, class: "num" }, cs); f.textContent = "free"; return; }
-    el("rect", { x: x(lo), y: cy - 7, width: Math.max(4, x(hi) - x(lo)), height: 14, rx: 7, fill: "var(--tx)" }, cs);
-    const vt = el("text", { x: x(hi) + 8, y: cy + 4, class: "num" }, cs); vt.textContent = lo === hi ? `~$${hi.toFixed(2)}` : `$${lo.toFixed(2)}–${hi.toFixed(2)}`;
-  });
 })();
 </script>

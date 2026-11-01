@@ -6,6 +6,7 @@ Research for issue #68. This directory is not product code.
 2. [02-survey.md](02-survey.md): a sourced survey of multi-agent communication and context-engineering approaches. Each claim is tagged by how it was verified: page opened, repository read, or search snippet only.
 3. [03-experiments.md](03-experiments.md): proposed experiments E0–E4, with metrics and cost estimates.
 4. [04-options.md](04-options.md): how the surveyed approaches fit JJ Bot, design options A, B and C, and a recommendation (a proposal).
+5. [05-results.md](05-results.md): real-model results of E0–E3 (`05-summary.json` has the aggregates). [explainer.html](explainer.html) is the interactive Context Map.
 
 The harness boots the engine in-process and records every model request:
 

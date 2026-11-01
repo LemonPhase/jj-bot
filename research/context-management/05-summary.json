@@ -1,0 +1,396 @@
+{
+  "e0": {
+    "n": 5,
+    "pass": 0,
+    "completed": 5,
+    "checks": {},
+    "promptTokens": 84477,
+    "coordinatorPrompt": 65440,
+    "workerPrompt": 19037,
+    "outputTokens": 2068,
+    "modelCalls": 37.6,
+    "costUsd": 0.00358,
+    "totalCostUsd": 0.0179,
+    "wallS": 41.6,
+    "workerSessions": 5,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 0.6,
+      "Ada:complete_task": 0.8,
+      "Ada:delegate": 0.8,
+      "Ada:read": 1,
+      "Grace:edit": 0.2,
+      "Grace:read": 0.2,
+      "Grace:write": 0.2,
+      "Linus:edit": 0.2,
+      "Linus:ls": 0.2,
+      "Linus:read": 0.2,
+      "Linus:write": 0.2
+    }
+  },
+  "e1-pull": {
+    "n": 5,
+    "pass": 5,
+    "completed": 5,
+    "checks": {
+      "aCount": 5,
+      "bCount": 5,
+      "aTagged": 5,
+      "bTagged": 5,
+      "noOverlap": 5
+    },
+    "promptTokens": 66902,
+    "coordinatorPrompt": 44974,
+    "workerPrompt": 21928,
+    "outputTokens": 1422,
+    "modelCalls": 29.6,
+    "costUsd": 0.00273,
+    "totalCostUsd": 0.01365,
+    "wallS": 22.4,
+    "workerSessions": 2.8,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 1.4,
+      "Ada:complete_task": 1.6,
+      "Ada:delegate": 2.6,
+      "Ada:message": 3.2,
+      "Ada:read": 1.4,
+      "Ada:read_entry": 2,
+      "Ada:read_report": 2.4,
+      "Ada:task_log": 1.4,
+      "Grace:edit": 0.6,
+      "Grace:read": 0.4,
+      "Grace:read_entry": 0.4,
+      "Grace:task_log": 0.8,
+      "Grace:write": 1.2,
+      "Linus:delegate": 0.2,
+      "Linus:message": 0.4,
+      "Linus:read": 1.4,
+      "Linus:read_entry": 0.6,
+      "Linus:read_report": 0.4,
+      "Linus:task_log": 2,
+      "Linus:write": 1.4
+    }
+  },
+  "e1-push": {
+    "n": 5,
+    "pass": 5,
+    "completed": 5,
+    "checks": {
+      "aCount": 5,
+      "bCount": 5,
+      "aTagged": 5,
+      "bTagged": 5,
+      "noOverlap": 5
+    },
+    "promptTokens": 45088,
+    "coordinatorPrompt": 33430,
+    "workerPrompt": 11658,
+    "outputTokens": 1392,
+    "modelCalls": 22.8,
+    "costUsd": 0.00223,
+    "totalCostUsd": 0.01115,
+    "wallS": 19.9,
+    "workerSessions": 2.6,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 1.4,
+      "Ada:complete_task": 2.2,
+      "Ada:delegate": 2.4,
+      "Ada:edit": 0.2,
+      "Ada:grep": 0.2,
+      "Ada:ls": 0.2,
+      "Ada:message": 3.6,
+      "Ada:read": 3.2,
+      "Ada:write": 0.2,
+      "Grace:edit": 0.8,
+      "Grace:message": 0.2,
+      "Grace:read": 0.2,
+      "Grace:write": 1.4,
+      "Linus:delegate": 0.2,
+      "Linus:message": 0.2,
+      "Linus:read": 1,
+      "Linus:write": 1.2
+    }
+  },
+  "e1-today": {
+    "n": 5,
+    "pass": 4,
+    "completed": 5,
+    "checks": {
+      "aCount": 5,
+      "bCount": 5,
+      "aTagged": 4,
+      "bTagged": 5,
+      "noOverlap": 5
+    },
+    "promptTokens": 47602,
+    "coordinatorPrompt": 33066,
+    "workerPrompt": 14536,
+    "outputTokens": 1633,
+    "modelCalls": 24.4,
+    "costUsd": 0.00248,
+    "totalCostUsd": 0.0124,
+    "wallS": 19.4,
+    "workerSessions": 2.8,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 1,
+      "Ada:complete_task": 3,
+      "Ada:delegate": 2.4,
+      "Ada:edit": 0.2,
+      "Ada:find": 0.2,
+      "Ada:message": 3.2,
+      "Ada:read": 3.6,
+      "Grace:edit": 1,
+      "Grace:read": 0.2,
+      "Grace:write": 1.4,
+      "Linus:bash": 0.2,
+      "Linus:delegate": 0.4,
+      "Linus:edit": 0.4,
+      "Linus:message": 1.2,
+      "Linus:read": 0.6,
+      "Linus:write": 1.6
+    }
+  },
+  "e2-fresh": {
+    "n": 5,
+    "pass": 4,
+    "completed": 5,
+    "checks": {
+      "fourEntries": 5,
+      "codewordMatches": 4
+    },
+    "promptTokens": 43625,
+    "coordinatorPrompt": 35140,
+    "workerPrompt": 8485,
+    "outputTokens": 1081,
+    "modelCalls": 22.4,
+    "costUsd": 0.00203,
+    "totalCostUsd": 0.01017,
+    "wallS": 22.2,
+    "workerSessions": 2.8,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 1.2,
+      "Ada:complete_task": 5.6,
+      "Ada:delegate": 2.6,
+      "Ada:edit": 0.6,
+      "Ada:message": 0.8,
+      "Ada:read": 3.6,
+      "Grace:bash": 0.2,
+      "Grace:edit": 0.6,
+      "Grace:ls": 0.2,
+      "Grace:read": 1,
+      "Grace:write": 1.8,
+      "Linus:bash": 0.4,
+      "Linus:delegate": 0.4,
+      "Linus:ls": 0.2,
+      "Linus:message": 0.2,
+      "Linus:read": 0.2
+    }
+  },
+  "e2-note": {
+    "n": 5,
+    "pass": 4,
+    "completed": 5,
+    "checks": {
+      "fourEntries": 5,
+      "codewordMatches": 4
+    },
+    "promptTokens": 30927,
+    "coordinatorPrompt": 25497,
+    "workerPrompt": 5430,
+    "outputTokens": 822,
+    "modelCalls": 16.8,
+    "costUsd": 0.00161,
+    "totalCostUsd": 0.00806,
+    "wallS": 18,
+    "workerSessions": 2.2,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 0.8,
+      "Ada:complete_task": 4.8,
+      "Ada:delegate": 2.2,
+      "Ada:read": 3.6,
+      "Grace:edit": 1,
+      "Grace:read": 1,
+      "Grace:write": 1.2
+    }
+  },
+  "e2-resume": {
+    "n": 5,
+    "pass": 4,
+    "completed": 5,
+    "checks": {
+      "fourEntries": 4,
+      "codewordMatches": 5
+    },
+    "promptTokens": 35459,
+    "coordinatorPrompt": 25663,
+    "workerPrompt": 9796,
+    "outputTokens": 880,
+    "modelCalls": 18.4,
+    "costUsd": 0.00155,
+    "totalCostUsd": 0.00774,
+    "wallS": 19.2,
+    "workerSessions": 1.4,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 1.6,
+      "Ada:complete_task": 4.8,
+      "Ada:delegate": 2.2,
+      "Ada:message": 0.2,
+      "Ada:read": 2.6,
+      "Grace:edit": 1,
+      "Grace:read": 1,
+      "Grace:write": 1.6,
+      "Linus:delegate": 0.2,
+      "Linus:message": 0.4,
+      "Linus:read": 0.4
+    }
+  },
+  "e3-hub": {
+    "n": 5,
+    "pass": 5,
+    "completed": 5,
+    "checks": {
+      "runs": 5
+    },
+    "promptTokens": 19437,
+    "coordinatorPrompt": 14789,
+    "workerPrompt": 4647,
+    "outputTokens": 759,
+    "modelCalls": 12.2,
+    "costUsd": 0.00135,
+    "totalCostUsd": 0.00674,
+    "wallS": 11.7,
+    "workerSessions": 2,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 0,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 2,
+      "Ada:complete_task": 1.8,
+      "Ada:delegate": 2.2,
+      "Ada:ls": 0.2,
+      "Ada:read": 2,
+      "Grace:write": 1,
+      "Linus:bash": 1,
+      "Linus:write": 1
+    }
+  },
+  "e3-message": {
+    "n": 5,
+    "pass": 5,
+    "completed": 5,
+    "checks": {
+      "runs": 5
+    },
+    "promptTokens": 59645,
+    "coordinatorPrompt": 34035,
+    "workerPrompt": 25610,
+    "outputTokens": 1557,
+    "modelCalls": 29.8,
+    "costUsd": 0.00264,
+    "totalCostUsd": 0.01319,
+    "wallS": 18.5,
+    "workerSessions": 3,
+    "extra": {
+      "botMessages": 9.6,
+      "fixDelegations": 1,
+      "notesFile": 0
+    },
+    "tools": {
+      "Ada:bash": 3.2,
+      "Ada:complete_task": 2,
+      "Ada:delegate": 3,
+      "Ada:ls": 0.4,
+      "Ada:message": 2.8,
+      "Ada:read": 1.6,
+      "Grace:bash": 0.6,
+      "Grace:edit": 0.2,
+      "Grace:ls": 0.4,
+      "Grace:message": 4.2,
+      "Grace:read": 1,
+      "Grace:write": 1.8,
+      "Linus:bash": 0.4,
+      "Linus:find": 0.2,
+      "Linus:ls": 0.2,
+      "Linus:message": 2.6,
+      "Linus:write": 1
+    }
+  },
+  "e3-notes": {
+    "n": 5,
+    "pass": 5,
+    "completed": 5,
+    "checks": {
+      "runs": 5
+    },
+    "promptTokens": 98397,
+    "coordinatorPrompt": 45952,
+    "workerPrompt": 52446,
+    "outputTokens": 2373,
+    "modelCalls": 48.4,
+    "costUsd": 0.0039,
+    "totalCostUsd": 0.01948,
+    "wallS": 24,
+    "workerSessions": 4.2,
+    "extra": {
+      "botMessages": 0,
+      "fixDelegations": 2.2,
+      "notesFile": 5
+    },
+    "tools": {
+      "Ada:bash": 3.8,
+      "Ada:complete_task": 3.4,
+      "Ada:delegate": 3.2,
+      "Ada:ls": 1.6,
+      "Ada:read": 4.8,
+      "Grace:bash": 0.4,
+      "Grace:delegate": 0.2,
+      "Grace:edit": 0.6,
+      "Grace:find": 0.2,
+      "Grace:ls": 2,
+      "Grace:read": 8,
+      "Grace:write": 3.6,
+      "Linus:bash": 1.6,
+      "Linus:delegate": 1,
+      "Linus:find": 0.2,
+      "Linus:ls": 1.4,
+      "Linus:read": 5.4,
+      "Linus:write": 3.4
+    }
+  }
+}

@@ -238,7 +238,7 @@ export const scenarios: Record<string, Scenario> = {
     async run({ engine, model, root }) {
       const bots = await team(engine, model);
       const { task } = await engine.tasks.create({
-        goal: "Delegate to Grace: write glossary-a.md with exactly 3 penguin terms, one line each in the form `- **Term**: definition`. Also ask her to invent a random codeword of 6 to 10 letters and to state it only in her report, never in any file. Then complete the task with a short summary that does not mention the codeword.",
+        goal: "Delegate to Grace: write glossary-a.md with exactly 3 penguin terms, one line each in the form `- **Term**: definition`. Also ask her to invent a random codeword of 6 to 10 letters and to state it in her report only (it is not secret; it just should not be written to a file yet). Then complete the task with a short summary that does not mention the codeword.",
         title: "Glossary with follow-up",
         coordinatorBotId: bots.Ada,
         participantBotIds: [bots.Grace, bots.Linus],
@@ -253,16 +253,21 @@ export const scenarios: Record<string, Scenario> = {
       await sleep(500);
       const view = await settle(engine, task.id);
       const text = (await read(root, "glossary-a.md")) ?? "";
-      const word = /Codeword:\s*`?([A-Za-z]+)`?/.exec(text)?.[1] ?? "";
+      // The codeword line's words (6+ letters, not "codeword") must appear in
+      // Grace's first report.
+      const line = text.split("\n").filter((l) => /codeword/i.test(l)).at(-1) ?? "";
+      const words = (line.match(/[A-Za-z]{6,}/g) ?? []).filter((w) => w.toLowerCase() !== "codeword");
       const checks = {
         fourEntries: entries(text).length === 4,
-        codewordMatches: word.length >= 4 && report.toLowerCase().includes(word.toLowerCase()),
+        codewordMatches: words.some((w) => report.toLowerCase().includes(w.toLowerCase())),
       };
       return {
         ...summary(view),
         checks,
         pass: Object.values(checks).every(Boolean),
         round2StartedAt: startedRound2,
+        file: text.slice(0, 1200),
+        firstReport: report.slice(0, 1200),
         graceSessions: view.sessions.filter((s) => s.botId === bots.Grace).length,
       };
     },
