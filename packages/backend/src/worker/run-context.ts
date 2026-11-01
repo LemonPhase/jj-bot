@@ -89,11 +89,6 @@ export interface RunContext {
   claimed: Set<string>;
   nextSeq: number;
   startedAt: Date;
-  /**
-   * Set once a snapshot of this run completed: it covered the session's
-   * earlier unsnapshotted runs, so later ones start at this run's start.
-   */
-  snapshotted: boolean;
   /** Set when the run's write-back finished the task, so its sandbox can go. */
   taskFinished: boolean;
 }

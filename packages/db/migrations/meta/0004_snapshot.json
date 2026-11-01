@@ -1,5 +1,5 @@
 {
-  "id": "b6b1503f-9c25-4caa-bb02-dfc5833ad60e",
+  "id": "d1966145-af78-4998-961a-43774d803520",
   "prevId": "b635ed41-51f7-4f59-9104-bc4ee62fe75b",
   "version": "7",
   "dialect": "postgresql",
@@ -818,11 +818,12 @@
           "primaryKey": false,
           "notNull": false
         },
-        "snapshotted_at": {
-          "name": "snapshotted_at",
-          "type": "timestamp with time zone",
+        "snapshot_pending": {
+          "name": "snapshot_pending",
+          "type": "boolean",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {

@@ -206,6 +206,7 @@ async function startRun(
         reason,
         status: "running",
         startedAt: now,
+        snapshotPending: true,
       })
       .returning();
     if (!run) throw new Error("The run insert returned no row.");
@@ -253,7 +254,6 @@ async function startRun(
       claimed: new Set(),
       nextSeq: await nextEntrySeq(tx, sessionId),
       startedAt: now,
-      snapshotted: false,
       taskFinished: false,
     };
     return { kind: "run", rc, reason, spec, unavailable };
@@ -368,7 +368,13 @@ export async function runSessionJob(
       call = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;
-      await finishRun(rc, { kind: "error", error: errorMessage(error) }, false);
+      // Nothing ran, so there is nothing to snapshot.
+      await finishRun(
+        rc,
+        { kind: "error", error: errorMessage(error) },
+        false,
+        true,
+      );
       return;
     }
     // Each executor call takes the inbox; input that arrives as a call ends
@@ -396,8 +402,9 @@ export async function runSessionJob(
           ? { kind: "aborted", reason: "signal" }
           : { kind: "error", error: errorMessage(error) };
       }
-      // A stop hands the run back unsnapshotted (a crash cannot snapshot):
-      // the session's next snapshot covers it.
+      // A stop hands the run back with its snapshot pending (a crash cannot
+      // snapshot): the session's next snapshot, or the task's final one,
+      // covers it.
       let snapshotted = false;
       if (!rc.control.fenced && rc.control.reason !== "shutdown")
         snapshotted = await snapshotArtifacts(rc, hold).then(

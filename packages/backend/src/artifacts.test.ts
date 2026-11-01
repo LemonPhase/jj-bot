@@ -9,8 +9,8 @@ import {
   taskEventSchema,
   taskViewSchema,
 } from "@jj/contracts";
-import { runs } from "@jj/db";
-import { asc, eq } from "drizzle-orm";
+import { jobs, runs } from "@jj/db";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { type Brain, said } from "./testing/fake-executor";
 import {
@@ -60,11 +60,10 @@ async function worker(options: Parameters<typeof testEngine>[1] = {}) {
 /** The clock of a worker that resumes the work a minute later. */
 const aMinuteLater = () => new Date(Date.now() + 60_000);
 
-/** A run's reason, status and whether it ended with its snapshot complete. */
+/** A run's reason and status. */
 const runSummary = (run?: typeof runs.$inferSelect) => [
   run?.reason,
   run?.status,
-  run?.snapshottedAt instanceof Date,
 ];
 
 /** The task's runs in start order. */
@@ -369,8 +368,8 @@ describe("artifacts of runs that ended without a snapshot", () => {
     const view = await untilTask(second.engine, task.id, completed);
     const [handed, resumed] = await runRows(task.id);
     expect([handed, resumed].map(runSummary)).toEqual([
-      ["start", "cancelled", false],
-      ["recovery", "completed", true],
+      ["start", "cancelled"],
+      ["recovery", "completed"],
     ]);
     expect(fileCredits(view)).toEqual([
       { path: "notes.md", sessionId: handed?.sessionId, runId: handed?.id },
@@ -404,8 +403,8 @@ describe("artifacts of runs that ended without a snapshot", () => {
     );
     const [crashed, recovered] = await runRows(task.id);
     expect([crashed, recovered].map(runSummary)).toEqual([
-      ["start", "failed", false],
-      ["recovery", "completed", true],
+      ["start", "failed"],
+      ["recovery", "completed"],
     ]);
     expect(fileCredits(view)).toEqual([
       { path: "notes.md", sessionId: crashed?.sessionId, runId: crashed?.id },
@@ -483,10 +482,10 @@ describe("artifacts of runs that ended without a snapshot", () => {
       (run) => run.sessionId === bobSession?.id,
     );
     // The resumed run is a wake (Bob's result was already queued for Ada),
-    // not a recovery: the mark, not the reason, finds the handed-back run.
+    // not a recovery: the pending flag, not the reason, finds the hand-back.
     expect(adaRuns.map(runSummary)).toEqual([
-      ["start", "cancelled", false],
-      ["wake", "completed", true],
+      ["start", "cancelled"],
+      ["wake", "completed"],
     ]);
     // Ada's next run reaches back to the handed-back run's start, which also
     // covers report.md: it is already stored and keeps Bob's credit.
@@ -539,12 +538,236 @@ describe("artifacts of runs that ended without a snapshot", () => {
     const view = await untilTask(engine.engine, task.id, completed);
     const [firstRun, secondRun] = await runRows(task.id);
     expect([firstRun, secondRun].map(runSummary)).toEqual([
-      ["start", "waiting", true],
-      ["wake", "completed", true],
+      ["start", "waiting"],
+      ["wake", "completed"],
     ]);
     expect(fileCredits(view)).toEqual([
       { path: "a.txt", sessionId: firstRun?.sessionId, runId: firstRun?.id },
       { path: "b.txt", sessionId: secondRun?.sessionId, runId: secondRun?.id },
+    ]);
+  });
+
+  it("credits a file to the covered run that touched it last", async () => {
+    const brain: Brain = (view) => {
+      switch (said.turns(view)) {
+        case 0:
+          return {
+            calls: [
+              { name: "write", args: { path: "a.md", content: "a\n" } },
+              { name: "write", args: { path: "b.md", content: "first\n" } },
+            ],
+          };
+        case 1:
+          return { calls: [{ name: "gate", args: { name: "hold" } }] };
+        case 2:
+          return {
+            calls: [
+              { name: "write", args: { path: "b.md", content: "second\n" } },
+            ],
+          };
+        default:
+          return lastResult(view)?.name === "complete_task"
+            ? { text: "done" }
+            : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      }
+    };
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    first.executor.brain(ada, brain);
+    const { task } = await first.engine.tasks.create({
+      goal: "Rewrite",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    await first.engine.worker.stop();
+    const second = await worker({ clock: aMinuteLater });
+    second.executor.brain(ada, brain);
+    const view = await untilTask(second.engine, task.id, completed);
+    const [handed, resumed] = await runRows(task.id);
+    expect(fileCredits(view)).toEqual([
+      { path: "a.md", sessionId: handed?.sessionId, runId: handed?.id },
+      { path: "b.md", sessionId: resumed?.sessionId, runId: resumed?.id },
+    ]);
+    const b = view.artifacts.find((a) => a.path === "b.md");
+    const { content } = await second.engine.tasks.artifactContent(
+      task.id,
+      b?.id as string,
+    );
+    expect(Buffer.from(content).toString()).toBe("second\n");
+  });
+
+  it("credits a teammate's write when both sessions were handed back together", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const coordinator: Brain = (view) => {
+      switch (said.turns(view)) {
+        case 0:
+          return {
+            calls: [
+              { name: "write", args: { path: "notes.md", content: "# N\n" } },
+              { name: "delegate", args: { bot: bob, brief: "report" } },
+            ],
+          };
+        case 1:
+          return { calls: [{ name: "gate", args: { name: "hold" } }] };
+        default:
+          if (!said.heard(view, `Result from ${bob} (session`))
+            return { text: "" };
+          return lastResult(view)?.name === "complete_task"
+            ? { text: "done" }
+            : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      }
+    };
+    const reporterBefore: Brain = (view) =>
+      said.turns(view) === 0
+        ? {
+            calls: [
+              { name: "write", args: { path: "report.md", content: "# R\n" } },
+            ],
+          }
+        : { calls: [{ name: "gate", args: { name: "bob-hold" } }] };
+    // Resumed, Bob holds at a gate, so Ada's snapshot comes first.
+    const reporterAfter: Brain = (view) =>
+      said.results(view).some((r) => r.text === "passed bob-resumed")
+        ? { text: "report written" }
+        : { calls: [{ name: "gate", args: { name: "bob-resumed" } }] };
+    first.executor.brain(ada, coordinator).brain(bob, reporterBefore);
+    const { task } = await first.engine.tasks.create({
+      goal: "Report",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await first.executor.gate("hold").reached;
+    await first.executor.gate("bob-hold").reached;
+    await first.engine.worker.stop();
+
+    const second = await worker({ clock: aMinuteLater });
+    second.executor.brain(ada, coordinator).brain(bob, reporterAfter);
+    await second.executor.gate("bob-resumed").reached;
+    const adaWaiting = await untilTask(
+      second.engine,
+      task.id,
+      (view) =>
+        view.sessions.some(
+          (s) => s.botId === team.byName[ada] && s.status === "waiting",
+        ) && view.artifacts.some((a) => a.path === "notes.md"),
+    );
+    const [adaRun, bobRun] = await runRows(task.id);
+    const credited = [
+      { path: "notes.md", sessionId: adaRun?.sessionId, runId: adaRun?.id },
+      { path: "report.md", sessionId: bobRun?.sessionId, runId: bobRun?.id },
+    ];
+    // Ada's snapshot found report.md and credited Bob's handed-back run.
+    expect(fileCredits(adaWaiting)).toEqual(credited);
+    second.executor.gate("bob-resumed").open();
+    const view = await untilTask(second.engine, task.id, completed);
+    expect(fileCredits(view)).toEqual(credited);
+  });
+
+  it("snapshots a handed-back session that never resumes when its task is stopped", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const coordinator: Brain = (view) => {
+      if (said.turns(view) === 0)
+        return {
+          calls: [{ name: "delegate", args: { bot: bob, brief: "report" } }],
+        };
+      if (said.heard(view, "status?") && lastResult(view)?.name !== "gate")
+        return { calls: [{ name: "gate", args: { name: "ada-hold" } }] };
+      return { text: "" };
+    };
+    const reporter: Brain = (view) =>
+      said.turns(view) === 0
+        ? {
+            calls: [
+              { name: "write", args: { path: "report.md", content: "# R\n" } },
+            ],
+          }
+        : { calls: [{ name: "gate", args: { name: "bob-hold" } }] };
+    first.executor.brain(ada, coordinator).brain(bob, reporter);
+    const { task } = await first.engine.tasks.create({
+      goal: "Report",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await first.executor.gate("bob-hold").reached;
+    await first.engine.worker.stop();
+    const [, bobRun] = await runRows(task.id);
+    // Bob's resumption is due later, so the task is stopped before it runs.
+    await db.database.db
+      .update(jobs)
+      .set({ runAfter: sql`now() + interval '10 minutes'` })
+      .where(
+        and(
+          eq(jobs.sessionId, bobRun?.sessionId as string),
+          eq(jobs.status, "queued"),
+        ),
+      );
+
+    const second = await worker({ clock: aMinuteLater });
+    second.executor.brain(ada, coordinator).brain(bob, reporter);
+    // Ada runs again (the run holds the task's sandbox) and is stopped there.
+    await second.engine.tasks.postMessage(task.id, { text: "status?" });
+    await second.executor.gate("ada-hold").reached;
+    await second.engine.tasks.stop(task.id);
+    const view = await untilTask(
+      second.engine,
+      task.id,
+      (v) => v.task.status === "cancelled" && v.artifacts.length > 0,
+      "the final snapshot",
+    );
+    expect(fileCredits(view)).toEqual([
+      { path: "report.md", sessionId: bobRun?.sessionId, runId: bobRun?.id },
+    ]);
+    expect(
+      second.executor.inputs.some(
+        (input) => input.sessionId === bobRun?.sessionId,
+      ),
+    ).toBe(false);
+  });
+
+  it("applies the per-run file cap after skipping files already stored", async () => {
+    const engine = await setup({
+      config: { artifacts: { maxFilesPerRun: 2 } },
+    });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    engine.executor.brain(ada, (view) => {
+      if (!said.heard(view, "one more"))
+        return said.turns(view) === 0
+          ? {
+              calls: [
+                { name: "write", args: { path: "a.txt", content: "a\n" } },
+                { name: "write", args: { path: "b.txt", content: "b\n" } },
+              ],
+            }
+          : { text: "first pass" };
+      if (!said.results(view).some((r) => r.text === "Wrote z/c.txt"))
+        return {
+          calls: [
+            // Touched again but unchanged, and listed before z/.
+            { name: "bash", args: { command: "touch a.txt b.txt" } },
+            { name: "write", args: { path: "z/c.txt", content: "c\n" } },
+          ],
+        };
+      return lastResult(view)?.name === "complete_task"
+        ? { text: "done" }
+        : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+    });
+    const { task } = await engine.engine.tasks.create({
+      goal: "Cap",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await untilTask(engine.engine, task.id, (v) => v.task.status === "waiting");
+    await engine.engine.tasks.postMessage(task.id, { text: "one more" });
+    const view = await untilTask(engine.engine, task.id, completed);
+    expect(fileCredits(view).map((file) => file.path)).toEqual([
+      "a.txt",
+      "b.txt",
+      "z/c.txt",
     ]);
   });
 });

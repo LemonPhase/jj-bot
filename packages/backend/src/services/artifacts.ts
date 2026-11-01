@@ -131,17 +131,17 @@ function workspacePath(sandbox: Sandbox, listed: string, dir: string): string {
 }
 
 /**
- * Files in the workspace modified at or after `since`: breadth-first, skipping
- * ignored directories, at most `maxListEntries` entries listed and
- * `maxFilesPerRun` files returned, each at most `maxFileBytes`.
+ * Files in the workspace modified at or after `since`, read one at a time:
+ * breadth-first, skipping ignored directories, at most `maxListEntries`
+ * entries listed, each file at most `maxFileBytes`. The caller applies
+ * `maxFilesPerRun` to the files it stores, after deduplication.
  */
-export async function changedFiles(
+export async function* changedFiles(
   sandbox: Sandbox,
   since: Date,
   limits: ArtifactLimits,
-): Promise<ChangedFile[]> {
+): AsyncGenerator<ChangedFile> {
   const ignored = new Set(limits.ignoreDirectories);
-  const found: ChangedFile[] = [];
   const queue = ["."];
   let listed = 0;
   while (queue.length > 0 && listed < limits.maxListEntries) {
@@ -162,17 +162,15 @@ export async function changedFiles(
         if (!ignored.has(name)) queue.push(path);
         continue;
       }
-      if (entry.kind !== "file" || found.length >= limits.maxFilesPerRun)
-        continue;
+      if (entry.kind !== "file") continue;
       const info = await sandbox.fs.stat(path).catch(() => undefined);
       if (!info || info.kind !== "file") continue;
       if (info.size > limits.maxFileBytes) continue;
       if (new Date(info.modifiedAt).getTime() < since.getTime()) continue;
       const content = await sandbox.fs.read(path).catch(() => undefined);
-      if (content) found.push({ path, content: new Uint8Array(content) });
+      if (content) yield { path, content: new Uint8Array(content) };
     }
   }
-  return found;
 }
 
 /** `GET /api/tasks/:id/artifacts/:artifactId/content`. */

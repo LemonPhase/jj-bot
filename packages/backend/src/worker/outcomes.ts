@@ -360,9 +360,8 @@ async function restorePrevious(tx: Tx, rc: RunContext, session: SessionRow) {
 
 /**
  * Applies the outcome of a run (after any continuation) in one fenced
- * transaction. `snapshotted` says the artifact snapshot just before it
- * completed; a run that ends that way is marked, so the session's next
- * snapshot need not reach back past it.
+ * transaction. `snapshotted` says the run's files are recorded (its last
+ * snapshot completed), which clears its `snapshot_pending`.
  */
 export async function finishRun(
   rc: RunContext,
@@ -449,7 +448,7 @@ export async function finishRun(
     if (snapshotted)
       await tx
         .update(runs)
-        .set({ snapshottedAt: ctx.clock() })
+        .set({ snapshotPending: false })
         .where(eq(runs.id, rc.run.id));
     await complete(tx, rc.job.lease);
     return "done";

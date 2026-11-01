@@ -5,7 +5,7 @@ import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
   maxFileBytes: number;
-  /** Most file artifacts one run records. */
+  /** Most new file artifacts one snapshot records, counted after deduplication. */
   maxFilesPerRun: number;
   /** Most workspace entries listed per snapshot. */
   maxListEntries: number;
