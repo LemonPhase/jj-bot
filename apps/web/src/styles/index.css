@@ -1,0 +1,4 @@
+/* Design-system foundation (C2 · Pixel Lite): fonts, tokens, base layer. */
+@import "./fonts.css";
+@import "./tokens.css";
+@import "./base.css";
