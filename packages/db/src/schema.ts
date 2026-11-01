@@ -358,7 +358,10 @@ export const runs = pgTable(
   ],
 );
 
-/** The persisted pi transcript: one pi message per row, appended after each completed turn. */
+/**
+ * The persisted pi transcript, append-only: one entry per row, a pi message
+ * or a compaction checkpoint (`role: "compaction"`), written as the run goes.
+ */
 export const sessionEntries = pgTable(
   "session_entries",
   {

@@ -3,7 +3,7 @@ import {
   type Api,
   type AssistantMessage,
   contentText,
-  createAssistantMessageEventStream,
+  isRecoverableLength,
   type Model,
   type RetryPolicy,
   type UserMessage,
@@ -19,7 +19,7 @@ import {
   shouldCompact,
 } from "@earendil-works/pi-coding-agent";
 import type { ModelRef } from "@jj/contracts";
-import { classifyModelError, retryingStreamFn } from "./errors";
+import { classifyModelError, retryingStreamFn, streamOf } from "./errors";
 import { toContractUsage } from "./loop";
 import type {
   CompactionEntry,
@@ -101,7 +101,7 @@ export const COMPACTION_INSTRUCTIONS =
 export interface CompactionOptions {
   /** Default true. */
   enabled?: boolean;
-  /** Tokens kept free below the context window (pi's default 16384). */
+  /** Tokens kept free below the context window (pi's default 16384; at least `MIN_RESERVE_TOKENS`). */
   reserveTokens?: number;
   /** Recent tokens kept as they are (pi's default 20000). */
   keepRecentTokens?: number;
@@ -119,10 +119,26 @@ const nonNegative = (value: number | undefined, fallback: number) =>
     : fallback;
 
 /**
- * pi's defaults, clamped to the window: the reserve is at most a quarter of
- * it and the kept part at most half of what remains, so on a small window a
- * compaction still leaves room below the threshold (pi's defaults alone would
- * keep more than a 32k window's threshold). A window of 0 (unknown) disables
+ * Tokens pi-ai's providers keep free below the window: they cap a request's
+ * output at the window less the context estimate less this
+ * (`clampMaxTokensToContext`).
+ */
+export const PROVIDER_SAFETY_TOKENS = 4096;
+/** The smallest reserve: the providers' margin plus room for a real answer. */
+export const MIN_RESERVE_TOKENS = PROVIDER_SAFETY_TOKENS + 4096;
+/**
+ * Below this window compaction is off: with the reserve the threshold would
+ * leave too little for the prompt, a summary and the kept part. Sessions on
+ * such a model grow until the window is exceeded, as without compaction.
+ */
+export const MIN_COMPACTION_WINDOW = 2 * MIN_RESERVE_TOKENS;
+
+/**
+ * pi's defaults, fitted to the window: the reserve is at least
+ * `MIN_RESERVE_TOKENS` (so the call at the threshold still has room to
+ * answer) and at most half the window, and the kept part at most half of
+ * what is left below the threshold. At 128k and above these are pi's
+ * defaults. A window under `MIN_COMPACTION_WINDOW`, or unknown (0), disables
  * compaction.
  */
 export function compactionSettings(
@@ -131,11 +147,14 @@ export function compactionSettings(
 ): CompactionSettings {
   const window = Math.max(0, Math.floor(contextWindow) || 0);
   const reserveTokens = Math.min(
-    nonNegative(
-      options.reserveTokens,
-      DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+    Math.max(
+      nonNegative(
+        options.reserveTokens,
+        DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+      ),
+      MIN_RESERVE_TOKENS,
     ),
-    Math.floor(window / 4),
+    Math.floor(window / 2),
   );
   const keepRecentTokens = Math.min(
     nonNegative(
@@ -145,10 +164,30 @@ export function compactionSettings(
     Math.floor((window - reserveTokens) / 2),
   );
   return {
-    enabled: options.enabled !== false && window > 0,
+    enabled: options.enabled !== false && window >= MIN_COMPACTION_WINDOW,
     reserveTokens,
     keepRecentTokens,
   };
+}
+
+/**
+ * A response the provider cut short because the context left it no room:
+ * pi's recoverable length stop (`isRecoverableLength`: a `length` stop below
+ * the model's own output limit) on a request whose context was big enough
+ * for the providers' output cap to bite. The runtime reports it as a context
+ * overflow, so it is compacted and retried like one.
+ */
+export function cutByContext(
+  message: AssistantMessage,
+  model: Model<Api>,
+  contextTokens: number,
+): boolean {
+  return (
+    model.contextWindow > 0 &&
+    isRecoverableLength(message, model.maxTokens) &&
+    model.contextWindow - contextTokens - PROVIDER_SAFETY_TOKENS <
+      model.maxTokens
+  );
 }
 
 export interface ContextCompactorOptions {
@@ -261,6 +300,51 @@ export class ContextCompactor {
     return messages.reduce((sum, message) => sum + estimateTokens(message), 0);
   }
 
+  /**
+   * How much of the conversation to keep, in pi's estimate (what
+   * `findCutPoint` counts): at most `keepRecentTokens`, and at most half of
+   * what the threshold leaves beside the system prompt, tools and the latest
+   * summary. Both are scaled by how far the provider's count runs above the
+   * estimate, so a dense context still has an older part to summarise.
+   */
+  keepBudget(messages: readonly AgentMessage[]): number {
+    const { settings, model } = this.options;
+    const fixed = messages
+      .filter(
+        (message) => message.role === "system" || message === this.summary,
+      )
+      .reduce((sum, message) => sum + estimateTokens(message), 0);
+    const ratio = this.usageRatio(messages);
+    const threshold = model.contextWindow - settings.reserveTokens;
+    const keep = Math.min(
+      settings.keepRecentTokens,
+      Math.floor((threshold - fixed * ratio) / 2),
+    );
+    return Math.max(0, Math.floor(keep / ratio));
+  }
+
+  /**
+   * The provider's tokens per estimated token, from the latest response that
+   * postdates the latest compaction: its usage over the estimate of what it
+   * was sent. Between 1 and 8; 1 without such a response.
+   */
+  private usageRatio(messages: readonly AgentMessage[]): number {
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index] as AgentMessage;
+      if (!usable(message)) continue;
+      if (this.stale.has(message)) return 1;
+      const estimated = messages
+        .slice(0, index + 1)
+        .reduce((sum, earlier) => sum + estimateTokens(earlier), 0);
+      if (estimated <= 0) return 1;
+      return Math.min(
+        8,
+        Math.max(1, calculateContextTokens(message.usage) / estimated),
+      );
+    }
+    return 1;
+  }
+
   /** True when `messages` are past the threshold (the window minus the reserve). */
   overThreshold(messages: readonly AgentMessage[]): boolean {
     const { settings, model } = this.options;
@@ -305,7 +389,7 @@ export class ContextCompactor {
       entries,
       0,
       entries.length,
-      options.settings.keepRecentTokens,
+      this.keepBudget(messages),
     );
     const historyEnd = cut.isSplitTurn
       ? cut.turnStartIndex
@@ -418,15 +502,33 @@ export class ContextCompactor {
       ).result();
       const failed = message.stopReason === "error";
       const text = options.scrub(contentText(message.content).trim());
+      // What pi refuses (error, length, a tool call) and what JJ refuses
+      // (aborted, empty) is no summary, and is reported as a failure.
+      const failure = failed
+        ? options.redactError(message.errorMessage || "the call failed")
+        : message.stopReason === "length"
+          ? "the summary was cut at the output limit"
+          : message.stopReason === "aborted"
+            ? "the call was aborted"
+            : message.content.some((block) => block.type === "toolCall")
+              ? "the model called a tool instead of summarising"
+              : !text
+                ? "the answer was empty"
+                : undefined;
       await hook({
         type: "model.finished",
         model: options.ref,
         stopReason: message.stopReason,
         usage: toContractUsage(message.usage),
         text: clip(
-          `Context compaction (about ${tokensBefore} tokens): ${text || "no summary"}`,
+          failure
+            ? `Context compaction failed (about ${tokensBefore} tokens): ${failure}. Nothing was compacted.`
+            : `Context compaction (about ${tokensBefore} tokens): ${text}`,
           2000,
         ),
+        ...(failure
+          ? { warning: `Context compaction failed: ${failure}` }
+          : {}),
         ...(failed && message.errorMessage
           ? { error: options.redactError(message.errorMessage) }
           : {}),
@@ -443,24 +545,16 @@ export class ContextCompactor {
       // summary either (pi would append its file lists to it and keep it).
       const answer: AssistantMessage =
         message.stopReason === "aborted" ||
-        (message.stopReason !== "error" && !text)
+        (message.stopReason !== "error" &&
+          message.stopReason !== "length" &&
+          !text)
           ? {
               ...message,
               stopReason: "error",
               errorMessage: `The summary call returned no summary (${message.stopReason}).`,
             }
           : message;
-      const stream = createAssistantMessageEventStream();
-      if (answer.stopReason === "error")
-        stream.push({ type: "error", reason: "error", error: answer });
-      else
-        stream.push({
-          type: "done",
-          reason: answer.stopReason as "stop",
-          message: answer,
-        });
-      stream.end(answer);
-      return stream;
+      return streamOf(answer);
     };
   }
 }

@@ -318,6 +318,9 @@ async function prepare(
         roster: team,
         workspaceDir: hold.sandbox.workspaceDir,
         requester,
+        ...(rc.session.parentSessionId === null
+          ? {}
+          : { brief: rc.session.brief }),
         canDelegate: tools.some((tool) => tool.name === "delegate"),
         resumed: rc.reason === "recovery",
       }),

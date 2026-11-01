@@ -13,6 +13,7 @@ import {
 } from "@jj/runtime";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { promptBot } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -21,7 +22,8 @@ import {
   testEngine,
   untilTask,
 } from "./testing/harness";
-import { createTeam } from "./testing/scenarios";
+import { createTeam, delegatingCoordinator } from "./testing/scenarios";
+import { BRIEF_HEADING, briefPointer } from "./worker/prompts";
 
 let db: TestDatabase;
 let current: TestEngine | undefined;
@@ -42,12 +44,12 @@ afterAll(async () => {
   await db?.close();
 });
 
-/** The scripted model with a 16k-token window, so a long session must compact. */
+/** The scripted model with a 24k-token window, so a long session must compact. */
 function smallWindowExecutor() {
   return new PiSessionExecutor({
     models: new ModelRegistry({
       env: {},
-      extraProviders: [createScriptedProvider({ contextWindow: 16_000 })],
+      extraProviders: [createScriptedProvider({ contextWindow: 24_000 })],
     }),
   });
 }
@@ -84,6 +86,48 @@ function callsAndResults(messages: readonly PiMessage[]) {
 }
 
 describe("context compaction in the engine", () => {
+  it("keeps a worker's brief in its prompt, where compaction cannot reach it", async () => {
+    current = await testEngine(db.database);
+    const { engine, executor } = current;
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const brief =
+      "Write bob.txt with three penguin facts.\n\n## Notes\nCite one source.";
+    executor
+      .brain(
+        ada,
+        delegatingCoordinator([bob], () => brief),
+      )
+      .brain(bob, () => ({ text: "Wrote bob.txt." }));
+    const { task } = await engine.tasks.create({
+      goal: "Penguin facts",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const view = await untilTask(engine, task.id, (next) =>
+      ["completed", "failed"].includes(next.task.status),
+    );
+    expect(view.task.status).toBe("completed");
+    const runs = executor.inputs.filter(
+      (input) => promptBot(input.systemPrompt) === bob,
+    );
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs)
+      expect(
+        run.systemPrompt.endsWith(`${BRIEF_HEADING} (from ${ada})\n${brief}`),
+      ).toBe(true);
+    // The session starts on a pointer, so the brief is not sent twice ...
+    expect(runs[0]?.inputs).toEqual([briefPointer(ada)]);
+    // ... while the task chat still shows the assignment as written.
+    expect(
+      view.messages.find((message) => message.intent === "assignment")?.text,
+    ).toBe(brief);
+    const coordinatorRuns = executor.inputs.filter(
+      (input) => promptBot(input.systemPrompt) === ada,
+    );
+    expect(coordinatorRuns[0]?.systemPrompt).not.toContain(BRIEF_HEADING);
+  });
+
   it("compacts a long session, accounts for the summary calls and resumes from the checkpoint", async () => {
     current = await testEngine(db.database, {
       runExecutor: smallWindowExecutor(),

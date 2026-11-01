@@ -14,7 +14,7 @@ import {
   openChildren,
 } from "../services/sessions";
 import type { CompletionRequest } from "./outcomes";
-import type { RosterMember } from "./prompts";
+import { briefPointer, type RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 
 export interface Teammate extends RosterMember {
@@ -177,7 +177,9 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           child,
           {
             kind: "brief",
-            text: `Assignment from ${rc.bot.name}:\n${brief}`,
+            // The brief itself is in the assignee's prompt, sent with every
+            // request; this only starts the session.
+            text: briefPointer(rc.bot.name),
             sourceMessageId: message.id,
           },
           { wake: true, ctx },

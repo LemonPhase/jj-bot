@@ -25,13 +25,15 @@ import {
   TOOL_OUTPUT_PREVIEW_LIMIT,
   type Usage,
 } from "@jj/contracts";
-import type { ContextCompactor } from "./compaction";
+import { type ContextCompactor, cutByContext } from "./compaction";
 import {
   classifyErrorText,
   classifyModelError,
+  OUTPUT_CUT_BY_CONTEXT,
   type RunErrorCode,
   redactSecrets,
   retryingStreamFn,
+  streamOf,
 } from "./errors";
 import type { ResolvedModel } from "./models";
 import {
@@ -273,6 +275,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   let thresholdOff = false;
   /** An overflow was compacted and retried, and no response has succeeded since. */
   let overflowRetried = false;
+  /** The estimated context of the request in flight. */
+  let requestTokens = 0;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
   const collabByName = new Map(
@@ -457,6 +461,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           update = { context: latestContext };
         } else if (result.reason === "summary_failed") thresholdOff = true;
       }
+      if (compactor) requestTokens = compactor.estimate(latestContext.messages);
       turns++;
       await spec.onEvent({ type: "model.started", model: ref });
       return update;
@@ -494,7 +499,26 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     ],
     tools,
   };
-  const streamFn = retryingStreamFn(spec.streamFn, spec.retry);
+  const retrying = retryingStreamFn(spec.streamFn, spec.retry);
+  // With compaction on, a response the provider cut short for lack of room
+  // is an overflow: it is not persisted, its calls never run, and it is
+  // compacted and retried below.
+  const streamFn: StreamFn = compactor
+    ? async (model, request, options) => {
+        const message = await (
+          await retrying(model, request, options)
+        ).result();
+        return streamOf(
+          cutByContext(message, resolved.model, requestTokens)
+            ? {
+                ...message,
+                stopReason: "error",
+                errorMessage: `${OUTPUT_CUT_BY_CONTEXT} (stop reason length after ${message.usage.output} output tokens).`,
+              }
+            : message,
+        );
+      }
+    : retrying;
   const overflowed = (message: AssistantMessage) =>
     message.stopReason === "error" &&
     classifyModelError(message, resolved.model.contextWindow) ===

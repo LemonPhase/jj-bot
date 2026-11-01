@@ -66,6 +66,8 @@ export type ExecutorEvent =
       usage: Usage;
       text?: string;
       error?: string;
+      /** Something the operator should know, such as a compaction that failed; logged as a warning. */
+      warning?: string;
     }
   | { type: "tool.started"; toolCallId: string; tool: string; summary: string }
   | {

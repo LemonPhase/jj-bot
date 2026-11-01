@@ -24,7 +24,8 @@ import {
  * The scripted test model: a keyless, deterministic stand-in for a real model
  * so tests, CI end-to-end runs and demos exercise the whole engine. It reads
  * the conversation and answers by rule. The system prompt is free-form and
- * ignored; everything it needs comes from the tools it is offered:
+ * ignored but for a worker's brief (below); everything else it needs comes
+ * from the tools it is offered:
  *
  * - its role: `create_task`/`send_to_task` → chat, `complete_task` →
  *   coordinator, otherwise worker;
@@ -33,6 +34,10 @@ import {
  * - the active tasks in chat: the enum of `send_to_task`'s `taskId`, with
  *   titles in its description (for example "task_7: Penguin report");
  * - the bots a chat can include: the item enum of `create_task`'s `participants`.
+ *
+ * A worker reads its brief from the system prompt's last `## Your brief`
+ * section (the engine puts it there), else from its first message; the rest
+ * of the system prompt is ignored.
  *
  * Like a provider, it refuses a prompt longer than its context window
  * (estimated at four characters a token) with a context overflow error. Asked
@@ -58,6 +63,11 @@ export interface ScriptedTurn {
   calls?: PlannedCall[];
 }
 
+/** The scripted model's own output limit. */
+const MAX_OUTPUT_TOKENS = 16_384;
+/** pi-ai's providers cap output at the window less the context less this (`clampMaxTokensToContext`). */
+const PROVIDER_MARGIN_TOKENS = 4096;
+
 export interface ScriptedProviderOptions {
   /** The model's context window in tokens; default 128000. Tests use small ones to exercise compaction. */
   contextWindow?: number;
@@ -78,18 +88,30 @@ export function createScriptedProvider(
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow,
-        maxTokens: 16_384,
+        maxTokens: MAX_OUTPUT_TOKENS,
       },
     ],
   });
-  const respond = (context: TranscriptContext): AssistantMessage => {
+  const respond = (
+    context: TranscriptContext,
+    request?: SimpleStreamOptions,
+  ): AssistantMessage => {
     const tokens = promptTokens(context.messages);
     if (tokens > contextWindow)
       return fauxAssistantMessage([], {
         stopReason: "error",
         errorMessage: `prompt is too long: ${tokens} tokens > ${contextWindow} maximum`,
       });
-    return toAssistantMessage(scriptedTurn(context.messages));
+    // Output is capped the way pi-ai's providers cap it, so a full context
+    // cuts the answer short (stop reason "length").
+    const limit = Math.min(
+      request?.maxTokens ?? MAX_OUTPUT_TOKENS,
+      Math.max(1, contextWindow - tokens - PROVIDER_MARGIN_TOKENS),
+    );
+    return cutToLimit(
+      toAssistantMessage(scriptedTurn(context.messages)),
+      limit,
+    );
   };
   // The faux core streams queued responses; queueing exactly one dynamic
   // response per request (synchronously, right before it is taken) makes it a
@@ -131,6 +153,39 @@ function toAssistantMessage(turn: ScriptedTurn): AssistantMessage {
   });
 }
 
+const blockText = (block: AssistantMessage["content"][number]) =>
+  block.type === "text"
+    ? block.text
+    : block.type === "thinking"
+      ? block.thinking
+      : `${block.name}:${JSON.stringify(block.arguments)}`;
+
+/**
+ * The answer cut to `limit` output tokens (four characters a token): text is
+ * cut, and a tool call that does not fit is dropped with what follows.
+ */
+function cutToLimit(
+  message: AssistantMessage,
+  limit: number,
+): AssistantMessage {
+  const size = (text: string) => Math.ceil(text.length / 4);
+  if (size(message.content.map(blockText).join("\n")) <= limit) return message;
+  const content: AssistantMessage["content"] = [];
+  let left = limit * 4;
+  for (const block of message.content) {
+    const text = blockText(block);
+    if (text.length <= left) {
+      content.push(block);
+      left -= text.length + 1;
+      continue;
+    }
+    if (block.type === "text" && left > 0)
+      content.push({ ...block, text: block.text.slice(0, left) });
+    break;
+  }
+  return { ...message, content, stopReason: "length" };
+}
+
 const promptText = (message: Message): string => {
   switch (message.role) {
     case "system":
@@ -139,15 +194,7 @@ const promptText = (message: Message): string => {
         ...(message.toolsAdded ?? []).map((tool) => JSON.stringify(tool)),
       ].join("\n");
     case "assistant":
-      return message.content
-        .map((block) =>
-          block.type === "text"
-            ? block.text
-            : block.type === "thinking"
-              ? block.thinking
-              : `${block.name}:${JSON.stringify(block.arguments)}`,
-        )
-        .join("\n");
+      return message.content.map(blockText).join("\n");
     case "toolResult":
       return `${message.toolName}\n${textOf(message.content)}`;
     default:
@@ -249,6 +296,21 @@ interface Conversation {
   /** Active tasks `send_to_task` offers. */
   activeTasks: { id: string; title: string }[];
   calls: { call: ToolCall; result: ToolResultMessage | undefined }[];
+  /** A worker's brief from the system prompt's last "## Your brief" section. */
+  brief?: string;
+}
+
+/** The engine puts a worker's brief last in its system prompt, under this heading. */
+const BRIEF_HEADING = "\n## Your brief";
+
+function briefOf(all: Message[]): string | undefined {
+  const system = all.find((message) => message.role === "system");
+  if (system?.role !== "system") return undefined;
+  const text = getSystemMessageText(system);
+  const start = text.lastIndexOf(BRIEF_HEADING);
+  if (start < 0) return undefined;
+  const body = text.indexOf("\n", start + 1);
+  return body < 0 ? undefined : text.slice(body + 1).trim() || undefined;
 }
 
 function readConversation(all: Message[]): Conversation {
@@ -277,6 +339,7 @@ function readConversation(all: Message[]): Conversation {
       title: titleOf(taskId?.description ?? "", id, taskIds),
     })),
     calls,
+    brief: briefOf(all),
   };
 }
 
@@ -441,7 +504,7 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
 
 function workerTurn(conversation: Conversation): ScriptedTurn {
   const { messages, tools, calls } = conversation;
-  const brief = userTexts(messages)[0] ?? "my assignment";
+  const brief = conversation.brief ?? userTexts(messages)[0] ?? "my assignment";
   const file = notesFileFor(brief);
   const wrote = calls.find(
     ({ call }) =>

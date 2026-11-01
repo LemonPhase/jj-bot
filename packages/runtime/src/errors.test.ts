@@ -1,6 +1,18 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import {
+  fauxAssistantMessage,
+  fauxProvider,
+  normalizeContext,
+} from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { classifyErrorText, classifyModelError, redactSecrets } from "./errors";
+import {
+  classifyErrorText,
+  classifyModelError,
+  redactSecrets,
+  retryingStreamFn,
+  retryPolicy,
+  streamOf,
+} from "./errors";
 
 describe("classifyErrorText", () => {
   it.each([
@@ -59,5 +71,44 @@ describe("redactSecrets", () => {
   it("leaves ordinary text alone", () => {
     const text = "The model call ended with error: 503 Service Unavailable";
     expect(redactSecrets(text)).toBe(text);
+  });
+});
+
+describe("retryingStreamFn", () => {
+  const model = fauxProvider().getModel();
+  const answering = (errorMessage: string) => {
+    let calls = 0;
+    const base: StreamFn = () => {
+      calls += 1;
+      return streamOf(
+        fauxAssistantMessage([], { stopReason: "error", errorMessage }),
+      );
+    };
+    return { base, calls: () => calls };
+  };
+
+  it("retries a transient failure", async () => {
+    const { base, calls } = answering("503 Service Unavailable");
+    await (
+      await retryingStreamFn(base, retryPolicy({ baseDelayMs: 1 }))(
+        model,
+        normalizeContext({ messages: [] }),
+      )
+    ).result();
+    expect(calls()).toBe(4);
+  });
+
+  it("never retries a context overflow, even one that reads as a 5xx", async () => {
+    const { base, calls } = answering(
+      "prompt is too long: 900 tokens > 500 maximum",
+    );
+    const message = await (
+      await retryingStreamFn(base, retryPolicy({ baseDelayMs: 1 }))(
+        model,
+        normalizeContext({ messages: [] }),
+      )
+    ).result();
+    expect(calls()).toBe(1);
+    expect(classifyModelError(message)).toBe("context_overflow");
   });
 });

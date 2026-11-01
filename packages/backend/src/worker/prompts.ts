@@ -25,11 +25,23 @@ export interface SessionPromptInput {
   workspaceDir: string;
   /** The bot that delegated this work (workers). */
   requester?: string;
+  /**
+   * A worker's brief, as its requester wrote it. It is part of the prompt,
+   * which is rebuilt every run, so context compaction never touches it.
+   */
+  brief?: string;
   /** False when delegation is not available (no teammates, or the depth limit). */
   canDelegate: boolean;
   /** True on a recovery run: the session resumes after its worker stopped. */
   resumed?: boolean;
 }
+
+/** Heading of the section that holds a worker's brief (the scripted model reads it too). */
+export const BRIEF_HEADING = "## Your brief";
+
+/** The inbox item that starts a delegated session: its brief is in the prompt. */
+export const briefPointer = (requester: string) =>
+  `Assignment from ${requester}: your brief is in the "Your brief" section of your system prompt. Start now.`;
 
 /**
  * Prepended to a coordinator's new input when that input sets aside a
@@ -106,7 +118,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
     );
   } else {
     lines.push(
-      `${input.requester ?? "The coordinator"} asked you to do one piece of this task; the brief is in the first message.`,
+      `${input.requester ?? "The coordinator"} asked you to do one piece of this task, described in your brief below.`,
       "- Edit only the files your brief names; you may read any file. If another file needs a change, say so in your report instead of editing it.",
       ...(input.canDelegate
         ? [
@@ -121,6 +133,12 @@ export function sessionPrompt(input: SessionPromptInput): string {
             "- This run resumes after an interruption (a restart). Check what is already done, then finish the brief and end with your report.",
           ]
         : []),
+    );
+    // Last, so the brief's own text (headings included) cannot cut it short.
+    lines.push(
+      "",
+      `${BRIEF_HEADING} (from ${input.requester ?? "the coordinator"})`,
+      input.brief?.trim() || "(no brief)",
     );
   }
   return lines.join("\n");

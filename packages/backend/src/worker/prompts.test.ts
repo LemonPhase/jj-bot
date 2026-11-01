@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { chatPrompt, sessionPrompt } from "./prompts";
+import {
+  BRIEF_HEADING,
+  briefPointer,
+  chatPrompt,
+  sessionPrompt,
+} from "./prompts";
 
 const roster = [
   { name: "Ada", role: "Lead", self: true },
@@ -27,6 +32,8 @@ const worker = sessionPrompt({
   roster: roster.map((member) => ({ ...member, self: member.name === "Bob" })),
   workspaceDir: "/workspace",
   requester: "Ada",
+  brief:
+    "Write notes-bob.md about penguins.\n\n## Sources\nUse the zoo's site.",
   canDelegate: false,
 });
 
@@ -98,6 +105,23 @@ describe("prompts", () => {
   it("tell a resumed coordinator to check what is open and finish with complete_task", () => {
     expect(resumedCoordinator).toContain(
       "This run resumes after an interruption (a restart). Check what has reported and what is still open, then carry on; once the work is done and verified, finish with `complete_task`.",
+    );
+  });
+
+  it("give a worker its brief in the prompt, last, whole and attributed", () => {
+    expect(worker).toContain(
+      "Ada asked you to do one piece of this task, described in your brief below.",
+    );
+    expect(worker).not.toContain("first message");
+    expect(
+      worker.endsWith(
+        `${BRIEF_HEADING} (from Ada)\nWrite notes-bob.md about penguins.\n\n## Sources\nUse the zoo's site.`,
+      ),
+    ).toBe(true);
+    expect(coordinator).not.toContain(BRIEF_HEADING);
+    // The inbox item that starts the session only points at it.
+    expect(briefPointer("Ada")).toBe(
+      'Assignment from Ada: your brief is in the "Your brief" section of your system prompt. Start now.',
     );
   });
 

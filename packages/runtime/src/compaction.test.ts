@@ -2,6 +2,7 @@ import {
   type AssistantMessage,
   fauxAssistantMessage,
   fauxProvider,
+  fauxText,
   fauxToolCall,
   getSystemMessageText,
   type Message,
@@ -14,6 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   compactionSettings,
   isCompaction,
+  MIN_COMPACTION_WINDOW,
+  MIN_RESERVE_TOKENS,
   summaryMessage,
   viewTranscript,
 } from "./compaction";
@@ -47,13 +50,17 @@ let faux: Faux;
 let registry: ModelRegistry;
 let workspace: Awaited<ReturnType<typeof localSandbox>>;
 
-/** A 4000-token window: compaction past 3000 tokens, keeping about 1000. */
-const SMALL = { reserveTokens: 1000, keepRecentTokens: 1000 };
-/** faux-1 has that window; faux-big never reaches the threshold, only a provider's overflow. */
+/**
+ * faux-1's 20000-token window compacts past 10000 tokens (the reserve is
+ * half the window) and keeps about 5000; faux-big never reaches its
+ * threshold in these tests, only a provider's overflow.
+ */
 const FAUX_MODELS = [
-  { id: "faux-1", contextWindow: 4000 },
+  { id: "faux-1", contextWindow: 20_000 },
   { id: "faux-big", contextWindow: 100_000 },
 ];
+/** For faux-big: compact on an overflow, keeping about 1000 tokens. */
+const ON_OVERFLOW = { keepRecentTokens: 1000 };
 
 beforeEach(async () => {
   faux = fauxProvider({ models: FAUX_MODELS });
@@ -65,14 +72,15 @@ afterEach(async () => {
   await workspace.cleanup();
 });
 
-const executor = () =>
-  new PiSessionExecutor({ models: registry, compaction: SMALL });
+const executor = () => new PiSessionExecutor({ models: registry });
 
 function input(
   overrides: Partial<RunInput> & Pick<RunInput, "hooks">,
 ): RunInput {
   return {
-    sessionId: "session-1",
+    // No session id: with one, the faux core caches prompts and counts uncached
+    // tokens both as input and as cache writes, doubling the usage it reports.
+    sessionId: "",
     runId: "run-1",
     systemPrompt: "You are a careful engineer.",
     transcript: [],
@@ -107,18 +115,28 @@ const result = (id: string, text: string): PiMessage => ({
   timestamp: 3,
 });
 
-/** A brief and `turns` commands with about 500 tokens of output each. */
-function longTranscript(turns: number, prefix = "c"): PiMessage[] {
+/** A brief and `turns` commands with `chars` / 4 tokens of output each (2000 by default). */
+function longTranscript(turns: number, chars = 8000): PiMessage[] {
   const messages: PiMessage[] = [
     user("Count the files, one command at a time."),
   ];
   for (let i = 1; i <= turns; i++)
     messages.push(
-      call(`${prefix}${i}`, `echo ${prefix}${i}`),
-      result(`${prefix}${i}`, `${prefix}${i}:${"x".repeat(2000)}`),
+      call(`c${i}`, `echo c${i}`),
+      result(`c${i}`, `c${i}:${"x".repeat(chars)}`),
     );
   return messages;
 }
+
+/** Usage a provider reported for a response. */
+const usageOf = (totalTokens: number) => ({
+  input: totalTokens,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+});
 
 const isSummaryRequest = (context: TranscriptContext) => {
   const system = context.messages[0];
@@ -276,17 +294,32 @@ describe("viewTranscript", () => {
 });
 
 describe("compactionSettings", () => {
-  it("uses pi's defaults on a large window and clamps them on a small one", () => {
+  it("uses pi's defaults on a large window and fits them to a small one", () => {
     expect(compactionSettings(128_000)).toEqual({
       enabled: true,
       reserveTokens: 16_384,
       keepRecentTokens: 20_000,
     });
-    expect(compactionSettings(8_000)).toEqual({
+    expect(compactionSettings(32_768)).toEqual({
       enabled: true,
-      reserveTokens: 2_000,
-      keepRecentTokens: 3_000,
+      reserveTokens: 16_384,
+      keepRecentTokens: 8_192,
     });
+    expect(compactionSettings(20_000)).toEqual({
+      enabled: true,
+      reserveTokens: 10_000,
+      keepRecentTokens: 5_000,
+    });
+    // The reserve always leaves pi-ai's 4096-token margin plus room to answer.
+    expect(
+      compactionSettings(128_000, { reserveTokens: 0 }).reserveTokens,
+    ).toBe(MIN_RESERVE_TOKENS);
+    expect(compactionSettings(MIN_COMPACTION_WINDOW)).toEqual({
+      enabled: true,
+      reserveTokens: 8_192,
+      keepRecentTokens: 4_096,
+    });
+    expect(compactionSettings(MIN_COMPACTION_WINDOW - 1).enabled).toBe(false);
     expect(compactionSettings(0).enabled).toBe(false);
     expect(compactionSettings(128_000, { enabled: false }).enabled).toBe(false);
   });
@@ -313,7 +346,7 @@ describe("context compaction", () => {
     ).toEqual([["user"], ["compaction"], ["assistant"]]);
     const [entry] = compactions(recorded.entries);
     expect(entry).toBeDefined();
-    expect(entry?.tokensBefore).toBeGreaterThan(3000);
+    expect(entry?.tokensBefore).toBeGreaterThan(10_000);
     expect(entry?.summary).toContain("Summary");
 
     // The model saw [summary] + exactly the kept entries, which end with the input.
@@ -524,13 +557,13 @@ describe("context compaction", () => {
     const { requests, summaries } = respond([overflow, say("Fits now.")]);
     const outcome = await new PiSessionExecutor({
       models: registry,
-      compaction: { reserveTokens: 0, keepRecentTokens: 1000 },
+      compaction: ON_OVERFLOW,
       retry: { baseDelayMs: 5 },
     }).run(
       input({
         hooks: recorded.hooks,
         model: "faux/faux-big",
-        transcript: longTranscript(6),
+        transcript: longTranscript(6, 2000),
         inputs: ["Report."],
         budgets: budgets(1),
       }),
@@ -570,13 +603,13 @@ describe("context compaction", () => {
     const { requests, summaries } = respond([overflow(), overflow(), say("x")]);
     const outcome = await new PiSessionExecutor({
       models: registry,
-      compaction: { reserveTokens: 0, keepRecentTokens: 1000 },
+      compaction: ON_OVERFLOW,
       retry: { baseDelayMs: 5 },
     }).run(
       input({
         hooks: recorded.hooks,
         model: "faux/faux-big",
-        transcript: longTranscript(6),
+        transcript: longTranscript(6, 2000),
         inputs: ["Report."],
       }),
     );
@@ -589,51 +622,264 @@ describe("context compaction", () => {
     expect(summaries.length).toBeGreaterThan(0);
   });
 
-  it("keeps no summary the model did not write and does not retry it in the run", async () => {
-    const recorded = recordingHooks();
-    const summaries: TranscriptContext[] = [];
-    const replies = [
-      fauxAssistantMessage(
-        fauxToolCall("bash", { command: "echo more" }, { id: "more" }),
-        { stopReason: "toolUse" },
-      ),
-      say("Done without compacting."),
-    ];
-    // Files were read and changed, so pi would append its file lists to an empty summary.
-    const stored = [
-      ...longTranscript(6),
-      fauxAssistantMessage(
-        [
-          fauxToolCall("read", { path: "a.txt" }, { id: "r" }),
-          fauxToolCall("write", { path: "b.txt", content: "b" }, { id: "w" }),
-        ],
-        { stopReason: "toolUse" },
-      ),
-      result("r", "a"),
-      result("w", "ok"),
-    ];
-    faux.setResponses(
-      Array.from({ length: 10 }, () => (context: TranscriptContext) => {
-        if (!isSummaryRequest(context)) return replies.shift() ?? say("x");
-        summaries.push(context);
-        return fauxAssistantMessage([], { stopReason: "stop" });
+  it.each([
+    [
+      "an empty answer",
+      fauxAssistantMessage([], { stopReason: "stop" }),
+      "the answer was empty",
+    ],
+    [
+      "an answer cut at the output limit",
+      fauxAssistantMessage(fauxText("## Goal\nCount the"), {
+        stopReason: "length",
       }),
+      "the summary was cut at the output limit",
+    ],
+    [
+      "a refused call",
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage: "401 Incorrect API key provided",
+      }),
+      "401 Incorrect API key provided",
+    ],
+  ])(
+    "keeps no summary from %s, says so, and does not retry it in the run",
+    async (_, answer, reason) => {
+      const recorded = recordingHooks();
+      const summaries: TranscriptContext[] = [];
+      const replies = [
+        fauxAssistantMessage(
+          fauxToolCall("bash", { command: "echo more" }, { id: "more" }),
+          { stopReason: "toolUse" },
+        ),
+        say("Done without compacting."),
+      ];
+      // Files were read and changed, so pi would append its file lists to an empty summary.
+      const stored = [
+        ...longTranscript(6),
+        fauxAssistantMessage(
+          [
+            fauxToolCall("read", { path: "a.txt" }, { id: "r" }),
+            fauxToolCall("write", { path: "b.txt", content: "b" }, { id: "w" }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+        result("r", "a"),
+        result("w", "ok"),
+      ];
+      faux.setResponses(
+        Array.from({ length: 10 }, () => (context: TranscriptContext) => {
+          if (!isSummaryRequest(context)) return replies.shift() ?? say("x");
+          summaries.push(context);
+          return answer;
+        }),
+      );
+      const outcome = await new PiSessionExecutor({
+        models: registry,
+        retry: { baseDelayMs: 5 },
+      }).run(
+        input({
+          hooks: recorded.hooks,
+          transcript: stored,
+          inputs: ["Go on."],
+        }),
+      );
+      expect(outcome).toEqual({
+        kind: "ended",
+        finalText: "Done without compacting.",
+      });
+      expect(summaries).toHaveLength(1);
+      expect(compactions(recorded.entries)).toHaveLength(0);
+      const reported = recorded.events.find(
+        (event) => event.type === "model.finished",
+      );
+      expect(reported).toMatchObject({
+        stopReason: answer.stopReason,
+        warning: `Context compaction failed: ${reason}`,
+      });
+      expect(reported?.type === "model.finished" && reported.text).toMatch(
+        new RegExp(
+          `^Context compaction failed \\(about \\d+ tokens\\): ${reason}\\. Nothing was compacted\\.$`,
+        ),
+      );
+    },
+  );
+
+  it("does not compact again on resume from usage that predates the checkpoint", async () => {
+    // The checkpoint kept c4 to c6 (about 6000 tokens, under the threshold);
+    // the last kept call reports usage from before it, far past the threshold.
+    const transcript = longTranscript(6);
+    const last = transcript.findIndex(
+      (message) =>
+        message.role === "assistant" && toolCallIds([message])[0] === "c6",
     );
+    transcript[last] = {
+      ...(transcript[last] as PiMessage),
+      usage: usageOf(50_000),
+    } as PiMessage;
+    const stored: TranscriptEntry[] = [
+      ...transcript,
+      {
+        role: "compaction",
+        summary: "Counted c1 to c3.",
+        keptEntries: 6,
+        tokensBefore: 50_000,
+        readFiles: [],
+        modifiedFiles: [],
+        timestamp: 4,
+      },
+    ];
+    const recorded = recordingHooks();
+    const { requests, summaries } = respond([say("Next one.")]);
+    const outcome = await executor().run(
+      input({ hooks: recorded.hooks, transcript: stored, inputs: ["Go on."] }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Next one." });
+    expect(summaries).toHaveLength(0);
+    expect(compactions(recorded.entries)).toHaveLength(0);
+    const seen = conversationOf(requests[0] as TranscriptContext);
+    expect(textOf(seen[0])).toContain("Counted c1 to c3.");
+    expect(toolCallIds(seen)).toEqual(["c4", "c5", "c6"]);
+    expect(textOf(seen.at(-1))).toBe("Go on.");
+  });
+
+  it("scales the kept part when the provider counts more tokens than pi's estimate", async () => {
+    // pi's estimate puts the conversation under the kept part, so an unscaled
+    // cut would keep everything and summarise nothing; the provider's usage
+    // puts it past the threshold.
+    const stored = [
+      ...longTranscript(3, 4000),
+      { ...call("c4", "echo c4"), usage: usageOf(12_000) },
+      result("c4", `c4:${"x".repeat(4000)}`),
+    ];
+    const recorded = recordingHooks();
+    const { requests, summaries } = respond([say("Compacted and done.")]);
     const outcome = await executor().run(
       input({ hooks: recorded.hooks, transcript: stored, inputs: ["Go on."] }),
     );
     expect(outcome).toEqual({
       kind: "ended",
-      finalText: "Done without compacting.",
+      finalText: "Compacted and done.",
     });
-    expect(summaries).toHaveLength(1);
-    expect(compactions(recorded.entries)).toHaveLength(0);
+    expect(summaries.length).toBeGreaterThan(0);
+    const [entry] = compactions(recorded.entries);
+    expect(entry?.tokensBefore).toBeGreaterThan(12_000);
+    const seen = conversationOf(requests[0] as TranscriptContext);
+    expect(textOf(seen[0])).toContain("<summary>");
+    expect(seen.length).toBeLessThan(stored.length);
+    expectValid(seen);
+  });
+
+  it("compacts and retries once when a full context cuts the answer short", async () => {
+    // The provider capped the output for lack of room: stop reason length.
+    const cut = fauxAssistantMessage(
+      [
+        fauxText("Running the next"),
+        fauxToolCall("bash", { command: "echo cut" }, { id: "cut" }),
+      ],
+      { stopReason: "length" },
+    );
+    const recorded = recordingHooks();
+    const { requests, summaries } = respond([cut, say("Fits now.")]);
+    const outcome = await executor().run(
+      input({
+        hooks: recorded.hooks,
+        transcript: longTranscript(4),
+        inputs: ["Report."],
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Fits now." });
+    expect(summaries.length).toBeGreaterThan(0);
+    expect(requests).toHaveLength(2);
+    expect(compactions(recorded.entries)).toHaveLength(1);
+    // The cut answer is reported as an overflow, never persisted, and its call never ran.
+    const finished = recorded.events.filter(
+      (event): event is Extract<ExecutorEvent, { type: "model.finished" }> =>
+        event.type === "model.finished",
+    );
+    expect(finished[0]).toMatchObject({
+      stopReason: "error",
+      errorCode: "context_overflow",
+      error: expect.stringContaining("left it no room"),
+    });
     expect(
-      recorded.events.find((event) => event.type === "model.finished"),
-    ).toMatchObject({
-      stopReason: "stop",
-      text: expect.stringMatching(/: no summary$/),
+      recorded.events.filter((event) => event.type === "tool.started"),
+    ).toEqual([]);
+    expect(
+      recorded.entries.filter(
+        (entry) =>
+          entry.role === "assistant" && textOf(entry).includes("Running"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not count the overflowed call against the turn budget", async () => {
+    const overflow = fauxAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "400 Your input exceeds the context window of this model.",
     });
+    const recorded = recordingHooks();
+    respond([
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo one" }), {
+        stopReason: "toolUse",
+      }),
+      overflow,
+      fauxAssistantMessage(fauxToolCall("bash", { command: "echo two" }), {
+        stopReason: "toolUse",
+      }),
+      say("Both done."),
+    ]);
+    // Three calls are allowed: the overflowed one is replaced by its retry.
+    const outcome = await new PiSessionExecutor({
+      models: registry,
+      compaction: ON_OVERFLOW,
+    }).run(
+      input({
+        hooks: recorded.hooks,
+        model: "faux/faux-big",
+        transcript: longTranscript(6, 2000),
+        inputs: ["Report."],
+        budgets: budgets(3),
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Both done." });
+    expect(compactions(recorded.entries)).toHaveLength(1);
+  });
+
+  it("recovers a later overflow again once a response has succeeded", async () => {
+    const overflow = () =>
+      fauxAssistantMessage([], {
+        stopReason: "error",
+        errorMessage:
+          "400 Your input exceeds the context window of this model.",
+      });
+    const recorded = recordingHooks();
+    const { summaries } = respond([
+      overflow(),
+      fauxAssistantMessage(fauxToolCall("bash", { command: "seq 1 1500" }), {
+        stopReason: "toolUse",
+      }),
+      overflow(),
+      say("Done after two compactions."),
+    ]);
+    const outcome = await new PiSessionExecutor({
+      models: registry,
+      compaction: ON_OVERFLOW,
+    }).run(
+      input({
+        hooks: recorded.hooks,
+        model: "faux/faux-big",
+        transcript: longTranscript(6, 2000),
+        inputs: ["Report."],
+      }),
+    );
+    expect(outcome).toEqual({
+      kind: "ended",
+      finalText: "Done after two compactions.",
+    });
+    expect(compactions(recorded.entries)).toHaveLength(2);
+    expect(summaries.length).toBeGreaterThanOrEqual(2);
   });
 
   it("does not compact with compaction turned off", async () => {
@@ -641,7 +887,7 @@ describe("context compaction", () => {
     const { summaries } = respond([say("Done.")]);
     await new PiSessionExecutor({
       models: registry,
-      compaction: { ...SMALL, enabled: false },
+      compaction: { enabled: false },
     }).run(
       input({
         hooks: recorded.hooks,
@@ -656,7 +902,7 @@ describe("context compaction", () => {
 
 describe("the scripted model with a small context window", () => {
   it("runs a long session across several compactions and completes", async () => {
-    const window = 16_000;
+    const window = 24_000;
     const scripted = new ModelRegistry({
       env: {},
       extraProviders: [createScriptedProvider({ contextWindow: window })],
@@ -695,9 +941,16 @@ describe("the scripted model with a small context window", () => {
           event.type === "model.finished" && event.stopReason === "error",
       ),
     ).toHaveLength(0);
-    // Each checkpoint was taken past the threshold (the window less a quarter).
+    // Each checkpoint was taken past the threshold (half this window), and
+    // no answer was ever cut short for lack of room.
     for (const entry of entries)
-      expect(entry.tokensBefore).toBeGreaterThan(window - window / 4);
+      expect(entry.tokensBefore).toBeGreaterThan(window / 2);
+    expect(
+      recorded.events.filter(
+        (event) =>
+          event.type === "model.finished" && event.stopReason === "length",
+      ),
+    ).toHaveLength(0);
     // The stored transcript reloads into a valid, compacted context ...
     const view = viewTranscript(recorded.entries);
     expectValid(repairTranscript(view.messages));
@@ -737,5 +990,43 @@ describe("the scripted model with a small context window", () => {
       }),
     );
     expect(outcome).toMatchObject({ kind: "error", code: "context_overflow" });
+  });
+
+  it("caps its answer the way providers do, and a cut answer is an overflow to the runtime", async () => {
+    const scripted = new ModelRegistry({
+      env: {},
+      extraProviders: [createScriptedProvider({ contextWindow: 20_000 })],
+    });
+    // A 15000-token brief leaves no room for the notes that quote it.
+    const brief = `Write notes-big.md: ${"y".repeat(60_000)}`;
+    const capped = recordingHooks();
+    await new PiSessionExecutor({
+      models: scripted,
+      compaction: { enabled: false },
+    }).run(
+      input({
+        hooks: capped.hooks,
+        model: "scripted/team",
+        inputs: [brief],
+        budgets: budgets(1),
+      }),
+    );
+    expect(
+      capped.events.find((event) => event.type === "model.finished"),
+    ).toMatchObject({ stopReason: "length" });
+    expect(capped.events.filter((e) => e.type === "tool.started")).toEqual([]);
+
+    const compacting = recordingHooks();
+    const outcome = await new PiSessionExecutor({ models: scripted }).run(
+      input({
+        hooks: compacting.hooks,
+        model: "scripted/team",
+        inputs: [brief],
+      }),
+    );
+    expect(outcome).toMatchObject({ kind: "error", code: "context_overflow" });
+    expect(outcome.kind === "error" && outcome.error).toContain(
+      "nothing older to summarise",
+    );
   });
 });

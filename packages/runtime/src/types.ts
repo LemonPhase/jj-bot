@@ -82,6 +82,8 @@ export type ExecutorEvent =
       error?: string;
       /** Its classification when `stopReason` is "error". */
       errorCode?: RunErrorCode;
+      /** Something the operator should know, such as a compaction that failed; the engine logs it. */
+      warning?: string;
     }
   | {
       type: "tool.started";
