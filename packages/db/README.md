@@ -31,6 +31,7 @@ Both modes take an optional `onError` for errors that have no caller: pool clien
 - Active bot names are unique per owner, ignoring case, because tools address bots by name. An archived bot (`archived_at` set) keeps its history and frees its name. Each owner has at most one default runtime profile.
 - `sessions.waiting_for` (`delegations` or `user`) is set exactly when `status = 'waiting'`. `tasks.cancel_requested_at` marks a requested stop until the task is cancelled.
 - `tasks.created_by_bot_id` is the bot that created the task from direct chat; it is null when the user created the task. The per-bot hourly limit counts it, using the `(created_by_bot_id, created_at)` index. To keep the count honest under concurrent requests, the engine locks the bot row (`SELECT … FOR UPDATE`) before it counts and inserts.
+- `tasks.created_from_message_id` and `task_messages.relayed_from_message_id` record the conversation message whose reply created the task or relayed the message. They are unique per creating bot and per task, so a chat reply that runs again after a hand-off or crash repeats neither.
 - `artifacts.content` holds the bytes. Select columns explicitly when listing artifacts.
 
 To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`, and commit the new SQL in `migrations/` together with `migrations/meta`. Never edit a migration that has been applied; add a new one. All pending migrations apply in one transaction.

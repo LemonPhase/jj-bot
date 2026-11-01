@@ -52,6 +52,8 @@ export interface NewTaskInput {
   participantBotIds: string[];
   /** Set when a bot creates the task from direct chat (rate-limited). */
   createdByBotId?: string | null;
+  /** The conversation message whose reply created the task (one task per message). */
+  createdFromMessageId?: string | null;
 }
 
 /** Creates the task, its coordinator session and the first wake, in the caller's transaction. */
@@ -69,6 +71,7 @@ export async function createTaskTx(
       goal: input.goal,
       coordinatorBotId: input.coordinatorBotId,
       createdByBotId: input.createdByBotId ?? null,
+      createdFromMessageId: input.createdFromMessageId ?? null,
       createdAt: now,
       updatedAt: now,
     })
