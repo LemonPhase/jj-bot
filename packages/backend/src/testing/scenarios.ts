@@ -65,8 +65,8 @@ export function delegatingCoordinator(
         })),
       };
     const done = reported(view, workers);
-    if (done.length < workers.length)
-      return { text: `Waiting for ${workers.length - done.length} result(s).` };
+    // Waits silently: text while delegations are open is posted to the task.
+    if (done.length < workers.length) return { text: "" };
     if (lastResult(view)?.name === "complete_task") return { text: "Done." };
     return {
       calls: [

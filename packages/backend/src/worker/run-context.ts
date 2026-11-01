@@ -10,6 +10,7 @@ import {
   type SessionRow,
   sessionEntries,
   sessionInbox,
+  sessions,
   type TaskRow,
   type Tx,
   usage,
@@ -135,7 +136,8 @@ async function markDelivered(tx: Tx, rc: RunContext) {
  * Takes undelivered inbox items (oldest first) for the executor. They stay
  * undelivered until the executor persists them, so a crash before that
  * re-delivers them on recovery. `kinds` limits which items are taken.
- * A coordinator that receives items catches up with the task's goal version.
+ * A coordinator that receives items catches up with the task's goal version,
+ * and any completion it recorded earlier is dropped.
  */
 export async function takeInbox(
   rc: RunContext,
@@ -158,6 +160,15 @@ export async function takeInbox(
     const fresh = items.filter((item) => !rc.claimed.has(item.id));
     if (fresh.length === 0) return [];
     for (const item of fresh) rc.claimed.add(item.id);
+    // New input voids a completion recorded before it: the coordinator must
+    // see the input first (a hand-off or crash can land between the two).
+    if (rc.session.completionRequested) {
+      await tx
+        .update(sessions)
+        .set({ completionRequested: null })
+        .where(eq(sessions.id, rc.session.id));
+      rc.session = { ...rc.session, completionRequested: null };
+    }
     if (
       rc.session.parentSessionId === null &&
       rc.task.goalVersion > rc.session.goalVersion

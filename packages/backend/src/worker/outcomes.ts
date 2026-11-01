@@ -150,6 +150,21 @@ async function endTurn(
   const { ctx } = rc.deps;
   const attribution = attributionOf(rc);
   if ((await openChildren(tx, session)).length > 0) {
+    // A coordinator may answer the user (a status question) while it waits.
+    if (session.parentSessionId === null && text.trim())
+      await postMessage(
+        tx,
+        ctx,
+        {
+          taskId: task.id,
+          authorKind: "bot",
+          authorBotId: session.botId,
+          sessionId: session.id,
+          intent: "discussion",
+          text,
+        },
+        attribution,
+      );
     await updateSession(
       tx,
       ctx,

@@ -146,7 +146,10 @@ export function assistantText(entry: unknown): string | undefined {
     .join("");
 }
 
-/** Undelivered input that continues a run (results, briefs, steering). */
+/** Input kinds that start or continue a run; plain messages wait for the next activation. */
+export const CONTINUING_KINDS = ["brief", "result", "steering"] as const;
+
+/** Undelivered input that starts or continues a run (briefs, results, steering). */
 export async function hasContinuingInput(tx: Tx, sessionId: string) {
   const [row] = await tx
     .select({ id: sessionInbox.id })
@@ -155,7 +158,7 @@ export async function hasContinuingInput(tx: Tx, sessionId: string) {
       and(
         eq(sessionInbox.sessionId, sessionId),
         isNull(sessionInbox.deliveredAt),
-        inArray(sessionInbox.kind, ["brief", "result", "steering"]),
+        inArray(sessionInbox.kind, [...CONTINUING_KINDS]),
       ),
     )
     .limit(1);
