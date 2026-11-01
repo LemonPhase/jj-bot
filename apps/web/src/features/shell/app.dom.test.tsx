@@ -9,12 +9,13 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { useLayoutEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import { ApiProvider } from "../../api/ApiContext";
 import { ApiError, type JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
-import { WorkspaceProvider } from "../../state/WorkspaceContext";
+import { useWorkspace, WorkspaceProvider } from "../../state/WorkspaceContext";
 
 // Whole-provider renders share CPU with the other suites in a full run.
 configure({ asyncUtilTimeout: 5000 });
@@ -78,6 +79,35 @@ describe("routing", () => {
     expect(window.location.hash).toBe("#/bots/bot-juno");
     act(() => window.history.forward());
     await heading("Kite");
+  });
+
+  it("keeps a navigation that lands before the shell's effects run", async () => {
+    // A layout effect runs in the commit that first shows the workspace,
+    // before that commit's passive effects: the same gap a click falls into
+    // when it comes as soon as the screen shows. The URL fix-up must not
+    // undo it from the route that commit rendered.
+    window.history.replaceState(null, "", "/#/bots/bot-juno");
+    let moved = false;
+    function NavigateOnLoad() {
+      const { loading } = useWorkspace();
+      useLayoutEffect(() => {
+        if (loading || moved) return;
+        moved = true;
+        window.location.hash = "#/bots/bot-kite";
+      }, [loading]);
+      return null;
+    }
+    render(
+      <ApiProvider api={createDemoApi({ autoplay: false })}>
+        <WorkspaceProvider>
+          <App />
+          <NavigateOnLoad />
+        </WorkspaceProvider>
+      </ApiProvider>,
+    );
+    await heading("Kite");
+    expect(moved).toBe(true);
+    expect(window.location.hash).toBe("#/bots/bot-kite");
   });
 
   it("switches sections without leaving an empty screen", async () => {
@@ -247,6 +277,7 @@ describe("direct chat", () => {
     window.history.replaceState(null, "", "/#/bots/bot-kite");
     const base = createDemoApi({ autoplay: false, replyMs: 60 });
     let releaseSend = () => {};
+    let deliverReply: (() => void) | undefined;
     renderApp({
       ...base,
       sendBotMessage: async (botId, command) => {
@@ -255,18 +286,27 @@ describe("direct chat", () => {
         });
         return base.sendBotMessage(botId, command);
       },
-      // The demo never fails a reply; this one always reports the last as failed.
+      // The demo never fails a reply; this one always reports the last as
+      // failed. The view with the reply waits for the test, not the demo's
+      // timer, so a slow run cannot let it land before the checks below.
       subscribeConversation: (botId, onView, options) =>
         base.subscribeConversation(
           botId,
-          (view) =>
-            onView({
-              ...view,
-              lastReplyError: {
-                message: "The model timed out.",
-                at: "2026-10-31T12:00:00.000Z",
-              },
-            }),
+          (view) => {
+            const deliver = () =>
+              onView({
+                ...view,
+                lastReplyError: {
+                  message: "The model timed out.",
+                  at: "2026-10-31T12:00:00.000Z",
+                },
+              });
+            const replied =
+              !view.replying &&
+              view.messages.some((message) => message.text === "Hi again");
+            if (replied) deliverReply = deliver;
+            else deliver();
+          },
           options,
         ),
     });
@@ -276,8 +316,12 @@ describe("direct chat", () => {
     // Still pending: the old failure is stale and hidden.
     expect(screen.queryByText("The model timed out.")).toBeNull();
     await act(async () => releaseSend());
+    // Sent, with the reply still on its way: still hidden.
+    expect(screen.queryByText("The model timed out.")).toBeNull();
+    await waitFor(() => expect(deliverReply).toBeDefined());
     expect(screen.queryByText("The model timed out.")).toBeNull();
     // The new reply "fails" too, and that one shows.
+    act(() => deliverReply?.());
     expect(await screen.findByText("The model timed out.")).toBeTruthy();
   });
 

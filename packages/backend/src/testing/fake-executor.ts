@@ -122,6 +122,18 @@ export class FakeExecutor implements RunExecutor {
     return state;
   }
 
+  /** Marks the gate reached and waits until it opens (true) or the run is aborted (false). */
+  private async waitAtGate(name: string, signal: AbortSignal) {
+    const gate = this.gateState(name);
+    gate.markReached();
+    const aborted = new Promise<void>((resolve) => {
+      if (signal.aborted) resolve();
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    await Promise.race([gate.opened, aborted]);
+    return !signal.aborted;
+  }
+
   async run(input: RunInput): Promise<RunOutcome> {
     this.inputs.push(input);
     if (input.signal.aborted) return { kind: "aborted", reason: "signal" };
@@ -326,6 +338,15 @@ export class FakeExecutor implements RunExecutor {
           String(call.args.path),
           String(call.args.content),
         );
+        // `holdAt` holds the call at a gate between the write and its result,
+        // where a real tool's result is still being recorded.
+        if (
+          call.args.holdAt !== undefined &&
+          !(await this.waitAtGate(String(call.args.holdAt), signal))
+        ) {
+          await finish({ ok: false, interrupted: "yes", truncated: false });
+          return { text: "interrupted", isError: true };
+        }
         await finish({ ok: true, truncated: false });
         return { text: `Wrote ${String(call.args.path)}` };
       }
@@ -338,14 +359,7 @@ export class FakeExecutor implements RunExecutor {
         return { text: content };
       }
       case "gate": {
-        const gate = this.gateState(String(call.args.name));
-        gate.markReached();
-        const aborted = new Promise<void>((resolve) => {
-          if (signal.aborted) resolve();
-          signal.addEventListener("abort", () => resolve(), { once: true });
-        });
-        await Promise.race([gate.opened, aborted]);
-        if (signal.aborted) {
+        if (!(await this.waitAtGate(String(call.args.name), signal))) {
           await finish({ ok: false, interrupted: "yes", truncated: false });
           return { text: "interrupted", isError: true };
         }

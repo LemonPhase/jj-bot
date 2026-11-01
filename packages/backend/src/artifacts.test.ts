@@ -294,6 +294,63 @@ describe("artifacts", () => {
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
+  it("leaves a running teammate's write to its own snapshot while its result is recorded", async () => {
+    // The coordinator's run ends, and snapshots, between Bob's file landing
+    // on disk and his call's result being recorded: under load, the window
+    // a snapshot of "files a run changed" can fall into.
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(bob, (view) =>
+        said.turns(view) === 0
+          ? {
+              calls: [
+                {
+                  name: "write",
+                  args: {
+                    path: "report.md",
+                    content: "# Report\n",
+                    holdAt: "bob-wrote",
+                  },
+                },
+              ],
+            }
+          : { text: "report written" },
+      )
+      .brain(ada, async (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [{ name: "delegate", args: { bot: bob, brief: "report" } }],
+          };
+        if (!said.heard(view, `Result from ${bob} (session`)) {
+          await executor.gate("bob-wrote").reached;
+          return { text: "waiting" };
+        }
+        return lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      });
+    const { task } = await engine.tasks.create({
+      goal: "Report",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const waiting = await untilTask(engine, task.id, (view) =>
+      view.sessions.some(
+        (s) => s.botId === team.byName[ada] && s.status === "waiting",
+      ),
+    );
+    // Ada's snapshot saw report.md and left it to Bob.
+    expect(fileCredits(waiting)).toEqual([]);
+    executor.gate("bob-wrote").open();
+    const view = await untilTask(engine, task.id, completed);
+    const [, bobRun] = await runRows(task.id);
+    expect(fileCredits(view)).toEqual([
+      { path: "report.md", sessionId: bobRun?.sessionId, runId: bobRun?.id },
+    ]);
+  });
+
   it("folds snapshot + events, and snapshot + stream, into a fresh snapshot", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);

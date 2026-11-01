@@ -9,9 +9,10 @@
 // covered runs and the task's other finished runs still pending; anything else
 // the scan finds (bash output files, a teammate's bash writes) is stored at
 // task level, with no session or run, because the shared workspace cannot say
-// who wrote it.
+// who wrote it. A file a teammate's running write or edit call touched, or is
+// still touching, is left to that run's snapshot.
 import { isAbsolute, posix, relative } from "node:path";
-import { runs, type Tx, taskEvents } from "@jj/db";
+import { runs, type Tx, taskEvents, tasks } from "@jj/db";
 import type { Sandbox } from "@jj/sandbox/contract";
 import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
@@ -100,6 +101,54 @@ async function toolPaths(
 }
 
 /**
+ * Paths that write or edit calls of these (running) runs touched or are
+ * touching: finished successfully, or started with no result recorded yet. A
+ * call's start is recorded before its tool runs, so a file it has written is
+ * found here even while its result is still being recorded.
+ */
+async function activePaths(
+  tx: Tx,
+  taskId: string,
+  runIds: string[],
+  workspaceDir: string,
+): Promise<Set<string>> {
+  const paths = new Set<string>();
+  if (runIds.length === 0) return paths;
+  const rows = await tx
+    .select({ type: taskEvents.type, payload: taskEvents.payload })
+    .from(taskEvents)
+    .where(
+      and(
+        eq(taskEvents.taskId, taskId),
+        inArray(taskEvents.type, ["tool.started", "tool.finished"]),
+        inArray(taskEvents.runId, runIds),
+        sql`${taskEvents.payload}->>'tool' in ('write', 'edit')`,
+      ),
+    )
+    .orderBy(asc(taskEvents.sequence));
+  const calls = new Map<string, { path?: string; failed: boolean }>();
+  for (const row of rows) {
+    if (!FILE_TOOLS.includes(String(row.payload.tool))) continue;
+    calls.set(String(row.payload.toolCallId), {
+      path: workspaceRelative(workspaceDir, String(row.payload.summary)),
+      failed: row.type === "tool.finished" && row.payload.ok !== true,
+    });
+  }
+  for (const call of calls.values())
+    if (call.path && !call.failed) paths.add(call.path);
+  return paths;
+}
+
+/** The task's latest event sequence; events commit in sequence order. */
+async function eventSequence(tx: Tx, taskId: string): Promise<number> {
+  const [row] = await tx
+    .select({ sequence: tasks.eventSeq })
+    .from(tasks)
+    .where(eq(tasks.id, taskId));
+  return row?.sequence ?? 0;
+}
+
+/**
  * Who gets each path: the last toucher among the covered runs and the task's
  * finished runs still pending a snapshot; and the paths of runs still
  * running elsewhere (other than `self`), which credit them when they end.
@@ -111,6 +160,9 @@ async function credits(
   self: string | undefined,
   workspaceDir: string,
 ) {
+  // First, so a later event (a teammate's call that starts after this look)
+  // always shows as a newer sequence.
+  const seen = await eventSequence(tx, taskId);
   const open = await tx
     .select({ id: runs.id, status: runs.status })
     .from(runs)
@@ -125,13 +177,14 @@ async function credits(
     (run) => run.status === "running" && run.id !== self,
   );
   return {
+    seen,
     credit: await toolPaths(
       tx,
       taskId,
       [...new Set([...covered, ...pending.map((run) => run.id)])],
       workspaceDir,
     ),
-    active: await toolPaths(
+    active: await activePaths(
       tx,
       taskId,
       running.map((run) => run.id),
@@ -155,10 +208,8 @@ async function recordChanges(
 ): Promise<void> {
   const from = Math.min(...covered.map((run) => run.startedAt.getTime()));
   const since = new Date(from - SNAPSHOT_SKEW_MS);
-  let who: Awaited<ReturnType<typeof credits>> | undefined;
-  let stored = 0;
-  for await (const file of changedFiles(sandbox, since, ctx.config.artifacts)) {
-    who ??= await write((tx) =>
+  const look = () =>
+    write((tx) =>
       credits(
         tx,
         taskId,
@@ -167,6 +218,20 @@ async function recordChanges(
         sandbox.workspaceDir,
       ),
     );
+  let who: Awaited<ReturnType<typeof credits>> | undefined;
+  let stored = 0;
+  for await (const file of changedFiles(sandbox, since, ctx.config.artifacts)) {
+    // `who` is looked up when the first file is found. A file read after
+    // that, which none of it accounts for, may come from a teammate's write
+    // that started since: before storing it with no one's credit, look
+    // again if any event was recorded in between.
+    if (!who) who = await look();
+    else if (
+      !who.credit.has(file.path) &&
+      !who.active.has(file.path) &&
+      (await write((tx) => eventSequence(tx, taskId))) !== who.seen
+    )
+      who = await look();
     const credit = who.credit.get(file.path);
     // A teammate still running wrote this with its own tools: it is credited when that run ends.
     if (!credit && who.active.has(file.path)) continue;
