@@ -8,9 +8,15 @@ import {
   type ToolCall,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { compactionSettings, isCompaction, viewTranscript } from "./compaction";
+import {
+  compactionSettings,
+  isCompaction,
+  summaryMessage,
+  viewTranscript,
+} from "./compaction";
 import { PiSessionExecutor } from "./executor";
 import { ModelRegistry } from "./models";
 import { createScriptedProvider, scriptedCommands } from "./scripted";
@@ -244,6 +250,28 @@ describe("viewTranscript", () => {
     expect(() => parseTranscript([{ ...entry, keptEntries: -1 }])).toThrow(
       /entry 0/,
     );
+  });
+
+  it("words the summary in context exactly as pi does", () => {
+    const entry: CompactionEntry = {
+      role: "compaction",
+      summary: "## Goal\nShip it.",
+      keptEntries: 1,
+      tokensBefore: 3,
+      readFiles: [],
+      modifiedFiles: [],
+      timestamp: 9,
+    };
+    expect(
+      convertToLlm([
+        {
+          role: "compactionSummary",
+          summary: entry.summary,
+          tokensBefore: entry.tokensBefore,
+          timestamp: entry.timestamp,
+        },
+      ]),
+    ).toEqual([summaryMessage(entry)]);
   });
 });
 
@@ -559,6 +587,53 @@ describe("context compaction", () => {
     expect(requests).toHaveLength(2);
     expect(compactions(recorded.entries)).toHaveLength(1);
     expect(summaries.length).toBeGreaterThan(0);
+  });
+
+  it("keeps no summary the model did not write and does not retry it in the run", async () => {
+    const recorded = recordingHooks();
+    const summaries: TranscriptContext[] = [];
+    const replies = [
+      fauxAssistantMessage(
+        fauxToolCall("bash", { command: "echo more" }, { id: "more" }),
+        { stopReason: "toolUse" },
+      ),
+      say("Done without compacting."),
+    ];
+    // Files were read and changed, so pi would append its file lists to an empty summary.
+    const stored = [
+      ...longTranscript(6),
+      fauxAssistantMessage(
+        [
+          fauxToolCall("read", { path: "a.txt" }, { id: "r" }),
+          fauxToolCall("write", { path: "b.txt", content: "b" }, { id: "w" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      result("r", "a"),
+      result("w", "ok"),
+    ];
+    faux.setResponses(
+      Array.from({ length: 10 }, () => (context: TranscriptContext) => {
+        if (!isSummaryRequest(context)) return replies.shift() ?? say("x");
+        summaries.push(context);
+        return fauxAssistantMessage([], { stopReason: "stop" });
+      }),
+    );
+    const outcome = await executor().run(
+      input({ hooks: recorded.hooks, transcript: stored, inputs: ["Go on."] }),
+    );
+    expect(outcome).toEqual({
+      kind: "ended",
+      finalText: "Done without compacting.",
+    });
+    expect(summaries).toHaveLength(1);
+    expect(compactions(recorded.entries)).toHaveLength(0);
+    expect(
+      recorded.events.find((event) => event.type === "model.finished"),
+    ).toMatchObject({
+      stopReason: "stop",
+      text: expect.stringMatching(/: no summary$/),
+    });
   });
 
   it("does not compact with compaction turned off", async () => {

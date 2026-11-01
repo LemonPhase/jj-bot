@@ -286,6 +286,9 @@ export class ContextCompactor {
     | { ok: false; reason: CompactionFailure; error?: string }
   > {
     const { options } = this;
+    this.hookError = undefined;
+    // System messages declare the tool loadout; all of them stay, in order,
+    // so replaying them still yields the same tools (JJ runs have one).
     const system = messages.filter((message) => message.role === "system");
     const conversation = messages.filter(
       (message) => message.role !== "system" && message !== this.summary,
@@ -366,12 +369,6 @@ export class ContextCompactor {
       };
     }
     signal.throwIfAborted();
-    if (!result.summary.trim())
-      return {
-        ok: false,
-        reason: "summary_failed",
-        error: "The summary was empty.",
-      };
 
     const details = result.details as
       | { readFiles?: string[]; modifiedFiles?: string[] }
@@ -442,20 +439,27 @@ export class ContextCompactor {
             }
           : {}),
       });
+      // pi rejects error and length stops; an aborted or empty answer is no
+      // summary either (pi would append its file lists to it and keep it).
+      const answer: AssistantMessage =
+        message.stopReason === "aborted" ||
+        (message.stopReason !== "error" && !text)
+          ? {
+              ...message,
+              stopReason: "error",
+              errorMessage: `The summary call returned no summary (${message.stopReason}).`,
+            }
+          : message;
       const stream = createAssistantMessageEventStream();
-      if (message.stopReason === "error" || message.stopReason === "aborted")
-        stream.push({
-          type: "error",
-          reason: message.stopReason,
-          error: message,
-        });
+      if (answer.stopReason === "error")
+        stream.push({ type: "error", reason: "error", error: answer });
       else
         stream.push({
           type: "done",
-          reason: message.stopReason as "stop",
-          message,
+          reason: answer.stopReason as "stop",
+          message: answer,
         });
-      stream.end(message);
+      stream.end(answer);
       return stream;
     };
   }

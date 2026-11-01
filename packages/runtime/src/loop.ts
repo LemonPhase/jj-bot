@@ -263,8 +263,10 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     );
 
   const produced: AgentMessage[] = [];
-  const { compactor } = spec;
-  const compacting = compactor?.settings.enabled === true;
+  /** Set when compaction is on; an earlier compaction's summary leads the context either way. */
+  const compactor = spec.compactor?.settings.enabled
+    ? spec.compactor
+    : undefined;
   /** The loop's context as of the latest request or turn, for overflow recovery. */
   let latestContext: AgentContext | undefined;
   /** A threshold compaction whose summary failed is not tried again this run. */
@@ -443,7 +445,6 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       let update: { context: AgentContext } | undefined;
       if (
         compactor &&
-        compacting &&
         !thresholdOff &&
         compactor.overThreshold(request.context.messages)
       ) {
@@ -484,7 +485,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     spec.systemPrompt,
     tools.map(toToolDeclaration),
   );
-  const summary = compactor?.summaryMessage;
+  const summary = spec.compactor?.summaryMessage;
   const context: AgentContext = {
     messages: [
       ...(system ? [system] : []),
@@ -521,7 +522,6 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       const failed = produced.at(-1);
       if (
         !compactor ||
-        !compacting ||
         signal.aborted ||
         failed?.role !== "assistant" ||
         !overflowed(failed)
