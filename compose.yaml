@@ -1,6 +1,8 @@
-# Local PostgreSQL. Run with `docker compose up -d postgres` and set
-# DATABASE_URL=postgresql://jj:jj_local@localhost:5433/jj_bot; without
-# DATABASE_URL the API uses embedded PGlite and needs no Docker.
+# JJ Bot in one command. Put one model provider key in .env
+# (`cp .env.example .env`), run `docker compose up -d --build` and open
+# http://127.0.0.1:3001. Compose reads .env only to fill the variables below.
+# `docker compose up -d postgres` alone starts just the database for
+# `npm run dev`. Details: docs/development.md, "Docker Compose".
 name: jj-bot
 
 services:
@@ -19,5 +21,85 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # The API, serving the web app, with the worker embedded. Its sandboxes are
+  # sibling containers on the host's daemon, started through the socket below.
+  app:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://jj:jj_local@postgres:5432/jj_bot
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      # Listening on 0.0.0.0 inside the container needs a token or this
+      # opt-in. The opt-in is safe only because `ports` publishes on the host's
+      # loopback: publishing beyond loopback requires API_TOKEN.
+      API_ALLOW_UNAUTHENTICATED: "true"
+      API_TOKEN: ${API_TOKEN:-}
+      # The isolating docker driver only, so the default profile is docker.
+      # Never enable `local` here: its commands would run in this container,
+      # next to the model keys and the Docker socket.
+      JJ_SANDBOX_DRIVERS: docker
+      JJ_DOCKER_NAMESPACE: ${JJ_DOCKER_NAMESPACE:-jj}
+      JJ_ENABLE_SCRIPTED_MODEL: ${JJ_ENABLE_SCRIPTED_MODEL:-false}
+      JJ_DEFAULT_MODEL: ${JJ_DEFAULT_MODEL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MISTRAL_API_KEY: ${MISTRAL_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      # Outbound proxy for model calls. 127.0.0.1 here is the container itself;
+      # reach a proxy on the host as host.docker.internal.
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      JJ_CONCURRENCY: ${JJ_CONCURRENCY:-}
+      JJ_MAX_SESSIONS_PER_TASK: ${JJ_MAX_SESSIONS_PER_TASK:-}
+      JJ_MAX_DELEGATION_DEPTH: ${JJ_MAX_DELEGATION_DEPTH:-}
+      JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
+      JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
+    ports:
+      # Loopback only. Anything wider needs API_TOKEN (see above).
+      - "127.0.0.1:${JJ_PORT:-3001}:3001"
+    volumes:
+      # Root-equivalent on the host. The app uses it to run sandboxes and never
+      # passes it into one. Rootless Docker: set JJ_DOCKER_SOCKET to its socket.
+      - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The entrypoint joins the socket's group and drops to uid 10001 (SETUID,
+    # SETGID), and init forwards stop signals to the app (KILL). The app
+    # itself runs with no capabilities.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    init: true
+    # Longer than the API's own 20 s shutdown limit, so running sessions are
+    # handed back cleanly on `docker compose stop` or `restart`.
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Builds the sandbox base image on the host's daemon, where the docker
+  # driver looks for it. The container does nothing and exits at once.
+  sandbox-image:
+    image: jj-sandbox:base-1
+    build:
+      context: packages/sandbox/images/base
+    entrypoint: ["true"]
+    network_mode: none
+    restart: "no"
+
 volumes:
   jj_postgres:

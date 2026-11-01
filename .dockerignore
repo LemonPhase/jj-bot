@@ -1,0 +1,20 @@
+# Build context of the app image (Dockerfile). Only sources and manifests go in.
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+.git
+.github
+.claude
+.jj-data
+.env
+.env.*
+compose*.yaml
+Dockerfile
+.dockerignore
+**/*.test.ts
+**/*.test.tsx
+**/__snapshots__
+docs
+packages/sandbox/images

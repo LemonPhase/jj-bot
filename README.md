@@ -10,6 +10,17 @@ JJ Bot is an open, self-hostable multi-bot agent workspace — an open alternati
 - **Every change is an event** in an append-only per-task log. Chat, the execution graph and the audit trail are projections of it, and reconnecting replays it without re-running work.
 - **Verification is opt-in per task.** A task with a verification plan cannot complete until its checks pass. Tool calls, exit codes and artifacts are recorded either way.
 
+## Quickstart (Docker)
+
+With Docker Engine and Compose v2, from the repository root:
+
+```sh
+cp .env.example .env    # then set one model provider key, such as OPENAI_API_KEY
+docker compose up -d --build
+```
+
+Open http://127.0.0.1:3001. This runs PostgreSQL and the app (the API serving the web app, with the worker embedded) and builds the sandbox image; every task runs in its own isolated Docker container. The app mounts the host's Docker socket, which is root-equivalent on the host, and serves without a token only because the port is published on loopback: set `API_TOKEN` before exposing it any further. Stop with `docker compose down` (add `-v` to delete the data). See [Docker Compose](docs/development.md#docker-compose) for the details.
+
 ## Run locally
 
 Use Node.js 24 (minimum 22.12) and npm:

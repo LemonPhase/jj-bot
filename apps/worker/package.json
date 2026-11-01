@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@jj/api": "*",
-    "@jj/runtime": "*"
+    "@jj/runtime": "*",
+    "tsx": "4.23.15"
   },
   "devDependencies": {
     "@jj/db": "*",
