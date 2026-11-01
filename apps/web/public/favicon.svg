@@ -1,4 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" shape-rendering="crispEdges">
-  <path fill="#141418" d="M5 1h2v1h-2zM2 2h8v1h-8zM1 3h10v1h-10zM1 4h10v1h-10zM1 5h2v1h-2zM5 5h2v1h-2zM9 5h2v1h-2zM1 6h2v1h-2zM5 6h2v1h-2zM9 6h2v1h-2zM1 7h10v1h-10zM1 8h10v1h-10zM1 9h10v1h-10zM2 10h8v1h-8z"/>
+  <!-- PixelIcon's brand grid (PixelIcon.test.tsx keeps them in sync). The head
+       is --ink for the browser's colour scheme, the tab strip it sits on; the
+       eyes are holes; the antenna tip is bot coral in both schemes. -->
+  <style>@media (prefers-color-scheme: dark) { .head { fill: #ededf0 } }</style>
+  <path class="head" fill="#141418" d="M5 1h2v1h-2zM2 2h8v1h-8zM1 3h10v1h-10zM1 4h10v1h-10zM1 5h2v1h-2zM5 5h2v1h-2zM9 5h2v1h-2zM1 6h2v1h-2zM5 6h2v1h-2zM9 6h2v1h-2zM1 7h10v1h-10zM1 8h10v1h-10zM1 9h10v1h-10zM2 10h8v1h-8z"/>
   <path fill="#FF7A66" d="M5 0h2v1h-2z"/>
 </svg>
