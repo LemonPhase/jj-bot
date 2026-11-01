@@ -1101,6 +1101,84 @@ describe("cutByContext", () => {
       false,
     );
   });
+
+  /** A length stop with this usage. */
+  const used = (usage: {
+    input?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    output: number;
+  }) => {
+    const message = stopped(usage.output);
+    return { ...message, usage: { ...message.usage, ...usage } };
+  };
+
+  it("allows at least 16 tokens when the context leaves little room", () => {
+    // 55440 characters are 15840 tokens: a cap of 20000 - 15840 - 4096 = 64,
+    // whose 1% would be a single token.
+    const full = normalizeContext({
+      messages: [user("x".repeat(55_440)) as Message],
+    });
+    expect(capOf(full, model("faux-1"))).toBe(64);
+    expect(cutByContext(stopped(48), model("faux-1"), full)).toBe(true);
+    expect(cutByContext(stopped(47), model("faux-1"), full)).toBe(false);
+  });
+
+  it("takes a length stop that reached the window for a cut, below pi-ai's cap", () => {
+    // pi estimates this context at 1000 tokens, a cap of 14904; a server
+    // that counts 15000 stops the answer at the real window instead.
+    const small = normalizeContext({
+      messages: [user("x".repeat(3_500)) as Message],
+    });
+    expect(capOf(small, model("faux-1"))).toBe(14_904);
+    const faux1 = model("faux-1");
+    // Within 1% (200 tokens) of the 20000 window, cache included.
+    expect(
+      cutByContext(used({ input: 15_000, output: 4_800 }), faux1, small),
+    ).toBe(true);
+    expect(
+      cutByContext(
+        used({
+          input: 5_000,
+          cacheRead: 8_000,
+          cacheWrite: 2_000,
+          output: 4_800,
+        }),
+        faux1,
+        small,
+      ),
+    ).toBe(true);
+    expect(
+      cutByContext(used({ input: 14_999, output: 4_800 }), faux1, small),
+    ).toBe(false);
+  });
+
+  it("goes by the window alone where pi-ai sends no output cap", () => {
+    const faux1 = model("faux-1");
+    const uncapped = [
+      { ...faux1, api: "openai-codex-responses" },
+      {
+        ...faux1,
+        api: "openai-responses",
+        compat: { supportsMaxOutputTokens: false },
+      },
+    ] as unknown as Model<string>[];
+    for (const target of uncapped) {
+      // At pi-ai's cap, which the provider never got: its own limit stopped it.
+      expect(cutByContext(stopped(5904), target, context)).toBe(false);
+      expect(
+        cutByContext(used({ input: 14_000, output: 5_904 }), target, context),
+      ).toBe(true);
+    }
+    // A Responses model that takes max_output_tokens gets the cap.
+    expect(
+      cutByContext(
+        stopped(5904),
+        { ...faux1, api: "openai-responses" } as Model<string>,
+        context,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("the scripted model with a small context window", () => {
