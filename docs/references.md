@@ -29,7 +29,7 @@ Separates persistent bot identities from independent conversation threads and mu
 
 Borrow durable decomposition and result-return paths — the assignment model is the strongest reference for JJ Bot's coordination design.
 
-## CopilotKit OpenBot
+## OpenBot
 
 Uses durable coworker profiles, channels, per-agent group threads and an attributed group transcript. Handoffs carry a task, constraints and expected output through durable delivery with provenance.
 
