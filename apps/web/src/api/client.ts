@@ -45,8 +45,16 @@ export interface ApiBadge {
   title: string;
 }
 
-/** Errors the client raises itself, next to the contract's server codes. */
-export type ClientErrorCode = "NETWORK_ERROR" | "INVALID_RESPONSE";
+/**
+ * Errors the client raises itself, next to the contract's server codes.
+ * `UNRECOGNIZED_ERROR`: the server sent an error envelope with a code this
+ * client does not know (a newer server); `message` is still the server's and
+ * `serverCode` holds the code as sent.
+ */
+export type ClientErrorCode =
+  | "NETWORK_ERROR"
+  | "INVALID_RESPONSE"
+  | "UNRECOGNIZED_ERROR";
 
 /**
  * Every failed call rejects with this. Server failures carry the contract
@@ -61,6 +69,8 @@ export class ApiError extends Error {
     readonly details?: unknown,
     /** HTTP status, when a response arrived. */
     readonly status?: number,
+    /** The envelope's `code` exactly as the server sent it. */
+    readonly serverCode?: string,
   ) {
     super(message);
   }
@@ -76,7 +86,11 @@ export type StreamState = "connecting" | "open" | "reconnecting" | "closed";
 
 export interface StreamOptions {
   onState?: (state: StreamState) => void;
-  /** A failed snapshot load or a malformed frame. The subscription keeps trying. */
+  /**
+   * A failed snapshot load or a malformed frame. The subscription keeps
+   * trying, except after a task load fails with NOT_FOUND or UNAUTHORIZED
+   * (`isTerminalTaskError`), when it stops in the `closed` state.
+   */
   onError?: (error: ApiError) => void;
 }
 
@@ -166,6 +180,11 @@ export interface JJApi {
   ): Unsubscribe;
   /** Where an artifact's content downloads from. */
   artifactUrl(taskId: string, artifactId: string): string;
+  /**
+   * Present when requests need an `Authorization` header (an API token is
+   * configured), which a plain link cannot send: fetch the content instead.
+   */
+  fetchArtifact?(taskId: string, artifactId: string): Promise<Blob>;
 
   /** Demo only: run the next scripted step of a demo task now. */
   advanceDemoTask?(taskId: string): Promise<void>;

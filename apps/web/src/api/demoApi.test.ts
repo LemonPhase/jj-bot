@@ -25,15 +25,6 @@ const demo = (options: Parameters<typeof createDemoApi>[0] = {}) =>
   createDemoApi({ now: () => NOW, autoplay: false, replyMs: 0, ...options });
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-const withoutOutputs = (view: TaskView): TaskView => ({
-  ...view,
-  events: view.events.map((event) => {
-    if (event.type !== "tool.finished") return event;
-    const { output: _output, ...payload } = event.payload;
-    return { ...event, payload };
-  }),
-});
-
 /** Follows a task the way the UI does and drives it to the end of its script. */
 async function runToEnd(api: JJApi, taskId: string) {
   const views: TaskView[] = [];
@@ -173,8 +164,9 @@ describe("demo API", () => {
     expect(final.artifacts).toHaveLength(1);
     expect(final.usage.total.modelCalls).toBeGreaterThan(0);
 
-    // The client's fold equals the server's view: snapshot n + events n+1..m = view m.
-    expect(withoutOutputs(final)).toEqual(await api.getTask("task-101"));
+    // The client's fold equals the server's view: snapshot n + events n+1..m =
+    // view m, exactly, because streamed tool output previews are dropped too.
+    expect(final).toEqual(await api.getTask("task-101"));
     expect(api.artifactUrl("task-101", final.artifacts[0]?.id ?? "")).toMatch(
       /^data:text\/markdown/,
     );
@@ -198,7 +190,8 @@ describe("demo API", () => {
   it.each([
     [["bot-kite"], 0],
     [["bot-kite", "bot-moss"], 1],
-    [["bot-kite", "bot-moss", "bot-vesper", "bot-juno"], 2],
+    // A third teammate becomes the first worker's helper, two levels down.
+    [["bot-kite", "bot-moss", "bot-vesper", "bot-juno"], 3],
   ])(
     "completes a new task with participants %j",
     async (participants, workers) => {
@@ -217,6 +210,13 @@ describe("demo API", () => {
       expect(final.sessions.filter((s) => s.role === "worker")).toHaveLength(
         workers,
       );
+      const parents = new Map(final.sessions.map((s) => [s.id, s]));
+      const depthOf = (id: string | null): number =>
+        id ? 1 + depthOf(parents.get(id)?.parentSessionId ?? null) : -1;
+      expect(Math.max(...final.sessions.map((s) => depthOf(s.id)))).toBe(
+        workers === 3 ? 2 : Math.min(workers, 1),
+      );
+      expect(final.sessions.every((s) => s.depth === depthOf(s.id))).toBe(true);
     },
   );
 
@@ -234,6 +234,60 @@ describe("demo API", () => {
     const { final } = await runToEnd(api, "task-103");
     expect(final.task.status).toBe("completed");
     expectValidEvents(final.events);
+  });
+
+  it("posts a goal change in the server's event order", async () => {
+    const api = demo();
+    // Waiting task: the goal change also reopens it.
+    await api.postTaskMessage("task-103", {
+      text: "Switch over in one go",
+      goal: "Plan a one-step rollout of the Docker sandbox driver",
+      observedGoalVersion: 1,
+    });
+    const { events } = await api.getTask("task-103");
+    const from = events.findIndex((e) => e.type === "task.goal_changed") - 1;
+    expect(events.slice(from).map((e) => e.type)).toEqual([
+      "task.updated",
+      "task.goal_changed",
+      "task.updated",
+      "task.reopened",
+      "message.posted",
+      "steering.received",
+    ]);
+    // A completed task's finished coordinator session is queued again too.
+    await api.postTaskMessage("task-102", { text: "One more thing" });
+    const after = (await api.getTask("task-102")).events;
+    const reopened = after.findIndex((e) => e.type === "task.reopened");
+    expect(after.slice(reopened - 1).map((e) => e.type)).toEqual([
+      "task.updated",
+      "task.reopened",
+      "session.updated",
+      "message.posted",
+      "steering.received",
+    ]);
+  });
+
+  it("checks the goal version only when the goal changes", async () => {
+    const api = demo();
+    const { task } = await api.getTask("task-101");
+    // The same goal is no change: no version check, no new version.
+    await api.postTaskMessage("task-101", {
+      text: "Same goal, more detail",
+      goal: task.goal,
+      observedGoalVersion: 99,
+    });
+    expect((await api.getTask("task-101")).task.goalVersion).toBe(1);
+    await expect(
+      api.postTaskMessage("task-101", {
+        text: "New goal",
+        goal: "Something else",
+        observedGoalVersion: 3,
+      }),
+    ).rejects.toMatchObject({
+      code: "STALE_GOAL_VERSION",
+      message: "The goal is at version 1; you edited version 3.",
+      details: { goalVersion: 1 },
+    });
   });
 
   it("changes the goal only against the observed version", async () => {
@@ -259,14 +313,23 @@ describe("demo API", () => {
     expect(events.some((e) => e.type === "task.goal_changed")).toBe(true);
   });
 
-  it("stops a task: stopping first, then cancelled", async () => {
+  it("stops a task as the server does: stopping while runs stop, then cancelled", async () => {
     const api = demo();
+    // Start the workers, so there are runs to stop.
+    await api.advanceDemoTask?.("task-101");
     const stopping = await api.stopTask("task-101", { reason: "  " });
     expect(stopping.cancelReason).toBeNull();
     expect(statusWord(stopping)).toBe("stopping");
-    await rejects(
-      api.postTaskMessage("task-101", { text: "hello" }),
-      "TASK_TERMINAL",
+    const refused = await api
+      .postTaskMessage("task-101", { text: "hello" })
+      .catch((reason: unknown) => reason);
+    expect(refused).toMatchObject({
+      code: "TASK_TERMINAL",
+      message: "The task is stopping and takes no new messages.",
+    });
+    // A repeat stop is idempotent.
+    expect((await api.stopTask("task-101")).cancelRequestedAt).toBe(
+      stopping.cancelRequestedAt,
     );
     await api.advanceDemoTask?.("task-101");
     const view = taskViewSchema.parse(await api.getTask("task-101"));
@@ -274,15 +337,47 @@ describe("demo API", () => {
     expect(
       view.sessions.every((s) => ["cancelled", "completed"].includes(s.status)),
     ).toBe(true);
-    expect(view.events.map((e) => e.type)).toEqual(
-      expect.arrayContaining([
-        "cancellation.requested",
-        "cancellation.completed",
-        "task.finished",
-      ]),
-    );
+    const types = view.events.map((e) => e.type);
+    const requested = types.indexOf("cancellation.requested");
+    // The server's order: request; runs stop (run.finished, then the session);
+    // the task is cancelled; cancellation.completed; task.finished.
+    expect(types.slice(requested - 1, requested + 1)).toEqual([
+      "task.updated",
+      "cancellation.requested",
+    ]);
+    expect(types.slice(-3)).toEqual([
+      "task.updated",
+      "cancellation.completed",
+      "task.finished",
+    ]);
+    const firstStop = types.indexOf("run.finished", requested);
+    expect(types[firstStop + 1]).toBe("session.updated");
     expectValidEvents(view.events);
-    await rejects(api.stopTask("task-101"), "TASK_TERMINAL");
+    expect((await api.stopTask("task-101")).status).toBe("cancelled");
+    await expect(
+      api.postTaskMessage("task-101", { text: "hello" }),
+    ).rejects.toMatchObject({
+      code: "TASK_TERMINAL",
+      message: "The task was cancelled; start a new task to continue the work.",
+    });
+  });
+
+  it("settles a stop at once with no run in progress, and refuses finished tasks", async () => {
+    const api = demo();
+    // task-101 as seeded: the coordinator waits and the workers are queued.
+    const stopped = await api.stopTask("task-101");
+    expect(stopped.status).toBe("cancelled");
+    const view = await api.getTask("task-101");
+    const completed = view.events.find(
+      (e) => e.type === "cancellation.completed",
+    );
+    expect(
+      completed?.type === "cancellation.completed" && completed.payload,
+    ).toMatchObject({ stopped: [] });
+    await expect(api.stopTask("task-102")).rejects.toMatchObject({
+      code: "CONFLICT",
+      message: "The task already completed; there is nothing to stop.",
+    });
   });
 
   it("replies to a greeting without starting a task", async () => {
@@ -346,7 +441,14 @@ describe("demo API", () => {
       "VERIFICATION_UNAVAILABLE",
     );
     await rejects(api.archiveBot("bot-juno"), "CONFLICT");
-    await rejects(api.deleteProfile("profile-docker"), "PROFILE_IN_USE");
+    await rejects(api.createBot({ name: "juno" }), "CONFLICT");
+    await rejects(api.updateBot("bot-kite", { name: "Moss" }), "CONFLICT");
+    await rejects(api.deleteProfile("profile-docker"), "CONFLICT");
+    await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
+    await rejects(
+      api.updateProfile("profile-docker", { isDefault: false }),
+      "CONFLICT",
+    );
     await rejects(
       api.createProfile({
         name: "Offline local",
@@ -355,6 +457,53 @@ describe("demo API", () => {
       "PROFILE_UNSUPPORTED",
     );
     await rejects(api.getTask("task-999"), "NOT_FOUND");
+  });
+
+  it("refuses specs with the drivers' own messages, as the server does", async () => {
+    const api = demo();
+    const message = async (promise: Promise<unknown>) =>
+      (
+        (await promise.then(
+          () => null,
+          (reason: unknown) => reason,
+        )) as ApiError | null
+      )?.message;
+    expect(
+      await message(
+        api.createProfile({
+          name: "Offline local",
+          sandbox: { driver: "local", network: { mode: "none" } },
+        }),
+      ),
+    ).toBe('Driver local cannot enforce network.mode="none"');
+    // Switching the docker profile to local keeps its network "none".
+    expect(
+      await message(
+        api.updateProfile("profile-docker", { sandbox: { driver: "local" } }),
+      ),
+    ).toBe('Driver local cannot enforce network.mode="none"');
+    // With an open network the image is dropped, but the resources stay.
+    expect(
+      await message(
+        api.updateProfile("profile-docker", {
+          sandbox: { driver: "local", network: { mode: "open" } },
+        }),
+      ),
+    ).toBe("Driver local cannot enforce resources");
+    expect(
+      await message(
+        api.createProfile({
+          name: "Local image",
+          sandbox: {
+            driver: "local",
+            image: "node:22",
+            network: { mode: "open" },
+          },
+        }),
+      ),
+    ).toBe(
+      'Driver local cannot enforce image "node:22": commands run directly on the host',
+    );
   });
 
   it("creates, edits and archives bots with contract defaults", async () => {
@@ -397,6 +546,22 @@ describe("demo API", () => {
     await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
   });
 
+  it("keeps a reopened seeded task moving on its own", async () => {
+    // Seeded task-103 waits for an answer with autoplay off.
+    const api = demo({ autoplay: true, stepMs: 2 });
+    const statuses: string[] = [];
+    const unsubscribe = api.subscribeTask("task-103", (view) =>
+      statuses.push(view.task.status),
+    );
+    await flush();
+    expect(statuses).toEqual(["waiting"]);
+    await api.postTaskMessage("task-103", { text: "Keep a fallback." });
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe("completed"), {
+      timeout: 3000,
+    });
+    unsubscribe();
+  });
+
   it("advances on a timer when autoplay is on", async () => {
     const api = demo({ autoplay: true, stepMs: 2 });
     const statuses: string[] = [];
@@ -421,9 +586,7 @@ describe("demo API", () => {
     await api.advanceDemoTask?.("task-101");
     stop();
     stopLate();
-    expect(withoutOutputs(late.at(-1) as TaskView)).toEqual(
-      withoutOutputs(early.at(-1) as TaskView),
-    );
+    expect(late.at(-1)).toEqual(early.at(-1));
     // Folding is idempotent: replaying an applied event changes nothing.
     const last = early.at(-1) as TaskView;
     const replayed = last.events.at(-1);

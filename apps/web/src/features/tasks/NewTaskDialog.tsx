@@ -6,10 +6,10 @@ import {
   Dialog,
   ErrorBanner,
   SectionLabel,
+  Select,
   Textarea,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
-import "./tasks.css";
 
 export interface NewTaskDialogProps {
   /** Preselected bots; the first coordinates. */
@@ -17,21 +17,32 @@ export interface NewTaskDialogProps {
   onClose: () => void;
 }
 
-/** Starts a task: a goal and the bots that work on it. On success the task opens. */
+/**
+ * Starts a task: the goal, the coordinator who plans and delegates, and any
+ * number of other participants. On success the task opens.
+ */
 export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const { bots, createTask } = useWorkspace();
   const formId = useId();
   const pickLabelId = useId();
-  const [goal, setGoal] = useState("");
-  const [picked, setPicked] = useState<string[]>(() =>
-    initialBotIds.filter((botId) => bots.some((bot) => bot.id === botId)),
+  const known = initialBotIds.filter((botId) =>
+    bots.some((bot) => bot.id === botId),
   );
+  const [goal, setGoal] = useState("");
+  const [coordinatorId, setCoordinatorId] = useState(
+    () => known[0] ?? bots[0]?.id ?? "",
+  );
+  const [others, setOthers] = useState<string[]>(() => known.slice(1));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const canStart = goal.trim().length > 0 && picked.length > 0 && !busy;
+  const participants = [
+    coordinatorId,
+    ...others.filter((botId) => botId !== coordinatorId),
+  ].filter(Boolean);
+  const canStart = goal.trim().length > 0 && Boolean(coordinatorId) && !busy;
 
   const toggle = (botId: string) =>
-    setPicked((current) =>
+    setOthers((current) =>
       current.includes(botId)
         ? current.filter((id) => id !== botId)
         : [...current, botId],
@@ -43,7 +54,7 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
     setBusy(true);
     setError(null);
     try {
-      await createTask({ goal: goal.trim(), participantBotIds: picked });
+      await createTask({ goal: goal.trim(), participantBotIds: participants });
       onClose();
     } catch (reason) {
       setError(
@@ -60,7 +71,7 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
         if (!busy) onClose();
       }}
       title="New task"
-      description="Describe the goal and pick the bots. The first bot you pick coordinates."
+      description="Describe the goal and pick the team. The coordinator plans the work and delegates to the others; everyone sees the whole chat."
       dismissible={!goal.trim()}
       width={520}
       footer={
@@ -79,32 +90,48 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
         </>
       }
     >
-      <form id={formId} className="new-task-form" onSubmit={submit}>
-        <Textarea
-          label="Goal"
-          value={goal}
-          rows={3}
-          required
-          placeholder="What should the bots accomplish?"
-          onChange={(event) => setGoal(event.target.value)}
-        />
-        <div className="new-task-form__bots">
-          <SectionLabel id={pickLabelId} tracking="part">
-            Bots
-          </SectionLabel>
-          {bots.length ? (
+      {bots.length === 0 ? (
+        <p className="new-task-form__note">
+          Create a bot first: a task needs at least a coordinator.
+        </p>
+      ) : (
+        <form id={formId} className="new-task-form" onSubmit={submit}>
+          <Textarea
+            label="Goal"
+            value={goal}
+            rows={3}
+            required
+            placeholder="What should the bots accomplish?"
+            onChange={(event) => setGoal(event.target.value)}
+          />
+          <Select
+            label="Coordinator"
+            value={coordinatorId}
+            onChange={setCoordinatorId}
+            options={bots.map((bot) => ({
+              value: bot.id,
+              label: bot.role ? `${bot.name} · ${bot.role}` : bot.name,
+            }))}
+          />
+          <div className="new-task-form__bots">
+            <SectionLabel id={pickLabelId} tracking="part">
+              Participants · {participants.length}
+            </SectionLabel>
             <div
               className="new-task-form__chips"
               role="group"
               aria-labelledby={pickLabelId}
             >
               {bots.map((bot) => {
-                const index = picked.indexOf(bot.id);
+                const isCoordinator = bot.id === coordinatorId;
                 return (
                   <Chip
                     key={bot.id}
-                    selected={index >= 0}
-                    onClick={() => toggle(bot.id)}
+                    selected={isCoordinator || others.includes(bot.id)}
+                    aria-disabled={isCoordinator || undefined}
+                    onClick={() => {
+                      if (!isCoordinator) toggle(bot.id);
+                    }}
                     leading={
                       <Avatar
                         appearance={bot.appearance}
@@ -116,7 +143,7 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
                     }
                   >
                     {bot.name}
-                    {index === 0 && (
+                    {isCoordinator && (
                       <span className="new-task-form__coordinator">
                         · coordinator
                       </span>
@@ -125,12 +152,10 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
                 );
               })}
             </div>
-          ) : (
-            <p className="new-task-form__note">Create a bot first.</p>
-          )}
-        </div>
-        {error && <ErrorBanner>{error}</ErrorBanner>}
-      </form>
+          </div>
+          {error && <ErrorBanner word="Not started">{error}</ErrorBanner>}
+        </form>
+      )}
     </Dialog>
   );
 }

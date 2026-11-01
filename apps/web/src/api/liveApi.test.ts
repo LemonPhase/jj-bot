@@ -222,6 +222,51 @@ describe("live API requests", () => {
     });
   });
 
+  it("keeps the server's message for an error code it does not know", async () => {
+    const { fetch } = mockFetch({
+      "GET /api/tasks": () =>
+        json(429, {
+          error: { code: "QUOTA_EXCEEDED", message: "Monthly quota used up." },
+        }),
+      "GET /api/bots": () =>
+        json(401, { error: { code: "TOKEN_EXPIRED", message: "Expired." } }),
+    });
+    const api = createLiveApi({ bootstrap, fetch, eventSource });
+    await expect(api.listTasks()).rejects.toMatchObject({
+      code: "UNRECOGNIZED_ERROR",
+      serverCode: "QUOTA_EXCEEDED",
+      message: "Monthly quota used up.",
+      status: 429,
+    });
+    await expect(api.listBots()).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+      serverCode: "TOKEN_EXPIRED",
+      message: "Expired.",
+    });
+  });
+
+  it("downloads artifacts through fetch only when a token must be sent", async () => {
+    const { fetch, calls } = mockFetch({
+      "GET /api/tasks/task-1/artifacts/a1/content": () =>
+        new Response("# Findings", {
+          headers: { "Content-Type": "text/markdown" },
+        }),
+      "GET /api/tasks/task-1/artifacts/gone/content": () =>
+        json(404, { error: { code: "NOT_FOUND", message: "No artifact." } }),
+    });
+    expect(createLiveApi({ bootstrap, fetch }).fetchArtifact).toBeUndefined();
+    const api = createLiveApi({ bootstrap, fetch, token: "secret" });
+    const blob = await api.fetchArtifact?.("task-1", "a1");
+    expect(await blob?.text()).toBe("# Findings");
+    expect(
+      (calls[0]?.init.headers as Record<string, string>).Authorization,
+    ).toBe("Bearer secret");
+    await expect(api.fetchArtifact?.("task-1", "gone")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "No artifact.",
+    });
+  });
+
   it("reports network failures and validates commands before sending", async () => {
     const fetch = vi.fn(async () => {
       throw new TypeError("fetch failed");
@@ -252,6 +297,8 @@ describe("live API requests", () => {
         (c) => (c.init.headers as Record<string, string>).Authorization,
       ),
     ).toEqual(["Bearer secret", "Bearer secret"]);
+    // Reads bypass the HTTP cache, so a hint-driven refetch sees the change.
+    expect(calls.map((c) => c.init.cache)).toEqual(["no-store", undefined]);
   });
 
   it("builds artifact URLs and badges from bootstrap", () => {
@@ -346,17 +393,120 @@ describe("live task stream", () => {
     expect(views.at(-1)?.messages).toHaveLength(2);
   });
 
-  it("ignores unknown event types and reports malformed known ones", async () => {
-    const { views, errors } = follow();
+  it("ignores unknown event types without moving anything on screen", async () => {
+    const { views } = follow();
     await flush();
     const source = latestSource();
     source.open();
     source.send(unknownEvent(3), false);
     expect(views).toHaveLength(1);
-    source.send({ ...posted(4), payload: { message: { text: 1 } } });
-    expect(errors.map((e) => e.code)).toEqual(["INVALID_RESPONSE"]);
     source.send(posted(4));
     expect(views.at(-1)?.cursor).toBe(4);
+  });
+
+  it("reloads the snapshot instead of skipping a malformed known event", async () => {
+    // The first snapshot is at 2; the reload reflects the event that was malformed on the wire.
+    const snapshots = [snapshot, { ...snapshot, cursor: 4 }];
+    const { fetch, calls } = mockFetch({
+      "GET /api/tasks/task-1": () => json(200, snapshots.shift() ?? snapshot),
+    });
+    const { views, errors, states } = follow(fetch);
+    await flush();
+    const first = latestSource();
+    first.open();
+    first.send(posted(3));
+    first.send({ ...posted(4), payload: { message: { text: 1 } } });
+    expect(errors.map((e) => e.code)).toEqual(["INVALID_RESPONSE"]);
+    // The stream is closed at once, so nothing after the bad frame is applied out of order.
+    expect(first.closed).toBe(true);
+    first.send(posted(5));
+    expect(views.map((v) => v.cursor)).toEqual([2, 3]);
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    expect(
+      calls.filter((c) => c.url === "/api/tasks/task-1").map((c) => c.url),
+    ).toHaveLength(2);
+    const second = latestSource();
+    expect(second.url).toBe("/api/tasks/task-1/stream?after=4");
+    second.open();
+    second.send(posted(5));
+    expect(views.map((v) => v.cursor)).toEqual([2, 3, 4, 5]);
+    expect(states).toEqual(["connecting", "open", "reconnecting", "open"]);
+  });
+
+  it("backs off while the server keeps sending the same malformed event", async () => {
+    vi.useFakeTimers();
+    try {
+      const { fetch, calls } = mockFetch({ "GET /api/tasks/task-1": snapshot });
+      const api = createLiveApi({ bootstrap, fetch, eventSource, retryMs: 10 });
+      const unsubscribe = api.subscribeTask("task-1", () => {});
+      const loads = () =>
+        calls.filter((c) => c.url === "/api/tasks/task-1").length;
+      const sendBad = async () => {
+        await vi.advanceTimersByTimeAsync(0);
+        const source = latestSource();
+        source.open();
+        source.send({ ...posted(3), payload: { message: { text: 1 } } });
+      };
+      await sendBad();
+      expect(loads()).toBe(1);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(loads()).toBe(2);
+      await sendBad();
+      // The second reload waits twice as long.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(loads()).toBe(2);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(loads()).toBe(3);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops tool output previews from streamed events, as snapshots do", async () => {
+    const { views } = follow();
+    await flush();
+    const source = latestSource();
+    source.open();
+    source.send({
+      ...base(3),
+      type: "tool.finished",
+      payload: {
+        toolCallId: "t1",
+        tool: "bash",
+        summary: "npm test",
+        ok: true,
+        output: "12 tests passed",
+        truncated: false,
+      },
+    });
+    const event = views.at(-1)?.events.at(-1);
+    expect(event?.type).toBe("tool.finished");
+    expect(event && "output" in event.payload).toBe(false);
+  });
+
+  it("stops retrying a task that does not exist and says why", async () => {
+    const { fetch, calls } = mockFetch({});
+    const { errors, states, views } = follow(fetch);
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(views).toEqual([]);
+    expect(errors.map((e) => e.code)).toEqual(["NOT_FOUND"]);
+    expect(states).toEqual(["connecting", "closed"]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps retrying a snapshot that fails for another reason", async () => {
+    let failures = 2;
+    const { fetch } = mockFetch({
+      "GET /api/tasks/task-1": () =>
+        failures-- > 0
+          ? json(503, { error: { code: "INTERNAL", message: "Restarting" } })
+          : json(200, snapshot),
+    });
+    const { errors, views } = follow(fetch);
+    await vi.waitFor(() => expect(views).toEqual([snapshot]));
+    expect(errors.map((e) => e.message)).toEqual(["Restarting", "Restarting"]);
   });
 
   it("lets the browser resume with Last-Event-ID after a dropped connection", async () => {

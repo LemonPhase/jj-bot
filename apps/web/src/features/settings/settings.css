@@ -1,0 +1,388 @@
+/*
+ * Settings (frontend brief; not in the design). Built from the C2 language:
+ * mono uppercase labels, 1px cards on --bg-raised, pills, 6px status squares
+ * next to a word. Colours come from tokens, so both themes work.
+ */
+
+.settings-subtitle {
+  font-size: var(--fs-ui);
+  color: var(--ink-muted);
+}
+
+.settings-tabs {
+  flex: none;
+  padding: 0 24px;
+}
+
+.settings-tabs .ui-tabs {
+  border-bottom: 1px solid var(--line-subtle);
+}
+
+.settings-tabs .ui-tab {
+  margin-bottom: -1px;
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  padding: 18px 24px 32px;
+  overflow-y: auto;
+}
+
+/* Left-aligned with the header and tabs. */
+.settings-column {
+  width: 100%;
+  max-width: 760px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+}
+
+.settings-section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+}
+
+.settings-heading {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-body);
+}
+
+.settings-callout {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+  font-size: var(--fs-ui);
+  color: var(--ink-2);
+}
+
+.settings-callout strong {
+  font-weight: var(--fw-semibold);
+  color: var(--ink);
+}
+
+.settings-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.settings-hint,
+.settings-meta {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
+.settings-empty {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.settings-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* A warning in words, led by a verifying-amber square (never colour alone). */
+.settings-warning {
+  position: relative;
+  margin: 0;
+  padding-left: 14px;
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+}
+
+.settings-warning::before {
+  content: "";
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: var(--status-square);
+  height: var(--status-square);
+  background: var(--status-verifying);
+}
+
+/* ── Lists of cards ────────────────────────────────────────────────────── */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+}
+
+.settings-card__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-medium);
+}
+
+.settings-card__description {
+  margin: 0;
+  font-size: var(--fs-ui);
+  color: var(--ink-2);
+}
+
+.settings-facts {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
+.settings-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-top: var(--sp-1);
+}
+
+.settings-default {
+  gap: var(--sp-1);
+}
+
+.settings-default__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  font-weight: var(--fw-medium);
+}
+
+/* ── Models table ──────────────────────────────────────────────────────── */
+.settings-details summary {
+  width: fit-content;
+  border-radius: var(--r-xs);
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.settings-details summary:hover {
+  color: var(--ink);
+}
+
+.settings-details summary:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+.settings-table-wrap {
+  margin-top: var(--sp-4);
+  overflow-x: auto;
+}
+
+/* Fixed columns, so the tables of every provider line up. */
+.settings-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: var(--fs-meta);
+}
+
+.settings-table thead th:nth-child(1) {
+  width: 44%;
+}
+
+.settings-table thead th:nth-child(2),
+.settings-table thead th:nth-child(3) {
+  width: 15%;
+}
+
+.settings-table th,
+.settings-table td {
+  padding: 7px 10px 7px 0;
+  border-top: 1px solid var(--line-subtle);
+  text-align: left;
+  vertical-align: top;
+}
+
+.settings-table thead th {
+  border-top: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  font-weight: var(--fw-regular);
+  letter-spacing: var(--tracking-part);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.settings-table tbody th {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-weight: var(--fw-regular);
+}
+
+.settings-table__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-ui);
+  color: var(--ink);
+}
+
+.settings-table td {
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+/* ── Forms ─────────────────────────────────────────────────────────────── */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-9);
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--r-xl);
+}
+
+.settings-group > legend {
+  padding: 0 4px;
+}
+
+.settings-group__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--sp-7) var(--sp-8);
+}
+
+.settings-group__fields--wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* A group nested in the sandbox group: a lighter frame. */
+.settings-group .settings-group {
+  padding: 12px 14px 14px;
+  border-radius: var(--r-lg);
+}
+
+.settings-choice__switch {
+  max-width: 360px;
+}
+
+.settings-field--mono .ui-textarea {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+
+.settings-driver-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.settings-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.settings-tools .ui-chip {
+  font-family: var(--font-mono);
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: fit-content;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.settings-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.settings-check input:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+.settings-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-4);
+}
+
+.settings-form__status {
+  margin-right: auto;
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
+/* ── Driver facts ──────────────────────────────────────────────────────── */
+.settings-dl {
+  display: grid;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.settings-dl__row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: var(--sp-6);
+  font-size: var(--fs-meta);
+}
+
+.settings-dl dt {
+  color: var(--ink-muted);
+}
+
+.settings-dl dd {
+  margin: 0;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.settings-column:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 1px solid var(--ink-2);
+  outline-offset: 4px;
+}

@@ -1,30 +1,47 @@
 /**
- * Imperative Three.js scene for the task "office" view.
+ * Imperative Three.js scene for the task Office 3D view (SPEC §5.5, §10).
  *
  * Bots in a task get a desk; each desk monitor shows that bot's real session
- * status, the whiteboard shows the task's goal, version and sessions, and
- * task messages are acted out as "beats" (walking, facing, speech bubbles and
- * beams). The scene never invents state: statuses only come from `sync()`.
+ * status and task events are acted out as beats (walking, facing, speech
+ * bubbles and beams). The scene never invents state: statuses only come from
+ * `sync()`, and beats only from real task events.
+ *
+ * Look: the C2 · Pixel Lite flat style. Every box has a top, front and side
+ * colour (MeshBasicMaterial, no lighting or shadow maps), per theme. Bots are
+ * block characters built from `bot.appearance` (see character3d.ts).
+ *
+ * Time: the loop measures real elapsed time and integrates it in small
+ * sub-steps, so playback keeps real-time pace even at a few frames per second
+ * (a headless browser). Rendering stops while the page is hidden or the stage
+ * is offscreen, and `dispose()` frees every GPU resource and the context.
  */
 
-import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
+import type { Bot, TaskView } from "@jj/contracts";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import { spritePathsFor } from "../../components/sprite/compose";
 import { colourRamp } from "../../lib/colour";
-import { statusWord } from "../../lib/status";
-import { orderedSessions, sessionOrdinal } from "../../lib/tasks";
-import type { Beat } from "./beats";
+import { type StatusTone, statusTone } from "../../lib/status";
+import { type Beat, beatHoldMs, sessionFor } from "./beats";
+import {
+  type BlockCharacter,
+  type Box3,
+  blinkScale,
+  blockCharacter,
+  boxToWorld,
+  type Faces,
+  gaitPose,
+  idleLift,
+  PLATE_HEIGHT,
+  PLATE_WIDTH,
+  type PlateRect,
+  PX,
+  REST_POSE,
+  talkPose,
+  tapPose,
+} from "./character3d";
+import type { OfficeStatus } from "./playback";
 
-export interface OfficeStatus {
-  /** Beats waiting to be acted out (including the one in progress). */
-  pending: number;
-  paused: boolean;
-  replaying: boolean;
-  /** Camera is following the speaker (dragging the view turns this off). */
-  following: boolean;
-}
+export type OfficeTheme = "light" | "dark";
 
 type Place = "desk" | "table" | "board" | "terminal" | "visiting";
 
@@ -36,25 +53,45 @@ interface CanvasTex {
 
 interface Desk {
   screen: CanvasTex;
+  top: THREE.Mesh;
+  housing: THREE.Mesh;
   spot: THREE.Vector3;
   face: THREE.Vector3;
   fwd: THREE.Vector3;
-  phase: number;
   botId: string | null;
+  tone: StatusTone | null;
+}
+
+interface GlowMat {
+  mat: THREE.MeshBasicMaterial;
+  base: THREE.Color;
 }
 
 interface Actor {
   profile: Bot;
-  /** Fill colour from the bot's appearance. */
+  /** Appearance key; a change rebuilds the character. */
+  look: string;
+  spec: BlockCharacter;
+  /** Fill colour from the bot's appearance (beams). */
   color: string;
   group: THREE.Group;
+  body: THREE.Group;
   headPivot: THREE.Group;
-  face: THREE.Mesh;
-  arms: THREE.Mesh[];
-  glow: THREE.MeshStandardMaterial;
+  eyes: THREE.Object3D[];
+  mouth: THREE.Object3D | null;
+  arms: [THREE.Group, THREE.Group];
+  tip: THREE.Object3D | null;
+  dish: THREE.Object3D | null;
+  leaves: THREE.Object3D | null;
+  rotor: THREE.Object3D | null;
+  halo: THREE.Object3D | null;
+  glow: GlowMat[];
   ring: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>;
+  own: { dispose: () => void }[];
   desk: Desk;
   tag: HTMLDivElement;
+  ping: HTMLDivElement;
+  typing: HTMLDivElement;
   path: THREE.Vector3[];
   finalFace: THREE.Vector3 | null;
   lookAt: THREE.Vector3 | null;
@@ -62,9 +99,13 @@ interface Actor {
   yaw: number;
   targetYaw: number;
   talking: boolean;
-  walkPhase: number;
+  /** Session running and at the desk: taps away. */
+  working: boolean;
+  walkT: number;
+  spin: number;
   at: Place;
   pingUntil: number;
+  phase: number;
 }
 
 interface Beam {
@@ -78,7 +119,7 @@ interface Beam {
 
 interface Bubble {
   el: HTMLDivElement;
-  text: HTMLDivElement;
+  text: HTMLSpanElement;
   from: string;
   full: string;
   born: number;
@@ -87,57 +128,200 @@ interface Bubble {
   anchor: () => THREE.Vector3;
 }
 
-export const STATUS_COLORS: Record<string, string> = {
-  queued: "#8c8c85",
-  running: "#2563eb",
-  waiting: "#d97706",
-  completed: "#10b981",
-  failed: "#e11d48",
-  cancelled: "#71716b",
-  idle: "#b5b5ad",
+/** Status colours per theme, mirroring `--status-*` in tokens.css. Light monitors use the light tones. */
+const STATUS: Readonly<Record<OfficeTheme, Record<StatusTone, string>>> = {
+  dark: {
+    running: "#60A5FA",
+    verifying: "#FBBF24",
+    completed: "#4ADE80",
+    failed: "#F87171",
+    idle: "#4A4A52",
+  },
+  light: {
+    running: "#3B82F6",
+    verifying: "#F59E0B",
+    completed: "#22C55E",
+    failed: "#EF4444",
+    idle: "#B4B4BC",
+  },
 };
 
-export const statusColor = (status: string | undefined): string =>
-  STATUS_COLORS[status ?? "idle"] ?? "#b5b5ad";
-
-const THEMES = {
-  light: {
-    bg: 0xf7f7f5,
-    floor: 0xecebe5,
-    wall: 0xf4f3ef,
-    wallEdge: 0xdedcd3,
-    desk: 0xd8cfbd,
-    leg: 0x575753,
-    rug: 0xe2e0d7,
-    table: 0xfbfbf9,
-    white: 0xf6f6f2,
-    window: 0xcfe0ee,
-    hemi: 1.15,
-    sun: 1.9,
-  },
+/** Lines on a lit screen (`--status-*-deep`; failed and idle are not designed). */
+const DEEP: Readonly<Record<OfficeTheme, Record<StatusTone, string>>> = {
   dark: {
-    bg: 0x0f0f0e,
-    floor: 0x1c1c1a,
-    wall: 0x242422,
-    wallEdge: 0x30302c,
-    desk: 0x3a352d,
-    leg: 0x8c8c85,
-    rug: 0x262623,
-    table: 0x2f2f2b,
-    white: 0xd8d8d2,
-    window: 0x1d2b3a,
-    hemi: 0.55,
-    sun: 0.9,
+    running: "#1E3A5F",
+    verifying: "#6B4E0A",
+    completed: "#14532D",
+    failed: "#5C1F1F",
+    idle: "#2A2A32",
   },
-} as const;
+  light: {
+    running: "#1E3A5F",
+    verifying: "#6B4E0A",
+    completed: "#14532D",
+    failed: "#7F1D1D",
+    idle: "#8A8A94",
+  },
+};
 
-const FONT = `-apple-system, "Inter", "Segoe UI", Roboto, sans-serif`;
-const MONO = `"SF Mono", "JetBrains Mono", Menlo, monospace`;
+interface RoomPalette {
+  bg: string;
+  floor: string;
+  checker: string;
+  slab: Faces;
+  wall: string;
+  wallSide: string;
+  wallEdge: string;
+  wallEdgeSide: string;
+  desk: Faces;
+  deskFree: Faces;
+  housingOn: Faces;
+  housingOff: Faces;
+  chair: Faces;
+  table: Faces;
+  leg: string;
+  rug: string;
+  sky: string;
+  frame: string;
+  star: string;
+  plantA: Faces;
+  plantB: Faces;
+  pot: Faces;
+  kiosk: Faces;
+  termScreen: string;
+  termCursor: string;
+  accessory: string;
+  boardFace: string;
+  boardLabel: string;
+  screenOff: string;
+  ping: string;
+  shadow: string;
+  shadowOpacity: number;
+}
+
+/** Room colours per theme (SPEC §10.1: top · front · side). */
+const THEMES: Readonly<Record<OfficeTheme, RoomPalette>> = {
+  dark: {
+    bg: "#0B0B0D",
+    floor: "#0E0E12",
+    checker: "#131318",
+    slab: { t: "#0E0E12", f: "#0A0A0D", s: "#08080A" },
+    wall: "#17171C",
+    wallSide: "#131317",
+    wallEdge: "#24242C",
+    wallEdgeSide: "#1F1F26",
+    desk: { t: "#2C2C34", f: "#212128", s: "#1A1A20" },
+    deskFree: { t: "#24242B", f: "#1C1C22", s: "#16161B" },
+    housingOn: { t: "#3A3A44", f: "#3A3A44", s: "#2A2A32" },
+    housingOff: { t: "#2E2E36", f: "#2A2A32", s: "#222228" },
+    chair: { t: "#202027", f: "#18181E", s: "#141419" },
+    table: { t: "#2A2A31", f: "#1F1F25", s: "#18181D" },
+    leg: "#3A3A44",
+    rug: "#131318",
+    sky: "#0F1626",
+    frame: "#2A2A32",
+    star: "#EDEDF0",
+    plantA: { t: "#34D399", f: "#1E8A57", s: "#17704A" },
+    plantB: { t: "#4AE3A4", f: "#22A06B", s: "#1B8257" },
+    pot: { t: "#94705A", f: "#7A5A44", s: "#654A38" },
+    kiosk: { t: "#2A2A31", f: "#1F1F25", s: "#1A1A20" },
+    termScreen: "#16161A",
+    termCursor: "#EDEDF0",
+    accessory: "#3A3A44",
+    boardFace: "#DCDCE2",
+    boardLabel: "#2A2A32",
+    screenOff: "#15151A",
+    ping: "#FBBF24",
+    shadow: "#000000",
+    shadowOpacity: 0.55,
+  },
+  light: {
+    bg: "#F7F7F8",
+    floor: "#F2F2F5",
+    checker: "#E9E9EE",
+    slab: { t: "#F2F2F5", f: "#C9C9D1", s: "#B9B9C2" },
+    wall: "#E6E6EC",
+    wallSide: "#DCDCE3",
+    wallEdge: "#D4D4DC",
+    wallEdgeSide: "#CDCDD5",
+    desk: { t: "#E2E2E8", f: "#CFCFD7", s: "#BDBDC6" },
+    deskFree: { t: "#DDDDE3", f: "#CACAD2", s: "#B8B8C1" },
+    housingOn: { t: "#8A8A94", f: "#8A8A94", s: "#B4B4BE" },
+    housingOff: { t: "#B4B4BE", f: "#B4B4BE", s: "#9E9EA8" },
+    chair: { t: "#D2D2DA", f: "#BEBEC7", s: "#ABABB5" },
+    table: { t: "#DADAE0", f: "#C6C6CE", s: "#B2B2BB" },
+    leg: "#8A8A94",
+    rug: "#E9E9EE",
+    sky: "#CFE3FF",
+    frame: "#B4B4BE",
+    star: "#FFFFFF",
+    plantA: { t: "#34D399", f: "#1E8A57", s: "#17704A" },
+    plantB: { t: "#4AE3A4", f: "#22A06B", s: "#1B8257" },
+    pot: { t: "#94705A", f: "#7A5A44", s: "#654A38" },
+    kiosk: { t: "#DADAE0", f: "#C6C6CE", s: "#BDBDC6" },
+    termScreen: "#2A2A32",
+    termCursor: "#FFFFFF",
+    accessory: "#8A8A94",
+    boardFace: "#FFFFFF",
+    // SPEC §15: the design's #B4B4BE on white is unreadable.
+    boardLabel: "#6B6B74",
+    screenOff: "#3A3A44",
+    ping: "#F59E0B",
+    shadow: "#14141E",
+    shadowOpacity: 0.16,
+  },
+};
+
+type Role =
+  | "slab"
+  | "wall"
+  | "wallSide"
+  | "edge"
+  | "edgeSide"
+  | "desk"
+  | "deskFree"
+  | "housingOn"
+  | "housingOff"
+  | "chair"
+  | "table"
+  | "leg"
+  | "rug"
+  | "plantA"
+  | "plantB"
+  | "pot"
+  | "kiosk"
+  | "accessory";
+
+const roleFaces = (p: RoomPalette, role: Role): Faces => {
+  const flat = (c: string): Faces => ({ t: c, f: c, s: c });
+  switch (role) {
+    case "slab":
+      return p.slab;
+    case "wall":
+      return { t: p.wallEdge, f: p.wall, s: p.wallSide };
+    case "wallSide":
+      return { t: p.wallEdgeSide, f: p.wallSide, s: p.wallSide };
+    case "edge":
+      return flat(p.wallEdge);
+    case "edgeSide":
+      return flat(p.wallEdgeSide);
+    case "leg":
+      return flat(p.leg);
+    case "rug":
+      return flat(p.rug);
+    case "accessory":
+      return flat(p.accessory);
+    default:
+      return p[role];
+  }
+};
+
+const MONO = `"Geist Mono", ui-monospace, monospace`;
 const TABLE = new THREE.Vector3(0, 0, 0.6);
 const OBSTACLE_R = 1.95;
 const RING_R = 2.2;
-const HOME_CAM = new THREE.Vector3(15, 15.5, 17);
-const HOME_TARGET = new THREE.Vector3(-0.5, 0.6, -0.4);
+const HOME_TARGET = new THREE.Vector3(0, 0.5, 0.3);
+const HOME_CAM = HOME_TARGET.clone().add(new THREE.Vector3(14.1, 13.6, 15.8));
 const DESK_SLOTS = [
   { x: -6.4, z: -5.6, rot: 0 },
   { x: -2.15, z: -5.6, rot: 0 },
@@ -150,8 +334,18 @@ export const MAX_DESKS = DESK_SLOTS.length;
 const BOARD_SPOT = new THREE.Vector3(-7.4, 0, 0.6);
 const BOARD_FACE = new THREE.Vector3(-9, 0, 0.6);
 const TERM_POS = new THREE.Vector3(7.7, 0, 3.4);
-const TERM_SPOT = new THREE.Vector3(6.2, 0, 3.4);
-const TERM_ANCHOR = new THREE.Vector3(7.7, 2.75, 3.4);
+/** The kiosk's screen faces the front of the room, toward the default camera. */
+const TERM_YAW = 0;
+/** Where a bot reports back: in front of the kiosk, to its left so the screen stays visible. */
+const TERM_SPOT = new THREE.Vector3(6.5, 0, 4.4);
+const TERM_ANCHOR = new THREE.Vector3(7.7, 2.1, 3.4);
+const WALK_SPEED = 2.6;
+/** Longest sub-step of the simulation, s. */
+const MAX_STEP = 1 / 30;
+/** Longest gap one frame may cover (after a stall); longer gaps are dropped. */
+const MAX_FRAME = 1;
+const DRIFT = (4 * Math.PI) / 180;
+const TAU = Math.PI * 2;
 
 function canvasTex(w: number, h: number): CanvasTex {
   const canvas = document.createElement("canvas");
@@ -165,66 +359,54 @@ function canvasTex(w: number, h: number): CanvasTex {
   return { canvas, ctx, tex };
 }
 
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxW: number) {
-  const lines: string[] = [];
-  let cur = "";
-  for (const w of text.split(/\s+/)) {
-    const t = cur ? `${cur} ${w}` : w;
-    if (ctx.measureText(t).width > maxW && cur) {
-      lines.push(cur);
-      cur = w;
-    } else cur = t;
-  }
-  if (cur) lines.push(cur);
-  return lines;
-}
-
-function rrect(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, r);
-}
-
 function angleLerp(a: number, b: number, t: number) {
   let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
+  while (d > Math.PI) d -= TAU;
+  while (d < -Math.PI) d += TAU;
   return a + d * t;
 }
 
-/** The session that best represents a bot right now: the latest active one, else the latest. */
-function sessionFor(
-  view: TaskView,
-  botId: string,
-): ExecutionSession | undefined {
-  const mine = orderedSessions(view).filter((s) => s.botId === botId);
-  const active = mine.filter((s) =>
-    ["queued", "running", "waiting"].includes(s.status),
-  );
-  return active.at(-1) ?? mine.at(-1);
-}
+/**
+ * Facing at the desk: toward the monitor while the bot's session is really
+ * running (it taps away), otherwise toward the room, so its face shows.
+ */
+const homeYaw = (desk: Pick<Desk, "face" | "spot">, working: boolean) =>
+  Math.atan2(desk.face.x - desk.spot.x, desk.face.z - desk.spot.z) +
+  (working ? 0 : Math.PI);
+
+const wave = (t: number, period: number) =>
+  (1 - Math.cos((TAU * t) / period)) / 2;
+
+const lookKey = (bot: Bot) => JSON.stringify(bot.appearance);
+
+/** A design-px point in Three coordinates (x, z up, y front). */
+const pxPoint = (x: number, y: number, z: number) =>
+  new THREE.Vector3(x * PX, z * PX, y * PX);
 
 export class OfficeScene {
   private readonly host: HTMLElement;
   private readonly overlay: HTMLDivElement;
   private readonly toastEl: HTMLDivElement;
+  private readonly youEl: HTMLDivElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(34, 1, 0.1, 200);
   private readonly controls: OrbitControls;
-  private readonly hemi: THREE.HemisphereLight;
-  private readonly sun: THREE.DirectionalLight;
-  private readonly mats: Record<string, THREE.MeshStandardMaterial>;
+  private readonly roleMats = new Map<
+    Role,
+    Record<keyof Faces, THREE.MeshBasicMaterial>
+  >();
+  private readonly paints = new Map<string, THREE.MeshBasicMaterial>();
+  private readonly geos = new Map<string, THREE.BufferGeometry>();
+  private readonly floorTex = canvasTex(256, 256);
+  private readonly windowTex = canvasTex(168, 60);
+  private readonly shadowMat = new THREE.MeshBasicMaterial({
+    transparent: true,
+    depthWrite: false,
+  });
   private readonly desks: Desk[];
-  private readonly board = canvasTex(1024, 576);
-  private readonly term = canvasTex(512, 320);
-  private readonly termScreen: THREE.Mesh;
+  private readonly board = canvasTex(992, 320);
+  private readonly term = canvasTex(160, 112);
   private readonly actors = new Map<string, Actor>();
   private readonly pickables: THREE.Object3D[] = [];
   private readonly beams: Beam[] = [];
@@ -233,14 +415,22 @@ export class OfficeScene {
   private readonly resizeObs: ResizeObserver;
   private readonly onStatus: (s: OfficeStatus) => void;
 
+  private theme: OfficeTheme;
   private task: TaskView | null = null;
+  /** What sync() last painted; a theme change repaints on its own. */
+  private drawnKey = "";
   private queue: Beat[] = [];
+  private current: Beat | null = null;
+  private played = 0;
+  private total = 0;
   private running = false;
   private runToken = 0;
   private paused = false;
   private replaying = false;
   private speed = 1;
   private follow = true;
+  private dragged = false;
+  private reduced = false;
   private focus: string | null = null;
   private camReset = false;
   /** Home camera position, pulled back for narrow panes so the whole room fits. */
@@ -248,35 +438,47 @@ export class OfficeScene {
   private framed = false;
   private simT = 0;
   private wallT = 0;
-  private lastMonitor = 0;
-  private boardFlash = 0;
-  private termPulse = 0;
-  private termText = "Waiting for you…";
+  private drift = 0;
+  private lastScan = -1;
+  private lastCursor = -1;
+  private lastFlash = -1;
+  private boardFlashUntil = 0;
   private raf = 0;
+  private active = true;
   private lastFrame = performance.now();
   private disposed = false;
 
   constructor(
     host: HTMLElement,
-    opts: { onStatus: (s: OfficeStatus) => void; theme: "light" | "dark" },
+    opts: {
+      onStatus: (s: OfficeStatus) => void;
+      theme: OfficeTheme;
+      reducedMotion?: boolean;
+    },
   ) {
     this.host = host;
     this.onStatus = opts.onStatus;
+    this.theme = opts.theme;
+    this.reduced = opts.reducedMotion ?? false;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.domElement.className = "office-canvas";
     host.appendChild(this.renderer.domElement);
 
     this.overlay = document.createElement("div");
-    this.overlay.className = "office-overlay";
+    this.overlay.className = "office-overlays";
+    this.overlay.setAttribute("aria-hidden", "true");
     host.appendChild(this.overlay);
     this.toastEl = document.createElement("div");
-    this.toastEl.className = "office-toast";
-    host.appendChild(this.toastEl);
+    this.toastEl.className = "office-toast office-toast--3d";
+    this.toastEl.hidden = true;
+    this.overlay.appendChild(this.toastEl);
+    this.youEl = document.createElement("div");
+    this.youEl.className = "office-you office-you--3d";
+    this.youEl.textContent = "You";
+    this.overlay.appendChild(this.youEl);
 
     this.camera.position.copy(HOME_CAM);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -288,53 +490,26 @@ export class OfficeScene {
     this.controls.maxDistance = 60;
     this.controls.addEventListener("start", () => {
       this.follow = false;
+      this.dragged = true;
       this.camReset = false;
       this.emit();
     });
 
-    this.hemi = new THREE.HemisphereLight(0xffffff, 0xd8d4c8, 1.15);
-    this.scene.add(this.hemi);
-    this.sun = new THREE.DirectionalLight(0xffffff, 1.9);
-    this.sun.position.set(8, 16, 9);
-    this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(this.sun.shadow.camera, {
-      left: -14,
-      right: 14,
-      top: 14,
-      bottom: -14,
-      near: 1,
-      far: 50,
-    });
-    this.sun.shadow.bias = -0.0005;
-    this.scene.add(this.sun);
-
-    const std = (p: THREE.MeshStandardMaterialParameters) =>
-      new THREE.MeshStandardMaterial(p);
-    this.mats = {
-      floor: std({ roughness: 0.95 }),
-      wall: std({ roughness: 0.9 }),
-      wallEdge: std({ roughness: 0.8 }),
-      desk: std({ roughness: 0.7 }),
-      leg: std({ roughness: 0.5, metalness: 0.3 }),
-      rug: std({ roughness: 1 }),
-      table: std({ roughness: 0.5 }),
-      white: std({ roughness: 0.45 }),
-      window: std({
-        roughness: 0.2,
-        emissive: 0x9fc3e0,
-        emissiveIntensity: 0.25,
-      }),
-      dark: std({ color: 0x1b1b1a, roughness: 0.4 }),
-      plant: std({ color: 0x5e9e6e, roughness: 0.8 }),
-      pot: std({ color: 0xc9b9a3, roughness: 0.8 }),
-    };
+    for (const tex of [this.floorTex.tex, this.windowTex.tex]) {
+      tex.magFilter = THREE.NearestFilter;
+    }
+    this.floorTex.tex.wrapS = this.floorTex.tex.wrapT = THREE.RepeatWrapping;
+    this.floorTex.tex.repeat.set(18 / 3.6, 14 / 3.6);
 
     this.buildRoom();
     this.desks = DESK_SLOTS.map((slot) => this.buildDesk(slot));
-    this.termScreen = this.buildTerminal();
+    this.buildTerminal();
     this.buildBoard();
     this.setTheme(opts.theme);
+    // Canvas text uses Geist Mono; redraw once the font is ready.
+    void document.fonts?.load(`500 88px ${MONO}`).then(() => {
+      if (!this.disposed) this.drawBoard();
+    });
 
     this.renderer.domElement.addEventListener(
       "pointerdown",
@@ -349,39 +524,41 @@ export class OfficeScene {
 
   /* ───────────── public API ───────────── */
 
-  /** Reconcile with the latest task view + bots. Safe to call on every update. */
+  /** Reconcile with the latest task view + bots (in desk order). Safe to call on every update. */
   sync(task: TaskView, participants: Bot[]) {
     this.task = task;
     const wanted = participants.slice(0, MAX_DESKS);
     for (const [id, actor] of this.actors) {
-      if (!wanted.some((b) => b.id === id)) this.removeActor(actor);
+      const bot = wanted.find((b) => b.id === id);
+      if (!bot || lookKey(bot) !== actor.look) this.removeActor(actor);
     }
     for (const bot of wanted) {
       const existing = this.actors.get(bot.id);
       if (existing) {
         existing.profile = bot;
-        existing.color = colourRamp(bot.appearance.colour).f;
+        existing.tag.textContent = bot.name;
       } else {
         const desk = this.desks.find((d) => d.botId === null);
         if (desk) this.addActor(bot, desk);
       }
     }
-    const lastUser = [...task.messages]
-      .reverse()
-      .find((m) => m.authorKind === "user");
-    if (lastUser && !this.termPulse) this.termText = lastUser.text;
+    const looks: string[] = [];
     for (const actor of this.actors.values()) {
-      const s = sessionFor(task, actor.profile.id);
-      actor.ring.material.color.set(statusColor(s?.status));
-      actor.tag.querySelector(".office-tag-status")!.textContent = s
-        ? `${sessionOrdinal(task, s.id)} ${statusWord(s.status)}`
-        : "no session";
-      (
-        actor.tag.querySelector(".office-tag-status") as HTMLElement
-      ).style.background = statusColor(s?.status);
+      const session = sessionFor(task, actor.profile.id);
+      const tone = session ? statusTone(session) : "idle";
+      actor.desk.tone = tone;
+      actor.working = session?.status === "running";
+      actor.ring.material.color.set(STATUS[this.theme][tone]);
+      looks.push(`${actor.profile.id}:${actor.look}:${tone}:${actor.working}`);
     }
+    for (const desk of this.desks) if (!desk.botId) desk.tone = null;
+    // Most task events change nothing the room draws; repaint only when the
+    // desks, their statuses or the board's goal version did.
+    const drawn = `${looks.join("|")}#v${task.task.goalVersion}`;
+    if (drawn === this.drawnKey) return;
+    this.drawnKey = drawn;
+    this.paintDesks();
     this.drawBoard();
-    this.drawTerminal();
     this.drawMonitors();
   }
 
@@ -389,13 +566,16 @@ export class OfficeScene {
   enqueue(beats: Beat[]) {
     if (!beats.length) return;
     this.queue.push(...beats);
+    this.total += beats.length;
     this.emit();
     void this.pump();
   }
 
-  /** Replay a transcript from the start. Statuses stay at their current, real values. */
+  /** Replay from the desks. Statuses stay at their current, real values. */
   replay(beats: Beat[]) {
     this.reset();
+    this.played = 0;
+    this.total = 0;
     this.replaying = beats.length > 0;
     this.enqueue(beats);
     this.emit();
@@ -403,11 +583,11 @@ export class OfficeScene {
 
   setPaused(paused: boolean) {
     this.paused = paused;
-    this.emit();
+    this.overlay.classList.toggle("is-frozen", paused);
   }
 
   setSpeed(speed: number) {
-    this.speed = speed;
+    this.speed = speed > 0 ? speed : 1;
   }
 
   setFollow(on: boolean) {
@@ -417,23 +597,56 @@ export class OfficeScene {
 
   resetView() {
     this.camReset = true;
+    this.dragged = false;
+    this.follow = true;
+    this.emit();
   }
 
-  setTheme(theme: "light" | "dark") {
+  /** Static poses: no idle float, gait, gestures, topper motion, blinking or drift. */
+  setReducedMotion(on: boolean) {
+    this.reduced = on;
+    if (on) {
+      for (const a of this.actors.values()) {
+        const end = a.path.at(-1);
+        if (end) a.group.position.set(end.x, 0, end.z);
+        a.path = [];
+        a.onArrive?.();
+      }
+    }
+    this.overlay.classList.toggle("is-reduced", on);
+  }
+
+  /** Stops the render loop while the page is hidden or the stage is offscreen. */
+  setActive(active: boolean) {
+    if (this.disposed || active === this.active) return;
+    this.active = active;
+    cancelAnimationFrame(this.raf);
+    if (active) {
+      this.lastFrame = performance.now();
+      this.raf = requestAnimationFrame(this.frame);
+    }
+  }
+
+  setTheme(theme: OfficeTheme) {
+    this.theme = theme;
     const p = THEMES[theme];
     this.scene.background = new THREE.Color(p.bg);
-    const m = this.mats;
-    m.floor!.color.set(p.floor);
-    m.wall!.color.set(p.wall);
-    m.wallEdge!.color.set(p.wallEdge);
-    m.desk!.color.set(p.desk);
-    m.leg!.color.set(p.leg);
-    m.rug!.color.set(p.rug);
-    m.table!.color.set(p.table);
-    m.white!.color.set(p.white);
-    m.window!.color.set(p.window);
-    this.hemi.intensity = p.hemi;
-    this.sun.intensity = p.sun;
+    for (const [role, mats] of this.roleMats) {
+      const faces = roleFaces(p, role);
+      mats.t.color.set(faces.t);
+      mats.f.color.set(faces.f);
+      mats.s.color.set(faces.s);
+    }
+    this.shadowMat.color.set(p.shadow);
+    this.shadowMat.opacity = p.shadowOpacity;
+    this.drawFloor();
+    this.drawWindow();
+    for (const a of this.actors.values())
+      a.ring.material.color.set(STATUS[theme][a.desk.tone ?? "idle"]);
+    this.paintDesks();
+    this.drawBoard();
+    this.drawTerminal();
+    this.drawMonitors();
   }
 
   dispose() {
@@ -443,185 +656,213 @@ export class OfficeScene {
     cancelAnimationFrame(this.raf);
     this.resizeObs.disconnect();
     this.controls.dispose();
+    this.renderer.domElement.removeEventListener(
+      "pointerdown",
+      this.onPointerDown,
+    );
+    this.renderer.domElement.removeEventListener("pointerup", this.onPointerUp);
+    for (const a of [...this.actors.values()]) this.removeActor(a);
+    for (const b of this.beams.splice(0)) this.disposeBeam(b);
     this.scene.traverse((o) => {
       const mesh = o as THREE.Mesh;
-      if (mesh.geometry) mesh.geometry.dispose();
+      mesh.geometry?.dispose();
       const mat = mesh.material as
         | THREE.Material
         | THREE.Material[]
         | undefined;
-      for (const mm of Array.isArray(mat) ? mat : mat ? [mat] : []) {
-        const map = (mm as THREE.MeshBasicMaterial).map;
-        if (map) map.dispose();
-        mm.dispose();
+      for (const m of Array.isArray(mat) ? mat : mat ? [mat] : []) {
+        (m as THREE.MeshBasicMaterial).map?.dispose();
+        m.dispose();
       }
     });
+    for (const geo of this.geos.values()) geo.dispose();
+    for (const mat of this.paints.values()) mat.dispose();
+    for (const mats of this.roleMats.values())
+      for (const m of Object.values(mats)) m.dispose();
+    this.shadowMat.dispose();
+    for (const t of [this.floorTex, this.windowTex, this.board, this.term])
+      t.tex.dispose();
+    for (const desk of this.desks) desk.screen.tex.dispose();
+    this.scene.clear();
     this.renderer.dispose();
+    // Free the WebGL context now rather than when the canvas is collected.
+    this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
     this.overlay.remove();
-    this.toastEl.remove();
   }
 
-  /* ───────────── building ───────────── */
+  /* ───────────── materials and geometry ───────────── */
 
-  private mesh(
+  private role(role: Role): THREE.Material[] {
+    let mats = this.roleMats.get(role);
+    if (!mats) {
+      const faces = roleFaces(THEMES[this.theme], role);
+      mats = {
+        t: new THREE.MeshBasicMaterial({ color: faces.t }),
+        f: new THREE.MeshBasicMaterial({ color: faces.f }),
+        s: new THREE.MeshBasicMaterial({ color: faces.s }),
+      };
+      this.roleMats.set(role, mats);
+    }
+    // BoxGeometry groups: +x, -x, +y (top), -y, +z (front), -z.
+    return [mats.s, mats.s, mats.t, mats.s, mats.f, mats.s];
+  }
+
+  /** A shared flat material for a bot colour (bots look the same in both themes). */
+  private paint(hex: string): THREE.MeshBasicMaterial {
+    let mat = this.paints.get(hex);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({ color: hex });
+      this.paints.set(hex, mat);
+    }
+    return mat;
+  }
+
+  private faceMats(faces: Faces): THREE.Material[] {
+    const t = this.paint(faces.t);
+    const f = this.paint(faces.f);
+    const s = this.paint(faces.s);
+    return [s, s, t, s, f, s];
+  }
+
+  private boxGeo(w: number, h: number, d: number): THREE.BufferGeometry {
+    const key = `box|${w.toFixed(4)}|${h.toFixed(4)}|${d.toFixed(4)}`;
+    let geo = this.geos.get(key);
+    if (!geo) {
+      geo = new THREE.BoxGeometry(w, h, d);
+      this.geos.set(key, geo);
+    }
+    return geo;
+  }
+
+  private add(
     geo: THREE.BufferGeometry,
-    mat: THREE.Material,
+    mat: THREE.Material | THREE.Material[],
     x = 0,
     y = 0,
     z = 0,
     parent: THREE.Object3D = this.scene,
-    cast = true,
   ) {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
-    m.castShadow = cast;
-    m.receiveShadow = true;
     parent.add(m);
     return m;
   }
 
+  private box(
+    w: number,
+    h: number,
+    d: number,
+    role: Role,
+    x: number,
+    y: number,
+    z: number,
+    parent: THREE.Object3D = this.scene,
+  ) {
+    return this.add(this.boxGeo(w, h, d), this.role(role), x, y, z, parent);
+  }
+
+  /* ───────────── building ───────────── */
+
   private buildRoom() {
-    const m = this.mats as Record<string, THREE.MeshStandardMaterial>;
-    const B = (w: number, h: number, d: number) =>
-      new THREE.BoxGeometry(w, h, d);
-    this.mesh(B(18, 0.3, 14), m.floor!, 0, -0.15, 0, this.scene, false);
-    this.mesh(B(18.4, 3.4, 0.25), m.wall!, 0, 1.7, -7.12);
-    this.mesh(B(0.25, 3.4, 14), m.wall!, -9.12, 1.7, 0);
-    this.mesh(B(18.4, 0.12, 0.3), m.wallEdge!, 0, 3.4, -7.12);
-    this.mesh(B(0.3, 0.12, 14), m.wallEdge!, -9.12, 3.4, 0);
+    const floorTop = new THREE.MeshBasicMaterial({ map: this.floorTex.tex });
+    const slab = this.role("slab");
+    this.add(
+      new THREE.BoxGeometry(18, 0.3, 14),
+      [slab[0]!, slab[1]!, floorTop, slab[3]!, slab[4]!, slab[5]!],
+      0,
+      -0.15,
+      0,
+    );
+    // Back wall (faces the room with +z) and side wall (faces it with +x).
+    this.box(18.4, 3.4, 0.25, "wall", 0, 1.7, -7.12);
+    const side = this.role("wallSide");
+    this.add(
+      this.boxGeo(0.25, 3.4, 14),
+      [side[4]!, side[1]!, side[2]!, side[3]!, side[1]!, side[5]!],
+      -9.12,
+      1.7,
+      0,
+    );
+    // Baseboards (4px).
+    this.box(18.4, 0.12, 0.08, "edge", 0, 0.06, -6.96);
+    this.box(0.08, 0.12, 14, "edgeSide", -8.96, 0.06, 0);
+    const win = new THREE.MeshBasicMaterial({ map: this.windowTex.tex });
     for (const x of [-4.2, 0, 4.2])
-      this.mesh(
-        B(2.6, 1.1, 0.05),
-        m.window!,
-        x,
-        2.55,
-        -6.98,
-        this.scene,
-        false,
-      );
-    this.mesh(
-      new THREE.CylinderGeometry(3.1, 3.1, 0.02, 64),
-      m.rug!,
+      this.add(new THREE.PlaneGeometry(2.52, 0.9), win, x, 2.45, -6.99);
+    const rug = new THREE.CylinderGeometry(3.1, 3.1, 0.02, 64);
+    this.add(rug, this.role("rug")[2]!, TABLE.x, 0.01, TABLE.z);
+    // Cylinder groups: side, top, bottom.
+    const t = this.role("table");
+    this.add(
+      new THREE.CylinderGeometry(1.15, 1.15, 0.1, 48),
+      [t[4]!, t[2]!, t[3]!],
       TABLE.x,
-      0.01,
-      TABLE.z,
-      this.scene,
-      false,
-    );
-    this.mesh(
-      new THREE.CylinderGeometry(1.15, 1.15, 0.08, 48),
-      m.table!,
-      TABLE.x,
-      0.78,
+      0.77,
       TABLE.z,
     );
-    this.mesh(
-      new THREE.CylinderGeometry(0.12, 0.35, 0.74, 20),
-      m.leg!,
-      TABLE.x,
-      0.37,
-      TABLE.z,
-    );
+    this.box(0.22, 0.72, 0.22, "leg", TABLE.x, 0.36, TABLE.z);
+    const c = this.role("chair");
     for (let k = 0; k < 6; k++) {
-      const a = (k / 6) * Math.PI * 2 + Math.PI / 6;
-      this.mesh(
-        new THREE.CylinderGeometry(0.22, 0.2, 0.42, 20),
-        m.desk!,
+      const a = (k / 6) * TAU + Math.PI / 6;
+      this.add(
+        new THREE.CylinderGeometry(0.22, 0.22, 0.42, 20),
+        [c[4]!, c[2]!, c[3]!],
         TABLE.x + Math.cos(a) * 1.6,
         0.21,
         TABLE.z + Math.sin(a) * 1.6,
       );
     }
     const plant = (x: number, z: number, s: number) => {
-      this.mesh(
-        new THREE.CylinderGeometry(0.3 * s, 0.24 * s, 0.5 * s, 16),
-        m.pot!,
-        x,
-        0.25 * s,
+      this.box(0.5 * s, 0.45 * s, 0.5 * s, "pot", x, 0.225 * s, z);
+      this.box(
+        0.2 * s,
+        0.75 * s,
+        0.2 * s,
+        "plantA",
+        x - 0.1 * s,
+        (0.45 + 0.375) * s,
         z,
       );
-      for (let k = 0; k < 5; k++) {
-        const leaf = this.mesh(
-          new THREE.SphereGeometry(0.32 * s, 10, 8),
-          m.plant!,
-          x + Math.cos(k * 1.3) * 0.18 * s,
-          (0.75 + k * 0.12) * s,
-          z + Math.sin(k * 1.3) * 0.18 * s,
-        );
-        leaf.scale.y = 1.3;
-      }
+      this.box(
+        0.2 * s,
+        0.55 * s,
+        0.2 * s,
+        "plantB",
+        x + 0.12 * s,
+        (0.45 + 0.275) * s,
+        z + 0.05 * s,
+      );
+      this.box(
+        0.16 * s,
+        0.4 * s,
+        0.16 * s,
+        "plantB",
+        x - 0.02 * s,
+        (0.45 + 0.2) * s,
+        z - 0.14 * s,
+      );
     };
-    plant(-8.3, -6.3, 1.2);
-    plant(8.3, -6.3, 1);
-    plant(-8.3, 6.2, 0.9);
-    this.mesh(B(0.9, 0.9, 0.7), m.desk!, -8.4, 0.45, 4.6);
-    this.mesh(B(0.45, 0.5, 0.4), m.dark!, -8.45, 1.15, 4.6);
+    plant(-8.3, -6.3, 1.4);
+    plant(8.3, -6.3, 1.2);
+    plant(-8.3, 6.2, 1.1);
+    this.box(0.9, 0.9, 0.7, "deskFree", -8.4, 0.45, 4.6);
+    this.box(0.45, 0.5, 0.4, "housingOff", -8.45, 1.15, 4.6);
   }
 
   private buildDesk(slot: { x: number; z: number; rot: number }): Desk {
-    const m = this.mats as Record<string, THREE.MeshStandardMaterial>;
     const g = new THREE.Group();
     g.position.set(slot.x, 0, slot.z);
     g.rotation.y = slot.rot;
     this.scene.add(g);
-    this.mesh(new THREE.BoxGeometry(2.5, 0.08, 1.15), m.desk!, 0, 0.76, 0, g);
-    for (const [lx, lz] of [
-      [-1.15, -0.48],
-      [1.15, -0.48],
-      [-1.15, 0.48],
-      [1.15, 0.48],
-    ] as const) {
-      this.mesh(
-        new THREE.BoxGeometry(0.06, 0.74, 0.06),
-        m.leg!,
-        lx,
-        0.37,
-        lz,
-        g,
-      );
-    }
-    this.mesh(
-      new THREE.BoxGeometry(0.08, 0.35, 0.08),
-      m.leg!,
-      0,
-      0.97,
-      -0.32,
-      g,
-    );
-    this.mesh(
-      new THREE.BoxGeometry(0.4, 0.03, 0.25),
-      m.leg!,
-      0,
-      0.81,
-      -0.32,
-      g,
-    );
-    this.mesh(
-      new THREE.BoxGeometry(1.25, 0.76, 0.06),
-      m.dark!,
-      0,
-      1.42,
-      -0.34,
-      g,
-    );
-    this.mesh(
-      new THREE.BoxGeometry(0.7, 0.03, 0.22),
-      m.white!,
-      0,
-      0.815,
-      0.12,
-      g,
-    );
-    this.mesh(
-      new THREE.CylinderGeometry(0.07, 0.06, 0.14, 14),
-      m.white!,
-      0.85,
-      0.87,
-      0.1,
-      g,
-    );
-    const screen = canvasTex(384, 224);
+    // A solid block, 26px (0.78u) high, as the design draws desks.
+    const top = this.box(2.5, 0.78, 1.15, "deskFree", 0, 0.39, 0, g);
+    this.box(0.08, 0.3, 0.08, "leg", 0, 0.93, -0.32, g);
+    this.box(0.4, 0.03, 0.25, "leg", 0, 0.795, -0.32, g);
+    const housing = this.box(1.25, 0.76, 0.06, "housingOff", 0, 1.42, -0.34, g);
+    this.box(0.7, 0.03, 0.22, "accessory", 0, 0.795, 0.12, g);
+    this.box(0.12, 0.14, 0.12, "accessory", 0.85, 0.85, 0.1, g);
+    const screen = canvasTex(150, 90);
     const plane = new THREE.Mesh(
       new THREE.PlaneGeometry(1.15, 0.67),
       new THREE.MeshBasicMaterial({ map: screen.tex }),
@@ -631,29 +872,25 @@ export class OfficeScene {
     const fwd = new THREE.Vector3(Math.sin(slot.rot), 0, Math.cos(slot.rot));
     return {
       screen,
+      top,
+      housing,
       spot: new THREE.Vector3(slot.x, 0, slot.z).addScaledVector(fwd, 1.05),
       face: new THREE.Vector3(slot.x, 0, slot.z),
       fwd,
-      phase: Math.random() * 10,
       botId: null,
+      tone: null,
     };
   }
 
   private buildBoard() {
     const g = new THREE.Group();
-    g.position.set(-8.97, 1.75, 0.6);
+    g.position.set(-8.97, 1.9, 0.6);
     g.rotation.y = Math.PI / 2;
     this.scene.add(g);
-    this.mesh(
-      new THREE.BoxGeometry(3.9, 2.25, 0.06),
-      this.mats.leg!,
-      0,
-      0,
-      -0.02,
-      g,
-    );
+    // 124×40 px face with a 3px frame (SPEC §10.1).
+    this.box(3.9, 1.38, 0.06, "leg", 0, 0, -0.02, g);
     const p = new THREE.Mesh(
-      new THREE.PlaneGeometry(3.75, 2.1),
+      new THREE.PlaneGeometry(3.72, 1.2),
       new THREE.MeshBasicMaterial({ map: this.board.tex }),
     );
     p.position.z = 0.015;
@@ -663,185 +900,251 @@ export class OfficeScene {
   private buildTerminal() {
     const g = new THREE.Group();
     g.position.copy(TERM_POS);
-    g.rotation.y = -Math.PI / 2;
+    g.rotation.y = TERM_YAW;
     this.scene.add(g);
-    this.mesh(
-      new THREE.CylinderGeometry(0.55, 0.65, 0.25, 32),
-      this.mats.leg!,
-      0,
-      0.12,
-      0,
-      g,
-    );
-    this.mesh(
-      new THREE.CylinderGeometry(0.06, 0.06, 1.2, 12),
-      this.mats.leg!,
-      0,
-      0.8,
-      0,
-      g,
-    );
+    // Kiosk 24×40×58 px; its front (+z) faces the room.
+    this.box(0.72, 1.74, 1.2, "kiosk", 0, 0.87, 0, g);
     const screen = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.0, 1.25),
-      new THREE.MeshBasicMaterial({
-        map: this.term.tex,
-        transparent: true,
-        side: THREE.DoubleSide,
-      }),
+      new THREE.PlaneGeometry(0.56, 0.4),
+      new THREE.MeshBasicMaterial({ map: this.term.tex }),
     );
-    screen.position.set(0, 2.05, 0);
+    screen.position.set(0, 1.36, 0.601);
     g.add(screen);
-    return screen;
   }
 
+  /** Builds the block character for a bot (SPEC §10.2). */
   private addActor(bot: Bot, desk: Desk) {
     desk.botId = bot.id;
-    const m = this.mats as Record<string, THREE.MeshStandardMaterial>;
+    const spec = blockCharacter(bot.appearance);
+    const own: { dispose: () => void }[] = [];
     const g = new THREE.Group();
     this.scene.add(g);
-    const color = colourRamp(bot.appearance.colour).f;
-    const col = new THREE.Color(color);
-    const accent = new THREE.MeshStandardMaterial({
-      color: col,
-      roughness: 0.45,
-    });
-    const glow = new THREE.MeshStandardMaterial({
-      color: col,
-      emissive: col,
-      emissiveIntensity: 0.6,
-    });
-    this.mesh(
-      new THREE.CapsuleGeometry(0.32, 0.42, 6, 18),
-      m.white!,
-      0,
-      0.62,
-      0,
-      g,
-    );
-    const belt = this.mesh(
-      new THREE.TorusGeometry(0.325, 0.045, 8, 32),
-      accent,
-      0,
-      0.6,
-      0,
-      g,
-    );
-    belt.rotation.x = Math.PI / 2;
-    const headPivot = new THREE.Group();
-    headPivot.position.y = 1.36;
-    g.add(headPivot);
-    this.mesh(
-      new RoundedBoxGeometry(0.74, 0.58, 0.62, 4, 0.16),
-      m.white!,
-      0,
-      0,
-      0,
-      headPivot,
-    );
+    const body = new THREE.Group();
+    g.add(body);
 
-    const fc = canvasTex(256, 192);
-    fc.ctx.fillStyle = "#141413";
-    rrect(fc.ctx, 0, 0, 256, 192, 46);
-    fc.ctx.fill();
-    const img = new Image();
-    img.onload = () => {
-      fc.ctx.drawImage(img, 32, 0, 192, 192);
-      fc.tex.needsUpdate = true;
+    const part = (
+      b: Box3,
+      faces: Faces,
+      parent: THREE.Object3D,
+      origin = new THREE.Vector3(),
+      mats?: THREE.Material[],
+    ) => {
+      const { size, centre } = boxToWorld(b);
+      const m = this.add(
+        this.boxGeo(...size),
+        mats ?? this.faceMats(faces),
+        centre[0] - origin.x,
+        centre[1] - origin.y,
+        centre[2] - origin.z,
+        parent,
+      );
+      return m;
     };
-    // The bot's idle pixel sprite on the face plate (the same art as the 2D UI).
-    const sprite = spritePathsFor(bot.appearance, "idle")
-      .map((path) => `<path fill="${path.fill}" d="${path.d}"/>`)
-      .join("");
-    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" width="192" height="192" shape-rendering="crispEdges">${sprite}</svg>`)}`;
-    const face = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.6, 0.45),
-      new THREE.MeshBasicMaterial({ map: fc.tex, transparent: true }),
-    );
-    face.position.z = 0.315;
-    headPivot.add(face);
-    for (const s of [-1, 1]) {
-      const ear = this.mesh(
-        new THREE.CylinderGeometry(0.09, 0.09, 0.06, 16),
-        accent,
-        s * 0.39,
-        0,
-        0,
-        headPivot,
+
+    part(spec.body.box, spec.body.faces, body);
+    part(spec.belt.box, spec.belt.faces, body);
+    part(spec.neck.box, spec.neck.faces, body);
+
+    const arms = spec.arms.map((arm, i) => {
+      const [sx, sy, sz] = spec.shoulders[i] ?? [0, 0, 0];
+      const pivot = new THREE.Group();
+      const origin = pxPoint(sx, sy, sz);
+      pivot.position.copy(origin);
+      body.add(pivot);
+      part(arm.box, arm.faces, pivot, origin);
+      return pivot;
+    }) as [THREE.Group, THREE.Group];
+
+    const headPivot = new THREE.Group();
+    const headOrigin = pxPoint(0, 0, spec.headPivotZ);
+    headPivot.position.copy(headOrigin);
+    body.add(headPivot);
+    for (const b of spec.head.boxes)
+      part(b.box, b.faces, headPivot, headOrigin);
+
+    // Face plate: 24×14 px, centred, bottom edge at fz, 0.6px in front of the head.
+    const plateZ = (spec.head.front + 0.6) * PX;
+    const rectMesh = (r: PlateRect, layer: number) => {
+      const w = r.w * PX;
+      const h = r.h * PX;
+      let geo: THREE.BufferGeometry;
+      if (r.r) {
+        const shape = new THREE.Shape();
+        const rad = Math.min(r.r * PX, w / 2, h / 2);
+        shape.moveTo(-w / 2 + rad, -h / 2);
+        shape.lineTo(w / 2 - rad, -h / 2);
+        shape.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + rad);
+        shape.lineTo(w / 2, h / 2 - rad);
+        shape.quadraticCurveTo(w / 2, h / 2, w / 2 - rad, h / 2);
+        shape.lineTo(-w / 2 + rad, h / 2);
+        shape.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - rad);
+        shape.lineTo(-w / 2, -h / 2 + rad);
+        shape.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + rad, -h / 2);
+        geo = new THREE.ShapeGeometry(shape, 4);
+        own.push(geo);
+      } else {
+        geo = this.planeGeo(w, h);
+      }
+      const mesh = new THREE.Mesh(geo, this.paint(r.colour));
+      mesh.position.set(
+        (-PLATE_WIDTH / 2 + r.x + r.w / 2) * PX,
+        (spec.head.fz + PLATE_HEIGHT - r.y - r.h / 2 - spec.headPivotZ) * PX,
+        plateZ + layer * 0.15 * PX,
       );
-      ear.rotation.z = Math.PI / 2;
-    }
-    this.mesh(
-      new THREE.CylinderGeometry(0.018, 0.018, 0.22, 8),
-      m.leg!,
-      0,
-      0.4,
-      0,
-      headPivot,
-    );
-    this.mesh(
-      new THREE.SphereGeometry(0.065, 16, 12),
-      glow,
-      0,
-      0.53,
-      0,
-      headPivot,
-    );
-    const arms = [-1, 1].map((s) => {
-      const arm = this.mesh(
-        new THREE.CapsuleGeometry(0.07, 0.28, 4, 10),
-        accent,
-        s * 0.42,
-        0.68,
-        0,
-        g,
-      );
-      arm.rotation.z = s * 0.18;
-      return arm;
+      return mesh;
+    };
+    const face = spec.face;
+    if (face.plate) headPivot.add(rectMesh(face.plate, 0));
+    const eyes = face.eyes.map((eye) => {
+      const mesh = rectMesh(eye, 1);
+      const group = new THREE.Group();
+      group.position.copy(mesh.position);
+      mesh.position.set(0, 0, 0);
+      group.add(mesh);
+      for (const d of face.eyeDetails) {
+        if (d.x < eye.x || d.x >= eye.x + eye.w) continue;
+        const detail = rectMesh(d, 2);
+        detail.position.sub(group.position);
+        group.add(detail);
+      }
+      headPivot.add(group);
+      return group;
     });
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(0.46, 0.56, 48),
-      new THREE.MeshBasicMaterial({
-        color: statusColor("idle"),
-        transparent: true,
-        opacity: 0.9,
-      }),
-    );
+    const mouth = face.mouth ? rectMesh(face.mouth, 1) : null;
+    if (mouth) headPivot.add(mouth);
+
+    // Topper at z = top, inside the head pivot so it nods with the head.
+    const topper = new THREE.Group();
+    topper.position.copy(pxPoint(0, 0, spec.head.top).sub(headOrigin));
+    headPivot.add(topper);
+    const glow: GlowMat[] = [];
+    const glowMats = (faces: Faces): THREE.Material[] => {
+      const make = (hex: string) => {
+        const mat = new THREE.MeshBasicMaterial({ color: hex });
+        own.push(mat);
+        glow.push({ mat, base: new THREE.Color(hex) });
+        return mat;
+      };
+      const t = make(faces.t);
+      const f = make(faces.f);
+      const s = make(faces.s);
+      return [s, s, t, s, f, s];
+    };
+    const groupFor = (pivotZ = 0) => {
+      const grp = new THREE.Group();
+      grp.position.y = pivotZ * PX;
+      topper.add(grp);
+      return grp;
+    };
+    let tip: THREE.Object3D | null = null;
+    let dish: THREE.Object3D | null = null;
+    let leaves: THREE.Object3D | null = null;
+    let rotor: THREE.Object3D | null = null;
+    for (const p of spec.topper.parts) {
+      const mats = p.glow ? glowMats(p.faces) : undefined;
+      if (p.role === "static") part(p.box, p.faces, topper, undefined, mats);
+      else if (p.role === "tip") {
+        const { centre } = boxToWorld(p.box);
+        const grp = groupFor();
+        grp.position.set(centre[0], centre[1], centre[2]);
+        part(p.box, p.faces, grp, new THREE.Vector3(...centre), mats);
+        tip = grp;
+      } else if (p.role === "dish") {
+        dish ??= groupFor();
+        part(p.box, p.faces, dish, undefined, mats);
+      } else if (p.role === "leaves") {
+        leaves ??= groupFor(spec.topper.leafPivot);
+        part(
+          p.box,
+          p.faces,
+          leaves,
+          pxPoint(0, 0, spec.topper.leafPivot),
+          mats,
+        );
+      } else if (p.role === "rotor") {
+        rotor ??= groupFor();
+        part(p.box, p.faces, rotor, undefined, mats);
+      }
+    }
+    let halo: THREE.Object3D | null = null;
+    if (spec.topper.halo) {
+      const h = spec.topper.halo;
+      const ring = new THREE.TorusGeometry(
+        ((h.diameter - h.tube) / 2) * PX,
+        (h.tube / 2) * PX,
+        8,
+        32,
+      );
+      own.push(ring);
+      const mat = new THREE.MeshBasicMaterial({ color: h.colour });
+      own.push(mat);
+      glow.push({ mat, base: new THREE.Color(h.colour) });
+      const mesh = new THREE.Mesh(ring, mat);
+      mesh.rotation.x = Math.PI / 2;
+      mesh.position.y = h.z * PX;
+      halo = groupFor();
+      halo.add(mesh);
+    }
+
+    // Ground shadow (38×30 px ellipse) and status ring (44 px, 2 px stroke).
+    const shadow = new THREE.Mesh(this.circleGeo(), this.shadowMat);
+    shadow.rotation.x = -Math.PI / 2;
+    shadow.scale.set(0.57, 0.45, 1);
+    shadow.position.y = 0.012;
+    g.add(shadow);
+    const ringGeo = new THREE.RingGeometry(0.6, 0.66, 48);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: STATUS[this.theme].idle,
+    });
+    own.push(ringGeo, ringMat);
+    const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0.025;
     g.add(ring);
 
     const tag = document.createElement("div");
-    tag.className = "office-tag";
-    const dot = document.createElement("span");
-    dot.className = "office-dot";
-    dot.style.background = color;
-    const name = document.createElement("span");
-    name.textContent = bot.name;
-    const status = document.createElement("span");
-    status.className = "office-tag-status";
-    const ping = document.createElement("span");
-    ping.className = "office-ping";
+    tag.className = "office-tag office-tag--3d";
+    tag.textContent = bot.name;
+    const ping = document.createElement("div");
+    ping.className = "office-ping office-ping--3d";
     ping.textContent = "!";
-    tag.append(dot, name, status, ping);
-    this.overlay.appendChild(tag);
-
-    const yaw = Math.atan2(
-      desk.face.x - desk.spot.x,
-      desk.face.z - desk.spot.z,
+    ping.hidden = true;
+    const typing = document.createElement("div");
+    typing.className = "office-typing office-typing--3d";
+    typing.append(
+      document.createElement("span"),
+      document.createElement("span"),
+      document.createElement("span"),
     );
+    typing.hidden = true;
+    this.overlay.append(tag, ping, typing);
+
+    const yaw = homeYaw(desk, false);
     g.position.copy(desk.spot);
     g.rotation.y = yaw;
     const actor: Actor = {
       profile: bot,
-      color,
+      look: lookKey(bot),
+      spec,
+      color: colourRamp(bot.appearance.colour).f,
       group: g,
+      body,
       headPivot,
-      face,
+      eyes,
+      mouth,
       arms,
+      tip,
+      dish,
+      leaves,
+      rotor,
+      halo,
       glow,
       ring,
+      own,
       desk,
       tag,
+      ping,
+      typing,
       path: [],
       finalFace: null,
       lookAt: null,
@@ -849,9 +1152,12 @@ export class OfficeScene {
       yaw,
       targetYaw: yaw,
       talking: false,
-      walkPhase: 0,
+      working: false,
+      walkT: 0,
+      spin: 0,
       at: "desk",
       pingUntil: 0,
+      phase: this.actors.size * 1.37,
     };
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) {
@@ -862,11 +1168,34 @@ export class OfficeScene {
     this.actors.set(bot.id, actor);
   }
 
+  private planeGeo(w: number, h: number) {
+    const key = `plane|${w.toFixed(4)}|${h.toFixed(4)}`;
+    let geo = this.geos.get(key);
+    if (!geo) {
+      geo = new THREE.PlaneGeometry(w, h);
+      this.geos.set(key, geo);
+    }
+    return geo;
+  }
+
+  private circleGeo() {
+    let geo = this.geos.get("circle");
+    if (!geo) {
+      geo = new THREE.CircleGeometry(1, 32);
+      this.geos.set("circle", geo);
+    }
+    return geo;
+  }
+
   private removeActor(actor: Actor) {
     this.scene.remove(actor.group);
     actor.tag.remove();
+    actor.ping.remove();
+    actor.typing.remove();
     actor.desk.botId = null;
+    actor.desk.tone = null;
     actor.onArrive?.();
+    for (const r of actor.own) r.dispose();
     for (let i = this.pickables.length - 1; i >= 0; i--) {
       if (this.pickables[i]?.userData.botId === actor.profile.id)
         this.pickables.splice(i, 1);
@@ -876,153 +1205,117 @@ export class OfficeScene {
 
   /* ───────────── drawing ───────────── */
 
+  private paintDesks() {
+    for (const desk of this.desks) {
+      const on = desk.botId !== null;
+      desk.top.material = this.role(on ? "desk" : "deskFree");
+      desk.housing.material = this.role(on ? "housingOn" : "housingOff");
+    }
+  }
+
+  private drawFloor() {
+    const { ctx, canvas, tex } = this.floorTex;
+    const p = THEMES[this.theme];
+    const half = canvas.width / 2;
+    ctx.fillStyle = p.floor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = p.checker;
+    ctx.fillRect(0, 0, half, half);
+    ctx.fillRect(half, half, half, half);
+    tex.needsUpdate = true;
+  }
+
+  private drawWindow() {
+    const { ctx, canvas, tex } = this.windowTex;
+    const p = THEMES[this.theme];
+    ctx.fillStyle = p.frame;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = p.sky;
+    ctx.fillRect(6, 6, canvas.width - 12, canvas.height - 12);
+    ctx.fillStyle = p.star;
+    for (const [x, y] of [
+      [20, 12],
+      [56, 32],
+      [92, 16],
+      [128, 38],
+      [146, 14],
+    ] as const)
+      ctx.fillRect(x, y, 4, 4);
+    tex.needsUpdate = true;
+  }
+
+  /** Whiteboard (SPEC §10.1): two text lines and the goal version. No checks in 1.0. */
   private drawBoard() {
     const { ctx, canvas, tex } = this.board;
-    const view = this.task;
-    const task = view?.task;
-    ctx.fillStyle = "#fbfbf9";
+    const p = THEMES[this.theme];
+    const u = canvas.width / 124;
+    ctx.fillStyle = p.boardFace;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    if (this.boardFlash > 0) {
-      ctx.fillStyle = `rgba(217,119,6,${0.18 * this.boardFlash})`;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#8E8E98";
+    ctx.fillRect(8 * u, 8 * u, 56 * u, 3 * u);
+    ctx.fillStyle = "#B4B4BC";
+    ctx.fillRect(8 * u, 15 * u, 38 * u, 3 * u);
+    const task = this.task?.task;
+    if (task) {
+      ctx.fillStyle = p.boardLabel;
+      ctx.font = `400 ${11 * u}px ${MONO}`;
+      ctx.textAlign = "right";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(`v${task.goalVersion}`, canvas.width - 8 * u, 30 * u);
     }
-    if (!view || !task) {
-      tex.needsUpdate = true;
-      return;
+    if (this.flashOn()) {
+      ctx.strokeStyle = p.ping;
+      ctx.lineWidth = 6 * u;
+      ctx.strokeRect(0, 0, canvas.width, canvas.height);
     }
-    ctx.fillStyle = "#8c8c85";
-    ctx.font = `600 22px ${FONT}`;
-    ctx.fillText("SESSIONS", 44, 58);
-    const chip = `goal v${task.goalVersion}`;
-    ctx.font = `600 22px ${MONO}`;
-    const cw = ctx.measureText(chip).width + 24;
-    ctx.fillStyle = task.goalVersion > 1 ? "#d97706" : "#e3e3dc";
-    rrect(ctx, canvas.width - 44 - cw, 34, cw, 36, 9);
-    ctx.fill();
-    ctx.fillStyle = task.goalVersion > 1 ? "#fff" : "#575753";
-    ctx.fillText(chip, canvas.width - 32 - cw, 60);
-    ctx.fillStyle = "#141413";
-    ctx.font = `700 36px ${FONT}`;
-    let y = 108;
-    for (const l of wrapText(ctx, task.goal, canvas.width - 88).slice(0, 2)) {
-      ctx.fillText(l, 44, y);
-      y += 44;
-    }
-    ctx.strokeStyle = "#e4e4de";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(44, y - 10);
-    ctx.lineTo(canvas.width - 44, y - 10);
-    ctx.stroke();
-    y += 22;
-    const sessions = orderedSessions(view);
-    if (!sessions.length) {
-      ctx.font = `400 26px ${FONT}`;
-      ctx.fillStyle = "#8c8c85";
-      ctx.fillText("No sessions yet", 44, y + 30);
-    }
-    for (const session of sessions.slice(0, 5)) {
-      ctx.fillStyle = STATUS_COLORS[session.status] ?? "#c9c9c0";
-      rrect(ctx, 44, y + 12, 34, 34, 8);
-      ctx.fill();
-      ctx.fillStyle = "#141413";
-      ctx.font = `500 26px ${FONT}`;
-      const name = this.actors.get(session.botId)?.profile.name ?? "Bot";
-      ctx.fillText(
-        `${sessionOrdinal(view, session.id)} · ${name} · ${statusWord(session.status)}`,
-        94,
-        y + 38,
-      );
-      y += 54;
-    }
-    ctx.fillStyle = STATUS_COLORS[task.status] ?? "#8c8c85";
-    ctx.beginPath();
-    ctx.arc(52, canvas.height - 42, 9, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#575753";
-    ctx.font = `600 22px ${MONO}`;
-    ctx.fillText(
-      `TASK ${statusWord(task.status).toUpperCase()}`,
-      70,
-      canvas.height - 34,
-    );
     tex.needsUpdate = true;
+  }
+
+  private flashOn() {
+    if (this.simT >= this.boardFlashUntil) return false;
+    // `flash`: .5s steps(2) — on for the first half of every half second.
+    return this.reduced || Math.floor(this.wallT / 0.25) % 2 === 0;
   }
 
   private drawTerminal() {
     const { ctx, canvas, tex } = this.term;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(20,20,19,0.92)";
-    rrect(ctx, 4, 4, canvas.width - 8, canvas.height - 8, 26);
-    ctx.fill();
-    ctx.strokeStyle = `rgba(255,255,255,${0.18 + this.termPulse * 0.6})`;
-    ctx.lineWidth = 4;
-    ctx.stroke();
-    ctx.fillStyle = "#fff";
-    ctx.font = `700 34px ${FONT}`;
-    ctx.fillText("You", 34, 66);
-    ctx.fillStyle = this.termPulse > 0.05 ? "#10b981" : "#6e6e67";
-    ctx.beginPath();
-    ctx.arc(canvas.width - 44, 54, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#a2a29a";
-    ctx.font = `500 25px ${FONT}`;
-    let y = 116;
-    for (const l of wrapText(ctx, this.termText, canvas.width - 68).slice(
-      0,
-      6,
-    )) {
-      ctx.fillText(l, 34, y);
-      y += 33;
+    const p = THEMES[this.theme];
+    const u = canvas.width / 32;
+    ctx.fillStyle = p.termScreen;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#8E8E98";
+    ctx.fillRect(4 * u, 5 * u, 14 * u, 2 * u);
+    ctx.fillRect(4 * u, 10 * u, 10 * u, 2 * u);
+    const cursorOn = this.reduced || Math.floor(this.wallT / 0.5) % 2 === 0;
+    if (cursorOn) {
+      ctx.fillStyle = p.termCursor;
+      ctx.fillRect(4 * u, 15 * u, 5 * u, 2 * u);
     }
     tex.needsUpdate = true;
   }
 
-  private drawMonitors() {
+  /** Monitors show the bot's real session status, in the theme's status colours. */
+  private drawMonitors(onlyRunning = false) {
+    const scanDim =
+      !this.reduced && Math.floor(this.wallT / (1.4 / 3)) % 3 === 1;
     for (const desk of this.desks) {
+      if (onlyRunning && desk.tone !== "running") continue;
       const { ctx, canvas, tex } = desk.screen;
-      ctx.fillStyle = "#121211";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      const actor = desk.botId ? this.actors.get(desk.botId) : undefined;
-      if (!actor || !this.task) {
-        tex.needsUpdate = true;
-        continue;
+      const w = canvas.width;
+      const h = canvas.height;
+      if (desk.tone === null) {
+        ctx.fillStyle = THEMES[this.theme].screenOff;
+        ctx.fillRect(0, 0, w, h);
+      } else {
+        ctx.fillStyle = STATUS[this.theme][desk.tone];
+        ctx.fillRect(0, 0, w, h);
+        const deep = DEEP[this.theme][desk.tone];
+        ctx.fillStyle = deep;
+        ctx.fillRect(w * 0.12, h * 0.26, w * 0.47, h * 0.11);
+        ctx.globalAlpha = desk.tone === "running" && scanDim ? 0.35 : 1;
+        ctx.fillRect(w * 0.12, h * 0.52, w * 0.67, h * 0.11);
+        ctx.globalAlpha = 1;
       }
-      const sess = sessionFor(this.task, actor.profile.id);
-      const st = sess?.status ?? "idle";
-      ctx.fillStyle = actor.color;
-      ctx.fillRect(0, 0, canvas.width, 8);
-      ctx.fillStyle = "#f2f2ee";
-      ctx.font = `700 26px ${FONT}`;
-      ctx.fillText(actor.profile.name, 20, 46);
-      ctx.fillStyle = "#8c8c85";
-      ctx.font = `500 18px ${MONO}`;
-      ctx.fillText(
-        sess
-          ? `${sessionOrdinal(this.task, sess.id)} · ${sess.role}`
-          : "no session",
-        20,
-        74,
-      );
-      const active = st === "running";
-      const off = active ? Math.floor(this.wallT * 3) : 0;
-      for (let i = 0; i < 6; i++) {
-        const r =
-          Math.abs(Math.sin((i + off) * 12.9898 + desk.phase) * 43758.5453) % 1;
-        ctx.fillStyle =
-          i === 5 && active ? (STATUS_COLORS[st] ?? "#2d2d29") : "#2d2d29";
-        rrect(ctx, 20 + (r > 0.7 ? 24 : 0), 92 + i * 14, 60 + r * 230, 7, 3);
-        ctx.fill();
-      }
-      ctx.fillStyle = STATUS_COLORS[st] ?? "#8c8c85";
-      rrect(ctx, 20, 182, 14, 14, 7);
-      ctx.fill();
-      ctx.font = `700 18px ${MONO}`;
-      ctx.fillText(
-        (sess ? statusWord(sess.status) : st).toUpperCase(),
-        42,
-        195,
-      );
       tex.needsUpdate = true;
     }
   }
@@ -1031,9 +1324,11 @@ export class OfficeScene {
 
   private emit() {
     this.onStatus({
-      pending: this.queue.length,
-      paused: this.paused,
+      step: this.played,
+      total: this.total,
+      currentId: this.current?.id ?? null,
       replaying: this.replaying,
+      pending: this.queue.length,
       following: this.follow,
     });
   }
@@ -1052,20 +1347,21 @@ export class OfficeScene {
     this.runToken++;
     this.running = false;
     this.queue = [];
+    this.current = null;
     this.flushWaiters();
     for (const b of this.bubbles.splice(0)) b.el.remove();
     for (const b of this.beams.splice(0)) this.disposeBeam(b);
+    this.toastEl.hidden = true;
+    this.boardFlashUntil = 0;
     for (const a of this.actors.values()) {
       a.path = [];
       a.onArrive?.();
       a.group.position.copy(a.desk.spot);
-      a.yaw = a.targetYaw = Math.atan2(
-        a.desk.face.x - a.desk.spot.x,
-        a.desk.face.z - a.desk.spot.z,
-      );
+      a.yaw = a.targetYaw = homeYaw(a.desk, a.working);
       a.at = "desk";
       a.talking = false;
       a.lookAt = null;
+      a.pingUntil = 0;
     }
     this.focus = null;
     this.replaying = false;
@@ -1076,23 +1372,28 @@ export class OfficeScene {
     this.running = true;
     const token = this.runToken;
     while (this.queue.length && token === this.runToken && !this.disposed) {
-      const beat = this.queue[0]!;
+      const beat = this.queue.shift()!;
+      this.current = beat;
+      this.played += 1;
+      this.emit();
       await this.perform(beat, token);
       if (token !== this.runToken) return;
-      this.queue.shift();
+      this.current = null;
       this.emit();
       await this.wait(450);
     }
     if (token !== this.runToken) return;
     this.running = false;
-    if (this.replaying) {
-      this.replaying = false;
-      this.emit();
-    }
     await this.wait(1500);
     if (token === this.runToken && !this.queue.length) {
-      for (const a of this.actors.values())
+      if (this.replaying) {
+        this.replaying = false;
+        this.emit();
+      }
+      for (const a of this.actors.values()) {
         if (a.at !== "desk") void this.goHome(a);
+        else a.lookAt = null;
+      }
       this.focus = null;
     }
   }
@@ -1108,6 +1409,13 @@ export class OfficeScene {
     a.path = this.planPath(a.group.position, pos);
     a.finalFace = face;
     a.lookAt = null;
+    if (this.reduced) {
+      a.group.position.set(pos.x, 0, pos.z);
+      a.path = [];
+      if (face)
+        a.yaw = a.targetYaw = Math.atan2(face.x - pos.x, face.z - pos.z);
+      return Promise.resolve();
+    }
     return new Promise<void>((res) => {
       a.onArrive = () => {
         a.onArrive = null;
@@ -1136,8 +1444,8 @@ export class OfficeScene {
     const ang = (p: THREE.Vector3) => Math.atan2(p.z - TABLE.z, p.x - TABLE.x);
     const a0 = ang(from);
     let d = ang(to) - a0;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
+    while (d > Math.PI) d -= TAU;
+    while (d < -Math.PI) d += TAU;
     const n = Math.max(2, Math.ceil(Math.abs(d) / 0.35));
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i <= n; i++) {
@@ -1158,7 +1466,7 @@ export class OfficeScene {
     const ids = [...this.actors.keys()];
     const i = Math.max(0, ids.indexOf(a.profile.id));
     const n = Math.max(ids.length, 3);
-    const ang = -Math.PI / 2 - Math.PI / 5 + (i / n) * Math.PI * 2;
+    const ang = -Math.PI / 2 - Math.PI / 5 + (i / n) * TAU;
     return new THREE.Vector3(
       TABLE.x + Math.cos(ang) * 2.05,
       0,
@@ -1188,7 +1496,7 @@ export class OfficeScene {
 
   private async perform(beat: Beat, token: number) {
     const alive = () => token === this.runToken;
-    const dur = THREE.MathUtils.clamp(1600 + beat.text.length * 42, 2200, 6500);
+    const dur = beatHoldMs(beat);
     const S = this.actors.get(beat.from);
     const T = beat.to
       .map((id) => this.actors.get(id))
@@ -1200,37 +1508,28 @@ export class OfficeScene {
     }
 
     if (beat.mode === "announce" || (!S && beat.from !== "user")) {
-      this.toast(beat.text);
-      this.boardFlash = 1;
-      for (const a of this.actors.values()) a.pingUntil = this.simT + 2.4;
+      this.toast(beat.text, dur);
+      this.boardFlashUntil = this.simT + dur / 1000;
+      for (const a of this.actors.values())
+        a.pingUntil = this.simT + dur / 1000;
       this.focus = "board";
-      await this.wait(2400);
+      await this.wait(dur);
       return;
     }
 
     if (beat.mode === "user" || !S) {
       this.focus = "user";
-      this.termText = beat.text;
-      this.termPulse = 1;
-      this.drawTerminal();
       for (const a of T) {
         a.lookAt = TERM_POS.clone();
+        a.pingUntil = this.simT + dur / 1000;
         this.addBeam(
-          () => TERM_ANCHOR.clone().setY(2.1),
+          () => TERM_ANCHOR.clone(),
           () => this.headPos(a),
-          0x141413,
+          0x8e8e98,
           dur,
         );
       }
-      this.showBubble(
-        "user",
-        "You",
-        "var(--ink)",
-        beat.text,
-        beat.intent,
-        dur,
-        () => TERM_ANCHOR.clone(),
-      );
+      this.showBubble("user", beat, dur, () => TERM_ANCHOR.clone().setY(2.3));
       await this.wait(dur);
       return;
     }
@@ -1253,33 +1552,26 @@ export class OfficeScene {
 
     S.talking = true;
     if (beat.mode === "huddle") S.lookAt = TABLE.clone();
+    const colour = new THREE.Color(S.color).getHex();
     for (const a of T) {
       a.lookAt = S.group.position.clone();
       this.addBeam(
         () => this.headPos(S),
         () => this.headPos(a),
-        new THREE.Color(S.color).getHex(),
+        colour,
         dur,
       );
     }
-    if (beat.mode === "terminal") {
+    if (beat.mode === "terminal")
       this.addBeam(
         () => this.headPos(S),
-        () => TERM_ANCHOR.clone().setY(2.1),
-        new THREE.Color(S.color).getHex(),
+        () => TERM_ANCHOR.clone(),
+        colour,
         dur,
       );
-      this.termPulse = 1;
-    }
-    if (beat.mode === "board") this.boardFlash = 0.6;
-    this.showBubble(
-      S.profile.id,
-      S.profile.name,
-      S.color,
-      beat.text,
-      beat.intent,
-      dur,
-      () => this.headPos(S).add(new THREE.Vector3(0, 0.55, 0)),
+    if (beat.mode === "board") this.boardFlashUntil = this.simT + dur / 1000;
+    this.showBubble(S.profile.id, beat, dur, () =>
+      this.headPos(S).add(new THREE.Vector3(0, 0.3, 0)),
     );
     await this.wait(dur);
     S.talking = false;
@@ -1287,8 +1579,11 @@ export class OfficeScene {
 
   /* ───────────── fx ───────────── */
 
+  /** The top of a bot (its topper included). */
   private headPos(a: Actor) {
-    return a.group.position.clone().add(new THREE.Vector3(0, 1.45, 0));
+    return a.group.position
+      .clone()
+      .add(new THREE.Vector3(0, a.spec.height * PX + 0.1, 0));
   }
 
   private addBeam(
@@ -1314,7 +1609,7 @@ export class OfficeScene {
     this.scene.add(line);
     const dots = [0, 1, 2].map(() => {
       const d = new THREE.Mesh(
-        new THREE.SphereGeometry(0.07, 12, 8),
+        new THREE.SphereGeometry(0.06, 8, 6),
         new THREE.MeshBasicMaterial({ color, transparent: true }),
       );
       this.scene.add(d);
@@ -1363,6 +1658,7 @@ export class OfficeScene {
         (life > 0.85 ? Math.max(0, (1 - life) / 0.15) : 1);
       b.line.material.opacity = op * 0.8;
       b.dots.forEach((d, k) => {
+        d.visible = !this.reduced;
         d.position.copy(curve.getPoint((age * 0.9 + k / 3) % 1));
         d.material.opacity = op;
       });
@@ -1375,25 +1671,23 @@ export class OfficeScene {
 
   private showBubble(
     from: string,
-    name: string,
-    color: string,
-    text: string,
-    intent: string,
+    beat: Beat,
     durMs: number,
     anchor: () => THREE.Vector3,
   ) {
     for (const b of this.bubbles) if (b.from === from) b.kill = this.simT;
     const el = document.createElement("div");
-    el.className = "office-bubble";
-    el.style.setProperty("--c", color);
-    const who = document.createElement("div");
-    who.className = "office-bubble-who";
-    who.textContent = name;
-    const tag = document.createElement("span");
-    tag.className = "office-intent";
-    tag.textContent = intent;
-    who.appendChild(tag);
-    const body = document.createElement("div");
+    el.className = "office-bubble office-bubble--3d";
+    const who = document.createElement("span");
+    who.className = "office-bubble__who";
+    const name =
+      from === "user"
+        ? "You"
+        : (this.actors.get(from)?.profile.name ?? "A bot");
+    who.textContent =
+      beat.intent === "discussion" ? name : `${name} · ${beat.intent}`;
+    const body = document.createElement("span");
+    body.className = "office-bubble__text";
     el.append(who, body);
     this.overlay.appendChild(el);
     const dur = durMs / 1000;
@@ -1401,28 +1695,28 @@ export class OfficeScene {
       el,
       text: body,
       from,
-      full: text,
+      full: beat.text,
       born: this.simT,
-      typeDur: Math.min(dur * 0.45, 2.2),
+      typeDur: this.reduced ? 0 : Math.min(dur * 0.45, 2.2),
       kill: this.simT + dur + 1.4,
       anchor,
     });
   }
 
-  private toast(text: string) {
+  private toast(text: string, durMs: number) {
     this.toastEl.textContent = text;
-    this.toastEl.classList.add("show");
-    window.setTimeout(
-      () => this.toastEl.classList.remove("show"),
-      2600 / this.speed,
-    );
+    this.toastEl.hidden = false;
+    const token = this.runToken;
+    void this.wait(durMs).then(() => {
+      if (token === this.runToken) this.toastEl.hidden = true;
+    });
   }
 
   private project(v: THREE.Vector3, w: number, h: number, el: HTMLElement) {
     const p = v.project(this.camera);
     el.style.left = `${((p.x + 1) / 2) * w}px`;
     el.style.top = `${((1 - p.y) / 2) * h}px`;
-    el.style.display = p.z > 1 ? "none" : "";
+    el.style.visibility = p.z > 1 ? "hidden" : "";
   }
 
   /* ───────────── loop ───────────── */
@@ -1446,11 +1740,8 @@ export class OfficeScene {
     }
   }
 
-  private readonly frame = (now: number) => {
-    if (this.disposed) return;
-    this.raf = requestAnimationFrame(this.frame);
-    const dt = Math.min((now - this.lastFrame) / 1000, 0.05);
-    this.lastFrame = now;
+  /** Advances the simulation by `dt` seconds of wall-clock time. */
+  private step(dt: number) {
     this.wallT += dt;
     const sdt = this.paused ? 0 : dt * this.speed;
     this.simT += sdt;
@@ -1461,22 +1752,21 @@ export class OfficeScene {
         w.res();
       }
     }
-
     for (const a of this.actors.values()) {
       const g = a.group;
       const target = a.path[0];
       if (target && sdt > 0) {
         const d = new THREE.Vector3().subVectors(target, g.position).setY(0);
         const dist = d.length();
-        const step = 2.6 * sdt;
-        if (dist <= step) {
+        const stepLen = WALK_SPEED * sdt;
+        if (dist <= stepLen) {
           g.position.set(target.x, 0, target.z);
           a.path.shift();
         } else {
-          g.position.addScaledVector(d.normalize(), step);
+          g.position.addScaledVector(d.normalize(), stepLen);
           a.targetYaw = Math.atan2(d.x, d.z);
         }
-        a.walkPhase += sdt * 11;
+        a.walkT += sdt;
         if (!a.path.length) {
           if (a.finalFace)
             a.targetYaw = Math.atan2(
@@ -1490,53 +1780,143 @@ export class OfficeScene {
           a.lookAt.x - g.position.x,
           a.lookAt.z - g.position.z,
         );
+      } else if (!a.path.length && a.at === "desk") {
+        a.targetYaw = homeYaw(a.desk, a.working && !a.talking);
       }
       a.yaw = angleLerp(a.yaw, a.targetYaw, Math.min(1, dt * 9));
-      g.rotation.y = a.yaw;
-      const walking = a.path.length > 0 && !this.paused;
-      g.position.y = walking
-        ? Math.abs(Math.sin(a.walkPhase)) * 0.08
-        : Math.sin(this.wallT * 2 + a.desk.phase) * 0.02;
-      g.rotation.z = walking ? Math.sin(a.walkPhase) * 0.05 : 0;
-      const swing = walking
-        ? Math.sin(a.walkPhase) * 0.6
-        : a.talking
-          ? Math.sin(this.wallT * 7) * 0.25
-          : 0;
-      a.arms[0]!.rotation.x = -swing;
-      a.arms[1]!.rotation.x = swing;
-      a.headPivot.rotation.x = a.talking ? Math.sin(this.wallT * 9) * 0.06 : 0;
-      a.headPivot.rotation.y = a.talking
-        ? Math.sin(this.wallT * 2.3) * 0.12
-        : 0;
-      a.face.scale.y = a.talking
-        ? 1 + Math.abs(Math.sin(this.wallT * 14)) * 0.08
-        : Math.sin(this.wallT * 0.9 + a.desk.phase * 3) > 0.985
-          ? 0.25
-          : 1;
-      a.glow.emissiveIntensity = a.talking
-        ? 1.4 + Math.sin(this.wallT * 12)
-        : 0.5;
-      a.ring.scale.setScalar(
-        a.talking ? 1 + Math.sin(this.wallT * 6) * 0.08 : 1,
-      );
-      a.tag.classList.toggle("ping", this.simT < a.pingUntil);
     }
+  }
 
-    if (this.termPulse > 0) {
-      this.termPulse = Math.max(0, this.termPulse - dt * 0.5);
-      if (Math.floor(this.wallT * 10) % 2 === 0) this.drawTerminal();
+  /** Poses every bot for the current time (SPEC §8 motion). */
+  private pose(dt: number) {
+    const t = this.wallT;
+    for (const a of this.actors.values()) {
+      a.group.rotation.y = a.yaw;
+      const walking = a.path.length > 0 && !this.paused;
+      const atDesk = a.at === "desk" && !walking;
+      const still = this.reduced;
+      const pose =
+        !still && walking ? gaitPose(a.spec.gait, a.walkT) : REST_POSE;
+      const lift = still ? 0 : walking ? pose.lift : idleLift(t, a.phase);
+      a.body.position.y = lift * PX;
+      a.body.rotation.set(pose.pitch, 0, pose.roll);
+      let armL = pose.armL;
+      let armR = pose.armR;
+      let yawL = 0;
+      let yawR = 0;
+      let headPitch = 0;
+      let headYaw = 0;
+      let mouth = 1;
+      let ring = 1;
+      if (!still && a.talking && !walking) {
+        const tp = talkPose(t);
+        armL = tp.armL;
+        armR = tp.armR;
+        yawL = tp.armYawL;
+        yawR = tp.armYawR;
+        headPitch = -tp.headPitch;
+        headYaw = tp.headYaw;
+        mouth = tp.mouth;
+        ring = tp.ring;
+      } else if (!still && a.working && atDesk) {
+        const tap = tapPose(t + a.phase);
+        armL = tap.armL;
+        armR = tap.armR;
+      }
+      a.arms[0].rotation.set(armL, yawL, 0);
+      a.arms[1].rotation.set(armR, yawR, 0);
+      a.headPivot.rotation.set(headPitch, headYaw, 0);
+      if (a.mouth) a.mouth.scale.y = mouth;
+      a.ring.scale.setScalar(ring);
+      const blink = still ? 1 : blinkScale(t, a.phase);
+      for (const eye of a.eyes) eye.scale.y = blink;
+
+      // Topper motion (SPEC §8).
+      if (still) {
+        a.tip?.scale.setScalar(1);
+        if (a.dish) a.dish.rotation.y = 0;
+        if (a.leaves) a.leaves.rotation.z = 0;
+        if (a.halo) a.halo.position.y = 0;
+        for (const gm of a.glow) gm.mat.color.copy(gm.base);
+        continue;
+      }
+      const talk = a.talking;
+      let glow = 0;
+      switch (a.spec.topper.kind) {
+        case "antenna": {
+          const k = wave(t + a.phase, talk ? 0.3 : 2);
+          a.tip?.scale.setScalar(1 + 0.25 * k);
+          glow = 0.35 * k;
+          break;
+        }
+        case "dish":
+          if (a.working && atDesk) {
+            a.spin += (dt * TAU) / 2.2;
+            if (a.dish) a.dish.rotation.y = a.spin;
+          } else if (a.dish)
+            a.dish.rotation.y =
+              ((22 * Math.PI) / 180) * Math.sin((TAU * t) / 4);
+          glow = talk ? 0.3 * wave(t, 0.4) : 0;
+          break;
+        case "sprout":
+          if (a.leaves)
+            a.leaves.rotation.z =
+              ((6 * Math.PI) / 180) *
+              Math.sin((TAU * t) / (walking ? 0.4 : 2.8));
+          break;
+        case "crest":
+          glow = 0.45 * wave(t + a.phase, talk ? 0.35 : 2.4);
+          break;
+        case "propeller": {
+          const period = walking ? 0.22 : talk || a.working ? 0.7 : 1.8;
+          a.spin += (dt * TAU) / period;
+          if (a.rotor) a.rotor.rotation.y = a.spin;
+          break;
+        }
+        case "halo":
+          if (a.halo)
+            a.halo.position.y = 4 * PX * wave(t + a.phase, talk ? 0.6 : 2.4);
+          glow = talk ? 0.3 * wave(t, 0.6) : 0;
+          break;
+        case "none":
+          break;
+      }
+      for (const gm of a.glow) gm.mat.color.copy(gm.base).lerp(WHITE, glow);
     }
-    if (this.boardFlash > 0) {
-      this.boardFlash = Math.max(0, this.boardFlash - dt * 0.8);
+  }
+
+  private readonly frame = (now: number) => {
+    if (this.disposed || !this.active) return;
+    this.raf = requestAnimationFrame(this.frame);
+    let dt = (now - this.lastFrame) / 1000;
+    this.lastFrame = now;
+    if (!(dt > 0)) dt = 0;
+    dt = Math.min(dt, MAX_FRAME);
+    const frameDt = dt;
+    while (dt > 1e-6) {
+      const h = Math.min(dt, MAX_STEP);
+      this.step(h);
+      dt -= h;
+    }
+    this.pose(frameDt);
+    this.updateBeams();
+
+    // Canvas animations, redrawn only when their step changes.
+    const scan = Math.floor(this.wallT / (1.4 / 3));
+    if (scan !== this.lastScan && !this.reduced) {
+      this.lastScan = scan;
+      this.drawMonitors(true);
+    }
+    const cursor = Math.floor(this.wallT / 0.5);
+    if (cursor !== this.lastCursor && !this.reduced) {
+      this.lastCursor = cursor;
+      this.drawTerminal();
+    }
+    const flash = this.flashOn() ? 1 : 0;
+    if (flash !== this.lastFlash) {
+      this.lastFlash = flash;
       this.drawBoard();
     }
-    this.termScreen.position.y = 2.05 + Math.sin(this.wallT * 1.6) * 0.04;
-    if (this.wallT - this.lastMonitor > 0.25) {
-      this.lastMonitor = this.wallT;
-      this.drawMonitors();
-    }
-    this.updateBeams();
 
     if (this.camReset) {
       this.camera.position.lerp(this.homeCam, 0.08);
@@ -1549,42 +1929,65 @@ export class OfficeScene {
       else if (this.focus === "board") f.copy(BOARD_SPOT);
       else f.copy(this.actors.get(this.focus)?.group.position ?? HOME_TARGET);
       f.lerp(HOME_TARGET, 0.55).setY(0.6);
-      this.controls.target.lerp(f, dt * 1.6);
+      this.controls.target.lerp(f, Math.min(1, frameDt * 1.6));
+    }
+    // Camera drift: ±4° of azimuth over 16 s, off once the user drags or with reduced motion.
+    const drift =
+      this.dragged || this.reduced
+        ? 0
+        : DRIFT * Math.sin((TAU * this.wallT) / 32);
+    if (drift !== this.drift) {
+      const offset = new THREE.Vector3().subVectors(
+        this.camera.position,
+        this.controls.target,
+      );
+      offset.applyAxisAngle(UP, drift - this.drift);
+      this.camera.position.copy(this.controls.target).add(offset);
+      this.drift = drift;
     }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+    this.layoutOverlays();
+  };
 
+  private layoutOverlays() {
     const w = this.host.clientWidth;
     const h = this.host.clientHeight;
+    const idle = !this.running && !this.queue.length && !this.current;
     for (const a of this.actors.values()) {
-      this.project(
-        this.headPos(a).add(new THREE.Vector3(0, 0.62, 0)),
-        w,
-        h,
-        a.tag,
-      );
+      const top = this.headPos(a);
+      this.project(top.clone(), w, h, a.tag);
       const speaking = this.bubbles.some(
         (b) => b.from === a.profile.id && this.simT < b.kill,
       );
       a.tag.style.opacity = speaking ? "0" : "";
+      const pinged = this.simT < a.pingUntil;
+      a.ping.hidden = !pinged;
+      a.typing.hidden = pinged || speaking || !(idle && a.working);
+      if (!a.ping.hidden) this.project(top.clone(), w, h, a.ping);
+      if (!a.typing.hidden) this.project(top.clone(), w, h, a.typing);
     }
+    this.project(TERM_ANCHOR.clone().setY(1.95), w, h, this.youEl);
     for (let i = this.bubbles.length - 1; i >= 0; i--) {
       const b = this.bubbles[i]!;
-      const n = Math.ceil(
-        b.full.length * Math.min(1, (this.simT - b.born) / b.typeDur),
-      );
+      const n =
+        b.typeDur > 0
+          ? Math.ceil(
+              b.full.length * Math.min(1, (this.simT - b.born) / b.typeDur),
+            )
+          : b.full.length;
       if (b.text.textContent?.length !== n)
         b.text.textContent = b.full.slice(0, n);
       this.project(b.anchor(), w, h, b.el);
       if (this.simT > b.kill) {
-        b.el.classList.add("fade");
+        b.el.classList.add("is-leaving");
         if (this.simT > b.kill + 0.4) {
           b.el.remove();
           this.bubbles.splice(i, 1);
         }
       }
     }
-  };
+  }
 
   /* ───────────── picking ───────────── */
 
@@ -1616,3 +2019,6 @@ export class OfficeScene {
     }
   };
 }
+
+const UP = new THREE.Vector3(0, 1, 0);
+const WHITE = new THREE.Color("#FFFFFF");

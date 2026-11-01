@@ -12,16 +12,39 @@ const listeners = new Set<() => void>();
 const currentHash = () =>
   typeof window === "undefined" ? "" : window.location.hash;
 
+/** The hash last seen, and the one before it (for "return to where I was"). */
+let lastHash = currentHash();
+let previousHash: string | null = null;
+
+/** Notes a hash change. A replaced entry (a redirect) is not somewhere to return to. */
+function record(replaced: boolean) {
+  const next = currentHash();
+  if (next === lastHash) return;
+  if (!replaced) previousHash = lastHash;
+  lastHash = next;
+}
+
 function notify() {
   for (const listener of listeners) listener();
 }
 
+function onHashChange() {
+  record(false);
+  notify();
+}
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  if (listeners.size === 1) window.addEventListener("hashchange", notify);
+  if (listeners.size === 1) {
+    // The app (re)mounted: it opened on this route, with nothing to go back to.
+    lastHash = currentHash();
+    previousHash = null;
+    window.addEventListener("hashchange", onHashChange);
+  }
   return () => {
     listeners.delete(listener);
-    if (listeners.size === 0) window.removeEventListener("hashchange", notify);
+    if (listeners.size === 0)
+      window.removeEventListener("hashchange", onHashChange);
   };
 }
 
@@ -37,6 +60,7 @@ export function navigate(route: Route, options: NavigateOptions = {}): void {
   if (options.replace) {
     // replaceState does not fire hashchange, so tell subscribers directly.
     window.history.replaceState(window.history.state, "", href);
+    record(true);
     notify();
   } else {
     window.location.hash = href;
@@ -47,4 +71,12 @@ export function navigate(route: Route, options: NavigateOptions = {}): void {
 export function useRoute(): Route {
   const hash = useSyncExternalStore(subscribe, currentHash, () => "");
   return useMemo(() => parseRoute(hash), [hash]);
+}
+
+/**
+ * The route shown before the current one, for Cancel buttons; null after a
+ * reload or when the app opened on this route.
+ */
+export function previousRoute(): Route | null {
+  return previousHash === null ? null : parseRoute(previousHash);
 }

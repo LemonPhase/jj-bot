@@ -292,25 +292,7 @@
   }
 }
 
-/* ── New bot dialog ────────────────────────────────────────────────────── */
-.new-bot-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-8);
-}
-
-.new-bot-form__preview {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-7);
-  padding: 12px 14px;
-  border: 1px solid var(--line-subtle);
-  border-radius: var(--r-xl);
-  background: var(--bg-scene);
-}
-
-.new-bot-form__summary {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono);
-  color: var(--ink-muted);
+/* The replying/working row's live region stays mounted; empty, it takes no gap. */
+.bot-chat__activity:empty {
+  margin-top: calc(var(--sp-9) * -1);
 }

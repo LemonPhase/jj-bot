@@ -21,7 +21,9 @@ import { formatMessageTime } from "../../lib/format";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { studioHref, taskHref } from "../shell/router";
 import { navigate } from "../shell/useRoute";
+import { draftFromBot, updateBotCommand } from "../studio/studioDraft";
 import { DEFAULT_OPTION, modelOptions, profileOptions } from "./botOptions";
+import { requestBotFocus } from "./focusRequest";
 import { useModels } from "./useModels";
 
 /** What the About links ask the inspector to focus when it opens. */
@@ -139,11 +141,16 @@ function DetailsForm({ bot }: { bot: Bot }) {
   );
   const [state, setState] = useState<SaveState>({ kind: "idle" });
 
-  const dirty =
-    role !== bot.role ||
-    instructions !== bot.instructions ||
-    model !== (bot.model ?? DEFAULT_OPTION) ||
-    profile !== (bot.runtimeProfileId ?? DEFAULT_OPTION);
+  // Only the fields edited here, so a save never overwrites what another tab
+  // or Bot Studio changed meanwhile (the Studio diff, on the same fields).
+  const changes = updateBotCommand(bot, {
+    ...draftFromBot(bot),
+    role,
+    instructions,
+    model,
+    runtimeProfileId: profile,
+  });
+  const dirty = changes !== null;
 
   // Follow changes made elsewhere while there is nothing unsaved here.
   const dirtyRef = useRef(dirty);
@@ -158,15 +165,10 @@ function DetailsForm({ bot }: { bot: Bot }) {
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
-    if (!dirty) return;
+    if (!changes) return;
     setState({ kind: "saving" });
     try {
-      const saved = await updateBot(bot.id, {
-        role: role.trim(),
-        instructions: instructions.trim(),
-        model: model === DEFAULT_OPTION ? null : model,
-        runtimeProfileId: profile === DEFAULT_OPTION ? null : profile,
-      });
+      const saved = await updateBot(bot.id, changes);
       setRole(saved.role);
       setInstructions(saved.instructions);
       setState({ kind: "saved", at: saved.updatedAt });
@@ -221,8 +223,15 @@ function DetailsForm({ bot }: { bot: Bot }) {
 
 /** The bot's durable memory (one free-text field), saved with `putMemory`. */
 function MemoryForm({ bot, fieldId }: { bot: Bot; fieldId: string }) {
-  const { memories, saveMemory } = useWorkspace();
+  const { memories, memoryErrors, saveMemory, loadMemory } = useWorkspace();
   const stored = memories[bot.id];
+  const loadError = stored ? undefined : memoryErrors[bot.id];
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    setRetrying(true);
+    await loadMemory(bot.id);
+    setRetrying(false);
+  };
   const [draft, setDraft] = useState<string | null>(stored?.text ?? null);
   const [state, setState] = useState<SaveState>({ kind: "idle" });
   const dirty = draft !== null && draft !== (stored?.text ?? "");
@@ -255,10 +264,29 @@ function MemoryForm({ bot, fieldId }: { bot: Bot; fieldId: string }) {
         value={draft ?? ""}
         rows={5}
         disabled={draft === null}
-        placeholder={draft === null ? "Loading…" : "Nothing remembered yet."}
+        placeholder={
+          draft !== null
+            ? "Nothing remembered yet."
+            : loadError
+              ? "Not loaded"
+              : "Loading…"
+        }
         hint={`Facts ${bot.name} keeps across all its sessions.`}
         onChange={(event) => setDraft(event.target.value)}
       />
+      {loadError && (
+        <ErrorBanner word="Not loaded">
+          Memory did not load: {loadError}{" "}
+          <button
+            type="button"
+            className="text-link"
+            disabled={retrying}
+            onClick={() => void retry()}
+          >
+            {retrying ? "Retrying…" : "Retry"}
+          </button>
+        </ErrorBanner>
+      )}
       {state.kind === "error" && <ErrorBanner>{state.message}</ErrorBanner>}
       <div className="inspector-actions">
         <Button
@@ -319,22 +347,37 @@ function ActiveTasks({ bot, focusId }: { bot: Bot; focusId: string }) {
 
 /** Archive, behind a confirmation. The server refuses while tasks are active. */
 function ArchiveSection({ bot }: { bot: Bot }) {
-  const { bots, archiveBot } = useWorkspace();
+  const { bots, archiveBot, refreshBots } = useWorkspace();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blocked = bot.activeTaskIds.length > 0;
 
+  const open = () => {
+    setError(null);
+    setConfirming(true);
+  };
+  const cancel = () => {
+    if (busy) return;
+    setConfirming(false);
+    setError(null);
+  };
   const archive = async () => {
     setBusy(true);
     setError(null);
     const next = bots.find((other) => other.id !== bot.id);
     try {
       await archiveBot(bot.id);
+      // Focus lands on the next bot's heading (or the empty state), not <body>.
+      requestBotFocus(next?.id ?? null);
       navigate({ name: "bots", botId: next?.id ?? null }, { replace: true });
     } catch (reason) {
       setError(isApiError(reason) ? reason.message : errorText(reason));
       setBusy(false);
+      // The server knows of active tasks this screen did not: catch up, so
+      // the button reflects them.
+      if (isApiError(reason) && reason.code === "CONFLICT")
+        void refreshBots().catch(() => {});
     }
   };
 
@@ -349,24 +392,18 @@ function ArchiveSection({ bot }: { bot: Bot }) {
           : `${bot.name} leaves the bot list and can no longer be messaged.`}
       </p>
       <div className="inspector-actions">
-        <Button
-          variant="danger"
-          disabled={blocked}
-          onClick={() => setConfirming(true)}
-        >
+        <Button variant="danger" disabled={blocked} onClick={open}>
           Archive bot
         </Button>
       </div>
       <Dialog
         open={confirming}
-        onClose={() => {
-          if (!busy) setConfirming(false);
-        }}
+        onClose={cancel}
         title={`Archive ${bot.name}?`}
         description={`${bot.name} leaves the bot list and can no longer be messaged.`}
         footer={
           <>
-            <Button onClick={() => setConfirming(false)} disabled={busy}>
+            <Button onClick={cancel} disabled={busy}>
               Cancel
             </Button>
             <Button variant="danger" onClick={archive} disabled={busy}>

@@ -1,0 +1,432 @@
+// @vitest-environment jsdom
+import "../test/dom";
+import {
+  type Bot,
+  type ConversationMessage,
+  type ConversationView,
+  emptyUsage,
+  type Task,
+  type TaskMessage,
+  type TaskView,
+  type WorkspaceHint,
+} from "@jj/contracts";
+import { act, configure, render, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiProvider } from "../api/ApiContext";
+import {
+  ApiError,
+  type HintOptions,
+  type JJApi,
+  type StreamOptions,
+} from "../api/client";
+import { createDemoApi } from "../api/demoApi";
+import { followTask, type TaskEventHandlers } from "../api/follow";
+import { useWorkspace, WorkspaceProvider } from "./WorkspaceContext";
+
+// Whole-provider renders share CPU with the other suites in a full run.
+configure({ asyncUtilTimeout: 5000 });
+
+const T0 = "2026-10-31T12:00:00.000Z";
+const T1 = "2026-10-31T12:01:00.000Z";
+
+const task: Task = {
+  id: "task-1",
+  title: "Check the stream",
+  goal: "Check the stream",
+  goalVersion: 1,
+  coordinatorBotId: "bot-a",
+  participantBotIds: ["bot-a"],
+  status: "running",
+  result: null,
+  error: null,
+  cancelReason: null,
+  cancelRequestedAt: null,
+  createdAt: T0,
+  updatedAt: T0,
+  finishedAt: null,
+};
+
+const message = (sequence: number, text = `message ${sequence}`) =>
+  ({
+    id: `m${sequence}`,
+    taskId: "task-1",
+    sequence,
+    authorKind: "bot",
+    authorBotId: "bot-a",
+    sessionId: null,
+    intent: "discussion",
+    text,
+    recipientBotIds: [],
+    createdAt: T0,
+  }) satisfies TaskMessage;
+
+const view = (messages: TaskMessage[], cursor: number): TaskView => ({
+  task,
+  sessions: [],
+  messages,
+  artifacts: [],
+  usage: { total: emptyUsage(), bySession: {} },
+  events: [],
+  firstSequence: 1,
+  hasEarlier: false,
+  cursor,
+});
+
+const posted = (sequence: number, m: TaskMessage) => ({
+  id: `e${sequence}`,
+  taskId: "task-1",
+  sequence,
+  occurredAt: T0,
+  botId: "bot-a",
+  sessionId: null,
+  runId: null,
+  causedBy: null,
+  type: "message.posted",
+  payload: { message: m },
+});
+
+const bot = (id: string): Bot => ({
+  id,
+  name: id,
+  role: "",
+  instructions: "",
+  model: null,
+  runtimeProfileId: null,
+  appearance: {
+    shape: "round",
+    face: "dots",
+    topper: "none",
+    colour: "teal",
+    body: "ivory",
+    gait: "hop",
+  },
+  presence: "idle",
+  activeTaskIds: [],
+  createdAt: T0,
+  updatedAt: T0,
+});
+
+/** A workspace API whose streams the test drives by hand. */
+function fakeApi(overrides: Partial<JJApi> = {}) {
+  const hints: {
+    onHint: (hint: WorkspaceHint) => void;
+    options?: HintOptions;
+  }[] = [];
+  const tasks: {
+    onView: (view: TaskView) => void;
+    options?: StreamOptions;
+  }[] = [];
+  const base = createDemoApi({ autoplay: false });
+  const api: JJApi = {
+    ...base,
+    bootstrap: async () => ({
+      ...(await base.bootstrap()),
+      bots: [bot("bot-a"), bot("bot-b")],
+      tasks: [],
+      profiles: [],
+    }),
+    subscribeHints: (onHint, options) => {
+      hints.push({ onHint, options });
+      return () => {};
+    },
+    subscribeConversation: vi.fn(() => () => {}),
+    subscribeTask: vi.fn((_taskId, onView, options) => {
+      tasks.push({ onView, options });
+      return () => {};
+    }),
+    listTasks: vi.fn(async () => []),
+    ...overrides,
+  };
+  const hint = (value: WorkspaceHint) =>
+    act(() => {
+      for (const h of hints) h.onHint(value);
+    });
+  return { api, hints, tasks, hint };
+}
+
+/** Views land once per frame: deliver one and let the frame pass. */
+async function showView(
+  stream: { onView: (view: TaskView) => void } | undefined,
+  next: TaskView,
+) {
+  await act(async () => {
+    stream?.onView(next);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  });
+}
+
+let workspace: ReturnType<typeof useWorkspace>;
+function Probe() {
+  workspace = useWorkspace();
+  return null;
+}
+
+async function mount(api: JJApi, children?: ReactNode) {
+  render(
+    <ApiProvider api={api}>
+      <WorkspaceProvider>
+        <Probe />
+        {children}
+      </WorkspaceProvider>
+    </ApiProvider>,
+  );
+  await waitFor(() => expect(workspace.loading).toBe(false));
+}
+
+beforeEach(() => {
+  window.location.hash = "#/tasks/task-1";
+});
+
+describe("WorkspaceContext: task load failures (a)", () => {
+  it("shows a terminal failure instead of loading forever", async () => {
+    const { api, tasks } = fakeApi();
+    await mount(api);
+    expect(workspace.taskViews["task-1"]).toBeUndefined();
+    act(() =>
+      tasks[0]?.options?.onError?.(new ApiError("NOT_FOUND", "No task.")),
+    );
+    expect(workspace.taskProblem).toMatchObject({
+      taskId: "task-1",
+      terminal: true,
+      error: { code: "NOT_FOUND", message: "No task." },
+    });
+  });
+
+  it("marks other failures retryable, retries on demand, and clears on the next view", async () => {
+    const { api, tasks } = fakeApi();
+    await mount(api);
+    act(() =>
+      tasks[0]?.options?.onError?.(new ApiError("NETWORK_ERROR", "Offline")),
+    );
+    expect(workspace.taskProblem?.terminal).toBe(false);
+    act(() => workspace.retryTask());
+    await waitFor(() => expect(api.subscribeTask).toHaveBeenCalledTimes(2));
+    await showView(tasks[1], view([], 0));
+    expect(workspace.taskProblem).toBeNull();
+    expect(workspace.taskViews["task-1"]?.cursor).toBe(0);
+  });
+});
+
+describe("WorkspaceContext: malformed events (b)", () => {
+  it("reloads the snapshot rather than losing the malformed event's change", async () => {
+    const snapshots = [
+      view([message(1)], 1),
+      view([message(1), message(2)], 2),
+    ];
+    const streams: TaskEventHandlers[] = [];
+    const subscribeTask: JJApi["subscribeTask"] = (taskId, onView, options) =>
+      followTask(
+        taskId,
+        async () => snapshots.shift() ?? view([], 0),
+        (_id, _after, handlers) => {
+          streams.push(handlers);
+          handlers.onOpen();
+          return () => {};
+        },
+        onView,
+        { retryMs: 5, ...options },
+      );
+    const { api } = fakeApi({ subscribeTask });
+    await mount(api);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    act(() =>
+      streams[0]?.onEvent({ ...posted(2, message(2)), payload: { bad: 1 } }),
+    );
+    expect(workspace.taskProblem?.error.code).toBe("INVALID_RESPONSE");
+    // The view stays on screen while the fresh snapshot loads.
+    expect(workspace.taskViews["task-1"]?.cursor).toBe(1);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    expect(workspace.taskViews["task-1"]?.messages.map((m) => m.id)).toEqual([
+      "m1",
+      "m2",
+    ]);
+    expect(workspace.taskProblem).toBeNull();
+  });
+});
+
+describe("WorkspaceContext: refetch amplification (f)", () => {
+  it("debounces task-list hints and skips the streamed task's own", async () => {
+    const { api, tasks, hint } = fakeApi();
+    await mount(api);
+    await showView(tasks[0], view([], 0));
+    hint({ type: "tasks.changed", taskId: "task-1" });
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(api.listTasks).not.toHaveBeenCalled();
+    hint({ type: "tasks.changed", taskId: "task-2" });
+    hint({ type: "tasks.changed", taskId: "task-3" });
+    hint({ type: "tasks.changed", taskId: "task-2" });
+    await waitFor(() => expect(api.listTasks).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 260));
+    expect(api.listTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the newest bot list, and follows only the open bot's conversation", async () => {
+    window.location.hash = "#/bots/bot-a";
+    const answers: ((bots: Bot[]) => void)[] = [];
+    const listBots = vi.fn(
+      () => new Promise<Bot[]>((resolve) => answers.push(resolve)),
+    );
+    const { api, hint } = fakeApi({ listBots });
+    await mount(api);
+    expect(api.subscribeConversation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.subscribeConversation).mock.calls[0]?.[0]).toBe(
+      "bot-a",
+    );
+    hint({ type: "bots.changed" });
+    await waitFor(() => expect(listBots).toHaveBeenCalledTimes(1));
+    hint({ type: "bots.changed" });
+    await waitFor(() => expect(listBots).toHaveBeenCalledTimes(2));
+    // The newer answer (same bots, reordered) lands first; the older one must not win.
+    await act(async () => answers[1]?.([bot("bot-b"), bot("bot-a")]));
+    await act(async () => answers[0]?.([bot("bot-a")]));
+    expect(workspace.bots.map((b) => b.id)).toEqual(["bot-b", "bot-a"]);
+    // Reloading the bot list never resubscribes; opening another bot does.
+    expect(api.subscribeConversation).toHaveBeenCalledTimes(1);
+    act(() => {
+      window.location.hash = "#/bots/bot-b";
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    await waitFor(() =>
+      expect(vi.mocked(api.subscribeConversation).mock.calls.at(-1)?.[0]).toBe(
+        "bot-b",
+      ),
+    );
+  });
+});
+
+describe("WorkspaceContext: direct chat sends", () => {
+  it("shows the stored message with the bot replying, and keeps it over stale views", async () => {
+    window.location.hash = "#/bots/bot-a";
+    const views: ((view: ConversationView) => void)[] = [];
+    const stored: ConversationMessage = {
+      id: "c2",
+      botId: "bot-a",
+      sequence: 2,
+      role: "user",
+      text: "Hello",
+      taskId: null,
+      createdAt: T0,
+    };
+    const first: ConversationMessage = {
+      ...stored,
+      id: "c1",
+      sequence: 1,
+      text: "Earlier",
+    };
+    const { api } = fakeApi({
+      subscribeConversation: vi.fn((_botId, onView) => {
+        views.push(onView);
+        return () => {};
+      }),
+      sendBotMessage: vi.fn(async () => stored),
+      getConversation: vi.fn(),
+    });
+    await mount(api);
+    const conversation = (
+      messages: ConversationMessage[],
+      replying = false,
+    ) => ({
+      botId: "bot-a",
+      messages,
+      replying,
+      lastReplyError: null,
+    });
+    act(() => views[0]?.(conversation([first])));
+    await act(async () => {
+      expect(await workspace.sendBotMessage("bot-a", "Hello")).toBe(true);
+    });
+    // In the same render that dropped the pending bubble.
+    expect(workspace.pendingBotTurns["bot-a"]).toBeUndefined();
+    expect(workspace.conversations["bot-a"]).toMatchObject({
+      replying: true,
+      messages: [{ id: "c1" }, { id: "c2" }],
+    });
+    // A view read before the send landed does not take the message away.
+    act(() => views[0]?.(conversation([first])));
+    expect(workspace.conversations["bot-a"]?.messages).toHaveLength(2);
+    // Once a fetched view has it, the fetched view is shown as is.
+    act(() => views[0]?.(conversation([first, stored], false)));
+    act(() => views[0]?.(conversation([first, stored], false)));
+    expect(workspace.conversations["bot-a"]).toMatchObject({ replying: false });
+    expect(api.getConversation).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkspaceContext: catching up", () => {
+  it("renders a burst of hundreds of views once, not once per event", async () => {
+    const { api, tasks } = fakeApi();
+    let renders = 0;
+    function Counter() {
+      useWorkspace();
+      renders += 1;
+      return null;
+    }
+    await mount(api, <Counter />);
+    const before = renders;
+    await act(async () => {
+      for (let cursor = 1; cursor <= 300; cursor += 1)
+        tasks[0]?.onView(view([message(1)], cursor));
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+    expect(workspace.taskViews["task-1"]?.cursor).toBe(300);
+    expect(renders - before).toBeLessThanOrEqual(3);
+  });
+});
+
+describe("WorkspaceContext: optimistic updates (h)", () => {
+  it("shows a posted message at once, once", async () => {
+    const stored = { ...message(2, "Keep going"), authorKind: "user" as const };
+    const { api, tasks } = fakeApi({
+      postTaskMessage: vi.fn(async () => stored),
+    });
+    await mount(api);
+    await showView(tasks[0], view([message(1)], 1));
+    let result: Awaited<ReturnType<typeof workspace.postTaskMessage>> | null =
+      null;
+    await act(async () => {
+      result = await workspace.postTaskMessage("task-1", "Keep going", false);
+    });
+    expect(result).toEqual({ ok: true });
+    expect(workspace.taskViews["task-1"]?.messages.map((m) => m.id)).toEqual([
+      "m1",
+      "m2",
+    ]);
+    // An unrelated event arrives before message.posted: the message stays.
+    await showView(tasks[0], { ...view([message(1)], 1), cursor: 2 });
+    expect(workspace.taskViews["task-1"]?.messages).toHaveLength(2);
+    // The stream delivers it: still exactly one copy.
+    await showView(tasks[0], view([message(1), stored], 3));
+    expect(workspace.taskViews["task-1"]?.messages).toHaveLength(2);
+  });
+
+  it("shows stopping at once and reports a failed post in place", async () => {
+    const stopping = { ...task, cancelRequestedAt: T1, updatedAt: T1 };
+    const { api, tasks } = fakeApi({
+      stopTask: vi.fn(async () => stopping),
+      postTaskMessage: vi.fn(async () => {
+        throw new ApiError("STALE_GOAL_VERSION", "Goal is at v3.");
+      }),
+    });
+    await mount(api);
+    await showView(tasks[0], view([], 0));
+    await act(async () => {
+      await workspace.stopTask("task-1");
+    });
+    expect(workspace.taskViews["task-1"]?.task.cancelRequestedAt).toBe(T1);
+    let result: Awaited<ReturnType<typeof workspace.postTaskMessage>> | null =
+      null;
+    await act(async () => {
+      result = await workspace.postTaskMessage("task-1", "New goal", true);
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "STALE_GOAL_VERSION" },
+    });
+    expect(api.postTaskMessage).toHaveBeenCalledWith("task-1", {
+      text: "New goal",
+      goal: "New goal",
+      observedGoalVersion: 1,
+    });
+  });
+});

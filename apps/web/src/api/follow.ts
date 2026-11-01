@@ -4,7 +4,8 @@
  *
  * - `followTask`: load the snapshot, then fold every streamed event onto it
  *   with `applyTaskEvent`, reopening after the last sequence when the stream
- *   closes.
+ *   closes. A malformed known event cannot be skipped (the cursor would move
+ *   past a change for good), so it closes the stream and reloads the snapshot.
  * - `followConversation`: load the conversation, then reload it on every
  *   `conversation.changed` hint for that bot and on a hint-stream resync.
  */
@@ -13,6 +14,7 @@ import {
   type ConversationView,
   type ParsedTaskEvent,
   parseTaskEvent,
+  type TaskEvent,
   type TaskView,
 } from "@jj/contracts";
 import {
@@ -57,6 +59,25 @@ export const toApiError = (reason: unknown): ApiError =>
     ? reason
     : new ApiError("NETWORK_ERROR", text(reason));
 
+/**
+ * A task load failure that retrying cannot fix: the task does not exist or
+ * the API refused the request. The subscription stops; anything else retries.
+ */
+export const isTerminalTaskError = (error: ApiError): boolean =>
+  error.code === "NOT_FOUND" || error.code === "UNAUTHORIZED";
+
+/**
+ * Drops a `tool.finished` output preview. Snapshots never carry them, so
+ * folding streamed events without them keeps a followed view equal to a fresh
+ * snapshot at the same cursor and keeps its memory bounded.
+ */
+export function stripToolOutput(event: TaskEvent): TaskEvent {
+  if (event.type !== "tool.finished" || event.payload.output === undefined)
+    return event;
+  const { output: _output, ...payload } = event.payload;
+  return { ...event, payload };
+}
+
 export function followTask(
   taskId: string,
   loadSnapshot: (taskId: string) => Promise<TaskView>,
@@ -70,6 +91,10 @@ export function followTask(
   let closeStream: (() => void) | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let retryDelay = baseRetry;
+  /** Backoff for snapshot reloads after malformed events; reset by a good event. */
+  let reloadDelay = baseRetry;
+  /** Bumped per stream, so a closed stream's late callbacks are ignored. */
+  let generation = 0;
   let stopped = false;
   let state: StreamState | null = null;
 
@@ -83,28 +108,40 @@ export function followTask(
     retryTimer = setTimeout(action, retryDelay);
     retryDelay = Math.min(retryDelay * 2, maxRetry);
   };
+  const dropStream = () => {
+    generation += 1;
+    closeStream?.();
+    closeStream = null;
+  };
 
-  const apply = (event: ParsedTaskEvent) => {
-    if (!view || event.taskId !== taskId) return;
-    const next = applyTaskEvent(view, event);
-    if (next === view) return; // at or before the cursor: a replayed duplicate
+  /** Folds one event; true when the view moved forward. */
+  const apply = (event: ParsedTaskEvent): boolean => {
+    if (!view || event.taskId !== taskId) return false;
+    const next = applyTaskEvent(
+      view,
+      "unknown" in event ? event : stripToolOutput(event),
+    );
+    if (next === view) return false; // at or before the cursor: a replayed duplicate
     view = next;
     // Unknown event types only advance the cursor; nothing on screen changed.
     if (!("unknown" in event)) onView(view);
+    return true;
   };
 
   const connect = () => {
     if (stopped || !view) return;
-    closeStream?.();
+    dropStream();
+    const current = generation;
+    const live = () => !stopped && current === generation;
     setState(state === "reconnecting" ? "reconnecting" : "connecting");
     closeStream = open(taskId, view.cursor, {
       onOpen: () => {
-        if (stopped) return;
+        if (!live()) return;
         retryDelay = baseRetry;
         setState("open");
       },
       onEvent: (raw) => {
-        if (stopped) return;
+        if (!live()) return;
         let event: ParsedTaskEvent;
         try {
           event = parseTaskEvent(raw);
@@ -112,20 +149,26 @@ export function followTask(
           options.onError?.(
             new ApiError(
               "INVALID_RESPONSE",
-              `Ignored a malformed task event: ${text(reason)}`,
+              `A malformed task event arrived; reloading the task: ${text(reason)}`,
               reason,
             ),
           );
+          // Skipping it would lose the change it carries: start over from a
+          // fresh snapshot, backing off in case the server keeps sending it.
+          dropStream();
+          setState("reconnecting");
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => void load(), reloadDelay);
+          reloadDelay = Math.min(reloadDelay * 2, maxRetry);
           return;
         }
-        apply(event);
+        if (apply(event)) reloadDelay = baseRetry;
       },
       onError: (retrying) => {
-        if (stopped) return;
+        if (!live()) return;
         setState("reconnecting");
         if (retrying) return;
-        closeStream?.();
-        closeStream = null;
+        dropStream();
         retry(connect);
       },
     });
@@ -142,12 +185,12 @@ export function followTask(
       if (stopped) return;
       const error = toApiError(reason);
       options.onError?.(error);
-      if (error.code === "NOT_FOUND" || error.code === "UNAUTHORIZED") {
+      if (isTerminalTaskError(error)) {
         setState("closed");
         return;
       }
       setState("reconnecting");
-      retry(load);
+      retry(() => void load());
     }
   };
 
@@ -157,8 +200,7 @@ export function followTask(
   return () => {
     stopped = true;
     clearTimeout(retryTimer);
-    closeStream?.();
-    closeStream = null;
+    dropStream();
     setState("closed");
   };
 }

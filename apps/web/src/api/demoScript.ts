@@ -149,6 +149,7 @@ class Ops {
     );
   }
 
+  /** As the server's worker: session running, `run.started`, then the task running if it was queued or waiting. */
   startRun(sessionId: string, reason: "start" | "wake" | "recovery") {
     const session = this.session(sessionId);
     this.host.runs.set(sessionId, this.host.nextId("run"));
@@ -161,20 +162,32 @@ class Ops {
       finishedAt: null,
     });
     this.host.emit("run.started", { reason }, this.ref(sessionId));
+    const { status } = this.task();
+    if (status === "queued" || status === "waiting")
+      this.updateTask({ status: "running" });
   }
 
+  /**
+   * Ends a run as the server does: a turn that ends (completed, waiting)
+   * updates the session, then emits `run.finished`; a cancelled run emits
+   * `run.finished`, then cancels the session.
+   */
   finishRun(
     sessionId: string,
     outcome: "completed" | "waiting" | "cancelled",
     patch: Partial<ExecutionSession> = {},
   ) {
-    this.host.emit("run.finished", { outcome }, this.ref(sessionId));
-    this.updateSession(sessionId, {
-      status: outcome,
-      waitingFor: null,
-      ...patch,
-      finishedAt: outcome === "waiting" ? null : this.host.now(),
-    });
+    const ref = this.ref(sessionId);
+    const update = () =>
+      this.updateSession(sessionId, {
+        status: outcome,
+        waitingFor: null,
+        ...patch,
+        finishedAt: outcome === "waiting" ? null : this.host.now(),
+      });
+    if (outcome !== "cancelled") update();
+    this.host.emit("run.finished", { outcome }, ref);
+    if (outcome === "cancelled") update();
     this.host.runs.delete(sessionId);
   }
 
@@ -282,6 +295,25 @@ class Ops {
   }
 }
 
+/**
+ * The coordinator's root session, created with the task as the server does
+ * (`task.created`, then `session.created`, queued).
+ */
+export function createRootSession(host: ScriptHost): string {
+  const ops = new Ops(host);
+  const task = ops.task();
+  return ops.createSession({
+    botId: task.coordinatorBotId,
+    parentSessionId: null,
+    role: "coordinator",
+    brief: task.goal,
+    depth: 0,
+  });
+}
+
+const rootOf = (host: ScriptHost) =>
+  host.view().sessions.find((s) => s.parentSessionId === null);
+
 interface ToolCall {
   toolCallId: string;
   tool: string;
@@ -365,29 +397,61 @@ const workPlans = (title: string): WorkPlan[] => [
   },
 ];
 
-/** The coordinator delegates to up to two workers, waits for their results, then completes the task. */
+/** What a second-level helper does for the first worker (tasks with four or more bots). */
+const helperPlan = (title: string): WorkPlan => ({
+  brief: `Check the edge cases for “${title}” and report anything the main checks miss.`,
+  phases: [
+    (ops, w) => {
+      ops.modelFinished(w.sessionId);
+      w.call = ops.toolStarted(w.sessionId, "find", "**/*.test.ts");
+    },
+    (ops, w) => {
+      if (w.call)
+        ops.toolFinished(w.sessionId, w.call, {
+          ok: true,
+          output: "Demo output: 3 test files (simulated).",
+        });
+      w.call = ops.toolStarted(w.sessionId, "bash", "npm test -- --run edge");
+    },
+    (ops, w) => {
+      if (w.call)
+        ops.toolFinished(w.sessionId, w.call, {
+          ok: true,
+          exitCode: 0,
+          output: "Demo output: 4 edge cases passed (simulated).",
+        });
+      ops.modelStarted(w.sessionId);
+    },
+  ],
+  result: "Edge cases pass; nothing extra to report (simulated).",
+});
+
+/**
+ * The coordinator delegates to up to two workers, waits for their results,
+ * then completes the task. With a third teammate, the first worker delegates
+ * a helper session of its own, so the execution graph is two levels deep.
+ */
 export function teamScript(host: ScriptHost): Step[] {
   const ops = new Ops(host);
   const { task } = host.view();
   const coordinatorId = task.coordinatorBotId;
   const plans = workPlans(task.title);
-  const workers: Worker[] = task.participantBotIds
-    .filter((botId) => botId !== coordinatorId)
+  const teammates = task.participantBotIds.filter(
+    (botId) => botId !== coordinatorId,
+  );
+  const workers: Worker[] = teammates
     .slice(0, 2)
     .map((botId) => ({ botId, sessionId: "", call: null }));
+  const helperId = teammates[2];
+  const helper: Worker | null = helperId
+    ? { botId: helperId, sessionId: "", call: null }
+    : null;
   let coordinator = "";
   let call: ToolCall | null = null;
   const steps: Step[] = [];
 
   steps.push(() => {
-    coordinator = ops.createSession({
-      botId: coordinatorId,
-      parentSessionId: null,
-      role: "coordinator",
-      brief: ops.task().goal,
-      depth: 0,
-    });
-    ops.updateTask({ status: "running" });
+    coordinator = rootOf(host)?.id ?? createRootSession(host);
     ops.startRun(coordinator, "start");
     ops.modelStarted(coordinator);
   });
@@ -449,11 +513,59 @@ export function teamScript(host: ScriptHost): Step[] {
         ops.modelStarted(worker.sessionId);
       }
     });
+    const lead = workers[0];
+    if (helper && lead) {
+      const plan = helperPlan(task.title);
+      steps.push(() => {
+        const delegation = ops.toolStarted(
+          lead.sessionId,
+          "delegate",
+          host.botName(helper.botId),
+        );
+        helper.sessionId = ops.createSession({
+          botId: helper.botId,
+          parentSessionId: lead.sessionId,
+          role: "worker",
+          brief: plan.brief,
+          depth: 2,
+        });
+        ops.post({
+          authorKind: "bot",
+          authorBotId: lead.botId,
+          sessionId: lead.sessionId,
+          intent: "assignment",
+          text: `@${host.botName(helper.botId)} ${plan.brief}`,
+          recipientBotIds: [helper.botId],
+        });
+        ops.toolFinished(lead.sessionId, delegation, {
+          ok: true,
+          output: `Delegated to ${host.botName(helper.botId)}`,
+        });
+        ops.startRun(helper.sessionId, "start");
+        ops.modelStarted(helper.sessionId);
+      });
+    }
     for (let phase = 0; phase < 3; phase += 1)
       steps.push(() => {
         workers.forEach((worker, index) => {
           plans[index]?.phases[phase]?.(ops, worker);
         });
+        if (helper?.sessionId)
+          helperPlan(task.title).phases[phase]?.(ops, helper);
+      });
+    if (helper && lead)
+      steps.push(() => {
+        const result = helperPlan(task.title).result;
+        ops.modelFinished(helper.sessionId);
+        ops.post({
+          authorKind: "bot",
+          authorBotId: helper.botId,
+          sessionId: helper.sessionId,
+          intent: "result",
+          text: result,
+          recipientBotIds: [lead.botId],
+        });
+        ops.finishRun(helper.sessionId, "completed", { result });
       });
     workers.forEach((worker, index) => {
       steps.push(() => {
@@ -509,14 +621,7 @@ export function askScript(host: ScriptHost): Step[] {
   let coordinator = "";
   return [
     () => {
-      coordinator = ops.createSession({
-        botId: task.coordinatorBotId,
-        parentSessionId: null,
-        role: "coordinator",
-        brief: task.goal,
-        depth: 0,
-      });
-      ops.updateTask({ status: "running" });
+      coordinator = rootOf(host)?.id ?? createRootSession(host);
       ops.startRun(coordinator, "start");
       ops.modelStarted(coordinator);
     },
@@ -576,74 +681,116 @@ export function continueScript(host: ScriptHost): Step[] {
   ];
 }
 
-/** Records a stop request; the returned step completes the cancellation. */
-export function requestCancel(host: ScriptHost, reason: string | null): Step {
+/**
+ * A stop request, in the server's order (packages/backend services/tasks.ts
+ * `stopTask` and `settleCancellation`): the task records the request
+ * (`task.updated`, `cancellation.requested`). With no run in progress the
+ * stop settles at once and this returns null; otherwise it returns the step
+ * in which the runs stop (`run.finished` cancelled, then the session) and the
+ * stop settles.
+ */
+export function requestCancel(
+  host: ScriptHost,
+  reason: string | null,
+): Step | null {
   const ops = new Ops(host);
   ops.updateTask({ cancelRequestedAt: host.now(), cancelReason: reason });
   host.emit("cancellation.requested", { reason });
+  const running = host.view().sessions.filter((s) => s.status === "running");
+  if (running.length === 0) {
+    settleCancellation(ops, host, []);
+    return null;
+  }
   return () => {
-    const stopped: { sessionId: string; botId: string; interrupted: "no" }[] =
-      [];
-    const neverStarted: string[] = [];
-    for (const session of host.view().sessions) {
-      if (isFinishedStatus(session.status)) continue;
-      if (session.status === "queued") {
-        neverStarted.push(session.id);
-        ops.updateSession(session.id, {
-          status: "cancelled",
-          waitingFor: null,
-          finishedAt: host.now(),
-        });
-      } else if (session.status === "running") {
-        stopped.push({
+    const stopped = host
+      .view()
+      .sessions.filter((s) => s.status === "running")
+      .map((session) => {
+        ops.finishRun(session.id, "cancelled");
+        return {
           sessionId: session.id,
           botId: session.botId,
-          interrupted: "no",
-        });
-        ops.finishRun(session.id, "cancelled");
-      } else {
-        ops.updateSession(session.id, {
-          status: "cancelled",
-          waitingFor: null,
-          finishedAt: host.now(),
-        });
-      }
-    }
-    host.emit("cancellation.completed", { stopped, neverStarted });
-    ops.finishTask("cancelled", null);
+          interrupted: "no" as const,
+        };
+      });
+    settleCancellation(ops, host, stopped);
   };
 }
 
-/** A user message: steering for the coordinator, and a reopen when the task had stopped working. */
+/** Cancels every open session, then the task: `cancellation.completed`, `task.finished`. */
+function settleCancellation(
+  ops: Ops,
+  host: ScriptHost,
+  stopped: { sessionId: string; botId: string; interrupted: "no" }[],
+) {
+  const neverStarted: string[] = [];
+  for (const session of host.view().sessions) {
+    if (isFinishedStatus(session.status)) continue;
+    if (session.runCount === 0) neverStarted.push(session.id);
+    ops.updateSession(session.id, {
+      status: "cancelled",
+      waitingFor: null,
+      finishedAt: host.now(),
+    });
+  }
+  ops.updateTask({ status: "cancelled", finishedAt: host.now() });
+  host.emit("cancellation.completed", { stopped, neverStarted });
+  host.emit("task.finished", {
+    status: "cancelled",
+    result: null,
+    error: null,
+  });
+}
+
+/**
+ * A user message, in the server's order (services/messages.ts
+ * `postTaskMessage`): a goal change (`task.updated`, `task.goal_changed`), a
+ * reopen of a waiting, completed or failed task (`task.updated`,
+ * `task.reopened`, the coordinator session queued again), then the message
+ * (`message.posted`) and its delivery (`steering.received`). A `goal` equal
+ * to the current one is no change.
+ */
 export function userMessage(
   host: ScriptHost,
   input: { text: string; goal?: string },
 ): { message: TaskMessage; reopened: boolean } {
   const ops = new Ops(host);
-  const task = ops.task();
+  const initial = ops.task();
+  if (input.goal !== undefined && input.goal !== initial.goal) {
+    const goalVersion = initial.goalVersion + 1;
+    ops.updateTask({ goal: input.goal, goalVersion });
+    host.emit("task.goal_changed", { goal: input.goal, goalVersion });
+  }
+  const previous = initial.status;
+  const reopened =
+    previous === "waiting" || previous === "completed" || previous === "failed";
+  if (reopened) {
+    ops.updateTask({
+      status: "running",
+      result: null,
+      error: null,
+      finishedAt: null,
+    });
+    host.emit("task.reopened", { previous });
+  }
+  const root = rootOf(host);
+  if (root && isFinishedStatus(root.status))
+    ops.updateSession(root.id, {
+      status: "queued",
+      waitingFor: null,
+      result: null,
+      error: null,
+      finishedAt: null,
+    });
   const message = ops.post({
     authorKind: "user",
     authorBotId: null,
     sessionId: null,
     intent: "steering",
     text: input.text,
-    recipientBotIds: [task.coordinatorBotId],
+    recipientBotIds: [initial.coordinatorBotId],
   });
-  if (input.goal !== undefined) {
-    const goalVersion = task.goalVersion + 1;
-    host.emit("task.goal_changed", { goal: input.goal, goalVersion });
-    ops.updateTask({ goal: input.goal, goalVersion });
-  }
-  const previous = task.status;
-  const reopened =
-    previous === "waiting" || previous === "completed" || previous === "failed";
-  if (reopened) {
-    host.emit("task.reopened", { previous });
-    ops.updateTask({ status: "running", finishedAt: null });
-  }
-  const coordinator = host
-    .view()
-    .sessions.find((s) => s.parentSessionId === null);
+  const coordinator = rootOf(host);
   host.emit(
     "steering.received",
     {

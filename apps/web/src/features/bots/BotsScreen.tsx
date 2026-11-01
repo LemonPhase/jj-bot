@@ -16,6 +16,7 @@ import { ScreenHeader } from "../shell/ScreenHeader";
 import { useShell } from "../shell/ShellContext";
 import { BotConversation } from "./BotConversation";
 import { BotInspector, type InspectorFocus } from "./BotInspector";
+import { takeBotFocus } from "./focusRequest";
 import "./bots.css";
 
 /** `#/bots/:botId`: the selected bot's direct chat, or an empty state. */
@@ -25,20 +26,7 @@ export function BotsScreen({ botId }: { botId: string | null }) {
   const bot = botId ? bots.find((candidate) => candidate.id === botId) : null;
 
   if (bot) return <BotScreen key={bot.id} bot={bot} />;
-  if (bots.length === 0)
-    return (
-      <main className="screen screen--center">
-        <EmptyState
-          align="center"
-          message="No bots yet. Create one to start chatting."
-          action={
-            <Button variant="primary" onClick={openNewBot}>
-              New bot
-            </Button>
-          }
-        />
-      </main>
-    );
+  if (bots.length === 0) return <NoBots onNew={openNewBot} />;
   // No id yet: the shell is about to open the first bot.
   if (!botId) return <main className="screen" />;
   const first = bots[0];
@@ -56,6 +44,32 @@ export function BotsScreen({ botId }: { botId: string | null }) {
               Open {first.name}
             </a>
           )
+        }
+      />
+    </main>
+  );
+}
+
+/** The empty Bots screen; after the last bot is archived its action takes focus. */
+function NoBots({ onNew }: { onNew: () => void }) {
+  const actionRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (takeBotFocus(null)) actionRef.current?.focus();
+  }, []);
+  return (
+    <main className="screen screen--center">
+      <EmptyState
+        align="center"
+        message="No bots yet. Create one to start chatting."
+        action={
+          <button
+            ref={actionRef}
+            type="button"
+            className={buttonClass({ variant: "primary" })}
+            onClick={onNew}
+          >
+            New bot
+          </button>
         }
       />
     </main>
@@ -97,6 +111,12 @@ function BotScreen({ bot }: { bot: Bot }) {
     void loadMemoryRef.current(bot.id);
   }, [bot.id]);
 
+  // Arriving here because the previous bot was archived: focus this bot.
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (takeBotFocus(bot.id)) headingRef.current?.focus();
+  }, [bot.id]);
+
   const openInspector = (target: InspectorFocus) => {
     setInspectorOpen(true);
     setFocus(target);
@@ -119,7 +139,13 @@ function BotScreen({ bot }: { bot: Bot }) {
                 size={24}
                 decorative
               />
-              <h1 className="screen-title screen-title--bot">{bot.name}</h1>
+              <h1
+                ref={headingRef}
+                className="screen-title screen-title--bot"
+                tabIndex={-1}
+              >
+                {bot.name}
+              </h1>
               <StatusTag size="lg" status={bot.presence} />
             </>
           }

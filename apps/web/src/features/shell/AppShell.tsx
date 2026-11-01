@@ -1,12 +1,17 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ErrorBanner, Spinner } from "../../components/ui";
+import { Button, ErrorBanner, Spinner } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
-import { NewBotDialog } from "../bots/NewBotDialog";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { StudioScreen } from "../studio/StudioScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
-import { canonicalRoute, type Route, type Section, sectionOf } from "./router";
+import {
+  canonicalRoute,
+  type Route,
+  routeHref,
+  type Section,
+  sectionOf,
+} from "./router";
 import { type ShellActions, ShellContext } from "./ShellContext";
 import { Sidebar } from "./Sidebar";
 import { navigate, useRoute } from "./useRoute";
@@ -17,10 +22,7 @@ const TasksScreen = lazy(() =>
   import("../tasks/TasksScreen").then((m) => ({ default: m.TasksScreen })),
 );
 
-type OpenDialog =
-  | { kind: "none" }
-  | { kind: "bot" }
-  | { kind: "task"; botIds: string[] };
+type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -29,8 +31,16 @@ type OpenDialog =
  */
 export function AppShell() {
   const route = useRoute();
-  const { loading, bots, tasks, error, dismissError, selectedBotId } =
-    useWorkspace();
+  const {
+    loading,
+    loadError,
+    retryLoad,
+    bots,
+    tasks,
+    error,
+    dismissError,
+    selectedBotId,
+  } = useWorkspace();
   const [dialog, setDialog] = useState<OpenDialog>({ kind: "none" });
   const lastSection = useRef<Section>("bots");
   const lastIds = useRef<Record<Section, string | null>>({
@@ -51,11 +61,19 @@ export function AppShell() {
   const botIds = bots.map((bot) => bot.id);
   const taskIds = tasks.map((task) => task.id);
   const listedKey = `${botIds.join("\n")}\t${taskIds.join("\n")}`;
-  // `listedKey` stands for the two id lists, which are new arrays every render.
+  // One effect keeps the URL naming what is on screen, always with
+  // history.replace: a list route without an id opens the first item (once
+  // the lists are loaded), and any route is spelled canonically ("#bots",
+  // "#/studio" and no hash at all are rewritten). Two effects would undo each
+  // other within one commit. `listedKey` stands for the two id lists, which are
+  // new arrays every render.
   useEffect(() => {
-    if (loading) return;
-    const next = canonicalRoute(route, { bots: botIds, tasks: taskIds });
-    if (next) navigate(next, { replace: true });
+    const target =
+      (loading
+        ? null
+        : canonicalRoute(route, { bots: botIds, tasks: taskIds })) ?? route;
+    if (window.location.hash !== routeHref(target))
+      navigate(target, { replace: true });
   }, [loading, route, listedKey]);
 
   const switchSection = (next: Section) => {
@@ -71,7 +89,7 @@ export function AppShell() {
 
   const actions = useMemo<ShellActions>(
     () => ({
-      openNewBot: () => setDialog({ kind: "bot" }),
+      openNewBot: () => navigate({ name: "studio", botId: null }),
       openNewTask: (botIds) =>
         setDialog({
           kind: "task",
@@ -100,10 +118,15 @@ export function AppShell() {
               <ErrorBanner onDismiss={dismissError}>{error}</ErrorBanner>
             </div>
           )}
-          {loading ? <ShellLoading /> : <Screen route={route} />}
+          {loading ? (
+            <ShellLoading />
+          ) : loadError ? (
+            <ShellLoadFailed message={loadError} onRetry={retryLoad} />
+          ) : (
+            <Screen route={route} />
+          )}
         </div>
       </div>
-      {dialog.kind === "bot" && <NewBotDialog onClose={closeDialog} />}
       {dialog.kind === "task" && (
         <NewTaskDialog initialBotIds={dialog.botIds} onClose={closeDialog} />
       )}
@@ -115,6 +138,24 @@ function ShellLoading({ label = "Loading workspace…" }: { label?: string }) {
   return (
     <main className="screen screen--center">
       <Spinner label={label} showLabel />
+    </main>
+  );
+}
+
+/** The bootstrap failed: say so, instead of showing an empty workspace. */
+function ShellLoadFailed({
+  message,
+  onRetry,
+}: {
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <main className="screen screen--center">
+      <div className="shell-failed">
+        <ErrorBanner word="Couldn't load">{message}</ErrorBanner>
+        <Button onClick={onRetry}>Retry</Button>
+      </div>
     </main>
   );
 }

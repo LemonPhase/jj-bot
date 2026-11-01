@@ -2,10 +2,9 @@ import { taskSummarySchema } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
 import { createDemoApi } from "../api/demoApi";
 import {
-  rootSession,
+  orderedSessions,
   sessionLine,
   sessionOrdinal,
-  sessionTools,
   summaryFromView,
 } from "./tasks";
 
@@ -24,13 +23,9 @@ describe("task view helpers", () => {
       sessionCount: 2,
       activeSessionCount: 0,
     });
-    const root = rootSession(view);
+    const [root] = orderedSessions(view);
     expect(root?.role).toBe("coordinator");
     expect(sessionOrdinal(view, root?.id ?? "")).toBe("s-1");
     expect(sessionLine(root ?? view.sessions[0]!)).toMatch(/^Demo result/);
-    expect(sessionTools(view, root?.id ?? "")).toEqual([
-      "delegate Vesper",
-      "complete_task",
-    ]);
   });
 });

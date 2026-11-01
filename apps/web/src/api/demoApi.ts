@@ -57,6 +57,7 @@ import {
 import {
   askScript,
   continueScript,
+  createRootSession,
   type EventRef,
   type IdKind,
   requestCancel,
@@ -69,6 +70,7 @@ import {
   followConversation,
   followTask,
   type OpenTaskEvents,
+  stripToolOutput,
   type TaskEventHandlers,
 } from "./follow";
 
@@ -124,8 +126,17 @@ function validate<Schema extends z.ZodType>(
   );
 }
 
+/** The server's NOT_FOUND (packages/backend errors.ts `notFound`). */
 const notFound = (what: string, id: string) =>
-  new ApiError("NOT_FOUND", `No ${what} with id ${id}.`, undefined, 404);
+  new ApiError(
+    "NOT_FOUND",
+    `${what[0]?.toUpperCase()}${what.slice(1)} ${id} was not found.`,
+    undefined,
+    404,
+  );
+
+/** The server's goal version budget (backend config `maxGoalVersions`). */
+const MAX_GOAL_VERSIONS = 20;
 
 /** A task title from its goal: the first line, cut at a word near 60 characters. */
 export function titleFromGoal(goal: string): string {
@@ -135,15 +146,6 @@ export function titleFromGoal(goal: string): string {
   const space = cut.lastIndexOf(" ");
   return `${(space > 30 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
-
-/** Snapshot events drop `tool.finished` output previews, as the live API does. */
-const withoutOutputs = (events: TaskEvent[]): TaskEvent[] =>
-  events.map((event) => {
-    if (event.type !== "tool.finished" || event.payload.output === undefined)
-      return event;
-    const { output: _output, ...payload } = event.payload;
-    return { ...event, payload };
-  });
 
 const isGreetingOrQuestion = (text: string) =>
   /^\s*(hi|hello|hey|yo|thanks|thank you|good (morning|afternoon|evening))\b/i.test(
@@ -385,6 +387,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     };
     const state = createTaskState(task, true);
     state.host.emit("task.created", { task });
+    // The server creates the coordinator's session with the task.
+    createRootSession(state.host);
     return state;
   };
 
@@ -407,23 +411,25 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
 
   const createTask = (command: unknown): Task => {
     const parsed = validate(createTaskCommandSchema, command);
+    // As services/tasks.ts `createTask`.
     if (parsed.verificationPlan)
       throw new ApiError(
         "VERIFICATION_UNAVAILABLE",
-        "Verification plans are not available: this server does not enforce them.",
+        "Verification plans are not enforced by this server yet; create the task without one.",
         undefined,
-        409,
+        422,
       );
-    for (const botId of parsed.participantBotIds) {
+    const missing = parsed.participantBotIds.filter((botId) => {
       const record = bots.get(botId);
-      if (!record || record.archived)
-        throw new ApiError(
-          "VALIDATION_FAILED",
-          `No bot with id ${botId}.`,
-          undefined,
-          400,
-        );
-    }
+      return !record || record.archived;
+    });
+    if (missing.length > 0)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `Unknown bot: ${missing.join(", ")}.`,
+        { botIds: missing },
+        400,
+      );
     const before = botState();
     const state = newTask({ ...parsed, id: `task-${++taskCounter}` });
     state.steps = teamScript(state.host);
@@ -491,31 +497,40 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   };
 
   // ── Profiles ─────────────────────────────────────────────────────────────
+  const unsupported = (message: string) =>
+    new ApiError("PROFILE_UNSUPPORTED", message, undefined, 422);
+  /**
+   * Refuses what the server refuses, with the same messages: the server
+   * answers PROFILE_UNSUPPORTED with the driver's own error (packages/sandbox
+   * `assertSpecSupported`, then each driver's `validateSpec`).
+   */
   const assertSupported = (spec: SandboxSpec) => {
     const driver = DEMO_DRIVERS.find((d) => d.id === spec.driver);
     if (!driver)
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `There is no sandbox driver "${spec.driver}".`,
-        undefined,
-        422,
+      throw unsupported(
+        `No sandbox driver "${spec.driver}" is installed on this server.`,
       );
     if (!driver.capabilities.networkModes.includes(spec.network.mode))
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `The ${driver.label} driver cannot enforce network mode "${spec.network.mode}".`,
-        undefined,
-        422,
+      throw unsupported(
+        `Driver ${driver.id} cannot enforce network.mode="${spec.network.mode}"`,
       );
     const wantsLimits = Object.values(spec.resources).some(
       (v) => v !== undefined,
     );
     if (wantsLimits && !driver.capabilities.resourceLimits)
-      throw new ApiError(
-        "PROFILE_UNSUPPORTED",
-        `The ${driver.label} driver cannot enforce resource limits.`,
-        undefined,
-        422,
+      throw unsupported(`Driver ${driver.id} cannot enforce resources`);
+    if (driver.id === "local" && spec.image !== undefined)
+      throw unsupported(
+        `Driver local cannot enforce image "${spec.image}": commands run directly on the host`,
+      );
+    if (driver.id === "docker" && spec.resources.diskMb !== undefined)
+      throw unsupported(
+        "Driver docker cannot enforce resources.diskMb: named volumes have no size limit",
+      );
+    const configKeys = Object.keys(spec.driverConfig);
+    if (configKeys.length > 0)
+      throw unsupported(
+        `Driver ${driver.id} takes no driverConfig; got ${configKeys.join(", ")}`,
       );
   };
   const profileStatus = (spec: SandboxSpec): RuntimeProfile["status"] => {
@@ -540,11 +555,26 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     if (!record) throw notFound("bot", botId);
     return record;
   };
+  const assertNameFree = (name: string, exceptId?: string) => {
+    const taken = [...bots.values()].some(
+      (record) =>
+        !record.archived &&
+        record.bot.id !== exceptId &&
+        record.bot.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (taken)
+      throw new ApiError(
+        "CONFLICT",
+        `A bot named ${name} already exists.`,
+        undefined,
+        409,
+      );
+  };
   const checkBotRefs = (fields: { runtimeProfileId?: string | null }) => {
     if (fields.runtimeProfileId && !profiles.has(fields.runtimeProfileId))
       throw new ApiError(
         "VALIDATION_FAILED",
-        `No runtime profile with id ${fields.runtimeProfileId}.`,
+        `Runtime profile ${fields.runtimeProfileId} does not exist.`,
         undefined,
         400,
       );
@@ -566,7 +596,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
 
   const getTask = async (taskId: string): Promise<TaskView> => {
     const { view } = getState(taskId);
-    return clone({ ...view, events: withoutOutputs(view.events) });
+    // Snapshot events drop `tool.finished` output previews, as the live API does.
+    return clone({ ...view, events: view.events.map(stripToolOutput) });
   };
   const getConversation = async (botId: string) => {
     getBotRecord(botId);
@@ -618,6 +649,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     createBot: async (command) => {
       const parsed = validate(createBotCommandSchema, command);
       checkBotRefs(parsed);
+      assertNameFree(parsed.name);
       const id = `bot-new-${++botCounter}`;
       const createdAt = now();
       const record: BotRecord = {
@@ -649,6 +681,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       const record = getBotRecord(botId);
       const parsed = validate(updateBotCommandSchema, command);
       checkBotRefs(parsed);
+      if (parsed.name !== undefined) assertNameFree(parsed.name, botId);
       const changes = Object.fromEntries(
         Object.entries(parsed).filter(([, value]) => value !== undefined),
       );
@@ -662,7 +695,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       if (bot.activeTaskIds.length)
         throw new ApiError(
           "CONFLICT",
-          `${bot.name} is still in ${bot.activeTaskIds.length} active task(s). Stop or finish them first.`,
+          `${bot.name} still takes part in ${bot.activeTaskIds.length} unfinished task(s); stop or finish them first.`,
           { activeTaskIds: bot.activeTaskIds },
           409,
         );
@@ -736,13 +769,33 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     updateProfile: async (profileId, command) => {
       const stored = getProfileRecord(profileId);
       const patch = validate(updateRuntimeProfileCommandSchema, command);
-      // Deep-merge as the server does; tools, network, env and driverConfig are replaced whole.
-      const sandbox = validate(sandboxSpecSchema, {
-        ...stored.sandbox,
-        ...patch.sandbox,
-        resources: { ...stored.sandbox.resources, ...patch.sandbox?.resources },
-        limits: { ...stored.sandbox.limits, ...patch.sandbox?.limits },
-      });
+      if (patch.isDefault === false && stored.isDefault)
+        throw new ApiError(
+          "CONFLICT",
+          "Make another profile the default instead of unsetting this one.",
+          undefined,
+          409,
+        );
+      // Deep-merge as the server does: tools, network, env and driverConfig
+      // are replaced whole, and a driver change drops the old driver's image
+      // and driverConfig unless the patch sets them.
+      const switching =
+        patch.sandbox?.driver !== undefined &&
+        patch.sandbox.driver !== stored.sandbox.driver;
+      const base: Partial<SandboxSpec> = switching
+        ? { ...stored.sandbox, image: undefined, driverConfig: {} }
+        : stored.sandbox;
+      const changes = Object.fromEntries(
+        Object.entries(patch.sandbox ?? {}).filter(([, v]) => v !== undefined),
+      );
+      const merged: Record<string, unknown> = {
+        ...base,
+        ...changes,
+        resources: { ...base.resources, ...patch.sandbox?.resources },
+        limits: { ...base.limits, ...patch.sandbox?.limits },
+      };
+      if (merged.image === undefined) delete merged.image;
+      const sandbox = validate(sandboxSpecSchema, merged);
       assertSupported(sandbox);
       const next: RuntimeProfile = {
         ...stored,
@@ -761,16 +814,21 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     },
     deleteProfile: async (profileId) => {
       const profile = getProfileRecord(profileId);
+      if (profile.isDefault)
+        throw new ApiError(
+          "CONFLICT",
+          "This is the default profile; make another profile the default first.",
+          undefined,
+          409,
+        );
       const users = [...bots.values()].filter(
         (record) =>
-          !record.archived &&
-          (record.bot.runtimeProfileId === profileId ||
-            (profile.isDefault && record.bot.runtimeProfileId === null)),
+          !record.archived && record.bot.runtimeProfileId === profileId,
       );
       if (users.length)
         throw new ApiError(
           "PROFILE_IN_USE",
-          `${profile.name} is used by ${users.map((u) => u.bot.name).join(", ")}.`,
+          `Used by ${users.map((u) => u.bot.name).join(", ")}.`,
           { botIds: users.map((u) => u.bot.id) },
           409,
         );
@@ -786,56 +844,77 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     createTask: async (command) => createTask(command),
     getTask,
+    // As services/messages.ts `postTaskMessage`, check for check and message
+    // for message.
     postTaskMessage: async (taskId, command) => {
-      const state = getState(taskId);
       const parsed = validate(postTaskMessageCommandSchema, command);
+      if (parsed.verificationPlan)
+        throw new ApiError(
+          "VERIFICATION_UNAVAILABLE",
+          "Verification plans are not enforced by this server yet.",
+          undefined,
+          422,
+        );
+      const state = getState(taskId);
       const { task } = state.view;
       if (task.status === "cancelled" || task.cancelRequestedAt)
         throw new ApiError(
           "TASK_TERMINAL",
-          "This task was stopped and can't take new messages.",
+          task.status === "cancelled"
+            ? "The task was cancelled; start a new task to continue the work."
+            : "The task is stopping and takes no new messages.",
           undefined,
           409,
         );
-      if (parsed.verificationPlan)
-        throw new ApiError(
-          "VERIFICATION_UNAVAILABLE",
-          "Verification plans are not available: this server does not enforce them.",
-          undefined,
-          409,
-        );
-      if (
-        parsed.goal !== undefined &&
-        parsed.observedGoalVersion !== task.goalVersion
-      )
-        throw new ApiError(
-          "STALE_GOAL_VERSION",
-          `The goal changed to version ${task.goalVersion} since you looked at it.`,
-          { goalVersion: task.goalVersion },
-          409,
-        );
+      if (parsed.goal !== undefined && parsed.goal !== task.goal) {
+        if (parsed.observedGoalVersion !== task.goalVersion)
+          throw new ApiError(
+            "STALE_GOAL_VERSION",
+            `The goal is at version ${task.goalVersion}; you edited version ${parsed.observedGoalVersion}.`,
+            { goalVersion: task.goalVersion },
+            409,
+          );
+        if (task.goalVersion >= MAX_GOAL_VERSIONS)
+          throw new ApiError(
+            "GOAL_VERSION_BUDGET",
+            `The goal can change at most ${MAX_GOAL_VERSIONS - 1} times; start a new task instead.`,
+            undefined,
+            409,
+          );
+      }
       const before = botState();
       const { message, reopened } = userMessage(state.host, parsed);
-      if (reopened) state.steps.push(...continueScript(state.host));
+      if (reopened) {
+        state.steps.push(...continueScript(state.host));
+        // Seeded tasks start paused; one the user continued must move on its own.
+        state.autoplay = true;
+      }
       notify({ type: "tasks.changed", taskId });
       if (botState() !== before) notify({ type: "bots.changed" });
       schedule(state);
       return clone(message);
     },
+    // As services/tasks.ts `stopTask`: idempotent while stopping or cancelled,
+    // CONFLICT once completed or failed.
     stopTask: async (taskId, command = {}) => {
-      const state = getState(taskId);
       const { reason } = validate(stopTaskCommandSchema, command);
+      const state = getState(taskId);
       const { task } = state.view;
-      if (isFinishedStatus(task.status) || task.cancelRequestedAt)
+      if (task.status === "cancelled" || task.cancelRequestedAt)
+        return clone(task);
+      if (task.status === "completed" || task.status === "failed")
         throw new ApiError(
-          "TASK_TERMINAL",
-          "This task has already finished or is stopping.",
+          "CONFLICT",
+          `The task already ${task.status}; there is nothing to stop.`,
           undefined,
           409,
         );
-      state.steps = [requestCancel(state.host, reason ?? null)];
+      const before = botState();
+      const settle = requestCancel(state.host, reason ?? null);
+      state.steps = settle ? [settle] : [];
       state.autoplay = true;
       notify({ type: "tasks.changed", taskId });
+      if (botState() !== before) notify({ type: "bots.changed" });
       schedule(state);
       return clone(state.view.task);
     },

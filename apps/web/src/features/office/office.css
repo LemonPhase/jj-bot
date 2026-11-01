@@ -1,298 +1,585 @@
-/* ---- Task office (3D) view ---- */
-.view-switch {
+/*
+ * Task Office, 2D and 3D (SPEC §5.4, §5.5, §9, §10). Every rule is scoped to
+ * `.office`. Scene colours that differ by theme are custom properties on
+ * `.office`, set for light and for both ways of choosing dark (explicit
+ * `data-theme="dark"`, or no choice with a dark system preference).
+ */
+
+/* ── Scene colours (SPEC §9.1, dark / light) ───────────────────────────── */
+.office {
+  --o2d-wall: #e3e3e9;
+  --o2d-wall-line: #cfcfd7;
+  --o2d-checker: #ebebf0;
+  --o2d-board-frame: #8a8a94;
+  --o2d-board-face: #ffffff;
+  --o2d-bezel: #8a8a94;
+  --o2d-desk: #cfcfd7;
+  --o2d-desk-hi: #dcdce2;
+  --o2d-desk-edge: #b8b8c1;
+  --o2d-chair: #cacad2;
+  --o2d-desk-free: #d7d7de;
+  --o2d-desk-free-hi: #e2e2e8;
+  --o2d-monitor-off: #c6c6ce;
+  --o2d-screen-off: #cacad2;
+  --o2d-stool: #c3c3cb;
+  --o2d-table: #ccccd4;
+  --o2d-table-hi: #dadae0;
+  --o2d-table-edge: #cfcfd6;
+  --o2d-term: #ccccd4;
+  --o2d-term-screen: #34343c;
+  --o2d-term-cursor: #f4f4f6;
+  --o2d-term-base: #c3c3cb;
+  --o2d-shadow: #cfcfd6;
+  --o2d-free-swatch: #cacad2;
+  --o2d-free-ring: #c4c4cc;
+  /* Not designed: screen lines for failed and idle monitors. */
+  --office-failed-deep: #7f1d1d;
+  --office-idle-deep: #8a8a94;
+}
+
+:root[data-theme="dark"] .office {
+  --o2d-wall: #15151a;
+  --o2d-wall-line: #26262e;
+  --o2d-checker: #111116;
+  --o2d-board-frame: #3a3a44;
+  --o2d-board-face: #dcdce2;
+  --o2d-bezel: #3a3a44;
+  --o2d-desk: #26262e;
+  --o2d-desk-hi: #30303a;
+  --o2d-desk-edge: #1b1b21;
+  --o2d-chair: #1a1a20;
+  --o2d-desk-free: #1f1f26;
+  --o2d-desk-free-hi: #282830;
+  --o2d-monitor-off: #18181d;
+  --o2d-screen-off: #1a1a20;
+  --o2d-stool: #1c1c22;
+  --o2d-table: #24242a;
+  --o2d-table-hi: #2e2e36;
+  --o2d-table-edge: #08080a;
+  --o2d-term: #24242a;
+  --o2d-term-screen: #16161a;
+  --o2d-term-cursor: #ededf0;
+  --o2d-term-base: #1c1c22;
+  --o2d-shadow: #08080a;
+  --o2d-free-swatch: #1a1a20;
+  --o2d-free-ring: #3a3a44;
+  --office-failed-deep: #5c1f1f;
+  --office-idle-deep: #2a2a32;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .office {
+    --o2d-wall: #15151a;
+    --o2d-wall-line: #26262e;
+    --o2d-checker: #111116;
+    --o2d-board-frame: #3a3a44;
+    --o2d-board-face: #dcdce2;
+    --o2d-bezel: #3a3a44;
+    --o2d-desk: #26262e;
+    --o2d-desk-hi: #30303a;
+    --o2d-desk-edge: #1b1b21;
+    --o2d-chair: #1a1a20;
+    --o2d-desk-free: #1f1f26;
+    --o2d-desk-free-hi: #282830;
+    --o2d-monitor-off: #18181d;
+    --o2d-screen-off: #1a1a20;
+    --o2d-stool: #1c1c22;
+    --o2d-table: #24242a;
+    --o2d-table-hi: #2e2e36;
+    --o2d-table-edge: #08080a;
+    --o2d-term: #24242a;
+    --o2d-term-screen: #16161a;
+    --o2d-term-cursor: #ededf0;
+    --o2d-term-base: #1c1c22;
+    --o2d-shadow: #08080a;
+    --o2d-free-swatch: #1a1a20;
+    --o2d-free-ring: #3a3a44;
+    --office-failed-deep: #5c1f1f;
+    --office-idle-deep: #2a2a32;
+  }
+}
+
+/* ── Panel layout (SPEC §5.4) ──────────────────────────────────────────── */
+.office {
   display: flex;
-  gap: 2px;
-  background: var(--bg-subtle);
-  padding: 3px;
-  border-radius: 9px;
-}
-
-.view-switch button {
-  padding: 4px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-}
-
-.view-switch button.active {
-  background: var(--bg-surface);
-  color: var(--ink);
-  box-shadow: var(--shadow-sm);
-}
-
-.graph-column.office-mode {
-  grid-template-rows: 54px 1fr;
-}
-
-.office-wrap {
-  position: relative;
-  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-7);
   min-width: 0;
-  overflow: hidden;
 }
 
-.office-host {
+.office__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+}
+
+.office__head-end {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  margin-left: auto;
+}
+
+.office__stage-wrap {
+  position: relative;
+}
+
+.office .office-stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-scene);
+}
+
+.office .office-stage--3d {
+  aspect-ratio: 3 / 2;
+  background: var(--bg-app);
+}
+
+.office .office-stage--loading {
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.office .office-2d {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.office .office-host {
   position: absolute;
   inset: 0;
 }
 
-.office-canvas {
+.office .office-canvas {
   display: block;
 }
 
-.office-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  overflow: hidden;
+.office__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
 }
 
-.office-tag {
-  position: absolute;
-  transform: translate(-50%, -100%);
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 6px;
-  background: var(--bg-surface);
-  border: 1px solid var(--line);
-  color: var(--ink);
+.office__step {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-5);
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.office__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-3);
+}
+
+.office__buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.office .office__speed {
+  padding: 0 10px;
+}
+
+.office__camera {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: var(--sp-3);
+}
+
+.office__camera .ui-btn {
+  background: var(--bg-surface);
+}
+
+/* ── Legend ────────────────────────────────────────────────────────────── */
+.office__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-7);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
+.office__swatch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.office__swatch::before {
+  content: "";
+  width: 8px;
+  height: 6px;
+  flex: none;
+  background: var(--status-idle);
+}
+
+.office__swatch[data-tone="running"]::before {
+  background: var(--status-running);
+}
+
+.office__swatch[data-tone="completed"]::before {
+  background: var(--status-completed);
+}
+
+.office__swatch[data-tone="failed"]::before {
+  background: var(--status-failed);
+}
+
+.office__swatch[data-tone="free"]::before {
+  background: var(--o2d-free-swatch);
+  box-shadow: inset 0 0 0 1px var(--o2d-free-ring);
+}
+
+/* ── Office 2D scene fills (SPEC §9.1) ─────────────────────────────────── */
+.office .o2d-wall {
+  fill: var(--o2d-wall);
+}
+.office .o2d-wall-line {
+  fill: var(--o2d-wall-line);
+}
+.office .o2d-floor {
+  fill: var(--bg-scene);
+}
+.office .o2d-checker {
+  fill: var(--o2d-checker);
+}
+.office .o2d-board-frame {
+  fill: var(--o2d-board-frame);
+}
+.office .o2d-board-face {
+  fill: var(--o2d-board-face);
+}
+.office .o2d-bezel {
+  fill: var(--o2d-bezel);
+}
+.office .o2d-screen-off {
+  fill: var(--o2d-screen-off);
+}
+.office .o2d-desk {
+  fill: var(--o2d-desk);
+}
+.office .o2d-desk-hi {
+  fill: var(--o2d-desk-hi);
+}
+.office .o2d-desk-edge {
+  fill: var(--o2d-desk-edge);
+}
+.office .o2d-chair {
+  fill: var(--o2d-chair);
+}
+.office .o2d-desk-free {
+  fill: var(--o2d-desk-free);
+}
+.office .o2d-desk-free-hi {
+  fill: var(--o2d-desk-free-hi);
+}
+.office .o2d-monitor-off {
+  fill: var(--o2d-monitor-off);
+}
+.office .o2d-stool {
+  fill: var(--o2d-stool);
+}
+.office .o2d-table {
+  fill: var(--o2d-table);
+}
+.office .o2d-table-hi {
+  fill: var(--o2d-table-hi);
+}
+.office .o2d-table-edge {
+  fill: var(--o2d-table-edge);
+}
+.office .o2d-term {
+  fill: var(--o2d-term);
+}
+.office .o2d-term-screen {
+  fill: var(--o2d-term-screen);
+}
+.office .o2d-term-cursor {
+  fill: var(--o2d-term-cursor);
+}
+.office .o2d-term-base {
+  fill: var(--o2d-term-base);
+}
+.office .o2d-shadow {
+  fill: var(--o2d-shadow);
+}
+
+/* Working sprites bob one scene unit (SPEC §8 `obob`). */
+.office .o2d-bob {
+  animation: office-obob var(--anim-bob);
+}
+
+@keyframes office-obob {
+  50% {
+    transform: translateY(-1px);
+  }
+}
+
+/* ── Overlays (SPEC §9.4, §10.1) ───────────────────────────────────────── */
+.office .office-overlays {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.office .office-tag {
+  position: absolute;
+  padding: 0 4px;
+  background: var(--tag-bg);
+  color: var(--tag-ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tag);
+  line-height: 1.5;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.office .office-tag--3d {
+  transform: translate(-50%, -100%);
   transition: opacity 0.2s;
 }
 
-.office-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.office-tag-status {
+.office .office-ping {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 18px;
+  background: var(--ping-bg);
+  color: var(--ping-ink);
+  box-shadow: var(--shadow-pixel-sm);
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  font-weight: 500;
-  color: #fff;
-  padding: 0 5px;
-  border-radius: 4px;
+  font-size: var(--fs-small);
+  font-weight: var(--fw-medium);
+  transform: translateX(-50%);
 }
 
-.office-ping {
-  display: none;
-  color: #fff;
-  background: var(--status-verifying);
-  border-radius: 4px;
-  padding: 0 4px;
-  font-size: 10px;
-}
-
-.office-tag.ping .office-ping {
-  display: inline-block;
-}
-
-.office-bubble {
+.office .office-typing {
   position: absolute;
-  transform: translate(-50%, calc(-100% - 10px));
-  max-width: 250px;
-  min-width: 120px;
-  background: var(--bg-surface);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--c);
-  border-radius: 12px;
-  padding: 7px 10px 8px;
-  font-size: 12px;
-  line-height: 1.42;
-  box-shadow: var(--shadow-md);
-  transition: opacity 0.35s;
-  animation: office-pop 0.25s ease;
-}
-
-.office-bubble::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -6px;
-  width: 10px;
-  height: 10px;
-  background: var(--bg-surface);
-  border-right: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  transform: translateX(-50%) rotate(45deg);
-}
-
-.office-bubble.fade {
-  opacity: 0;
-}
-
-.office-bubble-who {
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--c);
-  margin-bottom: 2px;
   display: flex;
-  gap: 6px;
-  align-items: center;
+  gap: 3px;
+  padding: 5px 6px;
+  background: var(--pop-bg);
+  box-shadow: var(--shadow-pixel-sm);
+  transform: translateX(-50%);
 }
 
-.office-intent {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  font-weight: 500;
-  color: var(--ink-muted);
-  background: var(--bg-hover);
-  padding: 1px 5px;
-  border-radius: 4px;
+/* 3D: the ping and typing chip sit 22px above the name tag. */
+.office .office-ping--3d,
+.office .office-typing--3d {
+  transform: translate(-50%, calc(-100% - 22px));
 }
 
-@keyframes office-pop {
-  from {
-    opacity: 0;
-    transform: translate(-50%, calc(-100% - 2px)) scale(0.94);
-  }
+.office .office-typing > span {
+  width: 4px;
+  height: 4px;
+  background: var(--pop-ink);
+  animation: office-blink var(--anim-blink);
 }
 
-.office-toast {
-  position: absolute;
-  top: 12px;
-  left: 50%;
-  transform: translate(-50%, -8px);
-  opacity: 0;
-  transition: all 0.3s;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 7px 12px;
-  border-radius: 9px;
-  background: var(--ink);
-  color: var(--bg-surface);
-  pointer-events: none;
+.office .office-typing > span:nth-child(2) {
+  animation-delay: 0.2s;
 }
 
-.office-toast.show {
-  opacity: 1;
-  transform: translate(-50%, 0);
-}
-
-.office-status {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  display: flex;
-  gap: 6px;
-}
-
-.office-chip {
-  font-size: 11px;
-  font-family: var(--font-mono);
-  padding: 3px 8px;
-  border-radius: 7px;
-  background: var(--bg-surface);
-  border: 1px solid var(--line);
-  color: var(--ink-secondary);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.office-live {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--status-completed);
-  animation: office-blink 1.6s ease-in-out infinite;
+.office .office-typing > span:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
 @keyframes office-blink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
   50% {
-    opacity: 0.3;
+    opacity: 1;
   }
 }
 
-.office-card {
-  position: absolute;
-  top: 46px;
-  left: 12px;
-  width: 260px;
-  background: var(--bg-surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-  padding: 10px 12px;
-  font-size: 12px;
-  display: grid;
-  gap: 5px;
-}
-
-.office-card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-}
-
-.office-card-close {
-  font-size: 16px;
-  color: var(--ink-muted);
-}
-
-.office-card-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.office-card-text {
-  color: var(--ink-secondary);
-  line-height: 1.45;
-}
-
-.office-controls {
+.office .office-toast {
   position: absolute;
   left: 50%;
-  bottom: 12px;
+  top: 3%;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 5px 10px;
+  background: var(--pop-bg);
+  color: var(--pop-ink);
+  box-shadow: var(--shadow-pixel);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  white-space: nowrap;
   transform: translateX(-50%);
+}
+
+.office .office-toast--3d {
+  top: 4%;
+}
+
+.office .office-bubble {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  background: var(--pop-bg);
+  color: var(--pop-ink);
+  box-shadow: var(--shadow-pixel);
+}
+
+.office .office-bubble--2d {
+  max-width: 34%;
+}
+
+.office .office-bubble--3d {
+  width: 210px;
+  box-sizing: border-box;
+  transform: translate(-50%, calc(-100% - 8px));
+  transition: opacity 0.35s;
+}
+
+.office .office-bubble.is-leaving {
+  opacity: 0;
+}
+
+.office .office-bubble__who {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tag);
+  color: var(--pop-meta);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.office .office-bubble__text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  font-size: var(--fs-small);
+  line-height: var(--lh-bubble);
+}
+
+.office .office-flash {
+  position: absolute;
+  box-shadow: inset 0 0 0 3px var(--ping-bg);
+  animation: office-flash 0.5s steps(2, end) infinite;
+}
+
+@keyframes office-flash {
+  50% {
+    opacity: 0.15;
+  }
+}
+
+/* The whiteboard label sits on the light board face in both themes. */
+.office .office-board-label {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: #2a2a32;
+}
+
+.office .office-you {
+  position: absolute;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tag);
+  transform: translateX(-50%);
+}
+
+.office .office-you--3d {
+  transform: translate(-50%, -100%);
+}
+
+/* ── 3D inspect card ───────────────────────────────────────────────────── */
+.office .office-card {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: min(260px, 60%);
+  box-sizing: border-box;
+  padding: 10px 12px 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-raised);
+}
+
+.office .office-card__head {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px;
-  border-radius: 11px;
-  background: var(--bg-surface);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-md);
-  white-space: nowrap;
+  justify-content: space-between;
+  gap: var(--sp-4);
 }
 
-.office-btn {
-  height: 30px;
-  min-width: 30px;
-  padding: 0 10px;
-  border-radius: 7px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink-secondary);
-  background: transparent;
-  border: none;
+.office .office-card__name {
+  min-width: 0;
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-medium);
 }
 
-.office-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--ink);
+.office .office-card__role {
+  color: var(--ink-muted);
+  font-weight: var(--fw-regular);
 }
 
-.office-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
+.office .office-card__brief,
+.office .office-card__now {
+  margin: 0;
+  font-size: var(--fs-ui);
+  color: var(--ink-2);
 }
 
-.office-btn.primary {
-  background: var(--ink);
-  color: var(--bg-surface);
+.office .office-card__now {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-3);
 }
 
-.office-btn.on {
-  color: var(--ink);
-  background: var(--bg-subtle);
+/* ── Paused and reduced motion ─────────────────────────────────────────── */
+.office .is-frozen *,
+.office .is-frozen {
+  animation-play-state: paused;
+}
+
+.office .is-reduced * {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .office .o2d-bob,
+  .office .office-flash,
+  .office .office-typing > span {
+    animation: none;
+  }
 }
