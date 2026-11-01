@@ -9,6 +9,7 @@ import {
   type DriverRegistry,
   type Engine,
   type Logger,
+  type Secret,
 } from "@jj/backend";
 import { type Database, openDatabase, readInstanceSetting } from "@jj/db";
 import { ChatResponder, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
@@ -26,14 +27,15 @@ export interface Services {
   drivers: DriverRegistry;
   models: ModelRegistry;
   engine: Engine;
-  /**
-   * The server's secret values the engine redacts from what runs persist.
-   * The API adds a token it generates after opening the services.
-   */
-  secrets: Set<string>;
+  /** The server's secret values the engine redacts, read afresh on each call. */
+  secrets: () => Promise<Secret[]>;
 }
 
-/** The database password from a PostgreSQL URL, as written and decoded. */
+/**
+ * The database password from a PostgreSQL URL, as written and decoded. It is
+ * redacted only in URL position (`:<password>@`): passwords such as
+ * "postgres" are ordinary words elsewhere.
+ */
 export function databasePassword(connectionString: string): string[] {
   try {
     const { password } = new URL(connectionString);
@@ -45,24 +47,39 @@ export function databasePassword(connectionString: string): string[] {
 }
 
 /**
- * Secret values known when the services open: the provider keys in `env`,
- * `API_TOKEN`, a token generated on an earlier boot, and the database password.
+ * The server's secrets: the provider keys in `env`, `API_TOKEN`, the database
+ * password, and the generated API token, which is read from the database on
+ * each call, so a worker that started before the API generated it still
+ * redacts it.
  */
-async function knownSecrets(
+function serverSecrets(
   config: ServicesConfig,
   env: Env,
   database: Database,
   models: ModelRegistry,
-): Promise<Set<string>> {
-  const values = [
+): () => Promise<Secret[]> {
+  const fixed: Secret[] = [
     ...models.secretValues(),
-    env.API_TOKEN?.trim(),
-    await readInstanceSetting(database.db, GENERATED_TOKEN_KEY),
+    ...(env.API_TOKEN?.trim()
+      ? [{ name: "API_TOKEN", value: env.API_TOKEN.trim() }]
+      : []),
     ...(config.database.mode === "postgres"
-      ? databasePassword(config.database.connectionString)
+      ? databasePassword(config.database.connectionString).map((value) => ({
+          name: "the DATABASE_URL password",
+          value,
+          inUrl: true,
+        }))
       : []),
   ];
-  return new Set(values.filter((value): value is string => Boolean(value)));
+  return async () => {
+    const generated = await readInstanceSetting(
+      database.db,
+      GENERATED_TOKEN_KEY,
+    );
+    return generated
+      ? [...fixed, { name: "the generated API token", value: generated }]
+      : fixed;
+  };
 }
 
 /** The registered sandbox drivers. Docker stays registered without a daemon; its probe says so. */
@@ -129,7 +146,7 @@ export async function openServices(
       env,
       enableScripted: config.enableScripted,
     });
-    const secrets = await knownSecrets(config, env, database, models);
+    const secrets = serverSecrets(config, env, database, models);
     const outputCapBytes = config.engine.outputCapBytes;
     const engine = await createEngine({
       db: database,
@@ -139,7 +156,7 @@ export async function openServices(
       models,
       config: config.engine,
       logger,
-      secrets: () => secrets,
+      secrets,
     });
     return { database, drivers, models, engine, secrets };
   } catch (error) {

@@ -136,6 +136,12 @@ export interface RunInput {
   /** Aborting stops the model call and the in-flight sandbox command. Outcome `aborted`. */
   signal: AbortSignal;
   hooks: RunHooks;
+  /**
+   * Replaces the server's secret values. The runtime applies it to tool
+   * output, tool summaries and model text before any cap, clip or spill, so
+   * a cut never leaves part of a secret; the engine redacts again on write.
+   */
+  redact?: (text: string) => string;
 }
 
 export type RunOutcome =

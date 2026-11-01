@@ -71,7 +71,6 @@ export async function startServer(
   let server: ServerType | undefined;
   try {
     const auth = await resolveApiToken(config, database.db);
-    if (auth.kind !== "none") services.secrets.add(auth.token);
     const app = createApp({
       engine,
       logger,

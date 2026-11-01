@@ -20,7 +20,7 @@ import type { SandboxSpec } from "@jj/sandbox/contract";
 import { asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
-import type { CollabToolContext, RunExecutor, RunOutcome } from "../ports";
+import type { RunExecutor, RunOutcome } from "../ports";
 import { profileSettings } from "../records";
 import { memoryText } from "../services/bots";
 import { profileFor } from "../services/profiles";
@@ -93,6 +93,8 @@ async function startRun(
 ): Promise<Start> {
   const { ctx } = deps;
   const sessionId = job.sessionId as string;
+  // Built before the transaction: reading the secrets may query the database.
+  const redact = await ctx.redactor();
   return ctx.db.transaction(async (tx): Promise<Start> => {
     if (!(await heartbeat(tx, job.lease, ctx.config.leaseMs)))
       return { kind: "skip", taskFinished: false };
@@ -256,6 +258,7 @@ async function startRun(
       nextSeq: await nextEntrySeq(tx, sessionId),
       startedAt: now,
       taskFinished: false,
+      redact,
     };
     return { kind: "run", rc, reason, spec, unavailable };
   });
@@ -301,17 +304,12 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   return async (inputs: string[]): Promise<RunOutcome> => {
-    // Per call: a continuation sees the delegations still open now. What a
-    // model passes a collaboration tool is persisted, so it is redacted first.
+    // Per call: a continuation sees the delegations still open now.
     const tools = sessionTools(
       rc,
       others,
       await openChildren(ctx.db, rc.session),
-    ).map((tool) => ({
-      ...tool,
-      execute: (args: Record<string, unknown>, context: CollabToolContext) =>
-        tool.execute(ctx.redact(args), context),
-    }));
+    );
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -340,10 +338,9 @@ async function prepare(
       },
       signal: rc.control.controller.signal,
       hooks: runHooks(rc),
+      redact: (text: string) => rc.redact(text),
     });
-    return rc.control.reason
-      ? { kind: "aborted", reason: "signal" }
-      : ctx.redact(outcome);
+    return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;
   };
 }
 

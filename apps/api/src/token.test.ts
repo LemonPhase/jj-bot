@@ -67,6 +67,9 @@ async function boot(env: Record<string, string>, logger: Logger) {
   return server;
 }
 
+const secretValues = async (server: RunningServer) =>
+  (await server.services.secrets()).map((secret) => secret.value);
+
 /** The server's port on 127.0.0.1, whatever address it listens on. */
 const local = (server: RunningServer) =>
   `http://127.0.0.1:${new URL(server.url).port}`;
@@ -116,7 +119,7 @@ describe("beyond loopback without API_TOKEN", () => {
       ]);
       expect(first.lines.join("\n")).toContain("generated now");
       // The engine redacts it from what runs persist.
-      expect(server.services.secrets.has(token)).toBe(true);
+      expect(await secretValues(server)).toContain(token);
       await server.close();
       servers.length = 0;
       vi.restoreAllMocks();
@@ -138,7 +141,7 @@ describe("beyond loopback without API_TOKEN", () => {
         `Open JJ Bot: http://127.0.0.1:3101/?token=${token}`,
       ]);
       expect(second.lines.join("\n")).toContain("generated on first boot");
-      expect(again.services.secrets.has(token)).toBe(true);
+      expect(await secretValues(again)).toContain(token);
     },
     OPEN_TIMEOUT,
   );
@@ -240,19 +243,25 @@ describe("API_TOKEN and loopback", () => {
   it(
     "hands the engine API_TOKEN and the provider keys to redact",
     async () => {
-      const { logger } = capture();
+      const { lines, logger } = capture();
       const server = await boot(
         {
-          API_TOKEN: "configured-token",
+          API_TOKEN: "short-token1",
           OPENAI_API_KEY: "sk-test-provider-key",
           JJ_DATABASE_PATH: "memory://",
         },
         logger,
       );
-      expect([...server.services.secrets].sort()).toEqual([
-        "configured-token",
-        "sk-test-provider-key",
+      expect(await server.services.secrets()).toEqual([
+        { name: "OPENAI_API_KEY", value: "sk-test-provider-key" },
+        { name: "API_TOKEN", value: "short-token1" },
       ]);
+      // Too short to redact as a bare value: named in a boot warning, never printed.
+      const warning = lines.find((line) =>
+        line.includes("API_TOKEN is shorter"),
+      );
+      expect(warning).toContain("is not redacted from task history");
+      expect(lines.join("\n")).not.toContain("short-token1");
     },
     OPEN_TIMEOUT,
   );

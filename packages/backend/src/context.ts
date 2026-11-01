@@ -36,8 +36,11 @@ export interface EngineContext {
   clock: () => Date;
   ids: (kind: IdKind) => string;
   logger: Logger;
-  /** Replaces the server's secret values in what a run hands the engine. */
-  redact: Redactor;
+  /**
+   * Builds a redactor over the server's secret values as they are now (a
+   * token generated after boot included). Each run builds one at its start.
+   */
+  redactor: () => Promise<Redactor>;
 }
 
 export const defaultIds = (kind: IdKind) => newId(kind);

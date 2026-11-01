@@ -108,6 +108,7 @@ export function summarizeCall(
   tool: string,
   args: Record<string, unknown>,
   collab: CollabTool | undefined,
+  redact: (text: string) => string = (text) => text,
 ): string {
   let summary: string;
   if (collab) {
@@ -122,7 +123,7 @@ export function summarizeCall(
   else if (tool === "find")
     summary = `${String(args.pattern ?? "")}${args.path ? ` in ${String(args.path)}` : ""}`;
   else summary = String(args.path ?? ".");
-  return clip(summary.replace(/\s+/g, " ").trim() || tool, 300);
+  return clip(redact(summary).replace(/\s+/g, " ").trim() || tool, 300);
 }
 
 export interface LoopSpec {
@@ -146,6 +147,8 @@ export interface LoopSpec {
   getSteering(): Promise<UserMessage[]>;
   persist(entries: PiMessage[]): Promise<void>;
   onEvent(event: ExecutorEvent): Promise<void>;
+  /** Replaces the server's secrets in summaries, model text and output previews, before any clip. */
+  redact?: (text: string) => string;
 }
 
 const persistable = (message: AgentMessage): message is PiMessage =>
@@ -194,6 +197,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   const ref: ModelRef = resolved.ref;
   const secrets = [resolved.getApiKey()];
   const redact = (text: string) => redactSecrets(text, secrets);
+  // The server's secrets, applied before anything below cuts text.
+  const scrub = spec.redact ?? ((text: string) => text);
   const fail = (code: RunErrorCode, error: string): RunOutcome => ({
     kind: "error",
     code,
@@ -264,7 +269,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         }
         if (persistable(message)) pending.push(message);
         if (message.role === "assistant") {
-          const text = assistantText(message);
+          const text = scrub(assistantText(message));
           const failed = message.stopReason === "error";
           await spec.onEvent({
             type: "model.finished",
@@ -295,6 +300,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           event.toolName,
           args,
           collabByName.get(event.toolName),
+          scrub,
         );
         calls.set(event.toolCallId, { tool: event.toolName, summary });
         await spec.onEvent({
@@ -333,10 +339,12 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           await flush();
         }
         const details = result.details ?? {};
-        const output = (result.content ?? [])
-          .filter((block): block is TextContent => block.type === "text")
-          .map((block) => block.text)
-          .join("\n");
+        const output = scrub(
+          (result.content ?? [])
+            .filter((block): block is TextContent => block.type === "text")
+            .map((block) => block.text)
+            .join("\n"),
+        );
         await spec.onEvent({
           type: "tool.finished",
           toolCallId: event.toolCallId,

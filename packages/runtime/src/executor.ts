@@ -106,6 +106,7 @@ export class PiSessionExecutor implements RunExecutor {
     const policy: OutputPolicy = {
       capBytes: this.capBytes,
       spill: (text, label) => hooks.spillOutput(text, label),
+      ...(input.redact ? { redact: input.redact } : {}),
     };
     let endRequested = false;
     // A sandbox released under the run (stop, idle release) stops it like an abort.
@@ -163,6 +164,7 @@ export class PiSessionExecutor implements RunExecutor {
       signal,
       retry: this.retry,
       endRequested: () => endRequested,
+      ...(input.redact ? { redact: input.redact } : {}),
       getSteering: drain,
       persist: async (entries) => {
         await hooks.onTurnComplete(entries);

@@ -19,6 +19,7 @@ import { and, asc, eq, inArray, isNull, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { emit } from "../events";
 import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
+import type { Redactor } from "../redact";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
 import { COMPLETION_SET_ASIDE } from "./prompts";
@@ -92,6 +93,8 @@ export interface RunContext {
   startedAt: Date;
   /** Set when the run's write-back finished the task, so its sandbox can go. */
   taskFinished: boolean;
+  /** Replaces the server's secrets in what this run persists (see redact.ts). */
+  redact: Redactor;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -314,7 +317,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
 
 /** The executor's hooks. What they persist is redacted first (see redact.ts). */
 export function runHooks(rc: RunContext): RunHooks {
-  const { redact } = rc.deps.ctx;
+  const { redact } = rc;
   return {
     onEvent: (event) =>
       writeRun(rc, (tx) => recordEvent(tx, rc, redact(event))),

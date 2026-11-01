@@ -103,8 +103,11 @@ function delegateTool(
         return refuse(
           `${String(args.bot)} is not on this task. Delegate to one of: ${team.map((member) => member.name).join(", ")}.`,
         );
-      const brief = textArg(args.brief);
-      if (!brief) return refuse("Give the teammate a brief.");
+      const written = textArg(args.brief);
+      if (!written) return refuse("Give the teammate a brief.");
+      // The tool gets what the model wrote; what it stores (the session's
+      // brief, the chat message, the assignee's inbox) is redacted.
+      const brief = rc.redact(written);
       return writeRun(rc, async (tx) => {
         const task = await lockTask(tx, rc.task.id);
         if (!task || task.cancelRequestedAt || isFinishedStatus(task.status))
@@ -199,8 +202,9 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
     summarize: (args) =>
       String(findTeammate(team, args.to)?.name ?? "the team"),
     async execute(args) {
-      const text = textArg(args.text);
-      if (!text) return refuse("The message is empty.");
+      const written = textArg(args.text);
+      if (!written) return refuse("The message is empty.");
+      const text = rc.redact(written);
       const to =
         args.to === undefined ? undefined : findTeammate(team, args.to);
       if (args.to !== undefined && !to)
@@ -302,8 +306,9 @@ function completeTaskTool(rc: RunContext): CollabTool {
       additionalProperties: false,
     },
     async execute(args) {
-      const result = textArg(args.result);
-      if (!result) return refuse("Give the result.");
+      const written = textArg(args.result);
+      if (!written) return refuse("Give the result.");
+      const result = rc.redact(written);
       return writeRun(rc, async (tx) => {
         const task = await lockTask(tx, rc.task.id);
         const session = await getSession(tx, rc.session.id);

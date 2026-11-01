@@ -365,10 +365,13 @@ async function restorePrevious(tx: Tx, rc: RunContext, session: SessionRow) {
  */
 export async function finishRun(
   rc: RunContext,
-  outcome: RunOutcome,
+  raw: RunOutcome,
   mayContinue: boolean,
   snapshotted = false,
 ): Promise<"done" | "continue"> {
+  // Final text and errors (a thrown message included) become messages and
+  // session records: redacted like everything else the run persists.
+  const outcome = rc.redact(raw);
   const reason = rc.control.reason;
   if (rc.control.fenced) return "done";
   if (reason === "shutdown") {

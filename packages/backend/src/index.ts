@@ -14,5 +14,6 @@ export { createDriverRegistry, type DriverEntry } from "./drivers";
 export { createEngine, type Engine, type EngineOptions } from "./engine";
 export { DomainError, HTTP_STATUS } from "./errors";
 export type * from "./ports";
+export { MIN_BARE_SECRET_LENGTH, type Secret } from "./redact";
 export type { TaskStreamOptions, TaskSubscription } from "./services/stream";
 export type { Worker } from "./worker/worker";

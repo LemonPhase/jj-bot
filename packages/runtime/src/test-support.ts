@@ -14,6 +14,14 @@ import {
 import { LocalSandboxDriver, type Sandbox } from "@jj/sandbox";
 import type { ExecutorEvent, PiMessage, RunHooks } from "./types";
 
+/** pi's faux provider, for tests in other packages that drive the real executor. */
+export {
+  fauxAssistantMessage,
+  fauxProvider,
+  fauxText,
+  fauxToolCall,
+} from "@earendil-works/pi-ai";
+
 /**
  * A `local` sandbox under its own temporary root (never the shared default
  * root), its spec limits, and a cleanup that removes the root.
