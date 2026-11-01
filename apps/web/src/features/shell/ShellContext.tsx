@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 
 /** Shell-level actions any screen can trigger. Provided by `AppShell`. */
 export interface ShellActions {
-  /** Starts the new-bot flow (today a dialog; Bot Studio can take over at `#/studio`). */
+  /** Opens Bot Studio on a new bot (`#/studio/new`). */
   openNewBot: () => void;
   /** Opens the new-task dialog with these bots preselected (the first coordinates). */
   openNewTask: (botIds?: string[]) => void;

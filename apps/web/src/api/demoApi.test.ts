@@ -346,7 +346,14 @@ describe("demo API", () => {
       "VERIFICATION_UNAVAILABLE",
     );
     await rejects(api.archiveBot("bot-juno"), "CONFLICT");
-    await rejects(api.deleteProfile("profile-docker"), "PROFILE_IN_USE");
+    await rejects(api.createBot({ name: "juno" }), "CONFLICT");
+    await rejects(api.updateBot("bot-kite", { name: "Moss" }), "CONFLICT");
+    await rejects(api.deleteProfile("profile-docker"), "CONFLICT");
+    await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
+    await rejects(
+      api.updateProfile("profile-docker", { isDefault: false }),
+      "CONFLICT",
+    );
     await rejects(
       api.createProfile({
         name: "Offline local",
@@ -355,6 +362,53 @@ describe("demo API", () => {
       "PROFILE_UNSUPPORTED",
     );
     await rejects(api.getTask("task-999"), "NOT_FOUND");
+  });
+
+  it("refuses specs with the drivers' own messages, as the server does", async () => {
+    const api = demo();
+    const message = async (promise: Promise<unknown>) =>
+      (
+        (await promise.then(
+          () => null,
+          (reason: unknown) => reason,
+        )) as ApiError | null
+      )?.message;
+    expect(
+      await message(
+        api.createProfile({
+          name: "Offline local",
+          sandbox: { driver: "local", network: { mode: "none" } },
+        }),
+      ),
+    ).toBe('Driver local cannot enforce network.mode="none"');
+    // Switching the docker profile to local keeps its network "none".
+    expect(
+      await message(
+        api.updateProfile("profile-docker", { sandbox: { driver: "local" } }),
+      ),
+    ).toBe('Driver local cannot enforce network.mode="none"');
+    // With an open network the image is dropped, but the resources stay.
+    expect(
+      await message(
+        api.updateProfile("profile-docker", {
+          sandbox: { driver: "local", network: { mode: "open" } },
+        }),
+      ),
+    ).toBe("Driver local cannot enforce resources");
+    expect(
+      await message(
+        api.createProfile({
+          name: "Local image",
+          sandbox: {
+            driver: "local",
+            image: "node:22",
+            network: { mode: "open" },
+          },
+        }),
+      ),
+    ).toBe(
+      'Driver local cannot enforce image "node:22": commands run directly on the host',
+    );
   });
 
   it("creates, edits and archives bots with contract defaults", async () => {

@@ -2,7 +2,6 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ErrorBanner, Spinner } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
-import { NewBotDialog } from "../bots/NewBotDialog";
 import { SettingsScreen } from "../settings/SettingsScreen";
 import { StudioScreen } from "../studio/StudioScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
@@ -17,10 +16,7 @@ const TasksScreen = lazy(() =>
   import("../tasks/TasksScreen").then((m) => ({ default: m.TasksScreen })),
 );
 
-type OpenDialog =
-  | { kind: "none" }
-  | { kind: "bot" }
-  | { kind: "task"; botIds: string[] };
+type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -71,7 +67,7 @@ export function AppShell() {
 
   const actions = useMemo<ShellActions>(
     () => ({
-      openNewBot: () => setDialog({ kind: "bot" }),
+      openNewBot: () => navigate({ name: "studio", botId: null }),
       openNewTask: (botIds) =>
         setDialog({
           kind: "task",
@@ -103,7 +99,6 @@ export function AppShell() {
           {loading ? <ShellLoading /> : <Screen route={route} />}
         </div>
       </div>
-      {dialog.kind === "bot" && <NewBotDialog onClose={closeDialog} />}
       {dialog.kind === "task" && (
         <NewTaskDialog initialBotIds={dialog.botIds} onClose={closeDialog} />
       )}

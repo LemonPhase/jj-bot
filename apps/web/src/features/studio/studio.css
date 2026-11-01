@@ -1,0 +1,562 @@
+/*
+ * Bot Studio (SPEC §5.6, §11). The stage shows the 2D pixel sprite, large,
+ * with a pixel body and the gait animation (brief decision 7: no CSS 3D).
+ * Measurements follow the C2 / C2L Studio boards; colours come from tokens,
+ * so both themes work. Sprites and figure pixels are the same in both themes.
+ */
+
+.studio-subtitle {
+  font-size: var(--fs-ui);
+  color: var(--ink-muted);
+}
+
+/* Body: preview column (flex 1 1 520) and parts column (flex 1 1 380), wrapping. */
+.studio-body {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: var(--sp-11);
+  min-height: 0;
+  padding: 0 24px 24px;
+  overflow-y: auto;
+}
+
+.studio-error {
+  flex: 1 1 100%;
+}
+
+.studio-main {
+  display: flex;
+  flex: 1 1 520px;
+  flex-direction: column;
+  gap: var(--sp-11);
+  min-width: 0;
+}
+
+.studio-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+}
+
+/* ── Stage ─────────────────────────────────────────────────────────────── */
+.studio-stage {
+  /* The design's checker: #1C1C22/#232329 dark, #E4E4EA/#DCDCE3 light. */
+  --studio-floor-a: color-mix(in srgb, var(--ink) 6%, var(--bg-scene));
+  --studio-floor-b: color-mix(in srgb, var(--ink) 10%, var(--bg-scene));
+  position: relative;
+  width: 100%;
+  height: 430px;
+  overflow: hidden;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--r-xl);
+  background: var(--bg-scene);
+}
+
+.studio-stage__floor {
+  position: absolute;
+  right: -80%;
+  bottom: 0;
+  left: -80%;
+  height: 150%;
+  background-color: var(--studio-floor-a);
+  background-image: repeating-conic-gradient(
+    var(--studio-floor-b) 0 25%,
+    var(--studio-floor-a) 0 50%
+  );
+  background-size: 48px 48px;
+  transform: perspective(700px) rotateX(72deg);
+  transform-origin: 50% 100%;
+}
+
+.studio-stage__floor--scroll {
+  animation: studio-floor 0.8s linear infinite;
+}
+
+@keyframes studio-floor {
+  to {
+    background-position: 0 48px;
+  }
+}
+
+.studio-stage__caption {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-width: calc(100% - 110px);
+}
+
+.studio-stage__name {
+  overflow: hidden;
+  font-size: var(--fs-title);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-stage__name--placeholder {
+  color: var(--ink-muted);
+}
+
+.studio-stage__summary {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
+.studio-stage__badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: var(--bg-surface);
+}
+
+/* ── Figure ────────────────────────────────────────────────────────────── */
+.studio-figure {
+  position: absolute;
+  bottom: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.studio-figure__shadow {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  width: 124px;
+  height: 22px;
+  margin-left: -62px;
+  border-radius: 50%;
+  background: var(--shadow-ground);
+}
+
+.studio-figure__bobber {
+  position: relative;
+  transform-origin: 50% 100%;
+}
+
+.studio-figure__svg {
+  display: block;
+  overflow: visible;
+}
+
+/* SVG groups pivot in sprite pixels: the head on its neck, arms at the shoulder. */
+.studio-figure__head,
+.studio-figure__arm {
+  transform-box: view-box;
+}
+
+.studio-figure__head {
+  transform-origin: 6px 11px;
+}
+
+.studio-figure__arm--left {
+  transform-origin: 1px 13px;
+}
+
+.studio-figure__arm--right {
+  transform-origin: 11px 13px;
+}
+
+/* The design's typing chip, shown while talking. */
+.studio-figure__typing {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 64%;
+  display: flex;
+  padding: 5px 7px;
+  background: var(--pop-bg);
+  box-shadow: var(--shadow-pixel-sm);
+}
+
+.studio-figure__typing .ui-dots__dot {
+  background: var(--pop-ink);
+}
+
+/* Idle: float. */
+.studio-figure--idle .studio-figure__bobber {
+  animation: studio-float 2.6s ease-in-out infinite;
+}
+
+@keyframes studio-float {
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+/* Walk: one gait each; the arms step a pixel in turn. */
+.studio-figure--walk.studio-figure--hop .studio-figure__bobber {
+  animation: studio-hop 0.4s linear infinite;
+}
+
+@keyframes studio-hop {
+  0%,
+  50%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-12px) rotate(3deg);
+  }
+  75% {
+    transform: translateY(-12px) rotate(-3deg);
+  }
+}
+
+.studio-figure--walk.studio-figure--waddle .studio-figure__bobber {
+  animation: studio-waddle 0.62s ease-in-out infinite;
+}
+
+@keyframes studio-waddle {
+  0%,
+  100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: translateY(-3px) rotate(8deg);
+  }
+}
+
+.studio-figure--walk.studio-figure--glide .studio-figure__bobber {
+  animation: studio-glide 1.2s ease-in-out infinite;
+}
+
+@keyframes studio-glide {
+  0%,
+  100% {
+    transform: translateY(-14px) rotate(-2deg);
+  }
+  50% {
+    transform: translateY(-20px) rotate(-1deg);
+  }
+}
+
+.studio-figure--walk.studio-figure--hop .studio-figure__arm,
+.studio-figure--walk.studio-figure--waddle .studio-figure__arm {
+  animation: studio-arm-step 0.4s steps(2, end) infinite;
+}
+
+.studio-figure--walk.studio-figure--waddle .studio-figure__arm {
+  animation-duration: 0.62s;
+}
+
+.studio-figure--walk.studio-figure--hop .studio-figure__arm--right {
+  animation-delay: -0.2s;
+}
+
+.studio-figure--walk.studio-figure--waddle .studio-figure__arm--right {
+  animation-delay: -0.31s;
+}
+
+@keyframes studio-arm-step {
+  50% {
+    transform: translateY(-1px);
+  }
+}
+
+/* Glide: arms trail outwards. */
+.studio-figure--walk.studio-figure--glide .studio-figure__arm--left {
+  transform: rotate(24deg);
+}
+
+.studio-figure--walk.studio-figure--glide .studio-figure__arm--right {
+  transform: rotate(-24deg);
+}
+
+/* Talk: nod and gesture. */
+.studio-figure--talk .studio-figure__head {
+  animation: studio-nod 0.9s ease-in-out infinite;
+}
+
+@keyframes studio-nod {
+  25% {
+    transform: rotate(6deg);
+  }
+  75% {
+    transform: rotate(-4deg);
+  }
+}
+
+.studio-figure--talk .studio-figure__arm--left {
+  animation: studio-gesture-left 0.55s ease-in-out infinite;
+}
+
+.studio-figure--talk .studio-figure__arm--right {
+  animation: studio-gesture-right 0.55s ease-in-out infinite reverse;
+}
+
+@keyframes studio-gesture-left {
+  0%,
+  100% {
+    transform: rotate(8deg);
+  }
+  50% {
+    transform: rotate(40deg);
+  }
+}
+
+@keyframes studio-gesture-right {
+  0%,
+  100% {
+    transform: rotate(-8deg);
+  }
+  50% {
+    transform: rotate(-40deg);
+  }
+}
+
+/* Work: the working face bobs and the arms tap. */
+.studio-figure--work .studio-figure__bobber {
+  animation: studio-bob 1.1s steps(2, end) infinite;
+}
+
+@keyframes studio-bob {
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.studio-figure--work .studio-figure__arm--left {
+  animation: studio-tap-left 0.34s ease-in-out infinite;
+}
+
+.studio-figure--work .studio-figure__arm--right {
+  animation: studio-tap-right 0.34s ease-in-out -0.17s infinite;
+}
+
+@keyframes studio-tap-left {
+  50% {
+    transform: rotate(-16deg);
+  }
+}
+
+@keyframes studio-tap-right {
+  50% {
+    transform: rotate(16deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-stage,
+  .studio-stage * {
+    animation: none !important;
+  }
+}
+
+/* ── Motion row and pixel avatar card ──────────────────────────────────── */
+.studio-motion {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-6);
+}
+
+.studio-motion__switch {
+  flex: 0 1 300px;
+  min-width: min(300px, 100%);
+}
+
+.studio-motion__note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-3);
+}
+
+.studio-avatar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-10);
+  padding: 14px 16px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--r-xl);
+}
+
+.studio-avatar__sizes {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-7);
+}
+
+.studio-avatar__sample {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 200px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-selected);
+}
+
+.studio-avatar__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--lh-step);
+}
+
+.studio-avatar__name {
+  font-weight: var(--fw-medium);
+}
+
+.studio-avatar__status {
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
+/* ── Details ───────────────────────────────────────────────────────────── */
+.studio-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.studio-details__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-7) var(--sp-8);
+}
+
+.studio-details__wide {
+  grid-column: 1 / -1;
+}
+
+.studio-details__profile {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* ── Parts ─────────────────────────────────────────────────────────────── */
+.studio-parts {
+  display: flex;
+  flex: 1 1 380px;
+  flex-direction: column;
+  gap: var(--sp-9);
+  min-width: 0;
+}
+
+.studio-part {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.studio-part__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--tracking-part);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.studio-part__note {
+  letter-spacing: 0;
+  text-align: right;
+  text-transform: none;
+  color: var(--ink-3);
+}
+
+.studio-part__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+}
+
+.studio-part__items--swatches {
+  gap: var(--sp-4);
+  /* Room for the selected ring. */
+  padding: 4px;
+  margin: -4px;
+}
+
+.studio-part__items--presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.studio-shape-icon {
+  display: block;
+  flex: none;
+}
+
+.studio-swatch {
+  width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.studio-swatch[aria-pressed="true"] {
+  box-shadow: var(--ring-selected);
+}
+
+.studio-swatch:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 6px;
+}
+
+.studio-preset {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  margin: 0;
+  padding: 10px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-ui) var(--ease-ui),
+    border-color var(--dur-ui) var(--ease-ui),
+    color var(--dur-ui) var(--ease-ui);
+}
+
+.studio-preset:hover {
+  background: var(--bg-hover);
+  color: var(--ink);
+}
+
+.studio-preset[aria-pressed="true"] {
+  border-color: var(--line-chip-on);
+  background: var(--bg-active);
+  color: var(--ink);
+}
+
+.studio-preset:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+.studio-preset__name {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Phones: keep the header to the title and the two pills. */
+@media (max-width: 759px) {
+  .studio-subtitle {
+    display: none;
+  }
+}
