@@ -84,7 +84,7 @@ async function main() {
   const started = Date.now();
   let outcome: unknown;
   try {
-    outcome = await scenario.run({ engine, model });
+    outcome = await scenario.run({ engine, model, root: join(dir, "sandboxes") });
   } finally {
     await engine.worker.stop?.();
   }
@@ -121,6 +121,21 @@ async function main() {
     };
   });
   const chatUsage = usageRows.filter((u) => u.sessionId === null);
+  // Tool calls per bot and tool, from the durable task events.
+  const toolCalls: Record<string, number> = {};
+  for (const { id } of (await engine.tasks.list()).tasks) {
+    let after = 0;
+    for (;;) {
+      const page = await engine.tasks.events(id, { after, limit: 500 });
+      for (const event of page.events)
+        if (event.type === "tool.started") {
+          const key = `${botName.get(event.botId ?? "") ?? "?"}:${(event.payload as { tool: string }).tool}`;
+          toolCalls[key] = (toolCalls[key] ?? 0) + 1;
+        }
+      if (page.events.length < 500) break;
+      after = page.events.at(-1)?.sequence ?? after;
+    }
+  }
   const report = {
     scenario: scenarioName,
     model,
@@ -139,6 +154,10 @@ async function main() {
       },
       chatCalls: chatUsage.length,
     },
+    toolCalls,
+    flags: Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => k.startsWith("JJ_EXP_")),
+    ),
     sessions: perSession,
     calls,
   };
@@ -146,7 +165,7 @@ async function main() {
   await mkdir(out, { recursive: true });
   const file = join(
     out,
-    `${scenarioName}-${model.replace(/[^a-z0-9]+/gi, "_")}-${Date.now()}.json`,
+    `${scenarioName}${process.env.JJ_EXP_LABEL ? `.${process.env.JJ_EXP_LABEL}` : ""}-${model.replace(/[^a-z0-9]+/gi, "_")}-${Date.now()}.json`,
   );
   await writeFile(file, JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ ...report, calls: undefined, file }, null, 2));

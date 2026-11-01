@@ -80,9 +80,17 @@ export function sessionPrompt(input: SessionPromptInput): string {
     "## How to work",
   ];
   const hasTeammates = input.roster.some((member) => !member.self);
-  const messaging = hasTeammates
-    ? ["- `message` tells a teammate something without starting new work."]
-    : [];
+  const messaging = [
+    ...(hasTeammates && process.env.JJ_EXP_NO_MESSAGE !== "1"
+      ? ["- `message` tells a teammate something without starting new work."]
+      : []),
+    // Research prototype (#68), off unless JJ_EXP_TASK_TOOLS=1.
+    ...(process.env.JJ_EXP_TASK_TOOLS === "1"
+      ? [
+          "- `task_log`, `read_entry` and `read_report` show the task's history: the user's messages, briefs and teammates' reports. Check them before you start, and whenever you need context your brief does not give.",
+        ]
+      : []),
+  ];
   if (input.role === "coordinator") {
     lines.push(
       "You coordinate this task and deliver its result.",

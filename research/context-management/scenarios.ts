@@ -1,11 +1,16 @@
 // Scenarios for the harness. Each drives the engine through its public API and
 // waits for the task to settle. Goals follow scripts/smoke-e2e.ts so the
 // scripted model can play them; real models get the same text.
+import { spawnSync } from "node:child_process";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Engine } from "@jj/backend";
 
 export interface ScenarioContext {
   engine: Engine;
   model: string;
+  /** The local sandbox driver's root: task workspaces live below it. */
+  root: string;
 }
 export interface Scenario {
   run(context: ScenarioContext): Promise<unknown>;
@@ -69,6 +74,55 @@ const summary = (view: Awaited<ReturnType<typeof settle>>) => ({
   messages: view.messages.length,
 });
 
+/** Finds a file by name anywhere under the sandbox root. */
+async function find(root: string, name: string): Promise<string | undefined> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    if (entry.isFile() && entry.name === name) return path;
+    if (entry.isDirectory() && entry.name !== "node_modules") {
+      const hit = await find(path, name);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
+}
+const read = async (root: string, name: string) => {
+  const path = await find(root, name);
+  return path ? readFile(path, "utf8") : undefined;
+};
+const entries = (text = "") =>
+  text.split("\n").filter((line) => /^\s*[-*]\s+\*\*[^*]+\*\*/.test(line));
+const termOf = (line: string) =>
+  (/\*\*([^*]+)\*\*/.exec(line)?.[1] ?? "").trim().toLowerCase();
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 10 * 60_000) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await check()) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
+const GLOSSARY =
+  "Build a two-part penguin glossary in the workspace. First delegate part 1 to Grace: glossary-a.md with exactly 3 penguin terms. Only after Grace has reported, delegate part 2 to Linus: glossary-b.md with exactly 3 other penguin terms that must not repeat any of Grace's terms. Every entry is one line in the form `- **Term**: definition`. Then complete the task with a short summary.";
+const TAG = "[kiwi-7]";
+
+const INTERFACE = (variant: string) =>
+  `Two pieces, delegated to Grace and Linus at the same time (both delegate calls in the same turn). Grace writes lib.ts, which exports one function that formats a penguin record (name, species, heightCm) as one line of text. Linus writes main.ts, which imports that function from './lib.ts' and prints the formatted line for one sample penguin. The check is that \`node --experimental-strip-types main.ts\` runs in the workspace and prints the line. ${
+    variant === "hub"
+      ? "Choose the function's name and exact signature yourself and put them in both briefs."
+      : variant === "notes"
+        ? "Do not choose the function's name or signature yourself and do not put them in the briefs: Grace and Linus agree between themselves through a NOTES.md file in the workspace. Whoever decides something writes it there, and each reads NOTES.md before deciding and again before finishing."
+        : "Do not choose the function's name or signature yourself and do not put them in the briefs: Grace and Linus agree between themselves using the message tool."
+  } Do not edit lib.ts or main.ts yourself; if they do not fit together, delegate a fix. Then complete the task.`;
+
 export const scenarios: Record<string, Scenario> = {
   /** The smoke's task: a coordinator and two parallel workers. */
   baseline: {
@@ -131,6 +185,123 @@ export const scenarios: Record<string, Scenario> = {
         replies: second.messages
           .filter((m) => m.role === "assistant")
           .map((m) => m.text.slice(0, 400)),
+      };
+    },
+  },
+  /**
+   * E1: a rule the user gives after Grace has started, and a fact (Grace's
+   * terms) that Linus needs. Checks that the rule reached both workers'
+   * files and that Linus avoided Grace's terms.
+   */
+  glossary: {
+    async run({ engine, model, root }) {
+      const bots = await team(engine, model);
+      const { task } = await engine.tasks.create({
+        goal: GLOSSARY,
+        title: "Penguin glossary",
+        coordinatorBotId: bots.Ada,
+        participantBotIds: [bots.Grace, bots.Linus],
+      } as never);
+      // The rule arrives once Grace's session exists, so the coordinator
+      // can no longer put it in her brief.
+      await waitFor(async () => (await engine.tasks.get(task.id)).sessions.length > 1);
+      await engine.tasks.postMessage(task.id, {
+        text: `New rule for every glossary entry, including any already being written: end each definition line with the tag ${TAG}.`,
+      } as never);
+      await sleep(500);
+      const view = await settle(engine, task.id);
+      const a = entries(await read(root, "glossary-a.md"));
+      const b = entries(await read(root, "glossary-b.md"));
+      const tagged = (lines: string[]) =>
+        lines.length > 0 && lines.every((line) => line.trimEnd().endsWith(TAG));
+      const overlap = a.map(termOf).filter((t) => b.map(termOf).includes(t));
+      const checks = {
+        aCount: a.length === 3,
+        bCount: b.length === 3,
+        aTagged: tagged(a),
+        bTagged: tagged(b),
+        noOverlap: a.length > 0 && b.length > 0 && overlap.length === 0,
+      };
+      return {
+        ...summary(view),
+        checks,
+        pass: Object.values(checks).every(Boolean),
+        workers: view.sessions.filter((s) => s.parentSessionId).length,
+      };
+    },
+  },
+  /**
+   * E2: Grace picks a codeword that only her report carries. A follow-up asks
+   * her (by re-delegation) to add a term and the codeword to her file.
+   */
+  redelegate: {
+    async run({ engine, model, root }) {
+      const bots = await team(engine, model);
+      const { task } = await engine.tasks.create({
+        goal: "Delegate to Grace: write glossary-a.md with exactly 3 penguin terms, one line each in the form `- **Term**: definition`. Also ask her to invent a random codeword of 6 to 10 letters and to state it only in her report, never in any file. Then complete the task with a short summary that does not mention the codeword.",
+        title: "Glossary with follow-up",
+        coordinatorBotId: bots.Ada,
+        participantBotIds: [bots.Grace, bots.Linus],
+      } as never);
+      const first = await settle(engine, task.id);
+      const graceFirst = first.sessions.find((s) => s.botId === bots.Grace);
+      const report = graceFirst?.result ?? "";
+      const startedRound2 = Date.now();
+      await engine.tasks.postMessage(task.id, {
+        text: "Follow-up: delegate to Grace again. She adds one more penguin term to glossary-a.md, keeping her existing three, and appends a last line `Codeword: <the codeword she chose earlier>`.",
+      } as never);
+      await sleep(500);
+      const view = await settle(engine, task.id);
+      const text = (await read(root, "glossary-a.md")) ?? "";
+      const word = /Codeword:\s*`?([A-Za-z]+)`?/.exec(text)?.[1] ?? "";
+      const checks = {
+        fourEntries: entries(text).length === 4,
+        codewordMatches: word.length >= 4 && report.toLowerCase().includes(word.toLowerCase()),
+      };
+      return {
+        ...summary(view),
+        checks,
+        pass: Object.values(checks).every(Boolean),
+        round2StartedAt: startedRound2,
+        graceSessions: view.sessions.filter((s) => s.botId === bots.Grace).length,
+      };
+    },
+  },
+  /** E3: two workers must agree on an interface. */
+  interface: {
+    async run({ engine, model, root }) {
+      const variant = process.env.JJ_EXP_VARIANT ?? "message";
+      const bots = await team(engine, model);
+      const { task } = await engine.tasks.create({
+        goal: INTERFACE(variant),
+        title: "Penguin formatter",
+        coordinatorBotId: bots.Ada,
+        participantBotIds: [bots.Grace, bots.Linus],
+      } as never);
+      const view = await settle(engine, task.id);
+      const main = await find(root, "main.ts");
+      let runs = false;
+      let output = "";
+      if (main) {
+        const result = spawnSync(
+          process.execPath,
+          ["--experimental-strip-types", "--no-warnings", "main.ts"],
+          { cwd: dirname(main), encoding: "utf8", timeout: 20_000 },
+        );
+        runs = result.status === 0 && result.stdout.trim().length > 0;
+        output = (result.stdout + result.stderr).slice(0, 300);
+      }
+      const workerSessions = view.sessions.filter((s) => s.parentSessionId).length;
+      return {
+        ...summary(view),
+        variant,
+        checks: { runs },
+        pass: runs && view.task.status === "completed",
+        output,
+        workerSessions,
+        fixDelegations: Math.max(0, workerSessions - 2),
+        botMessages: view.messages.filter((m) => m.intent === "discussion" && m.authorKind === "bot").length,
+        notesFile: Boolean(await find(root, "NOTES.md")),
       };
     },
   },

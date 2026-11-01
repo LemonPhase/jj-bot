@@ -12,7 +12,15 @@ import {
   insertSession,
   lockTask,
   openChildren,
+  updateSession,
 } from "../services/sessions";
+import {
+  exp,
+  handoffNote,
+  previousSession,
+  taskContextTools,
+  taskDigest,
+} from "./experiments";
 import type { CompletionRequest } from "./outcomes";
 import type { RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
@@ -143,6 +151,54 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             `This task already has ${ctx.config.maxSessionsPerTask} sessions, the limit. Use the results you have or do the work yourself.`,
           );
         const attribution = attributionOf(rc);
+        // Research prototypes (#68), off unless their flags are set.
+        const mode = exp.redelegate();
+        const previous = mode
+          ? await previousSession(tx, rc, assignee.botId)
+          : undefined;
+        const digest = exp.digest() ? await taskDigest(tx, task.id) : "";
+        if (previous && mode === "resume") {
+          const reopened = await updateSession(
+            tx,
+            ctx,
+            previous,
+            {
+              status: "queued",
+              result: null,
+              error: null,
+              goalVersion: task.goalVersion,
+            },
+            attribution,
+          );
+          const message = await postMessage(
+            tx,
+            ctx,
+            {
+              taskId: task.id,
+              authorKind: "bot",
+              authorBotId: rc.bot.id,
+              sessionId: rc.session.id,
+              intent: "assignment",
+              text: brief,
+              recipientBotIds: [assignee.botId],
+            },
+            attribution,
+          );
+          await deliver(
+            tx,
+            reopened,
+            {
+              kind: "brief",
+              text: `New assignment from ${rc.bot.name} (this continues your earlier session):\n${brief}${digest}`,
+              sourceMessageId: message.id,
+            },
+            { wake: true, ctx },
+          );
+          return {
+            text: `Delegated to ${assignee.name} (session ${reopened.id}, reopened).\n${await openDelegationsText(tx, rc.session)}\nEach result arrives as a message. Do not delegate work that is already assigned; end your turn to wait when you have nothing else to do meanwhile.`,
+          };
+        }
+        const prefix = previous && mode === "note" ? handoffNote(previous) : "";
         const child = await insertSession(
           tx,
           ctx,
@@ -177,7 +233,7 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           child,
           {
             kind: "brief",
-            text: `Assignment from ${rc.bot.name}:\n${brief}`,
+            text: `Assignment from ${rc.bot.name}:\n${prefix}${brief}${digest}`,
             sourceMessageId: message.id,
           },
           { wake: true, ctx },
@@ -370,7 +426,8 @@ export function sessionTools(
     rc.session.depth < rc.deps.ctx.config.maxDelegationDepth
   )
     tools.push(delegateTool(rc, team));
-  if (team.length > 0) tools.push(messageTool(rc, team));
+  if (team.length > 0 && !exp.noMessage()) tools.push(messageTool(rc, team));
   if (rc.session.parentSessionId === null) tools.push(completeTaskTool(rc));
+  if (exp.taskTools()) tools.push(...taskContextTools(rc));
   return tools;
 }
