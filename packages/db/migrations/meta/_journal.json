@@ -22,6 +22,13 @@
       "when": 1793492935045,
       "tag": "0002_sandbox_holder",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793497808967,
+      "tag": "0003_instance_settings",
+      "breakpoints": true
     }
   ]
 }
