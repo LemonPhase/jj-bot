@@ -2,9 +2,10 @@ import { COLOUR_RAMPS } from "../../lib/colour";
 import "./sprite.css";
 
 /**
- * The design's non-bot pixel icons (sprites.json `ui`). Colours come from
- * tokens, so they follow the theme:
- *   brand  JJ Bot mark, head in --ink with a bot-coral antenna tip; the eyes are holes that show the ground
+ * The design's non-bot pixel icons. Colours come from tokens, so they follow
+ * the theme; the brand's antenna tip is bot coral, the same in both:
+ *   brand  JJ Bot mark, the 12×12 sprite grid: head in --ink, a bot-coral
+ *          antenna tip, and eyes that are holes showing the ground
  *   gate   verification gate, frame --gate-frame, tick --status-completed
  *   play   / pause  Office replay controls, in currentColor (use on a primary circle)
  */
