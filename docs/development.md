@@ -83,6 +83,8 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                                |
 | `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                                     |
 | `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                                      |
+| `JJ_EPHEMERAL_IDLE_MINUTES`             | Minutes an idle ephemeral workspace is kept while its task is open, default `360`; its release discards the files.                                                  |
+| `JJ_MAX_HELD_SANDBOXES`                 | Sandboxes one worker holds at once, default `32`; over it the least recently used idle one is released.                                                             |
 | `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.                   |
 | `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it.               |
 | `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                                      |
