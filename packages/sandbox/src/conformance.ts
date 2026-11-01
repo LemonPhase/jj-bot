@@ -687,6 +687,20 @@ export function describeSandboxConformance(
         context.skip(`${name} does not declare network mode "allowlist"`);
     };
 
+    /**
+     * Probes for the allowlist checks. A driver that declares allowlist must
+     * be checked, so an image without node fails them instead of skipping.
+     */
+    const allowlistProbe = async (sandbox: Sandbox, probes: NetworkProbe[]) => {
+      const results = await probeNetwork(sandbox, probes);
+      if (!results)
+        throw new Error(
+          `${name} declares network mode "allowlist", whose checks probe with node inside the sandbox, ` +
+            "but its image has no node: run the suite with an image that has node 22 or later (options.spec.image)",
+        );
+      return results;
+    };
+
     it(
       "refuses unlisted hosts, its own DNS and connections that bypass its proxy in network mode allowlist",
       async (context) => {
@@ -694,7 +708,7 @@ export function describeSandboxConformance(
         const sandbox = await acquire({
           network: { mode: "allowlist", hosts: ["example.com"] },
         });
-        const results = await probeNetwork(sandbox, [
+        const results = await allowlistProbe(sandbox, [
           { kind: "http", url: "https://example.org/" },
           { kind: "http", url: "http://example.org/" },
           { kind: "http", url: "https://example.com:8443/" },
@@ -702,7 +716,6 @@ export function describeSandboxConformance(
           { kind: "tcp", host: "8.8.8.8", port: 53 },
           { kind: "dns", host: "example.org" },
         ]);
-        if (!results) return context.skip("no node in the sandbox image");
         for (const result of results)
           expect(reached(result), show(result)).toBe(false);
       },
@@ -772,8 +785,7 @@ export function describeSandboxConformance(
               ],
             ),
           ];
-          const results = await probeNetwork(sandbox, probes);
-          if (!results) return context.skip("no node in the sandbox image");
+          const results = await allowlistProbe(sandbox, probes);
           expect(v4.length).toBeGreaterThan(0);
           for (const [index, result] of results.entries()) {
             expect(
@@ -817,12 +829,11 @@ export function describeSandboxConformance(
                 }),
               )
           : [];
-        const results = await probeNetwork(sandbox, [
+        const results = await allowlistProbe(sandbox, [
           { kind: "http", url: "https://example.com/" },
           { kind: "http", url: "http://example.com/" },
           ...direct,
         ]);
-        if (!results) return context.skip("no node in the sandbox image");
         const [https, http, ...bypass] = results;
         expect(https && reached(https), show(https)).toBe(true);
         expect(http && reached(http), show(http)).toBe(true);
