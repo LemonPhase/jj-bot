@@ -21,6 +21,7 @@ import { REPO_ROOT } from "./config";
 import { type RunningServer, startServer } from "./server";
 import { OPEN_TIMEOUT } from "./testing";
 import { GENERATED_TOKEN_KEY } from "./token";
+import { databasePassword } from "./wiring";
 
 let dir: string;
 beforeAll(async () => {
@@ -65,6 +66,9 @@ async function boot(env: Record<string, string>, logger: Logger) {
   servers.push(server);
   return server;
 }
+
+const secretValues = async (server: RunningServer) =>
+  (await server.services.secrets()).map((secret) => secret.value);
 
 /** The server's port on 127.0.0.1, whatever address it listens on. */
 const local = (server: RunningServer) =>
@@ -114,6 +118,8 @@ describe("beyond loopback without API_TOKEN", () => {
         `Open JJ Bot: http://127.0.0.1:${new URL(server.url).port}/?token=${token}`,
       ]);
       expect(first.lines.join("\n")).toContain("generated now");
+      // The engine redacts it from what runs persist.
+      expect(await secretValues(server)).toContain(token);
       await server.close();
       servers.length = 0;
       vi.restoreAllMocks();
@@ -135,6 +141,7 @@ describe("beyond loopback without API_TOKEN", () => {
         `Open JJ Bot: http://127.0.0.1:3101/?token=${token}`,
       ]);
       expect(second.lines.join("\n")).toContain("generated on first boot");
+      expect(await secretValues(again)).toContain(token);
     },
     OPEN_TIMEOUT,
   );
@@ -234,6 +241,32 @@ describe("API_TOKEN and loopback", () => {
   );
 
   it(
+    "hands the engine API_TOKEN and the provider keys to redact",
+    async () => {
+      const { lines, logger } = capture();
+      const server = await boot(
+        {
+          API_TOKEN: "short-token1",
+          OPENAI_API_KEY: "sk-test-provider-key",
+          JJ_DATABASE_PATH: "memory://",
+        },
+        logger,
+      );
+      expect(await server.services.secrets()).toEqual([
+        { name: "OPENAI_API_KEY", value: "sk-test-provider-key" },
+        { name: "API_TOKEN", value: "short-token1" },
+      ]);
+      // Too short to redact as a bare value: named in a boot warning, never printed.
+      const warning = lines.find((line) =>
+        line.includes("API_TOKEN is shorter"),
+      );
+      expect(warning).toContain("is not redacted from task history");
+      expect(lines.join("\n")).not.toContain("short-token1");
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
     "keeps loopback without a token unauthenticated, behind the Host check",
     async () => {
       const { lines, logger } = capture();
@@ -252,4 +285,18 @@ describe("API_TOKEN and loopback", () => {
     },
     OPEN_TIMEOUT,
   );
+});
+
+describe("databasePassword", () => {
+  it("returns the password as written and decoded, or nothing", () => {
+    expect(databasePassword("postgresql://jj:p%40ss-word@db:5432/jj")).toEqual([
+      "p%40ss-word",
+      "p@ss-word",
+    ]);
+    expect(databasePassword("postgresql://jj:jj_local@db/jj")).toEqual([
+      "jj_local",
+    ]);
+    expect(databasePassword("postgresql://jj@db/jj")).toEqual([]);
+    expect(databasePassword("not a url")).toEqual([]);
+  });
 });

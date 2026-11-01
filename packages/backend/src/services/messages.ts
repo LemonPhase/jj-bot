@@ -23,7 +23,7 @@ import {
   taskGoalVersions,
   taskMessages,
 } from "@jj/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
@@ -79,6 +79,56 @@ export async function postMessage(
 
 export type Delivery = "injected" | "queued" | "stored";
 
+/** Undelivered notifications a session keeps; older ones collapse into one line. */
+export const MAX_PENDING_MESSAGES = 20;
+
+const OMITTED = /^\[(\d+) earlier messages? omitted\]$/;
+const omittedLine = (count: number) =>
+  `[${count} earlier message${count === 1 ? "" : "s"} omitted]`;
+
+/**
+ * Keeps a session's undelivered `message` items to the newest
+ * MAX_PENDING_MESSAGES, so broadcasts cannot pile up without bound in a
+ * waiting session. The older ones become a single "N earlier messages
+ * omitted" item in their place, ahead of the kept ones.
+ */
+async function capPendingMessages(tx: Tx, sessionId: string) {
+  const pending = await tx
+    .select({
+      id: sessionInbox.id,
+      text: sessionInbox.text,
+      sourceMessageId: sessionInbox.sourceMessageId,
+    })
+    .from(sessionInbox)
+    .where(
+      and(
+        eq(sessionInbox.sessionId, sessionId),
+        isNull(sessionInbox.deliveredAt),
+        eq(sessionInbox.kind, "message"),
+      ),
+    )
+    .orderBy(desc(sessionInbox.createdAt), desc(sessionInbox.id));
+  const isSummary = (item: (typeof pending)[number]) =>
+    item.sourceMessageId === null && OMITTED.test(item.text);
+  const summary = pending.find(isSummary);
+  const messages = pending.filter((item) => !isSummary(item));
+  const dropped = messages.slice(MAX_PENDING_MESSAGES);
+  const [newest, ...older] = dropped;
+  if (!newest) return;
+  const earlier = Number(summary ? OMITTED.exec(summary.text)?.[1] : 0);
+  // The newest dropped item becomes the summary, so it keeps its place.
+  await tx
+    .update(sessionInbox)
+    .set({
+      text: omittedLine(earlier + dropped.length),
+      sourceMessageId: null,
+    })
+    .where(eq(sessionInbox.id, newest.id));
+  const gone = [...older, ...(summary ? [summary] : [])].map((item) => item.id);
+  if (gone.length > 0)
+    await tx.delete(sessionInbox).where(inArray(sessionInbox.id, gone));
+}
+
 /**
  * Puts an item in a session's inbox. With `wake`, also enqueues a run in the
  * same transaction: a run already queued coalesces it, and a running session
@@ -101,6 +151,7 @@ export async function deliver(
     sourceMessageId: item.sourceMessageId ?? null,
     createdAt: options.ctx.clock(),
   });
+  if (item.kind === "message") await capPendingMessages(tx, session.id);
   if (isFinishedStatus(session.status)) return "stored";
   if (options.wake) {
     await enqueue(tx, {

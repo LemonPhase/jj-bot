@@ -67,6 +67,11 @@ export interface OutputPolicy {
   /** UTF-8 bytes of tool output the model and the event preview receive. */
   capBytes: number;
   spill: SpillOutput;
+  /**
+   * Replaces the server's secrets. Applied to the whole output before it is
+   * capped or spilled, so a cut can never leave part of a secret behind.
+   */
+  redact?: (text: string) => string;
 }
 
 const encoder = new TextEncoder();
@@ -103,10 +108,12 @@ function fitBytes(
  * replaced by its head and tail plus a note naming the artifact.
  */
 export async function capToolOutput(
-  text: string,
+  raw: string,
   policy: OutputPolicy,
-  label: string,
+  rawLabel: string,
 ): Promise<{ text: string; truncated: boolean; artifactId?: string }> {
+  const text = policy.redact ? policy.redact(raw) : raw;
+  const label = policy.redact ? policy.redact(rawLabel) : rawLabel;
   const total = byteLength(text);
   if (total <= policy.capBytes) return { text, truncated: false };
   let artifactId: string | undefined;

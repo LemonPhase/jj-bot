@@ -223,7 +223,8 @@ export async function openChildren(
   const rows = await exec
     .select()
     .from(sessions)
-    .where(eq(sessions.parentSessionId, session.id));
+    .where(eq(sessions.parentSessionId, session.id))
+    .orderBy(asc(sessions.createdAt), asc(sessions.id));
   return rows.filter((row) => !isFinishedStatus(row.status));
 }
 

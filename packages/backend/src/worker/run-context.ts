@@ -19,8 +19,10 @@ import { and, asc, eq, inArray, isNull, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { emit } from "../events";
 import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
+import type { Redactor } from "../redact";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
+import { COMPLETION_SET_ASIDE } from "./prompts";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */
@@ -91,6 +93,8 @@ export interface RunContext {
   startedAt: Date;
   /** Set when the run's write-back finished the task, so its sandbox can go. */
   taskFinished: boolean;
+  /** Replaces the server's secrets in what this run persists (see redact.ts). */
+  redact: Redactor;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -161,8 +165,10 @@ export async function takeInbox(
     if (fresh.length === 0) return [];
     for (const item of fresh) rc.claimed.add(item.id);
     // New input voids a completion recorded before it: the coordinator must
-    // see the input first (a hand-off or crash can land between the two).
-    if (rc.session.completionRequested) {
+    // see the input first (a hand-off or crash can land between the two), and
+    // is told so, or it would take its completion as done.
+    const setAside = Boolean(rc.session.completionRequested);
+    if (setAside) {
       await tx
         .update(sessions)
         .set({ completionRequested: null })
@@ -180,7 +186,8 @@ export async function takeInbox(
         { goalVersion: rc.task.goalVersion },
         attributionOf(rc),
       );
-    return fresh.map((item) => item.text);
+    const texts = fresh.map((item) => item.text);
+    return setAside ? [COMPLETION_SET_ASIDE, ...texts] : texts;
   });
 }
 
@@ -308,11 +315,15 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
   }
 }
 
+/** The executor's hooks. What they persist is redacted first (see redact.ts). */
 export function runHooks(rc: RunContext): RunHooks {
+  const { redact } = rc;
   return {
-    onEvent: (event) => writeRun(rc, (tx) => recordEvent(tx, rc, event)),
-    onTurnComplete: async (entries) => {
-      if (entries.length === 0) return;
+    onEvent: (event) =>
+      writeRun(rc, (tx) => recordEvent(tx, rc, redact(event))),
+    onTurnComplete: async (raw) => {
+      if (raw.length === 0) return;
+      const entries = redact(raw);
       await writeRun(rc, async (tx) => {
         await tx.insert(sessionEntries).values(
           entries.map((entry, index) => ({
@@ -329,6 +340,6 @@ export function runHooks(rc: RunContext): RunHooks {
     },
     drainInbox: () => takeInbox(rc),
     spillOutput: (text, label) =>
-      writeRun(rc, (tx) => spill(tx, rc, text, label)),
+      writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
   };
 }

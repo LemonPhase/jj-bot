@@ -33,3 +33,15 @@ export async function instanceSetting(
     throw new Error(`Instance setting ${key} vanished while it was created.`);
   return { value: raced, created: false };
 }
+
+/** The instance setting `key`, or undefined when it was never stored. */
+export async function readInstanceSetting(
+  exec: Executor,
+  key: string,
+): Promise<string | undefined> {
+  const [row] = await exec
+    .select({ value: instanceSettings.value })
+    .from(instanceSettings)
+    .where(eq(instanceSettings.key, key));
+  return row?.value;
+}

@@ -208,3 +208,31 @@ describe("capToolOutput", () => {
     expect(capped.text).not.toContain("�");
   });
 });
+
+describe("capToolOutput with a redactor", () => {
+  const KEY = "sk-test-0123456789abcdefghijklmn";
+  const middle = KEY.slice(8, 24);
+  const redact = (text: string) => text.split(KEY).join("[redacted]");
+
+  it("leaves no fragment of a secret wherever the cut lands", async () => {
+    let fragmentWithout = false;
+    // Every alignment of the key against the head and tail cuts.
+    for (let offset = 0; offset < KEY.length; offset += 1) {
+      const output = `${"a".repeat(offset)}${KEY.repeat(200)}`;
+      const spilled: string[] = [];
+      const capped = await capToolOutput(
+        output,
+        { ...policy(1024, spilled), redact },
+        `cat ${KEY}`,
+      );
+      expect(capped.truncated).toBe(true);
+      expect(capped.text).not.toContain(middle.slice(0, 4));
+      for (const text of spilled) expect(text).not.toContain(middle);
+      const plain = await capToolOutput(output, policy(1024, []), "x");
+      if (plain.text.replaceAll(KEY, "").includes(KEY.slice(4, 8)))
+        fragmentWithout = true;
+    }
+    // Without the redactor some alignment does leave a fragment.
+    expect(fragmentWithout).toBe(true);
+  });
+});

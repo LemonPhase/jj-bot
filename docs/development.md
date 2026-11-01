@@ -9,7 +9,7 @@ npm ci
 JJ_ENABLE_SCRIPTED_MODEL=true npm run dev
 ```
 
-Open http://127.0.0.1:5173. `npm run dev` starts the API on http://127.0.0.1:3001 with the worker embedded, and the Vite dev server, which proxies `/api` and `/health` to it. The proxy reads `API_PORT` from the shell environment, not from the root `.env`, so to move the API set it there (`API_PORT=3002 npm run dev`). Stop both with Ctrl+C.
+Open http://127.0.0.1:5173. `npm run dev` starts the API on http://127.0.0.1:3001 with the worker embedded, and the Vite dev server, which proxies `/api` and `/health` to it, following `API_PORT` from the environment or the root `.env`. Stop both with Ctrl+C.
 
 With no settings the API stores everything in embedded PGlite under `.jj-data` and needs no other service. To run bots, configure a model: `JJ_ENABLE_SCRIPTED_MODEL=true` registers the keyless, deterministic scripted test model (`scripted/team`), or put a provider key in `.env` (`cp .env.example .env`). Without either, the API stores and serves bots and tasks, bootstrap reports `capabilities.agentExecution: false` and tasks are refused with `MODEL_NOT_CONFIGURED`. Never commit `.env`.
 
@@ -83,6 +83,8 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                                |
 | `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                                     |
 | `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                                      |
+| `JJ_EPHEMERAL_IDLE_MINUTES`             | Minutes an idle ephemeral workspace is kept while its task is open, default `360`; its release discards the files.                                                  |
+| `JJ_MAX_HELD_SANDBOXES`                 | Sandboxes one worker holds at once, default `32`; over it the least recently used idle one is released.                                                             |
 | `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.                   |
 | `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it.               |
 | `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                                      |
@@ -97,7 +99,7 @@ Schema: opening the database applies the SQL migrations in `packages/db/migratio
 
 ## Endpoints
 
-The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.0); the schemas are in `packages/contracts`.
+The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.1); the schemas are in `packages/contracts`.
 
 | Method | Path                                           | Answer                                                      |
 | ------ | ---------------------------------------------- | ----------------------------------------------------------- |

@@ -31,8 +31,23 @@ export interface EngineConfig {
   outputCapBytes: number;
   /** Goal versions a task may reach; a further change answers GOAL_VERSION_BUDGET. */
   maxGoalVersions: number;
-  /** A task's sandbox is released after this long without a run (ephemeral workspaces excepted). */
+  /**
+   * A task's sandbox is released after this long without a run. Ephemeral
+   * workspaces use `ephemeralIdleMs` instead, since releasing one discards
+   * its files.
+   */
   sandboxIdleMs: number;
+  /**
+   * An ephemeral workspace's sandbox is released, discarding the files,
+   * after this long without a run (`JJ_EPHEMERAL_IDLE_MINUTES`, default 6 h).
+   * A later session of its task then fails visibly.
+   */
+  ephemeralIdleMs: number;
+  /**
+   * Sandboxes one worker holds at once (`JJ_MAX_HELD_SANDBOXES`). Over it,
+   * the least recently used idle one is released, a `task` workspace first.
+   */
+  maxHeldSandboxes: number;
   /** Conversation messages a chat reply sees. */
   chatHistoryLimit: number;
   chatMaxTurns: number;
@@ -77,6 +92,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     outputCapBytes: TOOL_OUTPUT_PREVIEW_LIMIT,
     maxGoalVersions: 20,
     sandboxIdleMs: 10 * 60_000,
+    ephemeralIdleMs: 6 * 60 * 60_000,
+    maxHeldSandboxes: 32,
     chatHistoryLimit: 40,
     chatMaxTurns: 6,
     chatTimeoutMs: 120_000,
@@ -100,6 +117,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "maxGoalVersions",
     "chatHistoryLimit",
     "chatMaxTurns",
+    "ephemeralIdleMs",
+    "maxHeldSandboxes",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)
@@ -141,9 +160,14 @@ export function configFromEnv(
     maxDelegationDepth: int("JJ_MAX_DELEGATION_DEPTH"),
     tasksPerBotPerHour: int("JJ_TASKS_PER_BOT_PER_HOUR"),
     outputCapBytes: int("JJ_OUTPUT_CAP_BYTES"),
+    ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
+    maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
     persistence: !inMemory,
   };
 }
+
+const minutes = (value: number | undefined) =>
+  value === undefined ? undefined : value * 60_000;
 
 function stripUndefined<T extends object>(value: T): Partial<T> {
   return Object.fromEntries(

@@ -16,6 +16,11 @@ import {
 } from "@jj/contracts";
 import { describe, expect, it, vi } from "vitest";
 import { statusWord } from "../lib/status";
+import {
+  DEEP_GRAPH_TASK,
+  GRAPH_FIXTURE_TASKS,
+  WIDE_GRAPH_TASK,
+} from "../test/graphFixtures";
 import { ApiError, type JJApi } from "./client";
 import { createDemoApi, titleFromGoal } from "./demoApi";
 import { DEMO_TASKS } from "./demoFixtures";
@@ -102,6 +107,22 @@ describe("demo API", () => {
       const view = taskViewSchema.parse(await api.getTask(summary.id));
       expectValidEvents(view.events);
     }
+  });
+
+  it("seeds fixture tasks instead of the default ones when given", async () => {
+    const api = demo({ tasks: GRAPH_FIXTURE_TASKS });
+    expect((await api.listTasks()).map((t) => t.id).sort()).toEqual(
+      GRAPH_FIXTURE_TASKS.map((t) => t.id).sort(),
+    );
+    const wide = taskViewSchema.parse(await api.getTask(WIDE_GRAPH_TASK.id));
+    expectValidEvents(wide.events);
+    const root = wide.sessions.find((s) => s.parentSessionId === null);
+    expect(
+      wide.sessions.filter((s) => s.parentSessionId === root?.id),
+    ).toHaveLength(7);
+    const deep = taskViewSchema.parse(await api.getTask(DEEP_GRAPH_TASK.id));
+    expectValidEvents(deep.events);
+    expect(Math.max(...deep.sessions.map((s) => s.depth))).toBe(6);
   });
 
   it("is deterministic for a given clock", async () => {

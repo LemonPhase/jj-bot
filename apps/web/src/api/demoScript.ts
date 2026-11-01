@@ -63,7 +63,7 @@ function demoDigest(content: string): string {
 }
 
 /** Event helpers over a host: each call emits the events a real engine would. */
-class Ops {
+export class Ops {
   private modelCalls = 0;
   constructor(private readonly host: ScriptHost) {}
 

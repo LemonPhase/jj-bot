@@ -1,7 +1,10 @@
 // One sandbox per task, shared by all of the task's sessions in this worker.
 // Acquired with the coordinator's profile and `workspaceKey = taskId`, held
 // while runs use it, released when the task finishes (here or on another
-// worker, after the `onFinished` hook's final look at it) or after it idles.
+// worker, after the `onFinished` hook's final look at it), after it idles
+// (`sandboxIdleMs`; `ephemeralIdleMs` for an ephemeral workspace, whose files
+// a release discards), or when the worker holds more than
+// `maxHeldSandboxes` (the least recently used idle one, `task` first).
 import { isFinishedStatus, type TaskStatus } from "@jj/contracts";
 import { tasks } from "@jj/db";
 import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
@@ -167,6 +170,8 @@ export class TaskSandboxes {
     }
     entry.refs += 1;
     entry.finishing = false;
+    // A new sandbox may take the worker over its cap: make room.
+    this.enforceCap();
     let sandbox: Sandbox;
     try {
       sandbox = await abortable(entry.acquiring, signal);
@@ -214,9 +219,11 @@ export class TaskSandboxes {
   }
 
   /**
-   * Releases unused sandboxes whose task has finished (on any worker) or that
-   * sat idle for `sandboxIdleMs`, ephemeral ones included: an idle ephemeral
-   * workspace is discarded, and a later session of its task fails visibly.
+   * Releases unused sandboxes whose task has finished (on any worker) or is
+   * gone, and those idle past their limit: `sandboxIdleMs` for a `task`
+   * workspace, the much longer `ephemeralIdleMs` for an ephemeral one, so a
+   * waiting task's next session still finds its files. Then holds the
+   * worker to `maxHeldSandboxes`.
    */
   async sweep(now = Date.now()): Promise<void> {
     const unused = [...this.entries].filter(
@@ -228,13 +235,34 @@ export class TaskSandboxes {
       if (entry.refs > 0 || this.entries.get(taskId) !== entry) continue;
       const status = statuses.get(taskId);
       const finished = status !== undefined && isFinishedStatus(status);
-      if (
-        finished ||
-        status === undefined ||
-        now - entry.idleSince >= this.ctx.config.sandboxIdleMs
-      )
+      const limit =
+        entry.spec.workspace === "ephemeral"
+          ? this.ctx.config.ephemeralIdleMs
+          : this.ctx.config.sandboxIdleMs;
+      if (finished || status === undefined || now - entry.idleSince >= limit)
         this.releaseEntry(taskId, entry, finished);
     }
+    this.enforceCap();
+  }
+
+  /**
+   * Over `maxHeldSandboxes`, releases idle sandboxes, least recently used
+   * first, `task` workspaces (which keep their files) before ephemeral ones.
+   * Sandboxes in use are never released, so the cap can be exceeded briefly.
+   */
+  private enforceCap(): void {
+    const excess = this.entries.size - this.ctx.config.maxHeldSandboxes;
+    if (excess <= 0) return;
+    const idle = [...this.entries]
+      .filter(([, entry]) => entry.refs === 0 && entry.sandbox)
+      .sort(
+        ([, a], [, b]) =>
+          Number(a.spec.workspace === "ephemeral") -
+            Number(b.spec.workspace === "ephemeral") ||
+          a.idleSince - b.idleSince,
+      );
+    for (const [taskId, entry] of idle.slice(0, excess))
+      this.releaseEntry(taskId, entry, false);
   }
 
   /** Releases everything, waiting for the drivers. */

@@ -13,7 +13,8 @@ import type { EngineConfigInput } from "../config";
 import type { Logger } from "../context";
 import { createDriverRegistry, type DriverEntry } from "../drivers";
 import { createEngine, type Engine } from "../engine";
-import type { DriverRegistry } from "../ports";
+import type { DriverRegistry, RunExecutor } from "../ports";
+import type { Secret } from "../redact";
 import { FakeExecutor } from "./fake-executor";
 import { FakeChatResponder, FakeModels } from "./fakes";
 
@@ -89,6 +90,8 @@ export interface TestEngine {
 export interface TestEngineOptions {
   config?: EngineConfigInput;
   executor?: FakeExecutor;
+  /** A real executor to run sessions instead of the fake one (such as the pi runtime). */
+  runExecutor?: RunExecutor;
   chat?: FakeChatResponder;
   models?: FakeModels;
   /** Extra drivers next to `local`. */
@@ -99,6 +102,8 @@ export interface TestEngineOptions {
   start?: boolean;
   /** The engine's clock (run starts, record timestamps); the database clock still drives leases. */
   clock?: () => Date;
+  /** Secret values the engine redacts. */
+  secrets?: Secret[];
 }
 
 export async function testEngine(
@@ -124,11 +129,12 @@ export async function testEngine(
   const engine = await createEngine({
     db: database,
     drivers,
-    executor,
+    executor: options.runExecutor ?? executor,
     chat,
     models: options.models ?? new FakeModels(),
     logger: quietLogger,
     clock: options.clock,
+    secrets: () => options.secrets ?? [],
     config: {
       pollIntervalMs: 25,
       leaseMs: 5_000,

@@ -92,6 +92,8 @@ async function startRun(
 ): Promise<Start> {
   const { ctx } = deps;
   const sessionId = job.sessionId as string;
+  // Built before the transaction: reading the secrets may query the database.
+  const redact = await ctx.redactor();
   return ctx.db.transaction(async (tx): Promise<Start> => {
     if (!(await heartbeat(tx, job.lease, ctx.config.leaseMs)))
       return { kind: "skip", taskFinished: false };
@@ -192,7 +194,7 @@ async function startRun(
         return { kind: "skip", taskFinished: false };
       }
       unavailable = deps.sandboxes.wasDiscarded(task.id)
-        ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished, stopped or sat idle), so this session cannot continue its work."
+        ? "The task's ephemeral workspace was discarded when its sandbox was released (the task finished or stopped, it sat idle past the ephemeral time limit, or the worker needed room), so this session cannot continue its work."
         : "The task's ephemeral workspace is not on this worker: a worker restart discarded it, or the worker that held it stopped. Ephemeral workspaces cannot move between workers.";
     }
     const now = ctx.clock();
@@ -255,6 +257,7 @@ async function startRun(
       nextSeq: await nextEntrySeq(tx, sessionId),
       startedAt: now,
       taskFinished: false,
+      redact,
     };
     return { kind: "run", rc, reason, spec, unavailable };
   });
@@ -316,6 +319,7 @@ async function prepare(
         workspaceDir: hold.sandbox.workspaceDir,
         requester,
         canDelegate: tools.some((tool) => tool.name === "delegate"),
+        resumed: rc.reason === "recovery",
       }),
       transcript: await loadTranscript(ctx, rc.session.id),
       inputs,
@@ -330,6 +334,7 @@ async function prepare(
       },
       signal: rc.control.controller.signal,
       hooks: runHooks(rc),
+      redact: (text: string) => rc.redact(text),
     });
     return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;
   };

@@ -1,35 +1,35 @@
 import type { Bot, ExecutionSession, TaskView } from "@jj/contracts";
-import { type CSSProperties, memo } from "react";
+import {
+  type CSSProperties,
+  memo,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { Avatar, cx, StatusTag } from "../../components/ui";
 import { type Mood, moodForStatus, statusTone } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import {
   botName,
   briefLine,
+  type GraphSlot,
+  graphLayout,
   type SessionNode,
   type SessionTools,
   TASK_NODE,
   toolCount,
-  treeShape,
 } from "./taskModel";
 import { useOrdinals, useSessionTools, useSessionTree } from "./useTaskModel";
-
-/** Each branch is at least this wide per leaf below it (node plus gutter), in px. */
-const LEAF_PX = 152;
-
-/** Sizes a branch by the leaves under it, so wide subtrees get room and nothing overlaps. */
-const leafWidth = (leaves: number) =>
-  ({
-    "--leaves": String(Math.max(1, leaves)),
-    "--leaf-px": `${LEAF_PX}px`,
-  }) as CSSProperties;
 
 /**
  * The execution graph (SPEC §5.3): the coordinator, its root session, then
  * every delegation as a branch of a tree built from `parentSessionId`. Any
- * depth and width: each level is a row of equal branches joined by elbows in
- * the child's status colour, and a tree wider than the panel scrolls
- * sideways. Nodes are buttons; picking one fills the inspector below.
+ * depth and width: `graphLayout` gives each branch a column sized by the
+ * leaves under it, and each level is a row of those columns joined by elbows
+ * in the child's status colour. The tree is centred when it fits the panel
+ * and scrolls both ways inside it when not; the view opens on the
+ * coordinator and keeps it in place as the tree grows. Nodes are buttons;
+ * picking one fills the inspector below.
  */
 export function TaskGraph({
   view,
@@ -43,16 +43,40 @@ export function TaskGraph({
   const { getBot } = useWorkspace();
   const { task } = view;
   const roots = useSessionTree(view);
+  const layout = useMemo(() => graphLayout(roots), [roots]);
   const ordinals = useOrdinals(view);
   const toolsOf = useSessionTools(view);
   const coordinator = getBot(task.coordinatorBotId);
   const coordinatorMood: Mood =
     task.status === "running" ? "working" : moodForStatus(task);
 
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const coordinatorRef = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<{ taskId: string; rootX: number } | null>(null);
+  // Opens with the coordinator centred in view; when the tree's width
+  // changes, the coordinator stays where it was on screen.
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    const root = coordinatorRef.current;
+    if (!canvas || !root) return;
+    const rootX = root.offsetLeft + root.offsetWidth / 2;
+    const previous = anchor.current;
+    const onScreen =
+      previous?.taskId === task.id
+        ? previous.rootX - canvas.scrollLeft
+        : canvas.clientWidth / 2;
+    canvas.scrollLeft = Math.max(0, rootX - onScreen);
+    anchor.current = { taskId: task.id, rootX };
+  }, [task.id, layout.width]);
+
   return (
-    <div className="graph-canvas">
-      <div className="graph-tree" style={leafWidth(treeShape(roots).leaves)}>
+    <div className="graph-canvas" ref={canvasRef}>
+      <div
+        className="graph-tree"
+        style={{ "--tree-px": `${layout.width}px` } as CSSProperties}
+      >
         <button
+          ref={coordinatorRef}
           type="button"
           className="graph-node graph-node--pill graph-node--coordinator"
           aria-pressed={selected === TASK_NODE}
@@ -79,6 +103,7 @@ export function TaskGraph({
             nodes={roots}
             label="Sessions"
             root
+            slots={layout.slots}
             selected={selected}
             onSelect={onSelect}
             getBot={getBot}
@@ -97,6 +122,7 @@ function GraphLevel({
   nodes,
   label,
   root = false,
+  slots,
   selected,
   onSelect,
   getBot,
@@ -106,6 +132,7 @@ function GraphLevel({
   nodes: readonly SessionNode[];
   label: string;
   root?: boolean;
+  slots: ReadonlyMap<string, GraphSlot>;
   selected: string;
   onSelect: (nodeId: string) => void;
   getBot: (botId: string) => Bot | undefined;
@@ -129,7 +156,7 @@ function GraphLevel({
             className="graph-branch"
             style={
               {
-                ...leafWidth(treeShape([node]).leaves),
+                "--slot-px": `${slots.get(node.session.id)?.width ?? 0}px`,
                 "--edge": edge,
               } as CSSProperties
             }
@@ -147,6 +174,7 @@ function GraphLevel({
               <GraphLevel
                 nodes={node.children}
                 label={`Delegated by ${botName(bot)}`}
+                slots={slots}
                 selected={selected}
                 onSelect={onSelect}
                 getBot={getBot}

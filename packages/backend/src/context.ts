@@ -2,6 +2,7 @@ import type { Bus, Db, IdKind } from "@jj/db";
 import { newId } from "@jj/db";
 import type { EngineConfig } from "./config";
 import type { DriverRegistry, ModelCatalog } from "./ports";
+import type { Redactor } from "./redact";
 
 export interface Logger {
   info(message: string, details?: unknown): void;
@@ -35,6 +36,11 @@ export interface EngineContext {
   clock: () => Date;
   ids: (kind: IdKind) => string;
   logger: Logger;
+  /**
+   * Builds a redactor over the server's secret values as they are now (a
+   * token generated after boot included). Each run builds one at its start.
+   */
+  redactor: () => Promise<Redactor>;
 }
 
 export const defaultIds = (kind: IdKind) => newId(kind);

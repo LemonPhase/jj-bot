@@ -43,6 +43,12 @@ import type {
   ModelCatalog,
   RunExecutor,
 } from "./ports";
+import {
+  createRedactor,
+  MIN_BARE_SECRET_LENGTH,
+  type Secret,
+  tooShortToRedact,
+} from "./redact";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
@@ -68,6 +74,12 @@ export interface EngineOptions {
   clock?: () => Date;
   ids?: (kind: IdKind) => string;
   logger?: Logger;
+  /**
+   * The server's secret values (provider keys, the API token, the database
+   * password), read when each run starts so values stored later count. They
+   * are replaced with `[redacted]` in everything a run persists.
+   */
+  secrets?: () => readonly Secret[] | Promise<readonly Secret[]>;
 }
 
 export interface Engine {
@@ -147,6 +159,7 @@ export interface Engine {
  * worker does not run until `engine.worker.start()`.
  */
 export async function createEngine(options: EngineOptions): Promise<Engine> {
+  const secrets = async () => (await options.secrets?.()) ?? [];
   const ctx: EngineContext = {
     db: options.db.db,
     bus: options.db.bus,
@@ -156,7 +169,12 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger: options.logger ?? consoleLogger,
+    redactor: async () => createRedactor(await secrets()),
   };
+  for (const name of tooShortToRedact(await secrets()))
+    ctx.logger.warn(
+      `${name} is shorter than ${MIN_BARE_SECRET_LENGTH} characters, so it is not redacted from task history: a value that short is too likely to be an ordinary word. Use a longer value.`,
+    );
   await profileService.seedDefaultProfiles(ctx);
   const worker = createWorker(ctx, options.executor, options.chat);
 

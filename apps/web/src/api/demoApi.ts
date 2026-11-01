@@ -52,6 +52,7 @@ import {
   DEMO_DRIVERS,
   DEMO_MODELS,
   DEMO_TASKS,
+  type DemoTaskSeed,
   demoProfiles,
 } from "./demoFixtures";
 import {
@@ -85,6 +86,8 @@ export interface DemoApiOptions {
   replyMs?: number;
   /** Why the demo is running instead of the live API, for the badge tooltip. */
   reason?: string;
+  /** The seeded tasks. Defaults to `DEMO_TASKS`; tests pass fixtures. */
+  tasks?: readonly DemoTaskSeed[];
 }
 
 export const demoBadge = (reason?: string): ApiBadge => ({
@@ -393,12 +396,16 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   };
 
   // Seeded tasks are played through their scripts on a clock in the past.
-  for (const seed of DEMO_TASKS) {
+  for (const seed of options.tasks ?? DEMO_TASKS) {
     seedClock = startedAt - seed.startedMinutesAgo * 60_000;
     const state = newTask(seed);
     state.autoplay = seed.autoplay;
     state.steps =
-      seed.script === "ask" ? askScript(state.host) : teamScript(state.host);
+      typeof seed.script === "function"
+        ? seed.script(state.host)
+        : seed.script === "ask"
+          ? askScript(state.host)
+          : teamScript(state.host);
     const count =
       seed.playedSteps === "all" ? state.steps.length : seed.playedSteps;
     for (let index = 0; index < count; index += 1) {

@@ -79,6 +79,56 @@ export function treeShape(roots: readonly SessionNode[]): {
   return { depth: widths.length, width: Math.max(0, ...widths), leaves };
 }
 
+/** Room for one leaf of the execution graph (a node plus its gutter), in px. */
+export const GRAPH_LEAF_PX = 152;
+
+/** One session's column in the graph, in px from the tree's left edge. */
+export interface GraphSlot {
+  left: number;
+  /** Its leaves times the leaf width; its children share it exactly. */
+  width: number;
+  /** Where the node and the elbow into it sit. */
+  center: number;
+}
+
+export interface GraphLayout {
+  /** The tree's width when every leaf gets its room. */
+  width: number;
+  /** Session levels below the coordinator. */
+  depth: number;
+  /** The coordinator sits over the middle of the tree. */
+  rootCenter: number;
+  slots: ReadonlyMap<string, GraphSlot>;
+}
+
+/**
+ * Columns for the execution graph, any width and depth: each session gets
+ * room for the leaves under it, children split their parent's column exactly
+ * (so a parent is centred over them and no level overflows its parent), and
+ * every column starts at or right of 0.
+ */
+export function graphLayout(
+  roots: readonly SessionNode[],
+  leafPx = GRAPH_LEAF_PX,
+): GraphLayout {
+  const slots = new Map<string, GraphSlot>();
+  let depth = 0;
+  // Places nodes from `left`; returns the width they took.
+  const place = (nodes: readonly SessionNode[], left: number): number => {
+    let x = left;
+    for (const node of nodes) {
+      depth = Math.max(depth, node.depth + 1);
+      const childWidth = place(node.children, x);
+      const width = Math.max(leafPx, childWidth);
+      slots.set(node.session.id, { left: x, width, center: x + width / 2 });
+      x += width;
+    }
+    return x - left;
+  };
+  const width = place(roots, 0);
+  return { width, depth, rootCenter: width / 2, slots };
+}
+
 // ── Labels ──────────────────────────────────────────────────────────────────
 
 /** The first line of a brief, cut to `limit` characters at a word. */
