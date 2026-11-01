@@ -1,3 +1,4 @@
+@import "./styles/index.css";
 /* Workspace UI — ported from the JJ Bot minimalist workspace prototype. */
 :root {
   --bg-app: #f7f7f5;

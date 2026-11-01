@@ -81,11 +81,27 @@ export class TaskSandboxes {
   private readonly discarded = new Set<string>();
   private readonly statuses: TaskStatusLookup;
 
+  private readonly onRelease?: (taskId: string, spec: SandboxSpec) => void;
+
   constructor(
     private readonly ctx: EngineContext,
-    statuses?: TaskStatusLookup,
+    options: {
+      statuses?: TaskStatusLookup;
+      /** Called when a sandbox is released (its holder record is cleared). */
+      onRelease?: (taskId: string, spec: SandboxSpec) => void;
+    } = {},
   ) {
-    this.statuses = statuses ?? dbStatuses(ctx);
+    this.statuses = options.statuses ?? dbStatuses(ctx);
+    this.onRelease = options.onRelease;
+  }
+
+  /** Tasks whose ephemeral sandbox this worker holds live. */
+  heldEphemeral(): string[] {
+    return [...this.entries]
+      .filter(
+        ([, entry]) => entry.sandbox && entry.spec.workspace === "ephemeral",
+      )
+      .map(([taskId]) => taskId);
   }
 
   /** True while this worker holds a live sandbox for the task. */
@@ -221,6 +237,7 @@ export class TaskSandboxes {
   private releaseEntry(taskId: string, entry: Entry): void {
     if (this.entries.get(taskId) === entry) this.entries.delete(taskId);
     if (entry.spec.workspace === "ephemeral") this.discarded.add(taskId);
+    this.onRelease?.(taskId, entry.spec);
     const done = entry.acquiring
       .then((sandbox) => sandbox.release())
       .catch((error: unknown) => {

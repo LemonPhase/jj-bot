@@ -15,6 +15,13 @@
       "when": 1793491693104,
       "tag": "0001_chat_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793492935045,
+      "tag": "0002_sandbox_holder",
+      "breakpoints": true
     }
   ]
 }
