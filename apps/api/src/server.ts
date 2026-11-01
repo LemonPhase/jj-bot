@@ -7,7 +7,12 @@ import { type ServerType, serve } from "@hono/node-server";
 import type { Logger } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
 import { apiLogger, createApp, type JJApp } from "./app";
-import { type Env, loadServerConfig, type ServerConfig } from "./config";
+import {
+  type Env,
+  isLoopbackHost,
+  loadServerConfig,
+  type ServerConfig,
+} from "./config";
 import { openServices, type Services } from "./wiring";
 
 export interface StartOptions {
@@ -46,6 +51,12 @@ function listen(
 }
 
 const hostForUrl = (host: string) => (host.includes(":") ? `[${host}]` : host);
+
+function authSummary(config: ServerConfig): string {
+  if (config.apiToken) return "bearer token";
+  if (isLoopbackHost(config.host)) return "none (loopback only)";
+  return "none (API_ALLOW_UNAUTHENTICATED: publish the port on loopback only)";
+}
 
 export async function startServer(
   options: StartOptions = {},
@@ -91,7 +102,7 @@ export async function startServer(
         `worker ${config.embedWorker ? "embedded" : "separate"}`,
         `drivers ${drivers.map((info) => `${info.id}${info.available ? "" : " (unavailable)"}`).join(", ")}`,
         `models ${providers.length > 0 ? providers.join(", ") : "none configured"}`,
-        `auth ${config.apiToken ? "bearer token" : "none (loopback only)"}`,
+        `auth ${authSummary(config)}`,
         `web ${config.webDist ? "served" : "not built"}`,
       ].join(" · "),
     );

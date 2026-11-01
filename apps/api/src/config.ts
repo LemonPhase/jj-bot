@@ -46,6 +46,11 @@ export interface ServerConfig extends ServicesConfig {
   host: string;
   port: number;
   apiToken?: string;
+  /**
+   * `API_ALLOW_UNAUTHENTICATED`: listen beyond loopback without a token. For a
+   * container whose port the host publishes on its loopback only.
+   */
+  allowUnauthenticated: boolean;
   /** Run the job loop inside the API process. */
   embedWorker: boolean;
   /** The built web app to serve, or null. */
@@ -155,13 +160,20 @@ export function loadServicesConfig(env: Env): ServicesConfig {
   };
 }
 
-/** The API's settings. Refuses to listen beyond loopback without `API_TOKEN`. */
+/**
+ * The API's settings. Refuses to listen beyond loopback without `API_TOKEN`,
+ * unless `API_ALLOW_UNAUTHENTICATED=true` says that something outside the
+ * process keeps the listener private: a container whose port the host
+ * publishes on its loopback only.
+ */
 export function loadServerConfig(env: Env): ServerConfig {
   const host = text(env, "API_HOST") ?? "127.0.0.1";
   const apiToken = text(env, "API_TOKEN");
-  if (!isLoopbackHost(host) && !apiToken)
+  const allowUnauthenticated = flag(env, "API_ALLOW_UNAUTHENTICATED", false);
+  if (!isLoopbackHost(host) && !apiToken && !allowUnauthenticated)
     throw new ConfigError(
-      `API_HOST=${host} is reachable from other machines, so API_TOKEN is required. Set API_TOKEN to a long random value, or listen on 127.0.0.1.`,
+      `API_HOST=${host} is reachable from other machines, so API_TOKEN is required. Set API_TOKEN to a long random value, or listen on 127.0.0.1. ` +
+        "In a container whose port is published only on the host's loopback, API_ALLOW_UNAUTHENTICATED=true opts out.",
     );
   const services = loadServicesConfig(env);
   const embedWorker = flag(env, "JJ_EMBED_WORKER", true);
@@ -174,6 +186,7 @@ export function loadServerConfig(env: Env): ServerConfig {
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
+    allowUnauthenticated,
     embedWorker,
     webDist: existsSync(join(WEB_DIST, "index.html")) ? WEB_DIST : null,
   };

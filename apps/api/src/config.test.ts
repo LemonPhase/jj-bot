@@ -1,6 +1,6 @@
 // Settings: defaults, the loopback-without-token refusal (in the loader and
 // as a real process exit), and the PostgreSQL requirement for a separate worker.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -86,6 +86,37 @@ describe("loadServerConfig", () => {
     ).toMatchObject({ host: "0.0.0.0", apiToken: "t" });
   });
 
+  it("listens beyond loopback without a token only on the explicit API_ALLOW_UNAUTHENTICATED opt-in", () => {
+    expect(loadServerConfig({}).allowUnauthenticated).toBe(false);
+    for (const value of ["false", "0", ""])
+      expect(() =>
+        loadServerConfig({
+          API_HOST: "0.0.0.0",
+          API_ALLOW_UNAUTHENTICATED: value,
+        }),
+      ).toThrow(/API_TOKEN is required/);
+    expect(() =>
+      loadServerConfig({
+        API_HOST: "0.0.0.0",
+        API_ALLOW_UNAUTHENTICATED: "yes",
+      }),
+    ).toThrow(/API_ALLOW_UNAUTHENTICATED must be true or false/);
+    const open = loadServerConfig({
+      API_HOST: "0.0.0.0",
+      API_ALLOW_UNAUTHENTICATED: "true",
+    });
+    expect(open).toMatchObject({ host: "0.0.0.0", allowUnauthenticated: true });
+    expect(open.apiToken).toBeUndefined();
+    // A token still applies when set alongside the opt-in.
+    expect(
+      loadServerConfig({
+        API_HOST: "0.0.0.0",
+        API_TOKEN: "t",
+        API_ALLOW_UNAUTHENTICATED: "true",
+      }).apiToken,
+    ).toBe("t");
+  });
+
   it("refuses a separate worker on PGlite, and malformed settings", () => {
     expect(() => loadServerConfig({ JJ_EMBED_WORKER: "false" })).toThrow(
       /needs PostgreSQL/,
@@ -133,5 +164,50 @@ describe("the API process", () => {
     expect(result.stderr).toContain("API_HOST=0.0.0.0");
     expect(result.stderr).toContain("API_TOKEN is required");
     expect(result.stdout).not.toContain("listening");
+  });
+
+  it("listens beyond loopback without a token on API_ALLOW_UNAUTHENTICATED=true, and says so", async () => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", join(REPO_ROOT, "apps/api/src/index.ts")],
+      {
+        env: {
+          PATH: process.env.PATH,
+          API_HOST: "0.0.0.0",
+          API_PORT: "0",
+          API_ALLOW_UNAUTHENTICATED: "true",
+          JJ_DATABASE_PATH: "memory://",
+          JJ_SANDBOX_DRIVERS: "local",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      output += chunk;
+    });
+    const exited = new Promise<number | null>((resolve) =>
+      child.once("exit", (code) => resolve(code)),
+    );
+    try {
+      const deadline = Date.now() + 30_000;
+      while (!/JJ Bot API at /.test(output)) {
+        if (child.exitCode !== null || Date.now() > deadline)
+          throw new Error(`The API did not start:\n${output}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const url = /JJ Bot API at (http:\/\/\S+)/.exec(output)?.[1] ?? "";
+      expect(url).toMatch(/^http:\/\/0\.0\.0\.0:\d+$/);
+      expect(output).toContain("auth none (API_ALLOW_UNAUTHENTICATED");
+      const port = new URL(url).port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/bootstrap`);
+      expect(response.status).toBe(200);
+    } finally {
+      child.kill("SIGTERM");
+    }
+    expect(await exited).toBe(0);
   });
 });
