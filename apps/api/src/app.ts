@@ -5,6 +5,7 @@
 import { consoleLogger, type Engine, type Logger } from "@jj/backend";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { originGuard, requireJson } from "./guard";
 import { healthRoutes } from "./health";
 import { bearerAuth, errorResponse, onError } from "./http";
 import { apiRoutes } from "./routes";
@@ -14,6 +15,11 @@ import { mountWeb, spaFallback } from "./web";
 export interface AppConfig {
   /** Required as `Authorization: Bearer` on `/api/*` when set. */
   apiToken?: string;
+  /**
+   * Without a token, `Host` values besides loopback that `/api/*` answers
+   * (API_ALLOWED_HOSTS): a hostname with any port, or an exact `host:port`.
+   */
+  allowedHosts?: readonly string[];
   /** The job loop runs in this process; readiness checks its heartbeat. */
   workerEmbedded: boolean;
   /** Comment heartbeat on open streams. Default 15 s. */
@@ -79,7 +85,15 @@ export function createApp({
 
   const api = new Hono();
   api.onError(handleError);
+  api.use(
+    "*",
+    originGuard({
+      tokenRequired: Boolean(config.apiToken),
+      allowedHosts: config.allowedHosts ?? [],
+    }),
+  );
   if (config.apiToken) api.use("*", bearerAuth(config.apiToken));
+  api.use("*", requireJson());
   api.use(
     "*",
     bodyLimit({

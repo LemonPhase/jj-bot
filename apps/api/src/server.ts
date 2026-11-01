@@ -65,19 +65,23 @@ export async function startServer(
     throw error;
   });
   const { engine, database } = services;
+  let server: ServerType | undefined;
   try {
-    if (config.embedWorker) await engine.worker.start();
     const app = createApp({
       engine,
       logger,
       config: {
         ...(config.apiToken ? { apiToken: config.apiToken } : {}),
+        allowedHosts: config.allowedHosts,
         workerEmbedded: config.embedWorker,
         webDist: config.webDist,
       },
     });
-    const { server, address } = await listen(app, config.host, config.port);
-    const url = `http://${hostForUrl(config.host)}:${address.port}`;
+    // Listen first: a port clash fails before the worker claims any run.
+    const listening = await listen(app, config.host, config.port);
+    server = listening.server;
+    const url = `http://${hostForUrl(config.host)}:${listening.address.port}`;
+    if (config.embedWorker) await engine.worker.start();
 
     const { drivers } = await engine.drivers();
     const providers = services.models
@@ -96,17 +100,18 @@ export async function startServer(
       ].join(" · "),
     );
 
+    const http = server;
     let closing: Promise<void> | undefined;
     const close = () => {
       closing ??= (async () => {
         const drained = new Promise<void>((resolve) =>
-          server.close(() => resolve()),
+          http.close(() => resolve()),
         );
         app.endStreams();
         // Connections go idle as their responses (streams included) finish;
         // close them as they do instead of waiting out client keep-alive.
         const sweep = setInterval(() => {
-          if ("closeIdleConnections" in server) server.closeIdleConnections();
+          if ("closeIdleConnections" in http) http.closeIdleConnections();
         }, 25);
         try {
           await engine.worker.stop();
@@ -114,7 +119,7 @@ export async function startServer(
         } finally {
           clearInterval(sweep);
         }
-        if ("closeAllConnections" in server) server.closeAllConnections();
+        if ("closeAllConnections" in http) http.closeAllConnections();
         await database.close();
         await proxy?.restore();
       })();
@@ -122,6 +127,7 @@ export async function startServer(
     };
     return { url, config, services, app, close };
   } catch (error) {
+    server?.close();
     await engine.worker.stop().catch(() => {});
     await database.close().catch(() => {});
     await proxy?.restore();

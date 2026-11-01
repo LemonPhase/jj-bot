@@ -591,9 +591,10 @@ describe("tasks", () => {
     expect(
       view.events.find((event) => event.type === "cancellation.completed"),
     ).toBeDefined();
-    // An empty body stops too, and stopping twice is idempotent.
+    // An empty JSON-typed body stops too, and stopping twice is idempotent.
     const again = await idle.app.request(`/api/tasks/${taskId}/stop`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
     });
     expect(again.status).toBe(200);
     expectError(

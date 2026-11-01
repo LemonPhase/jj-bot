@@ -43,9 +43,12 @@ export interface ServicesConfig {
 }
 
 export interface ServerConfig extends ServicesConfig {
+  /** The listen address, without IPv6 brackets. */
   host: string;
   port: number;
   apiToken?: string;
+  /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token. */
+  allowedHosts: string[];
   /** Run the job loop inside the API process. */
   embedWorker: boolean;
   /** The built web app to serve, or null. */
@@ -143,7 +146,11 @@ export function loadServicesConfig(env: Env): ServicesConfig {
 
 /** The API's settings. Refuses to listen beyond loopback without `API_TOKEN`. */
 export function loadServerConfig(env: Env): ServerConfig {
-  const host = text(env, "API_HOST") ?? "127.0.0.1";
+  // `[::1]` names the address; listen() takes it without the brackets.
+  const host = (text(env, "API_HOST") ?? "127.0.0.1").replace(
+    /^\[(.*)\]$/,
+    "$1",
+  );
   const apiToken = text(env, "API_TOKEN");
   if (!isLoopbackHost(host) && !apiToken)
     throw new ConfigError(
@@ -160,6 +167,10 @@ export function loadServerConfig(env: Env): ServerConfig {
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
+    allowedHosts: (text(env, "API_ALLOWED_HOSTS") ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
     embedWorker,
     webDist: existsSync(join(WEB_DIST, "index.html")) ? WEB_DIST : null,
   };
