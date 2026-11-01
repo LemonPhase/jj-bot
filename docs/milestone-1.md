@@ -31,4 +31,28 @@ The milestone is met only when all of these are demonstrable together, through t
 
 A configurable team size means the domain and scheduler accept any participant list. It does not promise unlimited concurrency, budget or quality.
 
-Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The API rejects a task that carries a verification plan rather than accepting one it cannot enforce. The demo task and final visualization layout remain open.
+Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The API rejects a task that carries a verification plan rather than accepting one it cannot enforce.
+
+## Demo task
+
+The acceptance run uses this task through the product surface. It exercises every criterion above with three bots and needs nothing but the Node.js standard library, so it runs in a `docker` sandbox with network mode `none`.
+
+**Goal:** Build `wordfreq`, a small Node.js command-line tool that prints the N most frequent words in a text file, with tests and a README. Use only the Node.js standard library.
+
+| Bot     | Role          | Instructions                                                                                                                                         |
+| ------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lead    | Tech lead     | Coordinates. Agrees the interface first, splits the work into files no two bots edit, delegates, reviews results, runs the tests and reports the outcome. |
+| Builder | Implementer   | Writes `wordfreq.js`: an exported `topWords(text, n)` function and a CLI (`node wordfreq.js <file> [n]`).                                             |
+| Tester  | Test engineer | Writes `wordfreq.test.js` with `node:test` against the agreed interface, plus a `sample.txt` fixture.                                                 |
+
+Lead is the coordinator and all three are participants. The runtime profile is the default docker profile with network `none`.
+
+Expected run:
+
+1. Lead delegates to Builder and Tester, who work in parallel in separate sessions and share files through the task workspace.
+2. Each working bot's activity line shows its commands and file edits; the execution graph shows Lead's two assignments.
+3. Lead reacts to each result, runs `node --test` and completes the task with a consolidated result.
+4. `wordfreq.js`, `wordfreq.test.js`, `sample.txt` and `README.md` are downloadable as artifacts.
+
+Steering, stop and recovery are checked on the same task: a mid-run message asking for a `--min-length` option changes what Lead delegates next; a second run is stopped while bots are working; and a server restart during a third run resumes or fails visibly without repeating completed commands.
+
