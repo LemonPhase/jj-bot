@@ -699,6 +699,67 @@ describe("orchestration", () => {
     ).toEqual([1, 1]);
   });
 
+  it("keeps a waiting session's newest 20 notifications and collapses the older ones", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(ada, (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [{ name: "delegate", args: { bot: bob, brief: "chatty" } }],
+          };
+        if (!said.heard(view, `Result from ${bob} (session`))
+          return { text: "" };
+        if (lastResult(view)?.name === "complete_task")
+          return { text: "Done." };
+        return { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      })
+      .brain(bob, (view) => {
+        if (said.turns(view) === 0)
+          return { calls: [{ name: "gate", args: { name: "start" } }] };
+        if (said.turns(view) === 1)
+          return {
+            calls: Array.from({ length: 25 }, (_, index) => ({
+              name: "message",
+              args: { text: `note ${index + 1}` },
+            })),
+          };
+        return { text: "bob done" };
+      });
+    const { task } = await engine.tasks.create({
+      goal: "Many notes",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await executor.gate("start").reached;
+    await untilTask(
+      engine,
+      task.id,
+      (view) =>
+        view.sessions.find((s) => s.parentSessionId === null)?.status ===
+        "waiting",
+      "the coordinator to wait",
+    );
+    executor.gate("start").open();
+    await untilTask(engine, task.id, finished("completed"));
+    const woke = executor.inputs.filter(
+      (input) => promptBot(input.systemPrompt) === ada,
+    )[1]?.inputs;
+    const broadcast = (n: number) =>
+      `Message from ${bob} to everyone:\nnote ${n}`;
+    expect(woke?.slice(0, 21)).toEqual([
+      "[5 earlier messages omitted]",
+      ...Array.from({ length: 20 }, (_, index) => broadcast(index + 6)),
+    ]);
+    expect(woke?.[21]).toContain(`Result from ${bob} (session`);
+    // Every note is still in the task chat.
+    const view = await engine.tasks.get(task.id);
+    expect(
+      view.messages.filter((m) => m.text.startsWith("note ")),
+    ).toHaveLength(25);
+  });
+
   it("routes a third bot through the same paths", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob", "Cy", "Dee"]);

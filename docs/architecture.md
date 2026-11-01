@@ -82,7 +82,7 @@ A direct message to a bot runs a lightweight pi session with the bot's persona a
 
 ## Visibility is separate from activation
 
-Each task message is persisted once, with attribution and intent. The user sees the whole task history; a bot sees only what reaches its session's inbox: its brief, results, steering, and messages addressed to it or to everyone (a message with no recipient goes to every other active session of the task). Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
+Each task message is persisted once, with attribution and intent. The user sees the whole task history; a bot sees only what reaches its session's inbox: its brief, results, steering, and messages addressed to it or to everyone (a message with no recipient goes to every other active session of the task). A session keeps at most its 20 newest undelivered messages; older ones reach it as one `[N earlier messages omitted]` line, and stay in the task history. Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
 
 Message intents: discussion, assignment, result, steering and notification.
 
