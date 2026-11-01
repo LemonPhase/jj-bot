@@ -6,8 +6,10 @@ import {
   isRecoverableLength,
   type Model,
   type RetryPolicy,
+  type TranscriptContext,
   type UserMessage,
 } from "@earendil-works/pi-ai";
+import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
 import {
   calculateContextTokens,
   compact,
@@ -171,22 +173,50 @@ export function compactionSettings(
 }
 
 /**
+ * The line an overflow's error carries when compaction is off because of the
+ * model's window (under `MIN_COMPACTION_WINDOW`, or unknown); undefined for a
+ * window that allows it.
+ */
+export function compactionOffNote(contextWindow: number): string | undefined {
+  const window = Math.max(0, Math.floor(contextWindow) || 0);
+  if (window >= MIN_COMPACTION_WINDOW) return undefined;
+  return window === 0
+    ? "Context compaction is off for models with no known context window."
+    : `Context compaction is off for models with a context window under ${MIN_COMPACTION_WINDOW} tokens.`;
+}
+
+/**
+ * How far below the output cap, as a share of it, a cut response may report
+ * its output. pi-ai's cap is exact, but providers report output in their own
+ * count, which can differ by a few tokens from the one they enforced (an
+ * end-of-turn token, tool-call or reasoning framing). A response that really
+ * stopped at a lower provider-side cap within this margin costs one
+ * compaction: its retry has more room, so it is not taken for a cut again.
+ */
+const CAP_TOLERANCE = 0.01;
+
+/**
  * A response the provider cut short because the context left it no room:
  * pi's recoverable length stop (`isRecoverableLength`: a `length` stop below
- * the model's own output limit) on a request whose context was big enough
- * for the providers' output cap to bite. The runtime reports it as a context
- * overflow, so it is compacted and retried like one.
+ * the output limit) whose output reached the cap pi-ai's providers set for
+ * this request (`clampMaxTokensToContext`: the window less pi-ai's estimate
+ * of `context` less 4096), where that cap is below the limit. A response that
+ * stopped short of the cap was cut by something else, such as a lower
+ * provider-side limit, and stays an ordinary `length` stop. The runtime
+ * reports a cut as a context overflow, so it is compacted and retried.
  */
 export function cutByContext(
   message: AssistantMessage,
   model: Model<Api>,
-  contextTokens: number,
+  context: TranscriptContext,
+  maxTokens: number = model.maxTokens,
 ): boolean {
+  if (model.contextWindow <= 0 || !isRecoverableLength(message, maxTokens))
+    return false;
+  const cap = clampMaxTokensToContext(model, context, maxTokens);
   return (
-    model.contextWindow > 0 &&
-    isRecoverableLength(message, model.maxTokens) &&
-    model.contextWindow - contextTokens - PROVIDER_SAFETY_TOKENS <
-      model.maxTokens
+    cap < maxTokens &&
+    message.usage.output >= cap - Math.ceil(cap * CAP_TOLERANCE)
   );
 }
 
