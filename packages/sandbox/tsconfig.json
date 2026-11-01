@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // egress-proxy.mjs runs as plain JavaScript in the proxy container; its
+    // JSDoc types are checked like the rest of the package.
+    "allowJs": true,
+    "checkJs": true
+  },
   "include": ["src"]
 }
