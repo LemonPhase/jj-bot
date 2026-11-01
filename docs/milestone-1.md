@@ -39,11 +39,11 @@ The acceptance run uses this task through the product surface. It exercises ever
 
 **Goal:** Build `wordfreq`, a small Node.js command-line tool that prints the N most frequent words in a text file, with tests and a README. Use only the Node.js standard library.
 
-| Bot     | Role          | Instructions                                                                                                                                         |
-| ------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bot     | Role          | Instructions                                                                                                                                              |
+| ------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Lead    | Tech lead     | Coordinates. Agrees the interface first, splits the work into files no two bots edit, delegates, reviews results, runs the tests and reports the outcome. |
-| Builder | Implementer   | Writes `wordfreq.js`: an exported `topWords(text, n)` function and a CLI (`node wordfreq.js <file> [n]`).                                             |
-| Tester  | Test engineer | Writes `wordfreq.test.js` with `node:test` against the agreed interface, plus a `sample.txt` fixture.                                                 |
+| Builder | Implementer   | Writes `wordfreq.js`: an exported `topWords(text, n)` function and a CLI (`node wordfreq.js <file> [n]`).                                                 |
+| Tester  | Test engineer | Writes `wordfreq.test.js` with `node:test` against the agreed interface, plus a `sample.txt` fixture.                                                     |
 
 Lead is the coordinator and all three are participants. The runtime profile is the default docker profile with network `none`.
 
@@ -55,4 +55,3 @@ Expected run:
 4. `wordfreq.js`, `wordfreq.test.js`, `sample.txt` and `README.md` are downloadable as artifacts.
 
 Steering, stop and recovery are checked on the same task: a mid-run message asking for a `--min-length` option changes what Lead delegates next; a second run is stopped while bots are working; and a server restart during a third run resumes or fails visibly without repeating completed commands.
-
