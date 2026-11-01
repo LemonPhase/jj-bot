@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Tabs } from "../../components/ui";
+import { TabPanel, Tabs } from "../../components/ui";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { DriversPanel } from "./DriversPanel";
 import { ModelsPanel } from "./ModelsPanel";
@@ -16,6 +16,9 @@ const SECTIONS: readonly { value: Section; label: string }[] = [
 ];
 
 const SECTION_KEY = "jj.settings.section";
+
+/** The tab panel each section's tab controls. */
+const panelId = (section: Section) => `settings-${section}`;
 
 /** The last section shown, remembered per browser as a convenience only. */
 function useSection(): [Section, (section: Section) => void] {
@@ -62,14 +65,15 @@ export function SettingsScreen() {
           items={SECTIONS}
           value={section}
           onChange={setSection}
+          panelId={panelId}
         />
       </div>
       <div className="settings-body">
-        <div className="settings-column">
+        <TabPanel id={panelId(section)} className="settings-column">
           {section === "models" && <ModelsPanel />}
           {section === "profiles" && <ProfilesPanel drivers={drivers} />}
           {section === "drivers" && <DriversPanel drivers={drivers} />}
-        </div>
+        </TabPanel>
       </div>
     </main>
   );

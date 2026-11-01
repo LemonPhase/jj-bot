@@ -8,6 +8,7 @@ import {
   cx,
   ErrorBanner,
   Mention,
+  Tooltip,
   TypingDots,
 } from "../../components/ui";
 import { formatMessageTime } from "../../lib/format";
@@ -131,16 +132,17 @@ export function TaskChat({ view }: { view: TaskView }) {
         sending={Boolean(pending)}
         disabled={!open}
         leading={
-          <Button
-            size="lg"
-            mono
-            pressed={changingGoal}
-            disabled={!open}
-            title="Send this message as the task's new goal"
-            onClick={() => setChangingGoal((on) => !on)}
-          >
-            new goal
-          </Button>
+          <Tooltip content="Send this message as the task's new goal">
+            <Button
+              size="lg"
+              mono
+              pressed={changingGoal}
+              disabled={!open}
+              onClick={() => setChangingGoal((on) => !on)}
+            >
+              new goal
+            </Button>
+          </Tooltip>
         }
         onSubmit={async (text) => {
           setSendError(null);

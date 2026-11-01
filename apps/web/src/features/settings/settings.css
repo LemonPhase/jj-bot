@@ -380,3 +380,9 @@
   color: var(--ink-2);
   overflow-wrap: anywhere;
 }
+
+.settings-column:focus-visible {
+  border-radius: var(--r-xs);
+  outline: 1px solid var(--ink-2);
+  outline-offset: 4px;
+}

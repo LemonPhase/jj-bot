@@ -37,7 +37,6 @@
 .task-screen--office .task-panel {
   flex: 1 1 680px;
   width: auto;
-  overflow: hidden;
 }
 
 /* ── Header ────────────────────────────────────────────────────────────── */
@@ -782,51 +781,22 @@
   gap: var(--sp-3);
 }
 
-/* ── Office tab ────────────────────────────────────────────────────────── */
-.task-office {
-  /* The office stylesheet still reads these pre-redesign names (they lived in
-     the removed legacy Tasks stylesheet). Drop them once office.css moves to
-     the C2 tokens. */
-  --bg-subtle: var(--bg-surface);
-  --ink-secondary: var(--ink-2);
-  --shadow-sm: none;
-  --shadow-md: var(--shadow-composer);
-  --radius-md: var(--r-lg);
-
-  position: relative;
+/* ── Panel body (the tab panel) ────────────────────────────────────────── */
+.task-panel__body {
   display: flex;
-  flex: 1;
   flex-direction: column;
-  min-height: 420px;
-  border: 1px solid var(--line-subtle);
-  border-radius: var(--r-lg);
-  background: var(--bg-scene);
-  overflow: hidden;
+  gap: var(--sp-9);
+  min-width: 0;
+  border-radius: var(--r-xs);
 }
 
-.task-office > .ui-spinner {
-  margin: auto;
+.task-screen--graph .task-panel__body {
+  gap: var(--sp-7);
 }
 
-.task-office > .office-wrap {
-  flex: 1;
-}
-
-.task-office .mono-muted {
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono-sm);
-  color: var(--ink-muted);
-}
-
-.task-office .muted-small {
-  font-size: var(--fs-mono-sm);
-  color: var(--ink-muted);
-}
-
-:where(.task-office button) {
-  border: none;
-  background: none;
-  cursor: pointer;
+.task-panel__body:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 4px;
 }
 
 /* ── Narrow: the panel goes below the chat ─────────────────────────────── */

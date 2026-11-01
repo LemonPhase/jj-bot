@@ -583,13 +583,3 @@
     animation: none;
   }
 }
-
-/*
- * The pre-redesign Tasks screen gives the office a bare grid cell; pad and
- * scroll it there. Remove with features/tasks/legacy-tasks.css.
- */
-.legacy-tasks .office {
-  min-height: 0;
-  overflow: auto;
-  padding: 16px 22px;
-}

@@ -129,11 +129,6 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
                     key={bot.id}
                     selected={isCoordinator || others.includes(bot.id)}
                     aria-disabled={isCoordinator || undefined}
-                    title={
-                      isCoordinator
-                        ? "The coordinator always takes part"
-                        : undefined
-                    }
                     onClick={() => {
                       if (!isCoordinator) toggle(bot.id);
                     }}

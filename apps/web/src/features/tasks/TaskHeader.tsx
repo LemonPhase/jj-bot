@@ -8,6 +8,7 @@ import {
   Dialog,
   ErrorBanner,
   StatusTag,
+  Tooltip,
 } from "../../components/ui";
 import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
@@ -47,12 +48,13 @@ export function TaskHeader({ view }: { view: TaskView }) {
               detail={`v${task.goalVersion}`}
             />
             {reconnecting && (
-              <span
-                className="task-head__stream"
-                role="status"
-                title="The live event stream dropped; reconnecting and catching up from the last event."
-              >
+              <span className="task-head__stream" role="status">
                 reconnecting…
+                <span className="visually-hidden">
+                  {" "}
+                  The live event stream dropped; catching up from the last
+                  event.
+                </span>
               </span>
             )}
           </span>
@@ -88,10 +90,16 @@ export function TaskHeader({ view }: { view: TaskView }) {
               );
             })}
           </span>
-          <Badge title={usageDetail(usage.total)}>
-            <span className="visually-hidden">Usage: </span>
-            {usageLine(usage.total)}
-          </Badge>
+          <Tooltip
+            content={usageDetail(usage.total)}
+            focusable
+            placement="auto"
+          >
+            <Badge>
+              <span className="visually-hidden">Usage: </span>
+              {usageLine(usage.total)}
+            </Badge>
+          </Tooltip>
           <StopControl view={view} />
         </>
       }
@@ -129,13 +137,6 @@ function StopControl({ view }: { view: TaskView }) {
       <Button
         variant="danger"
         disabled={!stoppable}
-        title={
-          stoppable
-            ? "Stop every session in this task"
-            : stopping
-              ? "The task is stopping"
-              : "The task has finished"
-        }
         onClick={() => setConfirming(true)}
       >
         {stopping ? "Stopping…" : "Stop"}
