@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import {
   mkdir,
@@ -305,6 +306,50 @@ describe("local driver", () => {
       if (original) Object.defineProperty(process, "platform", original);
     }
   });
+
+  it.skipIf(spawnSync("git", ["--version"]).status !== 0)(
+    "keeps git from finding a repository above the root",
+    async () => {
+      // An operator's root inside a git checkout, such as the JJ Bot repository.
+      const outer = await realpath(
+        await mkdtemp(join(tmpdir(), "jj-local-outer-repo-")),
+      );
+      try {
+        const git = spawnSync("git", ["init", "-q", outer], {
+          encoding: "utf8",
+        });
+        expect(git.status).toBe(0);
+        const inner = new LocalSandboxDriver({
+          root: join(outer, "workspaces"),
+          env: {},
+        });
+        const sandbox = await inner.acquire({
+          sessionId: "session-git",
+          taskId: "task-git",
+          spec: inner.validateSpec({
+            driver: "local",
+            network: { mode: "open" },
+          }),
+          workspaceKey: "git-ceiling",
+        });
+        const outside = await sandbox.exec("git rev-parse --show-toplevel");
+        expect(outside.exitCode).not.toBe(0);
+        expect(outside.stdout).not.toContain(outer);
+        expect(outside.stderr).toMatch(/not a git repository/i);
+        // The ceiling is the driver root.
+        const env = await sandbox.exec('printf %s "$GIT_CEILING_DIRECTORIES"');
+        expect(env.stdout).toBe(join(outer, "workspaces"));
+        // A repository of the workspace's own still works.
+        await sandbox.exec("git init -q");
+        const own = await sandbox.exec("git rev-parse --show-toplevel");
+        expect(own.exitCode).toBe(0);
+        expect(own.stdout.trim()).toBe(sandbox.workspaceDir);
+        await sandbox.release();
+      } finally {
+        await rm(outer, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("documents the limit: commands can read the server user's files", async () => {
     const sandbox = await driver.acquire(
