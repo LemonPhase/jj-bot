@@ -32,6 +32,12 @@ import {
   isNotFound,
   parseDockerHost,
 } from "./docker-engine";
+import {
+  egressListeningCheck,
+  egressProxyCommand,
+  egressProxyEnv,
+  sandboxProxyEnv,
+} from "./egress";
 
 /**
  * Container driver over the Docker Engine API. One container per acquired
@@ -64,10 +70,18 @@ import {
  * attribution. `release()` removes the container, which kills its whole PID
  * namespace, so commands interrupted by release report `"yes"`.
  *
+ * Network mode `allowlist`: per sandbox, an internal Docker network (no
+ * route out, no address on the host, IPv6 off) and an egress proxy container
+ * (`egress-proxy.mjs`) on that network and the default bridge. The sandbox
+ * joins only the internal network, with the proxy variables pointing at the
+ * proxy, which forwards CONNECT and plain HTTP to listed public hosts only.
+ * Release and `reapOrphans` remove the sandbox container, then the proxy,
+ * then the network.
+ *
  * Image requirements: `/bin/sh`, GNU coreutils, findutils and grep
  * (`realpath -m`, `head -z`, `find -printf`, `grep -z`), as in Debian- or Ubuntu-based
  * images such as `jj-sandbox:base-1`. `acquire` checks them and fails with a
- * clear error otherwise.
+ * clear error otherwise. The egress proxy image needs `node` 22 or later.
  */
 
 export const DOCKER_BASE_IMAGE = "jj-sandbox:base-1";
@@ -75,6 +89,14 @@ const WORKSPACE_DIR = "/workspace";
 const SANDBOX_USER = "1000:1000";
 const DEFAULT_NAMESPACE = "jj-sandbox";
 const DEFAULT_PIDS_LIMIT = 1024;
+/** The egress proxy's cgroup limits. */
+const PROXY_PIDS_LIMIT = 64;
+const PROXY_MEMORY_BYTES = 256 * 1024 * 1024;
+const PROXY_NANO_CPUS = 500_000_000;
+/** How long a new egress proxy may take to start listening. */
+const PROXY_START_MS = 15_000;
+/** Keeps the bridge of an allowlist network without an address on the host. */
+const INHIBIT_IPV4 = "com.docker.network.bridge.inhibit_ipv4";
 const KILL_GRACE_MS = 2_000;
 /** Once a stop is verified, how long output may drain before the stream is dropped. */
 const DRAIN_MS = 250;
@@ -93,6 +115,7 @@ const READ_SLACK_BYTES = 64 * 1024;
 const PROCESS_INSTANCE = randomUUID();
 const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,511}$/;
+const IPV4_SUBNET = /^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/;
 const ENV_NAME = /^[^=\0]+$/;
 
 /** Labels the driver owns; extra labels may not override them. */
@@ -105,6 +128,8 @@ const LABELS = {
   mode: "jj.sandbox.workspace-mode",
   key: "jj.sandbox.workspace-key",
   volume: "jj.sandbox.volume",
+  /** `egress-proxy` or `egress-network` on the resources of an allowlist sandbox. */
+  role: "jj.sandbox.role",
   instance: "jj.instance",
 } as const;
 
@@ -222,6 +247,12 @@ export interface DockerDriverOptions {
   host?: string;
   /** Image for specs that name none. Default `jj-sandbox:base-1`. */
   defaultImage?: string;
+  /**
+   * Image of the egress proxy that network mode `allowlist` runs next to a
+   * sandbox; it needs `node` 22 or later. Never the spec's image, which may
+   * lack node. Default `jj-sandbox:base-1`.
+   */
+  egressProxyImage?: string;
   /** Prefix of container and volume names; separates installs sharing a daemon. Default `jj-sandbox`. */
   namespace?: string;
   /** Extra labels on every container and volume the driver creates. */
@@ -437,11 +468,54 @@ interface RunningCommand {
   done: Promise<void>;
 }
 
+/** The egress proxy container and internal network of an allowlist sandbox, by name. */
+interface EgressResources {
+  proxyName: string;
+  networkName: string;
+}
+
+const removeContainer = (engine: DockerEngine, name: string) =>
+  engine
+    .json("DELETE", `/containers/${encodeURIComponent(name)}`, {
+      query: { force: true, v: true },
+      timeoutMs: 120_000,
+    })
+    .catch((error: unknown) => {
+      if (!isNotFound(error)) throw error;
+    });
+
+/** Removes a network, retrying briefly while the daemon detaches removed containers. */
+async function removeNetwork(
+  engine: DockerEngine,
+  name: string,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await engine.json("DELETE", `/networks/${encodeURIComponent(name)}`);
+      return;
+    } catch (error) {
+      if (isNotFound(error)) return;
+      if (attempt >= 4) throw error;
+      await delay(100 * 2 ** attempt);
+    }
+  }
+}
+
+/** The proxy, then its network: the sandbox container must already be gone. Idempotent. */
+async function removeEgress(
+  engine: DockerEngine,
+  egress: EgressResources,
+): Promise<void> {
+  await removeContainer(engine, egress.proxyName);
+  await removeNetwork(engine, egress.networkName);
+}
+
 interface SandboxSetup {
   id: string;
   containerId: string;
   containerName: string;
   volumeName: string;
+  egress?: EgressResources;
   engine: DockerEngine;
   spec: SandboxSpec;
   secrets: Record<string, string>;
@@ -460,6 +534,10 @@ class DockerSandbox implements Sandbox {
   readonly containerId: string;
   readonly containerName: string;
   readonly volumeName: string;
+  /** Network mode `allowlist` only: the egress proxy container and the internal network. */
+  readonly proxyContainerName?: string;
+  readonly networkName?: string;
+  private readonly egress?: EgressResources;
   private readonly engine: DockerEngine;
   private readonly spec: SandboxSpec;
   private readonly secrets: Record<string, string>;
@@ -479,6 +557,9 @@ class DockerSandbox implements Sandbox {
     this.containerId = setup.containerId;
     this.containerName = setup.containerName;
     this.volumeName = setup.volumeName;
+    this.egress = setup.egress;
+    this.proxyContainerName = setup.egress?.proxyName;
+    this.networkName = setup.egress?.networkName;
     this.engine = setup.engine;
     this.spec = setup.spec;
     this.secrets = setup.secrets;
@@ -956,6 +1037,7 @@ class DockerSandbox implements Sandbox {
       throw new Error(
         `Could not remove sandbox container ${this.containerName}; its processes may still be running`,
       );
+    if (this.egress) await removeEgress(this.engine, this.egress);
     if (this.ephemeral && !persist)
       await this.engine
         .json("DELETE", `/volumes/${this.volumeName}`)
@@ -993,7 +1075,7 @@ const imagePath = (image: string) =>
 export class DockerSandboxDriver implements SandboxDriver {
   readonly id = "docker";
   readonly capabilities: DriverCapabilities = {
-    networkModes: ["none", "open"],
+    networkModes: ["none", "allowlist", "open"],
     resourceLimits: true,
     filesystemIsolation: true,
     exposePort: false,
@@ -1004,6 +1086,7 @@ export class DockerSandboxDriver implements SandboxDriver {
   private readonly endpointError?: Error;
   private readonly namespace: string;
   private readonly defaultImage: string;
+  private readonly egressProxyImage: string;
   private readonly extraLabels: Record<string, string>;
   private readonly images = new Map<string, Promise<void>>();
   private readonly maxFileBytes: number;
@@ -1021,6 +1104,11 @@ export class DockerSandboxDriver implements SandboxDriver {
     if (!IMAGE_REFERENCE.test(this.defaultImage))
       throw new Error(
         `Invalid default image ${JSON.stringify(this.defaultImage)}`,
+      );
+    this.egressProxyImage = options.egressProxyImage ?? DOCKER_BASE_IMAGE;
+    if (!IMAGE_REFERENCE.test(this.egressProxyImage))
+      throw new Error(
+        `Invalid egress proxy image ${JSON.stringify(this.egressProxyImage)}`,
       );
     this.extraLabels = { ...options.labels };
     const reserved = new Set<string>(Object.values(LABELS));
@@ -1197,11 +1285,16 @@ export class DockerSandboxDriver implements SandboxDriver {
     return name;
   }
 
+  /**
+   * The sandbox container. `egress` (allowlist only) puts it on the internal
+   * network alone, with the proxy variables in its environment.
+   */
   private containerConfig(
     image: string,
     spec: SandboxSpec,
     volume: string,
     labels: Record<string, string>,
+    egress?: { networkName: string; proxyAddress: string },
   ) {
     const { cpus, memoryMb, processes } = spec.resources;
     const memory = memoryMb === undefined ? undefined : memoryMb * MiB;
@@ -1211,7 +1304,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       Cmd: [],
       User: SANDBOX_USER,
       WorkingDir: WORKSPACE_DIR,
-      Env: [],
+      Env: egress ? sandboxProxyEnv(egress.proxyAddress) : [],
       Labels: labels,
       Tty: false,
       OpenStdin: false,
@@ -1225,7 +1318,11 @@ export class DockerSandboxDriver implements SandboxDriver {
         CapDrop: ["ALL"],
         CapAdd: [],
         SecurityOpt: ["no-new-privileges:true"],
-        NetworkMode: spec.network.mode === "none" ? "none" : "bridge",
+        NetworkMode: egress
+          ? egress.networkName
+          : spec.network.mode === "none"
+            ? "none"
+            : "bridge",
         PidsLimit:
           processes ?? this.options.defaultPidsLimit ?? DEFAULT_PIDS_LIMIT,
         ...(memory === undefined ? {} : { Memory: memory, MemorySwap: memory }),
@@ -1247,13 +1344,160 @@ export class DockerSandboxDriver implements SandboxDriver {
   }
 
   /**
+   * The egress proxy of an allowlist sandbox, hardened like a sandbox and
+   * more: read-only root filesystem, small limits, no mounts, no logs, and
+   * nothing in its environment but its own configuration. It starts on the
+   * default bridge, its way out; the caller connects it to the internal
+   * network, the only one it listens on.
+   */
+  private proxyConfig(
+    hosts: readonly string[],
+    subnet: string,
+    labels: Record<string, string>,
+  ) {
+    return {
+      Image: this.egressProxyImage,
+      Entrypoint: egressProxyCommand(),
+      Cmd: [],
+      User: SANDBOX_USER,
+      WorkingDir: "/",
+      Env: egressProxyEnv(hosts, subnet),
+      Labels: labels,
+      Tty: false,
+      OpenStdin: false,
+      AttachStdin: false,
+      AttachStdout: false,
+      AttachStderr: false,
+      HostConfig: {
+        Init: true,
+        Privileged: false,
+        CapDrop: ["ALL"],
+        CapAdd: [],
+        SecurityOpt: ["no-new-privileges:true"],
+        NetworkMode: "bridge",
+        ReadonlyRootfs: true,
+        PidsLimit: PROXY_PIDS_LIMIT,
+        Memory: PROXY_MEMORY_BYTES,
+        MemorySwap: PROXY_MEMORY_BYTES,
+        NanoCpus: PROXY_NANO_CPUS,
+        Binds: [],
+        Mounts: [],
+        IpcMode: "private",
+        RestartPolicy: { Name: "no" },
+        LogConfig: { Type: "none", Config: {} },
+      },
+    };
+  }
+
+  /**
+   * Creates the internal network and starts the egress proxy on it, and
+   * returns the proxy's address there. Fails closed: a network Docker did
+   * not create as asked, or a proxy that does not start listening, fails the
+   * acquire. The caller removes `egress` on failure.
+   */
+  private async startEgress(
+    engine: DockerEngine,
+    egress: EgressResources,
+    hosts: readonly string[],
+    labels: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const network = encodeURIComponent(egress.networkName);
+    const proxy = encodeURIComponent(egress.proxyName);
+    await engine.json("POST", "/networks/create", {
+      body: {
+        Name: egress.networkName,
+        Driver: "bridge",
+        // No route out and no forwarded DNS; with inhibit_ipv4 the host's
+        // bridge gets no address, so the host is unreachable through it too.
+        Internal: true,
+        EnableIPv6: false,
+        Attachable: false,
+        Options: { [INHIBIT_IPV4]: "true" },
+        Labels: { ...labels, [LABELS.role]: "egress-network" },
+      },
+      signal,
+    });
+    const info = await engine.json<{
+      Internal?: boolean;
+      EnableIPv6?: boolean;
+      Options?: Record<string, string> | null;
+      IPAM?: { Config?: Array<{ Subnet?: string }> | null };
+    }>("GET", `/networks/${network}`, { signal });
+    const subnet = info.IPAM?.Config?.map((config) => config.Subnet).find(
+      (value): value is string =>
+        typeof value === "string" && IPV4_SUBNET.test(value),
+    );
+    if (
+      info.Internal !== true ||
+      info.EnableIPv6 === true ||
+      info.Options?.[INHIBIT_IPV4] !== "true" ||
+      !subnet
+    )
+      throw new SandboxCapabilityError(
+        this.id,
+        `network.mode="allowlist": Docker did not create ${egress.networkName} as an internal IPv4 network without a host address`,
+      );
+    await engine.json("POST", "/containers/create", {
+      query: { name: egress.proxyName },
+      body: this.proxyConfig(hosts, subnet, {
+        ...labels,
+        [LABELS.role]: "egress-proxy",
+      }),
+      signal,
+    });
+    await engine.json("POST", `/networks/${network}/connect`, {
+      body: { Container: egress.proxyName },
+      signal,
+    });
+    await engine.json("POST", `/containers/${proxy}/start`, { signal });
+    const state = await engine.json<{
+      NetworkSettings?: {
+        Networks?: Record<string, { IPAddress?: string }> | null;
+      };
+    }>("GET", `/containers/${proxy}/json`, { signal });
+    const address =
+      state.NetworkSettings?.Networks?.[egress.networkName]?.IPAddress;
+    if (!address)
+      throw new Error(
+        `Egress proxy ${egress.proxyName} has no address on ${egress.networkName}`,
+      );
+    const ready = await withSignal(
+      engine
+        .run(egress.proxyName, {
+          Cmd: egressListeningCheck(PROXY_START_MS),
+          Env: [],
+          User: SANDBOX_USER,
+          WorkingDir: "/",
+        })
+        .catch(
+          (error: unknown): ExecOutput => ({
+            exitCode: null,
+            stdout: Buffer.alloc(0),
+            stderr: Buffer.from(errorMessage(error)),
+          }),
+        ),
+      signal,
+    );
+    if (ready.exitCode !== 0)
+      throw new Error(
+        `Egress proxy ${egress.proxyName} did not start listening (its image ${this.egressProxyImage} needs node 22 or later)` +
+          (ready.stderr.length > 0
+            ? `: ${ready.stderr.toString("utf8").trim().slice(0, 500)}`
+            : ""),
+      );
+    return address;
+  }
+
+  /**
    * Removes this namespace's containers that another driver instance
-   * created, such as ones a crashed worker left running. Meant to run once at
-   * worker start, before the first acquire. Only containers are removed
-   * (with their anonymous volumes); named workspace volumes are never
-   * touched, so `task` and `bot` files survive and a crashed worker's
-   * `ephemeral` volumes stay for the operator. Two live workers must
-   * therefore not share a namespace on one daemon.
+   * created, such as ones a crashed worker left running, sandboxes and egress
+   * proxies alike, then that instance's allowlist networks. Meant to run once
+   * at worker start, before the first acquire. Named workspace volumes are
+   * never touched (containers go with their anonymous volumes only), so
+   * `task` and `bot` files survive and a crashed worker's `ephemeral`
+   * volumes stay for the operator. Two live workers must therefore not share
+   * a namespace on one daemon.
    */
   async reapOrphans(): Promise<{ removed: string[] }> {
     const engine = this.requireEngine();
@@ -1287,9 +1531,33 @@ export class DockerSandboxDriver implements SandboxDriver {
         failed.push(`${name} (${errorMessage(error)})`);
       }
     }
+    // Networks last: a network cannot go while a container is attached.
+    const networks = await engine.json<
+      Array<{ Id: string; Name?: string; Labels?: Record<string, string> }>
+    >("GET", "/networks", {
+      query: {
+        filters: JSON.stringify({
+          label: [
+            `${LABELS.sandbox}=1`,
+            `${LABELS.namespace}=${this.namespace}`,
+          ],
+        }),
+      },
+    });
+    for (const network of networks) {
+      if (network.Labels?.[LABELS.namespace] !== this.namespace) continue;
+      if (network.Labels?.[LABELS.instance] === this.instanceId) continue;
+      const name = network.Name ?? network.Id;
+      try {
+        await removeNetwork(engine, network.Id);
+        removed.push(name);
+      } catch (error) {
+        failed.push(`network ${name} (${errorMessage(error)})`);
+      }
+    }
     if (failed.length > 0)
       throw new Error(
-        `Could not remove orphaned sandbox containers: ${failed.join(", ")}` +
+        `Could not remove orphaned sandbox resources: ${failed.join(", ")}` +
           (removed.length > 0 ? `; removed ${removed.join(", ")}` : ""),
       );
     return { removed };
@@ -1304,6 +1572,9 @@ export class DockerSandboxDriver implements SandboxDriver {
     signal?.throwIfAborted();
     const image = spec.image ?? this.defaultImage;
     await this.ensureImage(image, signal);
+    const allowlist =
+      spec.network.mode === "allowlist" ? spec.network.hosts : undefined;
+    if (allowlist) await this.ensureImage(this.egressProxyImage, signal);
 
     const id = randomUUID();
     const ephemeral = spec.workspace === "ephemeral";
@@ -1326,9 +1597,42 @@ export class DockerSandboxDriver implements SandboxDriver {
       [LABELS.volume]: volumeName,
       [LABELS.instance]: this.instanceId,
     };
+    const egress: EgressResources | undefined = allowlist
+      ? {
+          proxyName: `${this.namespace}-egress-${id}`,
+          networkName: `${this.namespace}-net-${id}`,
+        }
+      : undefined;
     let containerId: string | undefined;
     try {
-      const config = this.containerConfig(image, spec, volumeName, labels);
+      const network =
+        egress && allowlist
+          ? {
+              networkName: egress.networkName,
+              proxyAddress: await this.startEgress(
+                engine,
+                egress,
+                allowlist,
+                {
+                  ...this.extraLabels,
+                  [LABELS.sandbox]: "1",
+                  [LABELS.id]: id,
+                  [LABELS.namespace]: this.namespace,
+                  [LABELS.task]: request.taskId,
+                  [LABELS.session]: request.sessionId,
+                  [LABELS.instance]: this.instanceId,
+                },
+                signal,
+              ),
+            }
+          : undefined;
+      const config = this.containerConfig(
+        image,
+        spec,
+        volumeName,
+        labels,
+        network,
+      );
       const create = () =>
         engine.json<{ Id: string }>("POST", "/containers/create", {
           query: { name: containerName },
@@ -1358,6 +1662,7 @@ export class DockerSandboxDriver implements SandboxDriver {
         containerId,
         containerName,
         volumeName,
+        egress,
         engine,
         spec,
         secrets: { ...request.secrets },
@@ -1370,12 +1675,10 @@ export class DockerSandboxDriver implements SandboxDriver {
       signal?.throwIfAborted();
       return sandbox;
     } catch (error) {
-      if (containerId !== undefined)
-        await engine
-          .json("DELETE", `/containers/${containerId}`, {
-            query: { force: true, v: true },
-          })
-          .catch(() => {});
+      // By name, so a container the daemon created while the call failed (an
+      // abort mid-request) goes too, before the network it is attached to.
+      await removeContainer(engine, containerName).catch(() => {});
+      if (egress) await removeEgress(engine, egress).catch(() => {});
       if (ephemeral)
         await engine.json("DELETE", `/volumes/${volumeName}`).catch(() => {});
       throw error;

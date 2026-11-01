@@ -1,7 +1,14 @@
 import { randomBytes } from "node:crypto";
+import { get as httpGet } from "node:http";
 import { createConnection, createServer } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { describeSandboxConformance } from "./conformance";
+import {
+  describeSandboxConformance,
+  type NetworkProbe,
+  type ProbeResult,
+  probeNetwork,
+  reached,
+} from "./conformance";
 import {
   type AcquireRequest,
   type Sandbox,
@@ -69,18 +76,46 @@ const strictSpec: Partial<SandboxSpecInput> = {
 };
 
 const createDriver = () =>
-  new DockerSandboxDriver({ namespace, labels, killGraceMs: 300 });
+  new DockerSandboxDriver({
+    namespace,
+    labels,
+    killGraceMs: 300,
+    egressProxyImage: image,
+  });
 
 const delay = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+/** A plain GET from this process, which runs on the Docker host. */
+const exchangeHttp = (host: string, port: number) =>
+  new Promise<string>((resolve, reject) => {
+    const request = httpGet(
+      { host, port, path: "/", timeout: 2_000 },
+      (response) => {
+        let body = "";
+        response.on("data", (chunk) => {
+          body += chunk;
+        });
+        response.on("end", () => resolve(body));
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("timeout")));
+    request.on("error", reject);
+  });
 
 type DockerSandbox = Sandbox & {
   containerId: string;
   containerName: string;
   volumeName: string;
+  proxyContainerName?: string;
+  networkName?: string;
 };
 
 interface ContainerInspect {
-  Config: { User: string; Env: string[] | null };
+  Id: string;
+  Config: { User: string; Env: string[] | null; Image: string };
+  NetworkSettings: {
+    Networks: Record<string, { IPAddress: string; Gateway?: string }> | null;
+  };
   HostConfig: Record<string, unknown> & {
     Privileged: boolean;
     CapDrop: string[] | null;
@@ -109,7 +144,12 @@ async function removeRunResources(): Promise<string[]> {
     const { Volumes } = await engine.json<{
       Volumes: Array<{ Name: string }> | null;
     }>("GET", "/volumes", { query: { filters } });
-    return { containers, volumes: Volumes ?? [] };
+    const networks = await engine.json<Array<{ Id: string; Name: string }>>(
+      "GET",
+      "/networks",
+      { query: { filters } },
+    );
+    return { containers, volumes: Volumes ?? [], networks };
   };
   const found = await list();
   await Promise.all(
@@ -121,15 +161,19 @@ async function removeRunResources(): Promise<string[]> {
         .catch(() => {}),
     ),
   );
-  await Promise.all(
-    found.volumes.map((volume) =>
+  await Promise.all([
+    ...found.volumes.map((volume) =>
       engine.json("DELETE", `/volumes/${volume.Name}`).catch(() => {}),
     ),
-  );
+    ...found.networks.map((network) =>
+      engine.json("DELETE", `/networks/${network.Id}`).catch(() => {}),
+    ),
+  ]);
   const left = await list();
   return [
     ...left.containers.map((container) => `container ${container.Id}`),
     ...left.volumes.map((volume) => `volume ${volume.Name}`),
+    ...left.networks.map((network) => `network ${network.Name}`),
   ];
 }
 
@@ -216,9 +260,14 @@ describe("docker engine client", () => {
       driver.validateSpec({ driver: "docker", ...overrides });
     expect(spec().network.mode).toBe("none");
     expect(spec({ network: { mode: "open" } }).network.mode).toBe("open");
+    expect(
+      spec({
+        network: { mode: "allowlist", hosts: ["Example.com", "*.npmjs.org"] },
+      }).network,
+    ).toEqual({ mode: "allowlist", hosts: ["example.com", "*.npmjs.org"] });
     expect(() =>
-      spec({ network: { mode: "allowlist", hosts: ["example.com"] } }),
-    ).toThrow(SandboxCapabilityError);
+      spec({ network: { mode: "allowlist", hosts: ["https://example.com"] } }),
+    ).toThrow(/host such as/);
     expect(() => spec({ resources: { diskMb: 1024 } })).toThrow(
       SandboxCapabilityError,
     );
@@ -674,6 +723,406 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         server.close();
         for (const socket of sockets) socket.destroy();
       }
+    });
+
+    describe("network mode allowlist", () => {
+      const allowlist = (...hosts: string[]): Partial<SandboxSpecInput> => ({
+        network: { mode: "allowlist", hosts },
+      });
+      const inspect = (name: string) =>
+        engine?.json<ContainerInspect>(
+          "GET",
+          `/containers/${encodeURIComponent(name)}/json`,
+        ) as Promise<ContainerInspect>;
+      const gone = async (kind: "containers" | "networks", name?: string) => {
+        if (!name) throw new Error(`no ${kind} name`);
+        await expect(
+          engine?.json(
+            "GET",
+            `/${kind}/${encodeURIComponent(name)}${kind === "containers" ? "/json" : ""}`,
+          ),
+        ).rejects.toSatisfy(isNotFound);
+      };
+      const probe = async (sandbox: Sandbox, probes: NetworkProbe[]) => {
+        const results = await probeNetwork(sandbox, probes);
+        if (!results) throw new Error(`${image} has no node to probe with`);
+        return results;
+      };
+
+      it("puts the sandbox alone on an internal network beside a hardened egress proxy", async () => {
+        const sandbox = await acquire(
+          allowlist("example.com", "*.npmjs.org"),
+          uniqueKey("allow"),
+          { secrets: { JJ_SECRET: "never-in-container-config" } },
+        );
+        const { networkName, proxyContainerName } = sandbox;
+        if (!networkName || !proxyContainerName)
+          throw new Error("no egress resources");
+
+        const network = await engine?.json<{
+          Internal: boolean;
+          EnableIPv6: boolean;
+          Options: Record<string, string>;
+          Labels: Record<string, string>;
+        }>("GET", `/networks/${networkName}`);
+        expect(network).toMatchObject({
+          Internal: true,
+          EnableIPv6: false,
+          Options: { "com.docker.network.bridge.inhibit_ipv4": "true" },
+          Labels: {
+            "jj.sandbox.namespace": namespace,
+            "jj.sandbox.role": "egress-network",
+          },
+        });
+
+        const proxy = await inspect(proxyContainerName);
+        const host = proxy.HostConfig;
+        expect(host.Privileged).toBe(false);
+        expect(host.CapDrop).toEqual(["ALL"]);
+        expect(host.CapAdd ?? []).toEqual([]);
+        expect(host.SecurityOpt).toContain("no-new-privileges:true");
+        expect(proxy.Config.User).toBe("1000:1000");
+        expect(host.ReadonlyRootfs).toBe(true);
+        expect(host.PidsLimit).toBe(64);
+        expect(host.Memory).toBe(256 * MiB);
+        expect(host.MemorySwap).toBe(256 * MiB);
+        expect(host.Binds ?? []).toEqual([]);
+        expect(host.Mounts ?? []).toEqual([]);
+        expect(proxy.Mounts).toEqual([]);
+        expect(host.LogConfig).toMatchObject({ Type: "none" });
+        expect(
+          Object.keys(proxy.NetworkSettings.Networks ?? {}).sort(),
+        ).toEqual(["bridge", networkName].sort());
+        // Its own configuration is all it gets, besides the image's environment.
+        const imageEnv = new Set(
+          (
+            await engine?.json<{ Config: { Env: string[] | null } }>(
+              "GET",
+              `/images/${proxy.Config.Image}/json`,
+            )
+          )?.Config.Env ?? [],
+        );
+        const added = (proxy.Config.Env ?? []).filter(
+          (entry) => !imageEnv.has(entry),
+        );
+        expect(added).toHaveLength(1);
+        expect(
+          JSON.parse(added[0]?.replace(/^JJ_EGRESS_CONFIG=/, "") ?? ""),
+        ).toMatchObject({ hosts: ["example.com", "*.npmjs.org"], port: 3128 });
+
+        const container = await inspect(sandbox.containerId);
+        expect(container.HostConfig.NetworkMode).toBe(networkName);
+        expect(Object.keys(container.NetworkSettings.Networks ?? {})).toEqual([
+          networkName,
+        ]);
+        const proxyAddress =
+          proxy.NetworkSettings.Networks?.[networkName]?.IPAddress;
+        const url = `http://${proxyAddress}:3128`;
+        expect(container.Config.Env).toEqual(
+          expect.arrayContaining([
+            `HTTP_PROXY=${url}`,
+            `HTTPS_PROXY=${url}`,
+            `http_proxy=${url}`,
+            `https_proxy=${url}`,
+            "NO_PROXY=localhost,127.0.0.1",
+            "NODE_USE_ENV_PROXY=1",
+          ]),
+        );
+        expect(JSON.stringify(container.Config.Env)).not.toContain(
+          "never-in-container-config",
+        );
+
+        // No default route, and no IPv6 address but loopback's (none
+        // reaches the host's bridge over link-local).
+        const inside = await sandbox.exec(
+          'echo "secret=$JJ_SECRET proxy=$HTTPS_PROXY"; cat /proc/net/route; echo ---; cat /proc/net/if_inet6 2>/dev/null; true',
+        );
+        expect(inside.stdout).toContain(
+          `secret=never-in-container-config proxy=${url}`,
+        );
+        const [routes = "", inet6 = ""] = inside.stdout.split("---");
+        expect(routes).not.toMatch(/^\S+\s+00000000\s/m);
+        for (const line of inet6.trim().split("\n").filter(Boolean))
+          expect(line).toMatch(/\slo$/);
+      });
+
+      it("refuses unlisted hosts and ports with a reason an agent can read", async () => {
+        const sandbox = await acquire(allowlist("example.com"));
+        const [https, http, port] = await probe(sandbox, [
+          { kind: "http", url: "https://example.org/" },
+          { kind: "http", url: "http://example.org/x" },
+          { kind: "http", url: "https://example.com:8443/" },
+        ]);
+        const unlisted =
+          "JJ Bot egress: example.org is not in this runtime profile's network allowlist";
+        expect(https).toMatchObject({
+          outcome: "refused",
+          status: 403,
+          reason: unlisted,
+          body: `${unlisted}\n`,
+        });
+        expect(http).toMatchObject({
+          outcome: "response",
+          status: 403,
+          reason: unlisted,
+          body: `${unlisted}\n`,
+        });
+        expect(port).toMatchObject({
+          outcome: "refused",
+          status: 403,
+          reason:
+            "JJ Bot egress: port 8443 of example.com is not in this runtime profile's network allowlist",
+        });
+        // A real client, where the image has one (the base image does).
+        const curl = await sandbox.exec(
+          "command -v curl >/dev/null || exit 99; curl -sS -o /dev/null -w '%{http_connect}' https://example.org/",
+        );
+        if (curl.exitCode !== 99) {
+          expect(curl.stdout).toBe("403");
+          expect(curl.exitCode).not.toBe(0);
+        }
+      });
+
+      it("keeps other containers and the Docker host unreachable, directly and through the proxy, even when listed", async () => {
+        if (!engine) throw new Error("no engine");
+        // Stand-ins for the app and PostgreSQL: one on the default bridge,
+        // one on a user-defined network like the compose project's.
+        const victimNetwork = `${namespace}-victims`;
+        await engine.json("POST", "/networks/create", {
+          body: { Name: victimNetwork, Driver: "bridge", Labels: labels },
+        });
+        const server = `require("http").createServer((q,s)=>{require("fs").appendFileSync("/tmp/hits","x\\n");s.end("victim-reached\\n")}).listen(8080)`;
+        const victims: Array<{ name: string; network: string }> = [
+          { name: `${namespace}-victim-bridge`, network: "bridge" },
+          { name: `${namespace}-victim-compose`, network: victimNetwork },
+        ];
+        try {
+          for (const victim of victims) {
+            await engine.json("POST", "/containers/create", {
+              query: { name: victim.name },
+              body: {
+                Image: image,
+                Entrypoint: ["node", "-e", server],
+                Cmd: [],
+                User: "1000:1000",
+                Labels: labels,
+                HostConfig: { NetworkMode: victim.network },
+                NetworkingConfig: {
+                  EndpointsConfig: {
+                    [victim.network]:
+                      victim.network === "bridge"
+                        ? {}
+                        : { Aliases: ["postgres", "app"] },
+                  },
+                },
+              },
+            });
+            await engine.json("POST", `/containers/${victim.name}/start`);
+          }
+          const details = await Promise.all(
+            victims.map((v) => inspect(v.name)),
+          );
+          const addresses = details.map(
+            (detail, index) =>
+              detail.NetworkSettings.Networks?.[victims[index]?.network ?? ""]
+                ?.IPAddress ?? "",
+          );
+          const gateways = (
+            await Promise.all(
+              ["bridge", victimNetwork].map((name) =>
+                engine?.json<{ IPAM: { Config: Array<{ Gateway?: string }> } }>(
+                  "GET",
+                  `/networks/${name}`,
+                ),
+              ),
+            )
+          ).flatMap((network) =>
+            (network?.IPAM.Config ?? []).flatMap((config) =>
+              config.Gateway ? [config.Gateway] : [],
+            ),
+          );
+          expect(addresses.every(Boolean)).toBe(true);
+          expect(gateways.length).toBeGreaterThan(0);
+          const hits = async () =>
+            Promise.all(
+              victims.map(async (victim) => {
+                const result = await engine?.run(victim.name, {
+                  Cmd: ["sh", "-c", "cat /tmp/hits 2>/dev/null | wc -l"],
+                  Env: [],
+                  User: "1000:1000",
+                });
+                return Number(result?.stdout.toString().trim());
+              }),
+            );
+
+          // Controls: both victims answer the Docker host, and an open
+          // sandbox on the default bridge reaches the first, so the probes
+          // below would notice a way through.
+          for (const address of addresses) {
+            let answer = "";
+            for (let attempt = 0; attempt < 40 && !answer; attempt++) {
+              answer = await exchangeHttp(address, 8080).catch(() => "");
+              if (!answer) await delay(250);
+            }
+            expect(answer, address).toContain("victim-reached");
+          }
+          expect(await hits()).toEqual([1, 1]);
+          const open = await acquire({ network: { mode: "open" } });
+          let control: ProbeResult | undefined;
+          for (let attempt = 0; attempt < 40; attempt++) {
+            [control] = await probe(open, [
+              { kind: "tcp", host: addresses[0] ?? "", port: 8080 },
+            ]);
+            if (control?.outcome === "connected") break;
+            await delay(250);
+          }
+          expect(control?.outcome).toBe("connected");
+          await open.release();
+
+          const targets = [
+            ...addresses,
+            ...gateways,
+            ...victims.map((victim) => victim.name),
+            "postgres",
+            "app",
+            "host.docker.internal",
+          ];
+          const sandbox = await acquire(
+            allowlist(
+              "example.com",
+              ...addresses,
+              ...targets.map((target) => `${target}:8080`),
+            ),
+          );
+          const before = await hits();
+          const probes: NetworkProbe[] = [
+            ...[...addresses, ...gateways].map(
+              (host): NetworkProbe => ({ kind: "tcp", host, port: 8080 }),
+            ),
+            ...targets.flatMap((target): NetworkProbe[] => [
+              { kind: "http", url: `http://${target}:8080/` },
+              { kind: "http", url: `https://${target}:8080/` },
+            ]),
+            ...addresses.map(
+              (address): NetworkProbe => ({
+                kind: "http",
+                url: `http://${address}/`,
+              }),
+            ),
+          ];
+          const results = await probe(sandbox, probes);
+          for (const [index, result] of results.entries()) {
+            const label = `${JSON.stringify(probes[index])} ${JSON.stringify(result)}`;
+            expect(reached(result), label).toBe(false);
+            expect(JSON.stringify(result), label).not.toContain(
+              "victim-reached",
+            );
+            const target = probes[index];
+            if (target?.kind === "http" && /\/\/\d/.test(target.url))
+              expect(result?.reason, label).toMatch(
+                /is a private address; only public destinations are reachable$/,
+              );
+          }
+          expect(await hits()).toEqual(before);
+        } finally {
+          await Promise.all(
+            victims.map((victim) =>
+              engine
+                ?.json("DELETE", `/containers/${victim.name}`, {
+                  query: { force: true },
+                })
+                .catch(() => {}),
+            ),
+          );
+          await engine
+            .json("DELETE", `/networks/${victimNetwork}`)
+            .catch(() => {});
+        }
+      });
+
+      it("removes the proxy and the network on release, and after an acquire that fails midway", async () => {
+        const sandbox = await acquire(allowlist("example.com"));
+        await sandbox.release();
+        await gone("containers", sandbox.containerName);
+        await gone("containers", sandbox.proxyContainerName);
+        await gone("networks", sandbox.networkName);
+        await expect(sandbox.release()).resolves.toBeUndefined();
+
+        // Abort as soon as the proxy exists: the acquire must undo all of it.
+        const taskId = `abort-${Math.random().toString(36).slice(2)}`;
+        const controller = new AbortController();
+        const filters = JSON.stringify({
+          label: [`jj.sandbox.task=${taskId}`],
+        });
+        const owned = async () => ({
+          containers:
+            (await engine?.json<unknown[]>("GET", "/containers/json", {
+              query: { all: true, filters },
+            })) ?? [],
+          networks:
+            (await engine?.json<unknown[]>("GET", "/networks", {
+              query: { filters },
+            })) ?? [],
+        });
+        const attempt = driver.acquire(
+          request(allowlist("example.com"), uniqueKey("abort"), {
+            taskId,
+            signal: controller.signal,
+          }),
+        );
+        attempt.then((late) => late.release()).catch(() => {});
+        for (let poll = 0; poll < 500; poll++) {
+          if ((await owned()).containers.length > 0) break;
+          await delay(10);
+        }
+        controller.abort();
+        await expect(attempt).rejects.toThrow();
+        expect(await owned()).toEqual({ containers: [], networks: [] });
+      });
+
+      it("reaps the proxies and networks another driver instance left behind", async () => {
+        const reapNamespace = `${namespace}-reapnet`;
+        const options = {
+          namespace: reapNamespace,
+          labels,
+          egressProxyImage: image,
+        };
+        const crashed = new DockerSandboxDriver({
+          ...options,
+          instanceId: "crashed-worker",
+        });
+        const current = new DockerSandboxDriver({
+          ...options,
+          instanceId: "current-worker",
+        });
+        const orphan = (await crashed.acquire(
+          request(allowlist("example.com")),
+        )) as DockerSandbox;
+        const mine = (await current.acquire(
+          request(allowlist("example.com")),
+        )) as DockerSandbox;
+        live.push(orphan, mine);
+
+        const { removed } = await current.reapOrphans();
+        expect([...removed].sort()).toEqual(
+          [
+            orphan.containerName,
+            orphan.proxyContainerName,
+            orphan.networkName,
+          ].sort(),
+        );
+        await gone("containers", orphan.containerName);
+        await gone("containers", orphan.proxyContainerName);
+        await gone("networks", orphan.networkName);
+        expect((await mine.exec("true")).exitCode).toBe(0);
+        await expect(
+          inspect(mine.proxyContainerName ?? ""),
+        ).resolves.toBeDefined();
+        await expect(
+          engine?.json("GET", `/networks/${mine.networkName}`),
+        ).resolves.toBeDefined();
+        expect(await current.reapOrphans()).toEqual({ removed: [] });
+      });
     });
   });
 });
