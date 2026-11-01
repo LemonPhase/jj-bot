@@ -10,9 +10,12 @@ import {
   taskViewSchema,
 } from "@jj/contracts";
 import { jobs, runs } from "@jj/db";
+import { LocalSandboxDriver } from "@jj/sandbox";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Brain, said } from "./testing/fake-executor";
+import { createDriverRegistry } from "./drivers";
+import type { EngineDriver } from "./ports";
+import { type Brain, FakeExecutor, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -292,6 +295,245 @@ describe("artifacts", () => {
     await expect(
       engine.tasks.artifactContent(task.id, "art_missing"),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("leaves a running teammate's write to its own snapshot while its result is recorded", async () => {
+    // The coordinator's run ends, and snapshots, between Bob's file landing
+    // on disk and his call's result being recorded: under load, the window
+    // a snapshot of "files a run changed" can fall into.
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(bob, (view) =>
+        said.turns(view) === 0
+          ? {
+              calls: [
+                {
+                  name: "write",
+                  args: {
+                    path: "report.md",
+                    content: "# Report\n",
+                    holdAt: "bob-wrote",
+                  },
+                },
+              ],
+            }
+          : { text: "report written" },
+      )
+      .brain(ada, async (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [{ name: "delegate", args: { bot: bob, brief: "report" } }],
+          };
+        if (!said.heard(view, `Result from ${bob} (session`)) {
+          await executor.gate("bob-wrote").reached;
+          return { text: "waiting" };
+        }
+        return lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      });
+    const { task } = await engine.tasks.create({
+      goal: "Report",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const waiting = await untilTask(engine, task.id, (view) =>
+      view.sessions.some(
+        (s) => s.botId === team.byName[ada] && s.status === "waiting",
+      ),
+    );
+    // Ada's snapshot saw report.md and left it to Bob.
+    expect(fileCredits(waiting)).toEqual([]);
+    executor.gate("bob-wrote").open();
+    const view = await untilTask(engine, task.id, completed);
+    const [, bobRun] = await runRows(task.id);
+    expect(fileCredits(view)).toEqual([
+      { path: "report.md", sessionId: bobRun?.sessionId, runId: bobRun?.id },
+    ]);
+  });
+
+  it("stores a file now when a teammate's call on it is in flight but the teammate's scan cannot reach it", async () => {
+    // Ada writes results.csv with bash; Bob, starting a minute later (past
+    // the skew), names it in a write that fails without writing. Ada's
+    // snapshot lands while that call is in flight. Bob's own scan starts
+    // after the file last changed, so leaving it to him would lose it.
+    let skew = 0;
+    const { engine, executor } = await setup({
+      clock: () => new Date(Date.now() + skew),
+    });
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(bob, (view) =>
+        said.turns(view) === 0
+          ? {
+              calls: [
+                {
+                  name: "write",
+                  args: {
+                    path: "results.csv",
+                    content: "x",
+                    holdAt: "bob-in-flight",
+                    fails: true,
+                  },
+                },
+              ],
+            }
+          : { text: "could not write" },
+      )
+      .brain(ada, async (view) => {
+        switch (said.turns(view)) {
+          case 0:
+            return {
+              calls: [
+                { name: "bash", args: { command: "echo a,b > results.csv" } },
+              ],
+            };
+          case 1:
+            skew = 60_000;
+            return {
+              calls: [
+                { name: "delegate", args: { bot: bob, brief: "fix results" } },
+              ],
+            };
+        }
+        if (!said.heard(view, `from ${bob} (session`)) {
+          await executor.gate("bob-in-flight").reached;
+          return { text: "waiting" };
+        }
+        return lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      });
+    const { task } = await engine.tasks.create({
+      goal: "Results",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const taskLevel = [{ path: "results.csv", sessionId: null, runId: null }];
+    const waiting = await untilTask(engine, task.id, (view) =>
+      view.sessions.some(
+        (s) => s.botId === team.byName[ada] && s.status === "waiting",
+      ),
+    );
+    expect(fileCredits(waiting)).toEqual(taskLevel);
+    executor.gate("bob-in-flight").open();
+    const view = await untilTask(engine, task.id, completed);
+    expect(fileCredits(view)).toEqual(taskLevel);
+    const [stored] = view.artifacts.filter((a) => a.path === "results.csv");
+    const { content } = await engine.tasks.artifactContent(
+      task.id,
+      stored?.id as string,
+    );
+    expect(Buffer.from(content).toString()).toBe("a,b\n");
+  });
+
+  it("looks again at who wrote a file read after a teammate's call on it started", async () => {
+    // Ada's snapshot finds a.txt first and looks up who wrote what; only
+    // then does Bob start writing z/b.txt, which the scan reads while his
+    // call is in flight. Stored at task level from the first look, his
+    // version would never be credited: his own snapshot finds it stored.
+    let reachZ = () => {};
+    const atZ = new Promise<void>((resolve) => {
+      reachZ = resolve;
+    });
+    const executor = new FakeExecutor();
+    let stalled = false;
+    const local = new LocalSandboxDriver({ killGraceMs: 200 });
+    const stalling: EngineDriver = {
+      id: local.id,
+      capabilities: local.capabilities,
+      validateSpec: (spec) => local.validateSpec(spec),
+      probe: () => local.probe(),
+      async acquire(request) {
+        const sandbox = await local.acquire(request);
+        return Object.assign(Object.create(sandbox) as typeof sandbox, {
+          exec: sandbox.exec.bind(sandbox),
+          release: sandbox.release.bind(sandbox),
+          id: sandbox.id,
+          driverId: sandbox.driverId,
+          workspaceDir: sandbox.workspaceDir,
+          fs: {
+            ...sandbox.fs,
+            // The scan's first look at z/b.txt waits for Bob's write.
+            stat: async (path: string) => {
+              if (path === "z/b.txt" && !stalled) {
+                stalled = true;
+                reachZ();
+                await executor.gate("bob-wrote").reached;
+              }
+              return sandbox.fs.stat(path);
+            },
+          },
+        });
+      },
+    };
+    const { engine } = await setup({
+      executor,
+      registry: createDriverRegistry([{ driver: stalling, label: "Local" }]),
+    });
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor
+      .brain(bob, async (view) => {
+        if (said.turns(view) > 0) return { text: "rewrote b" };
+        await atZ;
+        return {
+          calls: [
+            {
+              name: "write",
+              args: { path: "z/b.txt", content: "bob\n", holdAt: "bob-wrote" },
+            },
+          ],
+        };
+      })
+      .brain(ada, (view) => {
+        switch (said.turns(view)) {
+          case 0:
+            return {
+              calls: [
+                {
+                  name: "bash",
+                  args: {
+                    command: "mkdir z && echo a > a.txt && echo old > z/b.txt",
+                  },
+                },
+              ],
+            };
+          case 1:
+            return {
+              calls: [
+                { name: "delegate", args: { bot: bob, brief: "redo b" } },
+              ],
+            };
+        }
+        if (!said.heard(view, `Result from ${bob} (session`))
+          return { text: "waiting" };
+        return lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      });
+    const { task } = await engine.tasks.create({
+      goal: "Redo",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const aTxt = { path: "a.txt", sessionId: null, runId: null };
+    const waiting = await untilTask(engine, task.id, (view) =>
+      view.sessions.some(
+        (s) => s.botId === team.byName[ada] && s.status === "waiting",
+      ),
+    );
+    expect(fileCredits(waiting)).toEqual([aTxt]);
+    executor.gate("bob-wrote").open();
+    const view = await untilTask(engine, task.id, completed);
+    const [, bobRun] = await runRows(task.id);
+    expect(fileCredits(view)).toEqual([
+      aTxt,
+      { path: "z/b.txt", sessionId: bobRun?.sessionId, runId: bobRun?.id },
+    ]);
   });
 
   it("folds snapshot + events, and snapshot + stream, into a fresh snapshot", async () => {

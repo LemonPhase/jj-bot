@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { existsSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createConnection, createServer } from "node:net";
@@ -25,6 +25,7 @@ import {
   parseSubnetPool,
 } from "./drivers/docker";
 import {
+  DockerApiError,
   DockerEngine,
   DockerOutputLimitError,
   isNotFound,
@@ -1271,36 +1272,92 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           await gone("networks", sandbox.networkName);
       }, 300_000);
 
+      /**
+       * Creates `name` on the first /28 of a /27 in 10.214.0.0/16 that no
+       * network on the daemon overlaps; returns the /27 and its free /28.
+       * Another checkout's suite can share the daemon, or a killed run leave
+       * its networks behind, so no fixed range is safe to take.
+       */
+      const blockFirstHalf = async (name: string) => {
+        const ipv4 = (n: number) =>
+          [24, 16, 8, 0].map((shift) => (n >>> shift) & 255).join(".");
+        const range = (cidr: string): [number, number] | undefined => {
+          const match = /^(\d+)\.(\d+)\.(\d+)\.(\d+)\/(\d+)$/.exec(cidr);
+          if (!match) return undefined;
+          const [a, b, c, d, bits] = match.slice(1).map(Number) as number[];
+          const start =
+            (((a ?? 0) << 24) |
+              ((b ?? 0) << 16) |
+              ((c ?? 0) << 8) |
+              (d ?? 0)) >>>
+            0;
+          return [start, start + 2 ** (32 - (bits ?? 32)) - 1];
+        };
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const networks =
+            (await engine?.json<
+              Array<{
+                IPAM?: { Config?: Array<{ Subnet?: string }> | null } | null;
+              }>
+            >("GET", "/networks")) ?? [];
+          const taken = networks
+            .flatMap((network) => network.IPAM?.Config ?? [])
+            .flatMap((config) => {
+              const held = config.Subnet ? range(config.Subnet) : undefined;
+              return held ? [held] : [];
+            });
+          const base =
+            (((10 << 24) | (214 << 16)) >>> 0) + randomInt(2048) * 32;
+          if (taken.some(([start, end]) => start <= base + 31 && base <= end))
+            continue;
+          try {
+            await engine?.json("POST", "/networks/create", {
+              body: {
+                Name: name,
+                Internal: true,
+                IPAM: { Config: [{ Subnet: `${ipv4(base)}/28` }] },
+                Labels: labels,
+              },
+            });
+          } catch (error) {
+            // Taken between the listing and the create: pick another.
+            if (
+              error instanceof DockerApiError &&
+              /overlap/i.test(error.message)
+            )
+              continue;
+            throw error;
+          }
+          return { pool: `${ipv4(base)}/27`, free: `${ipv4(base + 16)}/28` };
+        }
+        throw new Error("No /27 in 10.214.0.0/16 is free on this daemon");
+      };
+
+      // Three allowlist sandboxes of two containers each: on a daemon another
+      // suite is busy with, more than the default 20 s.
       it("skips subnets other networks hold, and says so when its pool is full", async () => {
         // Two /28s; another network already holds the first.
-        const small = new DockerSandboxDriver({
-          namespace,
-          labels,
-          egressProxyImage: image,
-          egressSubnetPool: "10.214.0.0/27",
-        });
         const blocker = `${namespace}-blocker`;
-        await engine?.json("POST", "/networks/create", {
-          body: {
-            Name: blocker,
-            Internal: true,
-            IPAM: { Config: [{ Subnet: "10.214.0.0/28" }] },
-            Labels: labels,
-          },
-        });
         try {
+          const { pool, free } = await blockFirstHalf(blocker);
+          const small = new DockerSandboxDriver({
+            namespace,
+            labels,
+            egressProxyImage: image,
+            egressSubnetPool: pool,
+          });
           const first = (await small.acquire(
             request(allowlist("example.com")),
           )) as DockerSandbox;
           live.push(first);
-          expect(await subnetOf(first)).toBe("10.214.0.16/28");
+          expect(await subnetOf(first)).toBe(free);
           const taskId = `full-${Math.random().toString(36).slice(2)}`;
           await expect(
             small.acquire(
               request(allowlist("example.com"), uniqueKey("full"), { taskId }),
             ),
           ).rejects.toThrow(
-            /No free \/28 left in the egress subnet pool 10\.214\.0\.0\/27/,
+            `No free /28 left in the egress subnet pool ${pool}`,
           );
           expect(await ownedBy(taskId)).toEqual({
             containers: [],
@@ -1312,14 +1369,14 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
             request(allowlist("example.com")),
           )) as DockerSandbox;
           live.push(again);
-          expect(await subnetOf(again)).toBe("10.214.0.16/28");
+          expect(await subnetOf(again)).toBe(free);
         } finally {
           await Promise.all(
             live.splice(0).map((sandbox) => sandbox.release().catch(() => {})),
           );
           await engine?.json("DELETE", `/networks/${blocker}`).catch(() => {});
         }
-      });
+      }, 120_000);
 
       it("refuses, and removes, a sandbox that has IPv6 addresses", async (context) => {
         // Engines with CVE-2024-32473 leave IPv6 link-local addresses on

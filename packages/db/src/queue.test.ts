@@ -153,10 +153,16 @@ describe.each(targets)("job queue on $name", (target) => {
     const { db } = database;
     const [bot] = await seedBots(db, 1);
     const job = must(await enqueue(db, { kind: "chat.reply", botId: bot?.id }));
-    const first = must((await claim(db, "w", 1, 50)).jobs[0]);
-    // A live lease is not reclaimed.
+    const expire = () =>
+      db
+        .update(jobs)
+        .set({ leaseUntil: sql`now() - interval '1 second'` })
+        .where(eq(jobs.id, job.id));
+    const first = must((await claim(db, "w", 1, 30_000)).jobs[0]);
+    // A live lease is not reclaimed. (It is expired by hand: a short real
+    // lease can run out before the next statement on a loaded machine.)
     expect(await claimIds(database, "w")).toEqual([]);
-    await sleep(120);
+    await expire();
     const second = must((await claim(db, "w", 1, 30_000)).jobs[0]);
     expect(second).toMatchObject({ id: job.id, leaseOwner: "w", attempts: 2 });
     expect(second.lease).toEqual({ ...first.lease, attempt: 2 });
@@ -166,10 +172,7 @@ describe.each(targets)("job queue on $name", (target) => {
     expect(await fail(db, first.lease, "late")).toBe(false);
     expect(await heartbeat(db, second.lease, 30_000)).toBe(true);
     // Another owner reclaims after the second expiry, too.
-    await db
-      .update(jobs)
-      .set({ leaseUntil: sql`now() - interval '1 second'` })
-      .where(eq(jobs.id, job.id));
+    await expire();
     const third = must((await claim(db, "rescuer", 1, 30_000)).jobs[0]);
     expect(third.lease).toMatchObject({ owner: "rescuer", attempt: 3 });
     expect(await complete(db, second.lease)).toBe(false);

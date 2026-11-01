@@ -7,6 +7,7 @@ import { StudioScreen } from "../studio/StudioScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
 import {
   canonicalRoute,
+  parseRoute,
   type Route,
   routeHref,
   type Section,
@@ -66,8 +67,13 @@ export function AppShell() {
   // the lists are loaded), and any route is spelled canonically ("#bots",
   // "#/studio" and no hash at all are rewritten). Two effects would undo each
   // other within one commit. `listedKey` stands for the two id lists, which are
-  // new arrays every render.
+  // new arrays every render. A navigation can land between a commit and its
+  // effects (a click as soon as the screen shows): then the URL names another
+  // route than this render did, and rewriting it from this one would undo the
+  // navigation. Its own render, on `hashchange`, fixes it up instead.
   useEffect(() => {
+    if (routeHref(parseRoute(window.location.hash)) !== routeHref(route))
+      return;
     const target =
       (loading
         ? null
