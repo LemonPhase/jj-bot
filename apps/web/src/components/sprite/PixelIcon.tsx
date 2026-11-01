@@ -3,7 +3,7 @@ import "./sprite.css";
 /**
  * The design's non-bot pixel icons (sprites.json `ui`). Colours come from
  * tokens, so they follow the theme:
- *   brand  JJ Bot mark, body in --ink; the eyes are holes that show the ground
+ *   brand  JJ Bot mark, head in --ink with a bot-coral antenna tip; the eyes are holes that show the ground
  *   gate   verification gate, frame --gate-frame, tick --status-completed
  *   play   / pause  Office replay controls, in currentColor (use on a primary circle)
  */
@@ -17,20 +17,24 @@ interface IconData {
 
 const ICONS: Readonly<Record<PixelIconName, IconData>> = {
   brand: {
-    viewBox: "0 0 10 10",
+    // 12×12, the sprite grid. Head in --ink; the eyes are holes that show the ground.
+    // The antenna tip is bot coral (COLOUR_RAMPS.coral.f), the same in both themes.
+    viewBox: "0 0 12 12",
     grid: [
-      "....a.....",
-      "....a.....",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      ".aa.aa.aa.",
-      ".aa.aa.aa.",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      ".aaaaaaaa.",
-      "..........",
+      ".....tt.....",
+      ".....aa.....",
+      "..aaaaaaaa..",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      ".aa..aa..aa.",
+      ".aa..aa..aa.",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      ".aaaaaaaaaa.",
+      "..aaaaaaaa..",
+      "............",
     ],
-    fills: { a: "var(--ink)" },
+    fills: { a: "var(--ink)", t: "#FF7A66" },
   },
   gate: {
     // The design draws it in a "-1 -1 12 12" viewBox; this grid includes that margin.
