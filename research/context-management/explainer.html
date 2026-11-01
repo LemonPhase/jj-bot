@@ -156,7 +156,8 @@ a { color: var(--ride); }
 <!-- 2. Playback -->
 <section class="panel" id="flow">
   <h2><span class="n">2</span>Play a task: who wakes, and what reaches whom</h2>
-  <p>Every input for a bot lands in its session's <b>inbox</b>. Briefs, results and the user's messages <b style="color:var(--wake)">wake</b> the session. A teammate's message <b style="color:var(--ride)">waits</b> until something else wakes it, and it is <b style="color:var(--lost)">never read</b> if the recipient's session has already finished.</p>
+  <p class="note" style="color:var(--ink)">Each box is an <b>execution session</b>: one bot doing one piece of work in this task, with its own transcript and inbox. Ada, Grace and Linus are the <b>bots</b> (personas) running them. Ada's box is the task's root (coordinator) session; each <code>delegate</code> creates a new child session. A session runs in several <b>runs</b>: it wakes, works, then waits.</p>
+  <p>Every input lands in a session's <b>inbox</b>. Briefs, results and the user's messages <b style="color:var(--wake)">wake</b> the session. A teammate's message <b style="color:var(--ride)">waits</b> until something else wakes it, and it is <b style="color:var(--lost)">never read</b> if the recipient's session has already finished.</p>
   <div class="play">
     <div class="fig"><svg id="net" viewBox="0 0 520 380" role="img" aria-label="Diagram of the user, coordinator, two workers, the workspace and the task chat"></svg></div>
     <div>
@@ -326,9 +327,9 @@ a { color: var(--ride); }
   const N = {
     user: { x: 20, y: 20, w: 120, label: "User" },
     chat: { x: 380, y: 20, w: 120, label: "Task chat (UI)" },
-    ada: { x: 200, y: 130, w: 120, label: "Ada · coordinator" },
-    grace: { x: 60, y: 270, w: 120, label: "Grace · worker" },
-    linus: { x: 340, y: 270, w: 120, label: "Linus · worker" },
+    ada: { x: 190, y: 130, w: 150, label: "Ada · root session" },
+    grace: { x: 40, y: 270, w: 150, label: "Grace · child session" },
+    linus: { x: 330, y: 270, w: 150, label: "Linus · child session" },
   };
   const H_ = 52;
   const mid = (n) => ({ x: N[n].x + N[n].w / 2, y: N[n].y + H_ / 2 });
@@ -359,13 +360,14 @@ a { color: var(--ride); }
     { t: "Linus finishes first", x: "A worker's result is its last assistant text, with no size limit. It is posted to the task chat and delivered to Ada's inbox, which wakes her. It stays in her transcript permanently.", e: { "linus-ada": "wake", "ada-chat": "ride" }, on: ["ada"], st: { ada: "running", grace: "running", linus: "completed" }, inbox: [["wake", "Ada ← result from Linus + open delegations"]] },
     { t: "Grace replies to Linus, too late", x: "Linus's session has finished. The message is posted to the chat for the user to see, but no model will ever read it.", e: { "grace-linus": "lost" }, on: [], st: { ada: "running", grace: "running", linus: "completed" }, inbox: [["lost", "Linus ← 'ok?' (session finished, never read)"]] },
     { t: "Grace reports; Ada completes", x: "Ada resumes from her full transcript with both results and calls `complete_task`. The task's result goes to the task chat, but not back to the user's direct chat with Ada.", e: { "grace-ada": "wake", "ada-chat": "ride" }, on: ["ada"], st: { ada: "completed", grace: "completed", linus: "completed" }, inbox: [["wake", "Ada ← result from Grace"]] },
-    { t: "The user follows up", x: "The follow-up reopens the task and appends to Ada's same, ever-growing transcript. Delegating to Grace again starts a new, cold session that knows nothing of her first one.", e: { "user-ada": "wake", "ada-grace": "wake" }, on: ["ada", "grace"], st: { ada: "running", grace: "running (new)", linus: "completed" }, inbox: [["wake", "Ada ← follow-up (task reopened)"], ["wake", "Grace ← new brief, no memory of the first"]] },
+    { t: "The user follows up", x: "The follow-up reopens the task and appends to Ada's same, ever-growing transcript. Delegating to Grace again starts a new, cold session that knows nothing of her first one.", e: { "user-ada": "wake", "ada-grace": "wake" }, on: ["ada", "grace"], st: { ada: "running", grace: "running · first one completed", linus: "completed" }, graceLabel: "Grace · NEW child session", inbox: [["wake", "Ada ← follow-up (task reopened)"], ["wake", "New Grace session ← new brief, no memory of the first"]] },
   ];
   let step = 0, timer = null;
   function showStep() {
     const s = STEPS[step];
     for (const [k, e] of Object.entries(edgeEls)) { const kind = s.e[k]; e.setAttribute("class", "edge" + (kind ? " " + kind : "")); e.setAttribute("opacity", kind ? 1 : 0.35); }
     for (const [k, n] of Object.entries(nodeEls)) { n.g.classList.toggle("on", s.on.includes(k)); n.st.textContent = s.st[k] ?? ""; }
+    nodeEls.grace.g.querySelector("text").textContent = s.graceLabel ?? N.grace.label;
     document.getElementById("stepNo").textContent = `Step ${step + 1} of ${STEPS.length}`;
     document.getElementById("stepTitle").textContent = s.t;
     document.getElementById("stepText").innerHTML = s.x.replace(/`([^`]+)`/g, '<code>$1</code>');
