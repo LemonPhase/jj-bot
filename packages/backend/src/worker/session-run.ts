@@ -27,6 +27,7 @@ import { profileFor } from "../services/profiles";
 import {
   getSession,
   lockTask,
+  openChildren,
   updateSession,
   updateTask,
 } from "../services/sessions";
@@ -294,15 +295,18 @@ async function prepare(
   const requester = parent
     ? team.find((member) => member.botId === parent.botId)?.name
     : undefined;
-  const tools = sessionTools(
-    rc,
-    team.filter((member) => !member.self),
-  );
+  const others = team.filter((member) => !member.self);
   const deadline = new Date(
     rc.startedAt.getTime() +
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   return async (inputs: string[]): Promise<RunOutcome> => {
+    // Per call: a continuation sees the delegations still open now.
+    const tools = sessionTools(
+      rc,
+      others,
+      await openChildren(ctx.db, rc.session),
+    );
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -316,6 +320,7 @@ async function prepare(
         workspaceDir: hold.sandbox.workspaceDir,
         requester,
         canDelegate: tools.some((tool) => tool.name === "delegate"),
+        resumed: rc.reason === "recovery",
       }),
       transcript: await loadTranscript(ctx, rc.session.id),
       inputs,

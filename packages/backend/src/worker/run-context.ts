@@ -21,6 +21,7 @@ import { emit } from "../events";
 import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
+import { COMPLETION_SET_ASIDE } from "./prompts";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */
@@ -161,8 +162,10 @@ export async function takeInbox(
     if (fresh.length === 0) return [];
     for (const item of fresh) rc.claimed.add(item.id);
     // New input voids a completion recorded before it: the coordinator must
-    // see the input first (a hand-off or crash can land between the two).
-    if (rc.session.completionRequested) {
+    // see the input first (a hand-off or crash can land between the two), and
+    // is told so, or it would take its completion as done.
+    const setAside = Boolean(rc.session.completionRequested);
+    if (setAside) {
       await tx
         .update(sessions)
         .set({ completionRequested: null })
@@ -180,7 +183,8 @@ export async function takeInbox(
         { goalVersion: rc.task.goalVersion },
         attributionOf(rc),
       );
-    return fresh.map((item) => item.text);
+    const texts = fresh.map((item) => item.text);
+    return setAside ? [COMPLETION_SET_ASIDE, ...texts] : texts;
   });
 }
 

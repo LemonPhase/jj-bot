@@ -193,6 +193,37 @@ describe("recovery", () => {
     ).toEqual([{ reason: "start" }, { reason: "recovery" }]);
   });
 
+  it("tells a recovering coordinator to finish with complete_task once the work is done", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const brain: Brain = (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "hold" } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "resumed" } }] };
+    first.executor.brain(ada, brain);
+    const { task } = await first.engine.tasks.create({
+      goal: "Resume and finish",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    await first.engine.worker.stop();
+    const second = await worker();
+    second.executor.brain(ada, brain);
+    await untilTask(second.engine, task.id, status("completed"));
+    const instruction =
+      "This run resumes after an interruption (a restart). Check what has reported and what is still open, then carry on; once the work is done and verified, finish with `complete_task`.";
+    expect(first.executor.inputs[0]?.systemPrompt).not.toContain(instruction);
+    const resumed = second.executor.inputs[0];
+    expect(resumed?.inputs).toEqual([]);
+    expect(resumed?.systemPrompt).toContain(instruction);
+    expect(resumed?.systemPrompt).toContain(
+      "When the work is done and verified (every delegation has reported and you have checked the result against the goal), call `complete_task` with the consolidated result.",
+    );
+  });
+
   it("fails a session visibly when its ephemeral workspace did not survive", async () => {
     const first = await worker({ config: { leaseMs: 1_000 } });
     const { profile } = await first.engine.profiles.create({

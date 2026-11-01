@@ -3,7 +3,7 @@
 // scripted test model reads. Refusals are tool errors the model can adapt to,
 // never exceptions.
 import { isFinishedStatus } from "@jj/contracts";
-import { sessions } from "@jj/db";
+import { type SessionRow, sessions } from "@jj/db";
 import { and, count, desc, eq, inArray } from "drizzle-orm";
 import type { CollabTool, CollabToolResult } from "../ports";
 import { deliver, postMessage } from "../services/messages";
@@ -40,11 +40,37 @@ function findTeammate(team: readonly Teammate[], value: unknown) {
 const textArg = (value: unknown) =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
 
-function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
+/** The first line of a brief, cut near 80 characters. */
+function briefSummary(brief: string): string {
+  const line = (brief.trim().split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ");
+  return line.length <= 80 ? line : `${line.slice(0, 79).trimEnd()}…`;
+}
+
+/** The caller's delegations that have not reported yet: bot, brief summary and status. */
+export function describeOpenDelegations(
+  open: readonly Pick<SessionRow, "botId" | "brief" | "status">[],
+  team: readonly Teammate[],
+): string {
+  if (open.length === 0) return "Your open delegations: none.";
+  const names = new Map(team.map((member) => [member.botId, member.name]));
+  return [
+    "Your open delegations (assigned, not yet reported):",
+    ...open.map(
+      (child) =>
+        `- ${names.get(child.botId) ?? child.botId}: ${briefSummary(child.brief)} (${child.status})`,
+    ),
+  ].join("\n");
+}
+
+function delegateTool(
+  rc: RunContext,
+  team: readonly Teammate[],
+  open: readonly SessionRow[],
+): CollabTool {
   const { ctx } = rc.deps;
   return {
     name: "delegate",
-    description: `Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Teammates:\n${describeTeam(team)}`,
+    description: `Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Name the files the teammate owns in the brief. Never delegate work that is already assigned: while a delegation is open, wait for its result, or \`message\` that teammate.\nTeammates:\n${describeTeam(team)}\n${describeOpenDelegations(open, team)}`,
     parameters: {
       type: "object",
       properties: {
@@ -56,7 +82,7 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         brief: {
           type: "string",
           description:
-            "What to do, which files it owns, and what to report back.",
+            "What to do, the files it owns (it edits only those), and what to report back.",
         },
       },
       required: ["bot", "brief"],
@@ -79,6 +105,13 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         if (rc.session.depth + 1 > ctx.config.maxDelegationDepth)
           return refuse(
             `Delegation is limited to depth ${ctx.config.maxDelegationDepth}; do this part yourself.`,
+          );
+        const duplicate = (await openChildren(tx, rc.session)).find(
+          (child) => child.botId === assignee.botId && child.brief === brief,
+        );
+        if (duplicate)
+          return refuse(
+            `${assignee.name} already has this exact brief open (session ${duplicate.id}, ${duplicate.status}). Do not delegate it again; wait for its result.`,
           );
         const [existing] = await tx
           .select({ value: count() })
@@ -128,8 +161,9 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           },
           { wake: true, ctx },
         );
+        const open = await openChildren(tx, rc.session);
         return {
-          text: `Delegated to ${assignee.name} (session ${child.id}). Its result will arrive as a message; end your turn when you have nothing else to do meanwhile.`,
+          text: `Delegated to ${assignee.name} (session ${child.id}).\n${describeOpenDelegations(open, team)}\nEach result arrives as a message. Do not delegate work that is already assigned; end your turn to wait when you have nothing else to do meanwhile.`,
         };
       });
     },
@@ -267,17 +301,22 @@ function completeTaskTool(rc: RunContext): CollabTool {
   };
 }
 
-/** The collaboration tools for one run. `delegate` is omitted when nobody can be delegated to. */
+/**
+ * The collaboration tools for one executor call. `delegate` is omitted when
+ * nobody can be delegated to; its description lists `open`, the caller's
+ * delegations that have not reported yet.
+ */
 export function sessionTools(
   rc: RunContext,
   team: readonly Teammate[],
+  open: readonly SessionRow[] = [],
 ): CollabTool[] {
   const tools: CollabTool[] = [];
   if (
     team.length > 0 &&
     rc.session.depth < rc.deps.ctx.config.maxDelegationDepth
   )
-    tools.push(delegateTool(rc, team));
+    tools.push(delegateTool(rc, team, open));
   if (team.length > 0) tools.push(messageTool(rc, team));
   if (rc.session.parentSessionId === null) tools.push(completeTaskTool(rc));
   return tools;
