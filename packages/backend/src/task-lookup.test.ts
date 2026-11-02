@@ -310,6 +310,17 @@ describe("task log service", () => {
       earlier: 0,
       later: 8,
     });
+    // Adjacent cursors: an empty window whose counts still add up.
+    expect(await list({ after: seeded.ids[2], before: seeded.ids[3] })).toEqual(
+      { entries: [], earlier: 3, later: 5 },
+    );
+    // Crossed or equal cursors name no window: refused, not double-counted.
+    expect(
+      await list({ after: seeded.ids[5], before: seeded.ids[2] }),
+    ).toBeUndefined();
+    expect(
+      await list({ after: seeded.ids[3], before: seeded.ids[3] }),
+    ).toBeUndefined();
     // The newest reports: 3 of the 8 entries are reports.
     const reports = await list({ kind: "report", newest: true, limit: 2 });
     expect(ids(reports)).toEqual([seeded.ids[4], seeded.ids[7]]);
@@ -868,6 +879,15 @@ describe("lookup tools", () => {
       await call(tools, "task_log", { before: `${seeded.ids[1]}\u0000` }),
     ).toEqual({
       text: "`before` cannot contain a NUL character.",
+      isError: true,
+    });
+    expect(
+      await call(tools, "task_log", {
+        after: seeded.ids[5],
+        before: seeded.ids[2],
+      }),
+    ).toEqual({
+      text: "No entries between those cursors: `after` and `before` must both be entries of this task's log, `after` the older one.",
       isError: true,
     });
     const failing = lookupTools(

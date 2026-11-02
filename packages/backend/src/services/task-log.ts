@@ -205,7 +205,8 @@ async function entrySequence(exec: Executor, taskId: string, id: string) {
 /**
  * A page of the task's log, oldest first, filtered by kind and text: from the
  * oldest entry, after or before a cursor, or the newest. Returns undefined
- * when `after` or `before` is not an entry of this task.
+ * when the cursors name no window of this task's log: `after` or `before` is
+ * not one of its entries, or `after` is not older than `before`.
  */
 export async function listTaskLog(
   exec: Executor,
@@ -217,6 +218,8 @@ export async function listTaskLog(
   const after = await cursor(filter.after);
   const before = await cursor(filter.before);
   if (after === -1 || before === -1) return undefined;
+  // Crossed cursors would count the entries between them twice.
+  if (after !== null && before !== null && after >= before) return undefined;
   const limit = Math.min(
     Math.max(Math.floor(filter.limit ?? TASK_LOG_PAGE), 1),
     MAX_TASK_LOG_PAGE,

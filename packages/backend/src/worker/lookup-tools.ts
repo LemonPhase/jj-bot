@@ -156,7 +156,11 @@ export function lookupTools(rc: RunContext): CollabTool[] {
         };
         const page = await listTaskLog(db, taskId, filter);
         if (!page)
-          return refuse(noEntry((filter.after ?? filter.before) as string));
+          return refuse(
+            filter.after && filter.before
+              ? "No entries between those cursors: `after` and `before` must both be entries of this task's log, `after` the older one."
+              : noEntry((filter.after ?? filter.before) as string),
+          );
         return ok(
           formatTaskLogPage(page, filter, { redact, tool: "task_log" }),
         );
