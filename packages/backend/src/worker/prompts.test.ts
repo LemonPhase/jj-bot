@@ -157,10 +157,10 @@ describe("prompts", () => {
       );
     }
     expect(lookupLines(coordinator)[0]).toContain(
-      "Use them when you need something no longer in front of you, such as an earlier report or what the user asked before.",
+      "Use them when you need something no longer in front of you, such as an earlier report or what the user asked before, but not to check on open delegations: their results arrive as messages, so end your turn to wait.",
     );
     expect(lookupLines(worker)[0]).toContain(
-      "Use them when your brief does not tell you something you need, such as what the user asked or what a teammate reported, instead of guessing.",
+      "When your brief refers to something it does not spell out (a rule or request from the user, earlier work, a teammate's result, a file it does not explain), look it up with `task_log` or `read_report` before you start.",
     );
     expect(chat).not.toContain("`task_log`");
   });

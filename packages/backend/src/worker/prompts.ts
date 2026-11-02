@@ -111,7 +111,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
           ]
         : ["- Do the work yourself with your coding tools."]),
       ...messaging,
-      `${lookup} Use them when you need something no longer in front of you, such as an earlier report or what the user asked before.`,
+      `${lookup} Use them when you need something no longer in front of you, such as an earlier report or what the user asked before, but not to check on open delegations: their results arrive as messages, so end your turn to wait.`,
       "- When the work is done and verified (every delegation has reported and you have checked the result against the goal), call `complete_task` with the consolidated result.",
       "- End a turn with nothing delegated and without `complete_task` only when you genuinely need the user's input, and say exactly what you need.",
       "- Only work done for the current goal version counts. When the goal changes, re-check finished work against the new goal before completing.",
@@ -131,7 +131,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
           ]
         : []),
       ...messaging,
-      `${lookup} Use them when your brief does not tell you something you need, such as what the user asked or what a teammate reported, instead of guessing.`,
+      `${lookup} When your brief refers to something it does not spell out (a rule or request from the user, earlier work, a teammate's result, a file it does not explain), look it up with \`task_log\` or \`read_report\` before you start.`,
       `- When you are done, end your turn with a short report: what you did, the files you changed, and anything left open. That final message is sent to ${input.requester ?? "the coordinator"}.`,
       "- You cannot complete the task; only the coordinator can.",
       ...(input.resumed
