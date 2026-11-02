@@ -133,7 +133,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.0.2",
+      contractVersion: "1.1.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,

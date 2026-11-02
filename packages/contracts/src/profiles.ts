@@ -42,11 +42,19 @@ export const CODING_TOOLS = [
 ] as const;
 export const toolNameSchema = z.enum(CODING_TOOLS);
 
-/** Collaboration tools. Always available to task sessions, never listed in a profile. */
+/**
+ * Collaboration tools. Never listed in a profile: a task session gets the ones
+ * its place in the task allows (`delegate` and `message` with teammates,
+ * `complete_task` for the coordinator, the read-only lookup tools always).
+ */
 export const COLLABORATION_TOOLS = [
   "delegate",
   "message",
   "complete_task",
+  "task_state",
+  "task_log",
+  "read_entry",
+  "read_report",
 ] as const;
 
 const toolListSchema = z
