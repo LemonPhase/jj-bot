@@ -945,9 +945,9 @@ describe("orchestration", () => {
     expect(delegateTool?.parameters).toMatchObject({
       properties: { bot: { enum: [bob, cy].sort() } },
     });
-    // At the depth limit a worker gets no delegate tool.
+    // At the depth limit a worker gets no delegate tool; the lookup tools stay.
     expect(view.sessions.find((s) => s.depth === 1)?.result).toBe(
-      "tools: message",
+      "tools: message,task_state,task_log,read_entry,read_report",
     );
   });
 });

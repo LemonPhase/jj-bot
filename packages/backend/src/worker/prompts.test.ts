@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LOOKUP_TOOLS } from "./lookup-tools";
 import {
   BRIEF_HEADING,
   briefPointer,
@@ -131,6 +132,37 @@ describe("prompts", () => {
     expect(worker).toContain("You cannot complete the task");
     expect(worker).not.toContain("`delegate`");
     expect(worker).not.toContain("Your memory");
+  });
+
+  it("tell every task session about the lookup tools and when to use them, in one line", () => {
+    const solo = sessionPrompt({
+      bot: { name: "Ada", role: "", instructions: "" },
+      memory: "",
+      role: "coordinator",
+      goal: "Write a report",
+      goalVersion: 1,
+      roster: [{ name: "Ada", role: "", self: true }],
+      workspaceDir: "/workspace",
+      canDelegate: false,
+    });
+    const lookupLines = (prompt: string) =>
+      prompt.split("\n").filter((line) => line.includes("`task_log`"));
+    for (const prompt of [coordinator, worker, solo]) {
+      const lines = lookupLines(prompt);
+      expect(lines).toHaveLength(1);
+      for (const tool of LOOKUP_TOOLS)
+        expect(lines[0]).toContain(`\`${tool}\``);
+      expect(lines[0]).toContain(
+        "look up this task's shared record: its sessions, the user's messages, and every brief, report and teammate message in full.",
+      );
+    }
+    expect(lookupLines(coordinator)[0]).toContain(
+      "Use them when you need something no longer in front of you, such as an earlier report or what the user asked before.",
+    );
+    expect(lookupLines(worker)[0]).toContain(
+      "Use them when your brief does not tell you something you need, such as what the user asked or what a teammate reported, instead of guessing.",
+    );
+    expect(chat).not.toContain("`task_log`");
   });
 
   it("tell a chat bot when to answer, create a task or forward", () => {
