@@ -254,15 +254,16 @@ a { color: var(--ride); }
 <!-- 6. Results -->
 <section class="panel" id="exp">
   <h2><span class="n">6</span>What the real-model experiments showed</h2>
-  <p>50 runs on <span class="mono">openai/gpt-6-luna</span>, 5 per variant. A script checked each final workspace; a bot's own claim never counted as a pass. With 5 runs, a one-run gap (4/5 against 5/5) is noise. The token and cost differences, and E3's large gaps, are the signal.</p>
+  <p><b>How to read this.</b> Each experiment gives the bots one small task and tries it in two or three ways (the <b>variants</b>, one per bar). A real model does not answer the same way twice, so every variant ran <b>5 times</b>, 50 runs in total on <span class="mono">openai/gpt-6-luna</span>.</p>
+  <p>After each run, a script opened the files the bots wrote and checked whether the task was really done. The bots' own "done" did not count. <b>"Passed 4 of 5"</b> means the files were right in 4 of the 5 runs. With only 5 tries, 4 against 5 is too close to call. The clearer differences are in token use (bar length) and in E3.</p>
   <div class="readout">
-    <div class="stat" style="border-color:var(--tx)"><b>$0.15</b><span>spent of the $3 budget</span></div>
+    <div class="stat" style="border-color:var(--tx)"><b>$0.15</b><span>spent of the $3 budget (E4 was free)</span></div>
     <div class="stat" style="border-color:var(--sys)"><b>77%</b><span>of prompt tokens used by the coordinator (E0)</span></div>
     <div class="stat" style="border-color:var(--wake)"><b>3–5×</b><span>cost of workers agreeing peer-to-peer vs the coordinator deciding (E3)</span></div>
     <div class="stat" style="border-color:var(--ride)"><b>−29%</b><span>tokens with a handoff note on re-delegation (E2)</span></div>
   </div>
   <div class="exp-grid" id="expCharts"></div>
-  <p class="note">Bars show mean prompt tokens per run (input plus cached). The chip shows runs that passed the check. Full tables, failure details and method are in <span class="mono">research/context-management/05-results.md</span>. Not run: E4, the offline replay of tool-result clearing, because the harness does not save full transcripts yet. Caveat: the provider reported 99.9% of prompt tokens as cache reads, which I have not verified; at uncached list price the whole batch would have cost $0.36.</p>
+  <p class="note">Bar length is the average number of prompt tokens one run used (shorter is cheaper); the cheapest variant is green. The badge on the right is how many of its 5 runs passed the file check. Full tables, failure details and method are in <span class="mono">research/context-management/05-results.md</span>. Caveat: the provider reported 99.9% of prompt tokens as cache reads, which I have not verified; at uncached list price the whole batch would have cost $0.36.</p>
 </section>
 
 <footer>Branch <span class="mono">research/context-management</span> · <span class="mono">research/context-management/</span> 01–05 · Issue #68</footer>
@@ -441,15 +442,19 @@ a { color: var(--ride); }
 
   // ---------- 6. Results (means of 5 runs, from results/summary.json) ----------
   const EXPS = [
-    { id: "E1", title: "E1 · How a worker gets task context", q: "A user rule arrives after Grace has started, and Linus needs Grace's terms.",
+    { id: "E1", title: "E1 · How a worker gets task context", q: "Task: Grace writes 3 penguin terms, then Linus writes 3 different ones. After Grace starts, the user adds a rule: end every line with [kiwi-7]. Passed means both files have 3 lines, every line ends with [kiwi-7], and Linus repeats none of Grace's terms.",
       rows: [["Today: brief only", 47.6, 4, "$0.0025"], ["Push: digest added to the brief", 45.1, 5, "$0.0022"], ["Pull: task_log / read_report tools", 66.9, 5, "$0.0027"]],
       take: "Pushing a digest costs nothing extra. Pull works, and workers did call the tools, but it costs 40% more. In every variant the coordinator also relayed the late rule with message, about 3 times per run." },
-    { id: "E2", title: "E2 · Giving the same bot more work", q: "The follow-up needs the codeword Grace gave only in her first report.",
+    { id: "E2", title: "E2 · Giving the same bot more work", q: "Task: Grace writes 3 terms and makes up a codeword, which she puts only in her report. The user then asks for a 4th term plus a line with the codeword she chose earlier. Passed means the file has 4 terms and the codeword matches her first report.",
       rows: [["Today: fresh session", 43.6, 4, "$0.0020"], ["C2: fresh + handoff note", 30.9, 4, "$0.0016"], ["C1: reopen her old session", 35.5, 4, "$0.0016"]],
       take: "Warm variants are 20–30% cheaper with equal success. The worst failure was silent: a fresh session invented a new codeword (glacier instead of Frostvale), and the coordinator still reported 'done'." },
-    { id: "E3", title: "E3 · Two workers agreeing on an interface", q: "lib.ts and main.ts must fit together; pass means main.ts runs.",
+    { id: "E3", title: "E3 · Two workers agreeing on an interface", q: "Task: Grace writes lib.ts (a formatting function) and Linus writes main.ts (which calls it), at the same time. The two files only work if they agree on the function's name and arguments. Passed means main.ts runs.",
       rows: [["Hub: coordinator decides, puts it in both briefs", 19.4, 5, "$0.0014"], ["Today: peers use message (9.6 messages)", 59.6, 5, "$0.0026"], ["Peers use NOTES.md (2.2 fixes per run)", 98.4, 5, "$0.0039"]],
       take: "Everything worked in the end, but peer agreement cost 3–5× more and needed repair delegations. Deciding up front is cheapest, fastest (12 s vs 18–24 s) and needs no fixes." },
+    { id: "E4", title: "E4 · Would clearing old tool results help?", unit: "%", max: 80,
+      q: "No new runs: a calculation over the 50 recorded runs. First, what makes up the prompt tokens? Then, how much would be saved if all but the newest few tool outputs were replaced by a one-line stub (the idea is from Anthropic's context editing)?",
+      rows: [["Share: system prompt + tool definitions", 68.8, null, ""], ["Share: the bot's own earlier replies", 13.6, null, ""], ["Share: tool outputs (file reads, commands)", 10.5, null, ""], ["Share: inbox (briefs, results, messages)", 7.1, null, ""], ["Saving if only the newest tool output is kept", 5.3, null, ""], ["Saving if the newest 3 are kept", 3.8, null, ""]],
+      take: "In these small tasks, tool outputs are only about 10% of prompt tokens, so clearing them saves just 2–8%. Most of every call is the fixed part: system prompt and tool definitions, resent each time. That part only gets cheap through caching, which needs it to stay byte-identical. Real coding tasks read bigger files, so clearing would matter more there; these tasks cannot show that." },
   ];
   const host = document.getElementById("expCharts");
   for (const e of EXPS) {
@@ -457,23 +462,25 @@ a { color: var(--ride); }
     block.className = "exp-block";
     block.innerHTML = `<h3>${e.title}</h3><p class="q">${e.q}</p>`;
     const svg = el("svg", { role: "img", "aria-label": `${e.title}: prompt tokens and pass rate per variant` });
-    const W = 820, rowH = 34, L = 300, R = 150, T = 4;
+    const W = 820, rowH = 34, L = 300, R = 210, T = 4;
     const H = T + e.rows.length * rowH + 26;
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.style.minWidth = "560px"; svg.style.width = "100%";
-    const max = 100, x = (v) => L + (W - L - R) * (v / max);
-    for (let v = 0; v <= max; v += 25) {
+    const max = e.max ?? 100, x = (v) => L + (W - L - R) * (v / max);
+    for (let v = 0; v <= max; v += max / 4) {
       el("line", { x1: x(v), x2: x(v), y1: T, y2: H - 22, stroke: "var(--rule)" }, svg);
-      const tt = el("text", { x: x(v), y: H - 6, "text-anchor": "middle", class: "num" }, svg); tt.textContent = `${v}k`;
+      const tt = el("text", { x: x(v), y: H - 6, "text-anchor": "middle", class: "num" }, svg); tt.textContent = e.unit === "%" ? `${v}%` : `${v}k`;
     }
     const best = Math.min(...e.rows.map((r) => r[1]));
     e.rows.forEach(([name, k, pass, cost], i) => {
       const cy = T + i * rowH + rowH / 2;
       const tl = el("text", { x: L - 12, y: cy + 4, "text-anchor": "end", style: "font-size:13px" }, svg); tl.textContent = name;
       el("rect", { x: x(0), y: cy - 8, width: x(k) - x(0), height: 16, rx: 4, fill: k === best ? "var(--tx)" : "var(--tools)" }, svg);
-      const vt = el("text", { x: x(k) + 8, y: cy + 4, class: "num", style: "fill:var(--ink)" }, svg); vt.textContent = `${k}k · ${cost}`;
-      const chipX = W - 46;
-      el("rect", { x: chipX, y: cy - 10, width: 40, height: 20, rx: 10, fill: "none", stroke: pass === 5 ? "var(--yes)" : "var(--part)", "stroke-width": 1.5 }, svg);
-      const pt = el("text", { x: chipX + 20, y: cy + 4, "text-anchor": "middle", class: "num", style: `fill:${pass === 5 ? "var(--yes)" : "var(--part)"}` }, svg); pt.textContent = `${pass}/5`;
+      const vt = el("text", { x: x(k) + 8, y: cy + 4, class: "num", style: "fill:var(--ink)" }, svg); vt.textContent = e.unit === "%" ? `${k}%` : `${k}k tokens · ${cost}`;
+      if (pass !== null) {
+        const chipX = W - 92, ok = pass === 5;
+        el("rect", { x: chipX, y: cy - 10, width: 88, height: 20, rx: 10, fill: "none", stroke: ok ? "var(--yes)" : "var(--part)", "stroke-width": 1.5 }, svg);
+        const pt = el("text", { x: chipX + 44, y: cy + 4, "text-anchor": "middle", class: "num", style: `fill:${ok ? "var(--yes)" : "var(--part)"}` }, svg); pt.textContent = `passed ${pass} of 5`;
+      }
     });
     const wrap = document.createElement("div"); wrap.className = "fig"; wrap.appendChild(svg);
     block.appendChild(wrap);

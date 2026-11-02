@@ -4,6 +4,8 @@ Model: `openai/gpt-6-luna`. Each variant ran 5 times through `harness.ts`, with 
 
 **Spend:** $0.147 in total, including a discarded first E2 batch. The provider reported 99.9% of prompt tokens as cache reads. I have not verified that, so I also give the list price with no caching, which is $0.36 for all 3.2M prompt tokens.
 
+**How to read "passed 4/5".** Each experiment tries one small task in two or three ways (variants). A real model answers differently each time, so each variant ran 5 times. After each run a script opened the bot-written files and checked the task was really done, regardless of what the bots claimed. "4/5" means the files were right in 4 of the 5 runs. Each section says exactly what was checked.
+
 **Caveat:** n = 5 per variant. A gap of one run (4/5 against 5/5) is noise. Only the token and cost differences, and E3's large gaps, are signal.
 
 ## E0. Calibration: a task plus two follow-ups
@@ -69,6 +71,33 @@ Grace writes `lib.ts`, which exports a formatter. Linus writes `main.ts`, which 
 Each variant ended up working, but peer coordination cost 3–5× more and needed repair delegations. With `NOTES.md`, the workers read the file about 8 and 5 times per run while polling for each other's decisions, and still needed about 2 fixes per run.
 
 **Reading:** when the coordinator can decide an interface, it should, and put it in both briefs. Peer-to-peer agreement is the expensive path. A shared notes file is worse than `message` when used for live negotiation. A decision log (option B) is still plausible as a *record* of decisions, but not as a negotiation channel.
+
+## E4. Would clearing old tool results help? (offline, no model calls)
+
+E4 is a calculation over the 50 recorded runs (`e4-replay.cjs`). The harness recorded how many characters of each kind every call carried. The growth in tool-output text between one call and the next in the same session gives each new batch of tool outputs and its size. The replay then recomputes every call as if all but the newest K batches had been replaced by a 120-character stub.
+
+**What makes up the prompt tokens, all 50 runs:**
+
+| Part | Share |
+| --- | --- |
+| System prompt and tool definitions (the same on every call) | 68.8% |
+| The bot's own earlier replies and tool calls | 13.6% |
+| Tool outputs (file reads, command output) | 10.5% |
+| Inbox inputs (briefs, results, messages, steering) | 7.1% |
+
+**Saving from clearing old tool outputs:**
+
+| Policy | Saving |
+| --- | --- |
+| Keep only the newest batch | 5.3% |
+| Keep the newest 3 | 3.8% |
+| Keep the newest 5 | 2.6% |
+
+The figures by experiment are in `05-e4.json`.
+
+**Reading.**
+- **These tasks:** clearing is a small win, because the tasks read tiny files. The dominant cost is the fixed part resent on every call, which only caching makes cheap, and caching needs it byte-stable.
+- **Real coding tasks:** they read large files and logs, so tool outputs would be a far larger share there. These runs cannot measure that.
 
 ## What this changes in the recommendation
 
