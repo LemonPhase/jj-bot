@@ -7,9 +7,12 @@ import { ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import { callTool, fauxProvider, say, textOf } from "@jj/runtime/testing";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { CollabTool } from "./ports";
 import { REDACTED } from "./redact";
 import {
   formatSessionReport,
+  formatTaskLogPage,
+  formatTaskState,
   indexLine,
   listTaskLog,
   readBotReports,
@@ -23,13 +26,15 @@ import { type Brain, promptBot, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
+  quietLogger,
   type TestDatabase,
   type TestEngine,
   testEngine,
   untilTask,
 } from "./testing/harness";
 import { createTeam, lastResult, type Team } from "./testing/scenarios";
-import { LOOKUP_TOOLS } from "./worker/lookup-tools";
+import { LOOKUP_TOOLS, lookupTools } from "./worker/lookup-tools";
+import type { RunContext } from "./worker/run-context";
 
 let db: TestDatabase;
 let current: TestEngine | undefined;
@@ -51,6 +56,8 @@ async function setup(options: Parameters<typeof testEngine>[1] = {}) {
 }
 
 const exec = () => db.database.db;
+/** No secrets configured: the formatters' redactor changes nothing. */
+const same = (text: string) => text;
 
 type Seed = Omit<
   typeof taskMessages.$inferInsert,
@@ -191,7 +198,7 @@ describe("task log service", () => {
     const [ada, bob, cy] = team.names as [string, string, string];
     const seeded = await seededTask(engine, team);
     const page = await listTaskLog(exec(), seeded.task.id);
-    expect(page?.more).toBe(0);
+    expect(page).toMatchObject({ earlier: 0, later: 0 });
     expect(
       page?.entries.map((entry) => [
         entry.id,
@@ -254,7 +261,7 @@ describe("task log service", () => {
     expect(first?.entries.map((entry) => entry.id)).toEqual(
       seeded.ids.slice(0, 3),
     );
-    expect(first?.more).toBe(5);
+    expect(first).toMatchObject({ earlier: 0, later: 5 });
     const second = await listTaskLog(exec(), seeded.task.id, {
       after: seeded.ids[2],
       limit: 3,
@@ -262,17 +269,102 @@ describe("task log service", () => {
     expect(second?.entries.map((entry) => entry.id)).toEqual(
       seeded.ids.slice(3, 6),
     );
-    expect(second?.more).toBe(2);
+    expect(second).toMatchObject({ earlier: 3, later: 2 });
     const last = await listTaskLog(exec(), seeded.task.id, {
       after: seeded.ids[7],
     });
-    expect(last).toEqual({ entries: [], more: 0 });
+    expect(last).toEqual({ entries: [], earlier: 8, later: 0 });
     expect(
       await listTaskLog(exec(), seeded.task.id, { after: other.ids[0] }),
     ).toBeUndefined();
     expect(
       await listTaskLog(exec(), seeded.task.id, { after: "msg_unknown" }),
     ).toBeUndefined();
+  });
+
+  it("pages from the newest end and backward with before", async () => {
+    const { engine } = await setup({ start: false });
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const seeded = await seededTask(engine, team);
+    const other = await seededTask(engine, team);
+    const ids = (page: { entries: TaskLogEntry[] } | undefined) =>
+      page?.entries.map((entry) => entry.id);
+    const list = (filter: Parameters<typeof listTaskLog>[2]) =>
+      listTaskLog(exec(), seeded.task.id, filter);
+    const newest = await list({ newest: true, limit: 3 });
+    expect(ids(newest)).toEqual(seeded.ids.slice(5, 8));
+    expect(newest).toMatchObject({ earlier: 5, later: 0 });
+    const back = await list({ before: seeded.ids[5], limit: 3 });
+    expect(ids(back)).toEqual(seeded.ids.slice(2, 5));
+    expect(back).toMatchObject({ earlier: 2, later: 3 });
+    // Both cursors: the entries between them, from the older one.
+    const between = await list({
+      after: seeded.ids[1],
+      before: seeded.ids[6],
+      limit: 2,
+    });
+    expect(ids(between)).toEqual(seeded.ids.slice(2, 4));
+    expect(between).toMatchObject({ earlier: 2, later: 4 });
+    expect(await list({ before: seeded.ids[0] })).toEqual({
+      entries: [],
+      earlier: 0,
+      later: 8,
+    });
+    // The newest reports: 3 of the 8 entries are reports.
+    const reports = await list({ kind: "report", newest: true, limit: 2 });
+    expect(ids(reports)).toEqual([seeded.ids[4], seeded.ids[7]]);
+    expect(reports).toMatchObject({ earlier: 1, later: 0 });
+    expect(await list({ before: other.ids[3] })).toBeUndefined();
+  });
+
+  it("formats a page with hints that repeat its filters, or says why it is empty", async () => {
+    const { engine } = await setup({ start: false });
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const seeded = await seededTask(engine, team);
+    const filter = {
+      kind: "report" as const,
+      query: "e",
+      before: seeded.ids[7],
+      limit: 1,
+    };
+    const page = await listTaskLog(exec(), seeded.task.id, filter);
+    expect(
+      page &&
+        formatTaskLogPage(page, filter, {
+          redact: same,
+          tool: "read_task_log",
+          args: { id: seeded.task.id },
+        }),
+    ).toBe(
+      [
+        `(1 earlier before ${seeded.ids[4]}: call \`read_task_log\` again with id "${seeded.task.id}", before "${seeded.ids[4]}", kind "report", query "e", limit 1.)`,
+        `${seeded.ids[4]} [report] system → ${team.names[0]}: ${team.names[2]} failed: boom`,
+        `(1 more after ${seeded.ids[4]}: call \`read_task_log\` again with id "${seeded.task.id}", after "${seeded.ids[4]}", kind "report", query "e", limit 1.)`,
+      ].join("\n"),
+    );
+    const empty = { entries: [], earlier: 0, later: 0 };
+    const format = { redact: same, tool: "task_log" };
+    expect(formatTaskLogPage(empty, {}, format)).toBe("The task log is empty.");
+    expect(formatTaskLogPage(empty, { query: "x" }, format)).toBe(
+      "No entries match.",
+    );
+  });
+
+  it("treats a NUL character as matching nothing instead of failing the query", async () => {
+    const { engine } = await setup({ start: false });
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const seeded = await seededTask(engine, team);
+    const nul = `${seeded.ids[0]}\u0000`;
+    expect(
+      await listTaskLog(exec(), seeded.task.id, { after: nul }),
+    ).toBeUndefined();
+    expect(
+      await listTaskLog(exec(), seeded.task.id, { before: nul }),
+    ).toBeUndefined();
+    expect(
+      await listTaskLog(exec(), seeded.task.id, { query: "red\u0000" }),
+    ).toEqual({ entries: [], earlier: 0, later: 0 });
+    expect(await readTaskLogEntry(exec(), seeded.task.id, nul)).toBeUndefined();
   });
 
   it("reads one entry in full, and nothing of another task", async () => {
@@ -306,11 +398,12 @@ describe("task log service", () => {
       kind: "brief",
       author: "Ada",
       to: ["Grace", "Linus"],
+      everyone: false,
       sessionId: null,
       text: `Write glossary-a.md\n\nwith ${"many ".repeat(60)}terms.`,
       createdAt: new Date(0),
     };
-    const line = indexLine(entry);
+    const line = indexLine(entry, same);
     expect(
       line.startsWith(
         "msg_1 [brief] Ada → Grace, Linus: Write glossary-a.md with many many",
@@ -319,9 +412,15 @@ describe("task log service", () => {
     expect(line).not.toContain("\n");
     expect(line.endsWith("…")).toBe(true);
     expect(line.length).toBe("msg_1 [brief] Ada → Grace, Linus: ".length + 160);
-    expect(indexLine({ ...entry, to: [], text: "Short." })).toBe(
+    expect(indexLine({ ...entry, to: [], text: "Short." }, same)).toBe(
       "msg_1 [brief] Ada: Short.",
     );
+    expect(
+      indexLine(
+        { ...entry, kind: "message", to: [], everyone: true, text: "All." },
+        same,
+      ),
+    ).toBe("msg_1 [message] Ada → everyone: All.");
   });
 
   it("reads the task state and each session's brief and report, by session id or bot name", async () => {
@@ -346,24 +445,44 @@ describe("task log service", () => {
         s.brief,
       ]),
     ).toEqual([
-      [seeded.root.id, ada, "coordinator", "queued", null, "Paint the fence"],
+      [
+        seeded.root.id,
+        ada,
+        "coordinator",
+        "queued",
+        null,
+        "Paint the fence\nIn red.",
+      ],
       [
         seeded.bobSession.id,
         bob,
         "worker",
         "completed",
         ada,
-        "Write bob.txt in red.",
+        "Write bob.txt in red.\nUse the zoo palette.",
       ],
       [seeded.cySession.id, cy, "worker", "failed", ada, "Write cy.txt."],
     ]);
+    // The text shows each worker's first brief line.
+    expect(state && formatTaskState(state, same)).toBe(
+      [
+        `Task ${seeded.task.id} "Fence": queued`,
+        "Goal (version 1):",
+        "Paint the fence\nIn red.",
+        "",
+        "Sessions, oldest first:",
+        `- ${seeded.root.id} ${ada} (coordinator): queued`,
+        `- ${seeded.bobSession.id} ${bob} (worker, from ${ada}): completed. Brief: Write bob.txt in red.`,
+        `- ${seeded.cySession.id} ${cy} (worker, from ${ada}): failed. Brief: Write cy.txt.`,
+      ].join("\n"),
+    );
 
     const bobReport = await readSessionReport(
       exec(),
       seeded.task.id,
       seeded.bobSession.id,
     );
-    expect(bobReport && formatSessionReport(bobReport)).toBe(
+    expect(bobReport && formatSessionReport(bobReport, same)).toBe(
       [
         `Session ${seeded.bobSession.id}: ${bob} (worker, from ${ada}), completed, goal version 1`,
         "Brief:",
@@ -378,7 +497,9 @@ describe("task log service", () => {
       cy.toUpperCase(),
     );
     expect(byName?.bot).toBe(cy);
-    expect(byName?.reports.map(formatSessionReport)).toEqual([
+    expect(
+      byName?.reports.map((report) => formatSessionReport(report, same)),
+    ).toEqual([
       [
         `Session ${seeded.cySession.id}: ${cy} (worker, from ${ada}), failed, goal version 1`,
         "Brief:",
@@ -392,7 +513,7 @@ describe("task log service", () => {
       seeded.task.id,
       seeded.root.id,
     );
-    expect(coordinator && formatSessionReport(coordinator)).toContain(
+    expect(coordinator && formatSessionReport(coordinator, same)).toContain(
       "Brief (the task's goal when it started):\nPaint the fence\nIn red.\nResult:\n(not reported yet: queued)",
     );
     // A participant without a session, a stranger, and another task's session.
@@ -469,11 +590,14 @@ describe("lookup tools", () => {
         said.turns(view) === 0
           ? {
               // To the coordinator, not to Cy: Cy still finds it in the log.
+              // Then one to everyone, which the log tells apart from a reply
+              // to the user.
               calls: [
                 {
                   name: "message",
                   args: { to: ada, text: "FYI: I chose crimson." },
                 },
+                { name: "message", args: { text: "All: crimson it is." } },
               ],
             }
           : { text: "Bob wrote bob.txt in crimson." },
@@ -493,9 +617,13 @@ describe("lookup tools", () => {
                 { name: "task_log", args: { query: "KIWI-7" } },
                 { name: "task_log", args: { limit: 2 } },
                 { name: "task_log", args: { kind: "brief", limit: 1 } },
+                { name: "task_log", args: { newest: true, limit: 2 } },
               ],
             };
           case 2: {
+            const before = /^(msg_\S+) \[report\]/m.exec(
+              results[7]?.text ?? "",
+            )?.[1];
             const userEntry = /^(msg_\S+) \[user\]/m.exec(
               results[3]?.text ?? "",
             )?.[1];
@@ -505,6 +633,7 @@ describe("lookup tools", () => {
             ).exec(results[1]?.text ?? "")?.[1];
             return {
               calls: [
+                { name: "task_log", args: { before, limit: 2 } },
                 { name: "read_entry", args: { id: userEntry } },
                 { name: "read_report", args: { bot: bob } },
                 { name: "read_report", args: { session: root } },
@@ -551,6 +680,8 @@ describe("lookup tools", () => {
       ["task_log", true],
       ["task_log", true],
       ["task_log", true],
+      ["task_log", true],
+      ["task_log", true],
       ["read_entry", true],
       ["read_report", true],
       ["read_report", true],
@@ -566,6 +697,8 @@ describe("lookup tools", () => {
       search,
       paged,
       briefs,
+      newest,
+      previous,
       entry,
       bobReport,
       rootReport,
@@ -587,15 +720,17 @@ describe("lookup tools", () => {
       ].join("\n"),
     );
     // Every entry so far, oldest first, keyed by its message id, including
-    // Bob's message to the coordinator.
+    // Bob's message to the coordinator. His broadcast reads "→ everyone",
+    // while the coordinator's question to the user has no recipient.
     expect(all).toBe(
       [
         `${ids[0]} [message] ${ada}: Which palette?`,
         `${ids[1]} [user] user → ${ada}: ${USER_TEXT}`,
         `${ids[2]} [brief] ${ada} → ${bob}: Write bob.txt`,
         `${ids[3]} [message] ${bob} → ${ada}: FYI: I chose crimson.`,
-        `${ids[4]} [report] ${bob} → ${ada}: Bob wrote bob.txt in crimson.`,
-        `${ids[5]} [brief] ${ada} → ${cy}: Write cy.txt`,
+        `${ids[4]} [message] ${bob} → everyone: All: crimson it is.`,
+        `${ids[5]} [report] ${bob} → ${ada}: Bob wrote bob.txt in crimson.`,
+        `${ids[6]} [brief] ${ada} → ${cy}: Write cy.txt`,
       ].join("\n"),
     );
     expect(users).toBe(`${ids[1]} [user] user → ${ada}: ${USER_TEXT}`);
@@ -604,7 +739,7 @@ describe("lookup tools", () => {
       [
         `${ids[0]} [message] ${ada}: Which palette?`,
         `${ids[1]} [user] user → ${ada}: ${USER_TEXT}`,
-        `(4 more after ${ids[1]}: call \`task_log\` again with after "${ids[1]}", limit 2.)`,
+        `(5 more after ${ids[1]}: call \`task_log\` again with after "${ids[1]}", limit 2.)`,
       ].join("\n"),
     );
     // The next-page hint keeps the filters it was listed with.
@@ -612,6 +747,23 @@ describe("lookup tools", () => {
       [
         `${ids[2]} [brief] ${ada} → ${bob}: Write bob.txt`,
         `(1 more after ${ids[2]}: call \`task_log\` again with after "${ids[2]}", kind "brief", limit 1.)`,
+      ].join("\n"),
+    );
+    // The newest page, still oldest first, points back at what is earlier;
+    // the page before a cursor points both ways.
+    expect(newest).toBe(
+      [
+        `(5 earlier before ${ids[5]}: call \`task_log\` again with before "${ids[5]}", limit 2.)`,
+        `${ids[5]} [report] ${bob} → ${ada}: Bob wrote bob.txt in crimson.`,
+        `${ids[6]} [brief] ${ada} → ${cy}: Write cy.txt`,
+      ].join("\n"),
+    );
+    expect(previous).toBe(
+      [
+        `(3 earlier before ${ids[3]}: call \`task_log\` again with before "${ids[3]}", limit 2.)`,
+        `${ids[3]} [message] ${bob} → ${ada}: FYI: I chose crimson.`,
+        `${ids[4]} [message] ${bob} → everyone: All: crimson it is.`,
+        `(2 more after ${ids[4]}: call \`task_log\` again with after "${ids[4]}", limit 2.)`,
       ].join("\n"),
     );
     expect(entry).toBe(`${ids[1]} [user] user → ${ada}\n${USER_TEXT}`);
@@ -627,9 +779,9 @@ describe("lookup tools", () => {
     expect(rootReport).toContain(
       `Session ${sessionOf(ada).id}: ${ada} (coordinator), waiting for its delegations, goal version 1\nBrief (the task's goal when it started):\nWrite two files\nResult:\n(not reported yet: waiting for its delegations)`,
     );
-    expect(outputs.slice(9).map((o) => o.output)).toEqual([
-      "No entry msg_unknown in this task's log. Entry ids come from `task_log`.",
-      "No session sess_unknown on this task. Session ids come from `task_state`.",
+    expect(outputs.slice(11).map((o) => o.output)).toEqual([
+      'No entry "msg_unknown" in this task\'s log. Entry ids look like msg_… and start each `task_log` line.',
+      'No session "sess_unknown" on this task. Session ids look like sess_… and come from `task_state`.',
       "Stranger is not on this task.",
       "Unknown kind steering. Use one of: user, brief, report, message.",
     ]);
@@ -681,6 +833,55 @@ describe("lookup tools", () => {
       ...ids,
     ])
       expect(definitions[0]).not.toContain(text);
+  });
+
+  it("refuse a NUL character and a failed read cleanly, without the database's message", async () => {
+    const { engine } = await setup({ start: false });
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const seeded = await seededTask(engine, team);
+    const warnings = quietLogger.warnings.length;
+    // Only what the tools use of a run.
+    const rcWith = (db: unknown) =>
+      ({
+        deps: { ctx: { db, logger: quietLogger } },
+        task: { id: seeded.task.id },
+        session: { id: seeded.root.id },
+        redact: same,
+      }) as unknown as RunContext;
+    const call = (tools: CollabTool[], name: string, args: object) =>
+      tools
+        .find((tool) => tool.name === name)
+        ?.execute(args as Record<string, unknown>, {
+          toolCallId: "c",
+          signal: new AbortController().signal,
+        });
+    const tools = lookupTools(rcWith(exec()));
+    expect(await call(tools, "read_entry", { id: "msg_\u0000" })).toEqual({
+      text: "`id` cannot contain a NUL character.",
+      isError: true,
+    });
+    expect(await call(tools, "task_log", { query: "red\u0000" })).toEqual({
+      text: "`query` cannot contain a NUL character.",
+      isError: true,
+    });
+    expect(
+      await call(tools, "task_log", { before: `${seeded.ids[1]}\u0000` }),
+    ).toEqual({
+      text: "`before` cannot contain a NUL character.",
+      isError: true,
+    });
+    const failing = lookupTools(
+      rcWith({
+        select() {
+          throw new Error('Failed query: select * from "task_messages"');
+        },
+      }),
+    );
+    for (const name of LOOKUP_TOOLS)
+      expect(
+        await call(failing, name, { id: seeded.ids[0], bot: "Ada" }),
+      ).toEqual({ text: "The lookup failed; try again.", isError: true });
+    expect(quietLogger.warnings.length).toBe(warnings + LOOKUP_TOOLS.length);
   });
 
   it("read only the caller's own task, by id and by search", async () => {
@@ -763,19 +964,19 @@ describe("lookup tools", () => {
       [
         "read_entry",
         false,
-        `No entry ${entryId} in this task's log. Entry ids come from \`task_log\`.`,
+        `No entry "${entryId}" in this task's log. Entry ids look like msg_… and start each \`task_log\` line.`,
       ],
       [
         "read_report",
         false,
-        `No session ${bobSession} on this task. Session ids come from \`task_state\`.`,
+        `No session "${bobSession}" on this task. Session ids look like sess_… and come from \`task_state\`.`,
       ],
       ["read_report", false, `${bob} is not on this task.`],
       ["task_log", true, "No entries match."],
       [
         "task_log",
         false,
-        `No entry ${entryId} in this task's log. Entry ids come from \`task_log\`.`,
+        `No entry "${entryId}" in this task's log. Entry ids look like msg_… and start each \`task_log\` line.`,
       ],
       ["task_log", true, "The task log is empty."],
     ]);
@@ -787,8 +988,8 @@ describe("lookup tools", () => {
     const { engine, executor } = await setup({
       secrets: [{ name: "OPENAI_API_KEY", value: KEY }],
     });
-    const team = await createTeam(engine, ["Ada"]);
-    const [ada] = team.names as [string];
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
     // The fake executor hands tool results to the brain as they are.
     let seen: string[] = [];
     executor.brain(ada, (view) => {
@@ -800,23 +1001,49 @@ describe("lookup tools", () => {
         const id = /^(msg_\S+) /.exec(results[0]?.text ?? "")?.[1];
         return { calls: [{ name: "read_entry", args: { id } }] };
       }
+      if (results.length === 2)
+        return { calls: [{ name: "task_state", args: {} }] };
       if (lastResult(view)?.name === "complete_task") return { text: "Done." };
       seen = results.map((result) => result.text);
       return { calls: [{ name: "complete_task", args: { result: "Read." } }] };
     });
+    // The user's goal and messages are stored as written.
     const { task } = await engine.tasks.create({
-      goal: "Read the key",
+      goal: `Read the key ${KEY}`,
       coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
     });
     await untilTask(engine, task.id, (v) => v.task.status === "waiting");
-    // The user's text is stored as written, and the 160-character preview
-    // would cut through the key.
+    // A brief stored before the key was a configured secret: the task state's
+    // 80-character first line would cut through it.
+    const [root] = await exec()
+      .select()
+      .from(sessions)
+      .where(eq(sessions.taskId, task.id));
+    const head = "y".repeat(70);
+    await exec()
+      .insert(sessions)
+      .values({
+        id: newId("session"),
+        taskId: task.id,
+        botId: team.byName[bob] as string,
+        parentSessionId: root?.id,
+        role: "worker",
+        brief: `${head} ${KEY} and more`,
+        goalVersion: 1,
+        depth: 1,
+        status: "completed",
+        result: "done",
+      });
+    // The 160-character preview would cut through this one.
     const pad = "x".repeat(150);
     await engine.tasks.postMessage(task.id, { text: `${pad} ${KEY} is it.` });
     await untilTask(engine, task.id, (v) => v.task.status === "completed");
-    expect(seen).toHaveLength(2);
+    expect(seen).toHaveLength(3);
     expect(seen[0]?.endsWith(`: ${pad} [redacte…`)).toBe(true);
     expect(seen[1]).toContain(`${pad} ${REDACTED} is it.`);
+    expect(seen[2]).toContain(`Goal (version 1):\nRead the key ${REDACTED}`);
+    expect(seen[2]).toContain(`Brief: ${head} [redacte…`);
     for (const text of seen) expect(text).not.toContain(KEY.slice(0, 7));
   });
 

@@ -660,7 +660,7 @@ describe("orchestration", () => {
     const view = await engine.tasks.get(task.id);
     expect(
       view.messages.find((m) => m.text === "FYI the API changed"),
-    ).toMatchObject({ intent: "discussion", recipientBotIds: [] });
+    ).toMatchObject({ intent: "notification", recipientBotIds: [] });
     const root = view.sessions.find((s) => s.parentSessionId === null);
     // The waiting coordinator got it in its inbox but was not launched.
     expect(root).toMatchObject({ status: "waiting", runCount: 1 });

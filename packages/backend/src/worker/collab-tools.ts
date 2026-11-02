@@ -226,7 +226,9 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             authorKind: "bot",
             authorBotId: rc.bot.id,
             sessionId: rc.session.id,
-            intent: "discussion",
+            // A broadcast is a notification, so it can be told apart from a
+            // coordinator's reply to the user, which has no recipient either.
+            intent: to ? "discussion" : "notification",
             text,
             recipientBotIds: to ? [to.botId] : [],
           },
