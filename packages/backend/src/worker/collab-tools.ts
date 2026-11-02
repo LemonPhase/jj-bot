@@ -15,6 +15,7 @@ import {
   openChildren,
 } from "../services/sessions";
 import { briefSummary } from "../services/task-log";
+import { handoffNote } from "./handoff";
 import { lookupTools } from "./lookup-tools";
 import type { CompletionRequest } from "./outcomes";
 import { briefPointer, type RosterMember } from "./prompts";
@@ -138,6 +139,14 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             `This task already has ${ctx.config.maxSessionsPerTask} sessions, the limit. Use the results you have or do the work yourself.`,
           );
         const attribution = attributionOf(rc);
+        // A bot that already reported to this session starts on a note that
+        // points at its latest earlier session (handoff.ts).
+        const note = await handoffNote(
+          tx,
+          task.id,
+          { parentSessionId: rc.session.id, botId: assignee.botId },
+          rc.redact,
+        );
         const child = await insertSession(
           tx,
           ctx,
@@ -173,8 +182,11 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           {
             kind: "brief",
             // The brief itself is in the assignee's prompt, sent with every
-            // request; this only starts the session.
-            text: briefPointer(rc.bot.name),
+            // request; this only starts the session, after the handoff note
+            // when there is one. Neither changes the stored brief.
+            text: note
+              ? `${note}\n\n${briefPointer(rc.bot.name)}`
+              : briefPointer(rc.bot.name),
             sourceMessageId: message.id,
           },
           { wake: true, ctx },

@@ -108,15 +108,22 @@ export interface TaskLogPage {
 /** No stored id or text holds a NUL, and the databases refuse one in a query. */
 export const hasNul = (text: string) => text.includes("\u0000");
 
-/** `text` on one line, cut near `max` characters (never inside a surrogate pair). */
-export function clipLine(text: string, max: number): string {
-  const line = text.replace(/\s+/g, " ").trim();
-  if (line.length <= max) return line;
-  return `${line
+/**
+ * `text` trimmed and cut to at most `max` characters, ending in `…` when cut
+ * (never inside a surrogate pair). Line breaks are kept.
+ */
+export function clipText(text: string, max: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed
     .slice(0, max - 1)
     .replace(/[\uD800-\uDBFF]$/, "")
     .trimEnd()}…`;
 }
+
+/** `text` on one line, cut near `max` characters (never inside a surrogate pair). */
+export const clipLine = (text: string, max: number): string =>
+  clipText(text.replace(/\s+/g, " "), max);
 
 /** The first line of a brief, cut near 80 characters. */
 export const briefSummary = (brief: string): string =>
@@ -487,6 +494,32 @@ export async function readSessionReport(
     (report) => report.id === sessionId,
   );
   return found ? withoutBotId(found) : undefined;
+}
+
+/**
+ * The latest of a bot's sessions under one parent session that has reported,
+ * by completing or failing, with its brief and report in full; undefined when
+ * it has none. A cancelled session never reported, so it does not count.
+ */
+export async function readLatestReport(
+  exec: Executor,
+  taskId: string,
+  under: { parentSessionId: string; botId: string },
+): Promise<SessionReport | undefined> {
+  const [latest] = await exec
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.taskId, taskId),
+        eq(sessions.parentSessionId, under.parentSessionId),
+        eq(sessions.botId, under.botId),
+        inArray(sessions.status, ["completed", "failed"]),
+      ),
+    )
+    .orderBy(desc(sessions.createdAt), desc(sessions.id))
+    .limit(1);
+  return latest ? readSessionReport(exec, taskId, latest.id) : undefined;
 }
 
 /**
