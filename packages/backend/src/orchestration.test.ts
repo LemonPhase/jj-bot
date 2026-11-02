@@ -699,6 +699,121 @@ describe("orchestration", () => {
     ).toEqual([1, 1]);
   });
 
+  it("refuses a message to a teammate with no active session, finished or never started, and posts nothing", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const [ada, bob, cy] = team.names as [string, string, string];
+    executor
+      .brain(ada, (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [{ name: "delegate", args: { bot: bob, brief: "work" } }],
+          };
+        if (!said.heard(view, `Result from ${bob} (session`))
+          return { text: "" };
+        if (lastResult(view)?.name === "complete_task")
+          return { text: "Done." };
+        const sent = said.results(view).filter((r) => r.name === "message");
+        if (sent.length === 0)
+          return {
+            calls: [
+              { name: "message", args: { to: bob, text: "late note" } },
+              { name: "message", args: { to: cy, text: "early note" } },
+              { name: "message", args: { text: "note for all" } },
+            ],
+          };
+        return {
+          calls: [
+            {
+              name: "complete_task",
+              args: { result: sent.map((r) => r.isError).join(",") },
+            },
+          ],
+        };
+      })
+      .brain(bob, () => ({ text: "bob done" }));
+    const { task } = await engine.tasks.create({
+      goal: "Message nobody",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const done = await untilTask(engine, task.id, finished("completed"));
+    // The model got tool errors for both addressed messages, not the broadcast.
+    expect(done.task.result).toBe("true,true,false");
+    const page = await engine.tasks.events(task.id);
+    const outputs = page.events.flatMap((e) =>
+      e.type === "tool.finished" && e.payload.tool === "message"
+        ? [{ ok: e.payload.ok, output: e.payload.output ?? "" }]
+        : [],
+    );
+    expect(outputs).toEqual([
+      {
+        ok: false,
+        output: `Not sent: ${bob}'s session on this task has finished, so no bot would read the message. To have ${bob} act on it, \`delegate\` to ${bob}.`,
+      },
+      {
+        ok: false,
+        output: `Not sent: ${cy} has no session on this task, so no bot would read the message. To have ${cy} act on it, \`delegate\` to ${cy}.`,
+      },
+      {
+        ok: true,
+        output:
+          "Posted to the task chat. No other session on the task is active, so no bot receives it.",
+      },
+    ]);
+    // Refused messages are not posted; the broadcast still is.
+    const texts = done.messages.map((m) => m.text);
+    expect(texts).not.toContain("late note");
+    expect(texts).not.toContain("early note");
+    expect(done.messages.find((m) => m.text === "note for all")).toMatchObject({
+      intent: "notification",
+      recipientBotIds: [],
+    });
+    expect(done.sessions).toHaveLength(2);
+  });
+
+  it("tells a worker that cannot delegate to report what a finished teammate should act on", async () => {
+    const { engine, executor } = await setup({
+      config: { maxDelegationDepth: 1 },
+    });
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const [ada, bob, cy] = team.names as [string, string, string];
+    executor
+      .brain(ada, delegatingCoordinator([bob, cy]))
+      .brain(bob, (view) => {
+        if (said.turns(view) === 0)
+          return { calls: [{ name: "gate", args: { name: "bob" } }] };
+        if (said.turns(view) === 1)
+          return {
+            calls: [{ name: "message", args: { to: cy, text: "late note" } }],
+          };
+        return { text: `bob: ${lastResult(view)?.text}` };
+      })
+      .brain(cy, () => ({ text: "cy done" }));
+    const { task } = await engine.tasks.create({
+      goal: "Two pieces",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await executor.gate("bob").reached;
+    await untilTask(
+      engine,
+      task.id,
+      (view) =>
+        view.sessions.find((s) => s.botId === team.byName[cy])?.status ===
+        "completed",
+      "Cy's session to finish",
+    );
+    executor.gate("bob").open();
+    const done = await untilTask(engine, task.id, finished("completed"));
+    expect(
+      done.sessions.find((s) => s.botId === team.byName[bob])?.result,
+    ).toBe(
+      `bob: Not sent: ${cy}'s session on this task has finished, so no bot would read the message. Put it in your report instead.`,
+    );
+    expect(done.messages.map((m) => m.text)).not.toContain("late note");
+  });
+
   it("keeps a waiting session's newest 20 notifications and collapses the older ones", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob"]);
