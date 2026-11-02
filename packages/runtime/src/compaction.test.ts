@@ -16,6 +16,7 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  COMPACTION_INSTRUCTIONS,
   compactionSettings,
   cutByContext,
   isCompaction,
@@ -384,6 +385,12 @@ describe("context compaction", () => {
     );
     expect(outcome).toEqual({ kind: "ended", finalText: "All counted." });
     expect(summaries.length).toBeGreaterThan(0);
+    // JJ's instructions reach the summary request, a handoff note among what
+    // they say to keep.
+    expect(COMPACTION_INSTRUCTIONS).toContain("a handoff note");
+    expect(JSON.stringify(summaries[0])).toContain(
+      `Additional focus: ${COMPACTION_INSTRUCTIONS}`,
+    );
 
     // The input is persisted first, then the checkpoint alone, then the answer.
     expect(
