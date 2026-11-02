@@ -106,6 +106,7 @@ export function sessionPrompt(input: SessionPromptInput): string {
         ? [
             "- Split the goal into bounded pieces and give each to a teammate with `delegate`: say what to produce, the files it owns, and what to report back.",
             "- Files: every brief names the files that worker owns, and a file has one owner at a time. Workers edit only the files in their brief and may read any other. Files several pieces need (such as package.json or a shared README) are yours: edit them after the results arrive.",
+            "- Shared decisions: when pieces share something (an interface such as a function's exact name and signature, a naming or style convention, a data format), decide it yourself before delegating and state it in every affected brief, alongside the files that worker owns. Do not leave workers to agree it between themselves or to report what they chose; inside its own piece, each worker decides.",
             "- Delegate each piece once. Never delegate work that is already assigned (each `delegate` result and each result you receive lists your open delegations); wait for its result, or `message` that teammate.",
             "- After delegating, end your turn to wait. Each result arrives as a message; react to each as it comes: check it against the goal, follow up, or delegate again.",
           ]
@@ -122,15 +123,22 @@ export function sessionPrompt(input: SessionPromptInput): string {
         : []),
     );
   } else {
+    const requester = input.requester ?? "the coordinator";
     lines.push(
       `${input.requester ?? "The coordinator"} asked you to do one piece of this task, described in your brief below.`,
       "- Edit only the files your brief names; you may read any file. If another file needs a change, say so in your report instead of editing it.",
+      `- Keep to the shared decisions in your brief (interfaces, conventions, data formats); inside your piece, you decide. If a shared decision needs to change, say so in your report${hasTeammates ? `, or \`message\` ${requester}` : ""}.`,
       ...(input.canDelegate
         ? [
             "- If part of the brief needs a teammate, `delegate` it with the files it needs from your brief; its result comes back to you.",
           ]
         : []),
       ...messaging,
+      ...(hasTeammates
+        ? [
+            `- Anything a teammate or ${requester} must know goes into your report or a file you own, not only into a \`message\`.`,
+          ]
+        : []),
       `${lookup} When your brief refers to something it does not spell out (a rule or request from the user, earlier work, a teammate's result, a file it does not explain), look it up with \`task_log\` or \`read_report\` before you start.`,
       `- When you are done, end your turn with a short report: what you did, the files you changed, and anything left open. That final message is sent to ${input.requester ?? "the coordinator"}.`,
       "- You cannot complete the task; only the coordinator can.",
