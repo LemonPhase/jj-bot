@@ -11,6 +11,8 @@
 # it except evidence/.
 set -euo pipefail
 
+[ "$(uname -s)" = Linux ] ||
+  { echo "launch.sh: Linux or WSL only (uses setsid, ss and /proc)" >&2; exit 2; }
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 build=1
 driver=local
@@ -39,8 +41,15 @@ fi
 # The docker driver reaps every container of its namespace that another worker
 # started, so a verification instance gets a namespace of its own and never
 # touches your dev stack's sandboxes.
+# The daemon address passes through, so the instance and stop.sh's docker CLI
+# talk to the same daemon (rootless, colima, a remote host).
 docker_env=()
-[ "$driver" = docker ] && docker_env=(JJ_DOCKER_NAMESPACE="jj-verify-$id")
+if [ "$driver" = docker ]; then
+  docker_env=(JJ_DOCKER_NAMESPACE="jj-verify-$id")
+  for var in DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH; do
+    [ -n "${!var:-}" ] && docker_env+=("$var=${!var}")
+  done
+fi
 
 git -C "$repo" rev-parse HEAD >"$run/commit"
 git -C "$repo" status --porcelain -- . ':!.agents' ':!.claude' >"$run/dirty"
@@ -52,19 +61,24 @@ env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=production \
   JJ_DATABASE_PATH="$run/data" \
   JJ_ENABLE_SCRIPTED_MODEL=true \
   JJ_SANDBOX_DRIVERS="$driver" JJ_SANDBOX_ROOT="$run/sandbox" \
-  "${docker_env[@]}" \
+  ${docker_env[@]+"${docker_env[@]}"} \
   setsid node --import tsx apps/api/src/index.ts >"$run/server.log" 2>&1 &
 echo $! >"$run/pid"
+
+# A launch that fails after the server started tears it down, so a failed
+# attempt never strands a detached process; the run dir keeps the logs.
+give_up() {
+  echo "launch.sh: $1, see $run/server.log" >&2
+  tail -20 "$run/server.log" >&2
+  "$(dirname "$0")/stop.sh" "$run" >&2 || true
+  exit 1
+}
 
 # Ready means the readiness checks pass (database, migrations, worker, drivers),
 # not just that a port answers.
 url=""
 for _ in $(seq 1 120); do
-  if ! kill -0 "$(cat "$run/pid")" 2>/dev/null; then
-    echo "launch.sh: server exited during startup, see $run/server.log" >&2
-    tail -20 "$run/server.log" >&2
-    exit 1
-  fi
+  kill -0 "$(cat "$run/pid")" 2>/dev/null || give_up "server exited during startup"
   if [ -z "$url" ]; then
     url=$(grep -o -m1 'JJ Bot API at http://[0-9.:]*' "$run/server.log" | sed 's/^JJ Bot API at //' || true)
   fi
@@ -75,5 +89,4 @@ for _ in $(seq 1 120); do
   fi
   sleep 0.5
 done
-echo "launch.sh: not ready after 60 s, see $run/server.log" >&2
-exit 1
+give_up "not ready after 60 s (curl $url/health/ready names the failing check)"

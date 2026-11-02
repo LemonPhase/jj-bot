@@ -14,10 +14,11 @@ Every command below runs from the repository root. `$RUN` is the run dir that `l
 
 ## Prerequisites
 
+- Linux or WSL: the helpers use `setsid`, `ss` and `/proc`, and `launch.sh` refuses other systems.
 - `npm ci` has run in this checkout.
 - `playwright-cli` is on `PATH` (`npm install -g @playwright/cli`) with Playwright's bundled Chromium installed (`playwright-cli install-browser chromium` or `npx playwright install chromium`). `pw.sh` always opens `--browser=chromium`; the default `chrome` channel is usually missing on Linux and WSL.
 - `ss` and `curl` (doctor uses them).
-- Docker only for `--driver docker`.
+- Docker only for `--driver docker`. The daemon is found through `DOCKER_HOST` (and `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`), which `launch.sh` passes through; a daemon reached only through a `docker context` needs `DOCKER_HOST` set to that context's address.
 
 ## Launch
 
@@ -27,7 +28,7 @@ RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --no-build) # reuse apps/we
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --driver docker)
 ```
 
-It builds the web app (about 1 s), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`/tmp/jj-verify/<id>`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`.
+It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`/tmp/jj-verify/<id>`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, or readiness doesn't pass within 60 s, it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
 
 Isolation, by construction:
 
@@ -59,7 +60,7 @@ $P "$RUN" goto "$(cat "$RUN/url")/#/settings"
 $P "$RUN" screenshot --filename=02-settings.png
 ```
 
-`pw.sh` wraps `playwright-cli` with a browser session named after the run (`jjv-<id>`) and runs it inside `$RUN/evidence`, so relative `--filename` paths land with the rest of the proof.
+`pw.sh` wraps `playwright-cli` with a browser session named after the run (`jjv-<id>`) and runs it inside `$RUN/evidence`, so relative `--filename` paths land with the rest of the proof. `playwright-cli` also writes an unnamed snapshot of every step to `$RUN/evidence/.playwright-cli/`; that's a step trail, not the proof, so cite your own named files.
 
 - Target elements with Playwright role locators (`getByRole('button', { name: 'Start task' })`), never snapshot refs (`e42`) in a recipe: refs change on every render. The UI is labelled throughout: dialogs, tabs, logs, radiogroups and form fields all have accessible names.
 - Screens are hash routes: `#/bots/:botId`, `#/tasks/:taskId`, `#/studio` (new bot), `#/studio/:botId`, `#/settings`. A list route without an id opens the first item.

@@ -13,11 +13,18 @@ pid=$(cat "$run/pid")
 # The browser session named after this run, if the drive opened one.
 playwright-cli -s="jjv-$(basename "$run")" close >/dev/null 2>&1 || true
 
-if kill -0 "$pid" 2>/dev/null; then
+# Kill only if the pid is still this run's server: after a reboot or a long
+# gap the number can belong to an unrelated process group.
+ours() { grep -qzx "JJ_DATABASE_PATH=$run/data" "/proc/$pid/environ" 2>/dev/null; }
+if ! kill -0 "$pid" 2>/dev/null; then
+  echo "stop.sh: server already gone"
+elif ! ours; then
+  echo "stop.sh: pid $pid is no longer this run's server; not killing it"
+else
   # SIGTERM lets the API hand running sessions back; it allows itself 20 s.
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid"
   for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-  kill -0 "$pid" 2>/dev/null && { kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid"; }
+  kill -0 "$pid" 2>/dev/null && ours && { kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid"; }
 fi
 
 if [ "$(cat "$run/driver" 2>/dev/null)" = docker ]; then

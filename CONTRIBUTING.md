@@ -9,7 +9,7 @@ Read [AGENTS.md](AGENTS.md) and the local docs (`docs/development.md`, `docs/pro
 - Branch from the latest `main`, one branch per change, named `<kind>/<topic>` (`feat/compose`, `fix/artifacts-after-handoff`, `docs/demo-task`). Keep unrelated changes on separate branches.
 - Open the PR against `main`, with `Closes #N` when it implements an issue; small self-contained changes need no issue ([AGENTS.md](AGENTS.md#work-tracking-github-issues)). Its description states the problem, the resulting behavior, the acceptance criteria when there is no issue to hold them, the verification (commands and observed results, with what passed, failed or did not run) and known limits.
 - Pull requests run CI on their merge result. Keep the branch current with `main` and re-run the checks after merging it in.
-- Agree changes to `packages/contracts` on the issue first, bump `CONTRACT_VERSION` and add an entry to [the contract changelog](docs/contract-changelog.md).
+- Changes to `packages/contracts` always start from an issue: agree them there first, bump `CONTRACT_VERSION` and add an entry to [the contract changelog](docs/contract-changelog.md).
 
 ## Required development verification loop
 
