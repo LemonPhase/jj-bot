@@ -23,10 +23,12 @@ A milestone can have an `epic` issue that lists its work as sub-issues in depend
 
 ## Picking up an issue
 
+A small self-contained change (a contained fix, tooling, docs) needs no issue: it goes straight to a PR that carries the goal, acceptance criteria and verification ([AGENTS.md](../AGENTS.md#work-tracking-github-issues)). Everything else starts from an issue:
+
 1. Choose an open issue with no open blockers.
 2. Assign yourself or comment to claim it, naming the accountable human owner and any agent or session.
 3. If it lacks acceptance criteria and expected evidence, add them first.
 4. Branch from the latest `main`, one branch per issue, and open a PR against `main` that closes the issue (`Closes #N`).
 5. Follow [CONTRIBUTING.md](../CONTRIBUTING.md) for the checks, the PR description and review.
 
-Coordinate on the issue before touching shared files: `packages/contracts`, root dependencies, and shared web layout and styles. New work found along the way gets its own issue rather than growing the current one.
+Coordinate on the issue before touching shared files: `packages/contracts`, root dependencies, and shared web layout and styles. New work found along the way gets its own issue, or its own PR when it is small and self-contained, rather than growing the current one.
