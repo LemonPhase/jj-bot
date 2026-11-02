@@ -1,6 +1,6 @@
 # Architecture
 
-The design contract for JJ Bot: components, boundaries, records and invariants. Product semantics are in [Product specification](product-spec.md), and package-level contracts in the READMEs of [the engine](../packages/backend/README.md), [the runtime](../packages/runtime/README.md), [the sandbox drivers](../packages/sandbox/README.md) and [storage](../packages/db/README.md). Code and tests establish implementation behavior.
+The design contract for JJ Bot: components, boundaries, records and invariants. Terms are defined in the [glossary](glossary.md). Product semantics are in [Product specification](product-spec.md), and package-level contracts in the READMEs of [the engine](../packages/backend/README.md), [the runtime](../packages/runtime/README.md), [the sandbox drivers](../packages/sandbox/README.md) and [storage](../packages/db/README.md). Code and tests establish implementation behavior.
 
 ## Components
 
