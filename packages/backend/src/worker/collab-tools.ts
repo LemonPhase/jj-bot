@@ -1,5 +1,6 @@
-// Collaboration tools for task sessions: delegate, message and complete_task.
-// The roster is in the schemas (an enum of teammate names), which is what the
+// Collaboration tools for task sessions: delegate, message and complete_task,
+// plus the read-only lookup tools every session has (lookup-tools.ts). The
+// roster is in the schemas (an enum of teammate names), which is what the
 // scripted test model reads. Refusals are tool errors the model can adapt to,
 // never exceptions.
 import { isFinishedStatus } from "@jj/contracts";
@@ -13,9 +14,12 @@ import {
   lockTask,
   openChildren,
 } from "../services/sessions";
+import { briefSummary } from "../services/task-log";
+import { lookupTools } from "./lookup-tools";
 import type { CompletionRequest } from "./outcomes";
 import { briefPointer, type RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
+import { textArg } from "./tool-args";
 
 export interface Teammate extends RosterMember {
   botId: string;
@@ -42,15 +46,6 @@ function findTeammate(team: readonly Teammate[], value: unknown) {
     (member) =>
       member.name.toLowerCase() === wanted || member.botId === value.trim(),
   );
-}
-
-const textArg = (value: unknown) =>
-  typeof value === "string" && value.trim() ? value.trim() : undefined;
-
-/** The first line of a brief, cut near 80 characters. */
-function briefSummary(brief: string): string {
-  const line = (brief.trim().split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ");
-  return line.length <= 80 ? line : `${line.slice(0, 79).trimEnd()}…`;
 }
 
 /**
@@ -231,7 +226,9 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             authorKind: "bot",
             authorBotId: rc.bot.id,
             sessionId: rc.session.id,
-            intent: "discussion",
+            // A broadcast is a notification, so it can be told apart from a
+            // coordinator's reply to the user, which has no recipient either.
+            intent: to ? "discussion" : "notification",
             text,
             recipientBotIds: to ? [to.botId] : [],
           },
@@ -360,7 +357,8 @@ function completeTaskTool(rc: RunContext): CollabTool {
  * The collaboration tools for a run. Their names, descriptions and schemas
  * depend only on the session and its task's roster, so every run of a
  * session sends identical definitions (tools lead the prompt cache prefix).
- * `delegate` is omitted when nobody can be delegated to.
+ * `delegate` is omitted when nobody can be delegated to; the lookup tools
+ * come last, for every session.
  */
 export function sessionTools(
   rc: RunContext,
@@ -374,5 +372,6 @@ export function sessionTools(
     tools.push(delegateTool(rc, team));
   if (team.length > 0) tools.push(messageTool(rc, team));
   if (rc.session.parentSessionId === null) tools.push(completeTaskTool(rc));
+  tools.push(...lookupTools(rc));
   return tools;
 }

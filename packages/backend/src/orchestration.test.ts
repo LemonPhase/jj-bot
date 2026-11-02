@@ -660,7 +660,7 @@ describe("orchestration", () => {
     const view = await engine.tasks.get(task.id);
     expect(
       view.messages.find((m) => m.text === "FYI the API changed"),
-    ).toMatchObject({ intent: "discussion", recipientBotIds: [] });
+    ).toMatchObject({ intent: "notification", recipientBotIds: [] });
     const root = view.sessions.find((s) => s.parentSessionId === null);
     // The waiting coordinator got it in its inbox but was not launched.
     expect(root).toMatchObject({ status: "waiting", runCount: 1 });
@@ -945,9 +945,9 @@ describe("orchestration", () => {
     expect(delegateTool?.parameters).toMatchObject({
       properties: { bot: { enum: [bob, cy].sort() } },
     });
-    // At the depth limit a worker gets no delegate tool.
+    // At the depth limit a worker gets no delegate tool; the lookup tools stay.
     expect(view.sessions.find((s) => s.depth === 1)?.result).toBe(
-      "tools: message",
+      "tools: message,task_state,task_log,read_entry,read_report",
     );
   });
 });

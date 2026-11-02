@@ -31,6 +31,24 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.1.0 — 2026-11-02 — Task lookup tools
+
+**Changed by:** backend ([#77](https://github.com/LemonPhase/jj-bot/issues/77), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/77#issuecomment-6590262115) and [its addendum](https://github.com/LemonPhase/jj-bot/issues/77#issuecomment-6590794101)) · **Compatibility:** additive
+
+- `COLLABORATION_TOOLS`: adds `task_state`, `task_log`, `read_entry` and `read_report`, the
+  read-only lookup tools every task session has. Profiles never list collaboration tools
+  (`toolNameSchema` stays the coding tools), so no stored profile changes.
+- `activityFromEvent`: a lookup tool's `tool.started` is a `reading` activity ("Checking the task
+  state", "Reading the task log", "Reading task log entry <id>", "Reading the report of
+  <bot or session>") instead of the generic `command` line "Using <tool>".
+- `taskMessageSchema.intent`: a bot's broadcast (`message` with no recipient) is now posted as
+  `notification`, a value the enum already had, so it can be told apart from a coordinator's reply
+  to the user, which is `discussion` with no recipient too. Earlier broadcasts stay `discussion`.
+
+**Action required (frontend):** none. The task chat labels broadcasts "notification", and the
+office view's speech bubble reads "<bot> · notification" for them (`bubbleWho`).
+**Action required (backend):** none.
+
 ## 1.0.2 — 2026-11-01 — Validate network allowlist hosts
 
 **Changed by:** backend ([#63](https://github.com/LemonPhase/jj-bot/issues/63)) · **Compatibility:** clarifying

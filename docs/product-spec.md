@@ -25,11 +25,11 @@ Bots and tasks are many-to-many. A bot can work on many tasks and a task can inv
 3. The bot that creates a task coordinates it and chooses its participating bots. A user can also create a task directly, naming the coordinator and the participants.
 4. The coordinator delegates bounded work; each piece runs as its own execution session with a brief and selected context.
 5. Sessions do real work — running commands, reading and writing files — inside the task's sandbox, which the coordinator's runtime profile selects. Every session of a task shares its workspace.
-6. Every task message is posted, attributed, to the task's shared chat. Posting is not activation: only an assignment, a result or steering starts work, and a bot's model sees only the messages delivered to its own sessions.
+6. Every task message is posted, attributed, to the task's shared chat. Posting is not activation: only an assignment, a result or steering starts work, and a bot's model is given only the messages delivered to its own sessions. Any session can look up the rest of its task's log, and every session's brief and report, with read-only tools.
 7. Bots can message each other directly to align work.
 8. Results return to the coordinator, which consolidates them into the task result.
 
-Bot memories and private conversation histories are never implicitly merged, and no model call receives the whole task transcript.
+Bot memories and private conversation histories are never implicitly merged, and no bot reads another session's transcript.
 
 ## User control
 

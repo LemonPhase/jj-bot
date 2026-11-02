@@ -85,3 +85,15 @@ describe("runtime profile editor: network allowlist", () => {
     });
   });
 });
+
+describe("runtime profile editor: tools", () => {
+  it("says collaboration tools, the lookup tools included, are not set per profile", () => {
+    renderEditor();
+    expect(
+      screen.getByText(/^Coding tools run inside the task's sandbox\./)
+        .textContent,
+    ).toBe(
+      "Coding tools run inside the task's sandbox. Collaboration tools (delegate, message, complete_task, task_state, task_log, read_entry, read_report) are not set here: each task session gets the ones its place in the task allows.",
+    );
+  });
+});

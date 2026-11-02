@@ -360,6 +360,22 @@ export function activityFromEvent(
           };
         case "complete_task":
           return { kind: "messaging", text: "Writing the result…", since };
+        case "task_state":
+          return { kind: "reading", text: "Checking the task state", since };
+        case "task_log":
+          return { kind: "reading", text: "Reading the task log", since };
+        case "read_entry":
+          return {
+            kind: "reading",
+            text: describe("Reading task log entry ", summary),
+            since,
+          };
+        case "read_report":
+          return {
+            kind: "reading",
+            text: describe("Reading the report of ", summary),
+            since,
+          };
         default:
           return { kind: "command", text: describe("Using ", tool), since };
       }

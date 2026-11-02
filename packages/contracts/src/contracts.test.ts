@@ -178,8 +178,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.0.2", () => {
-    expect(CONTRACT_VERSION).toBe("1.0.2");
+  it("is version 1.1.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.1.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -337,6 +337,24 @@ describe("contracts 1.0", () => {
       text: "Delegated to Researcher",
     });
     expect(tool("message", "Researcher")).toMatchObject({ kind: "messaging" });
+    // The read-only lookup tools read; they run no command.
+    expect(tool("task_state", "task")).toEqual({
+      kind: "reading",
+      text: "Checking the task state",
+      since: at,
+    });
+    expect(tool("task_log", "user: kiwi")).toMatchObject({
+      kind: "reading",
+      text: "Reading the task log",
+    });
+    expect(tool("read_entry", "msg_1")).toMatchObject({
+      kind: "reading",
+      text: "Reading task log entry msg_1",
+    });
+    expect(tool("read_report", "Researcher")).toMatchObject({
+      kind: "reading",
+      text: "Reading the report of Researcher",
+    });
 
     const long = tool("bash", `echo ${"x".repeat(280)}\n&& done`);
     expect(long?.text.length).toBeLessThanOrEqual(200);

@@ -52,7 +52,7 @@ The docker driver enforces three network modes. `none` leaves a sandbox only loo
 
 ## Runtime profiles
 
-A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), the coding tools it grants, and budgets (model calls per run and minutes per run). Collaboration tools come with a session's place in the task, not with a profile: `delegate` and `message` when the task has teammates (`delegate` only while the session's depth is below the delegation limit), and `complete_task` for the coordinator alone. Users create and edit profiles in settings; a bot references one, or uses the default profile. The profile is the single place where isolation and spending are configured. The API reports each profile's status from its driver: whether the driver is available, and whether it isolates the filesystem. A profile without filesystem isolation is labelled unisolated. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tools and budgets still apply to its sessions.
+A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), the coding tools it grants, and budgets (model calls per run and minutes per run). Collaboration tools come with a session's place in the task, not with a profile: `delegate` and `message` when the task has teammates (`delegate` only while the session's depth is below the delegation limit), `complete_task` for the coordinator alone, and the read-only lookup tools (`task_state`, `task_log`, `read_entry`, `read_report`; see [Context and memory](#context-and-memory)) for every session. Users create and edit profiles in settings; a bot references one, or uses the default profile. The profile is the single place where isolation and spending are configured. The API reports each profile's status from its driver: whether the driver is available, and whether it isolates the filesystem. A profile without filesystem isolation is labelled unisolated. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tools and budgets still apply to its sessions.
 
 On first boot, with no profiles stored, the server seeds one profile per registered driver, each with every coding tool and the default budgets (60 model calls and 30 minutes per run): **Docker sandbox** (`jj-sandbox:base-1`, network `open`, `task` workspace, 2 CPUs, 2048 MB, 512 processes) and **Local (unisolated)** (network `open`, `task` workspace). Docker is the default when its daemon answers at that boot; otherwise local is, when registered.
 
@@ -84,9 +84,11 @@ A direct message to a bot runs a lightweight pi session with the bot's persona a
 
 ## Visibility is separate from activation
 
-Each task message is persisted once, with attribution and intent. The user sees the whole task history; a bot sees only what reaches its session's inbox: its brief, results, steering, and messages addressed to it or to everyone (a message with no recipient goes to every other active session of the task). A session keeps at most its 20 newest undelivered messages; older ones reach it as one `[N earlier messages omitted]` line, and stay in the task history. Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
+Each task message is persisted once, with attribution and intent, in the task log. The user sees the whole task log. A session is pushed only what reaches its inbox: its brief, results, steering, and messages addressed to it or to everyone (a message with no recipient goes to every other active session of the task). A session keeps at most its 20 newest undelivered messages; older ones reach it as one `[N earlier messages omitted]` line, and stay in the task log. Beyond its inbox, every session can pull its own task's shared record with read-only lookup tools: the whole task log, including messages not addressed to it, and any session's brief and report (see [Context and memory](#context-and-memory)). Other sessions' transcripts stay private. Pulling delivers nothing and wakes no one.
 
-Message intents: discussion, assignment, result, steering and notification.
+Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
+
+Message intents: discussion, assignment, result, steering and notification. A bot's message with no recipient (a broadcast) is a notification; a coordinator's reply to the user is a discussion message with no recipient.
 
 ## Coordination
 
@@ -121,7 +123,23 @@ Messages arrive whole; text is not streamed token by token. While a bot works, c
 
 ## Context and memory
 
-A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster, the shared workspace and, for a delegated session, its brief as the requester wrote it. Its inputs are what its inbox delivers; a delegated session starts on an item that points at the brief in its prompt, so the brief is not sent twice. No model call receives the whole task transcript.
+A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster, the shared workspace and, for a delegated session, its brief as the requester wrote it. Its inputs are what its inbox delivers; a delegated session starts on an item that points at the brief in its prompt, so the brief is not sent twice.
+
+Every task session, coordinator and workers alike, can also look up its task's shared record with four read-only tools, and its prompt says when to use them:
+
+- `task_state`: the goal and goal version, the task's status (with its result or error once it has one), and each session's id, bot, role, status and the first line of its brief.
+- `task_log`: the task log, shown oldest first, filtered by kind and by text (ignoring case), from the oldest or the newest entry and paged with `after`, `before` and `limit`; a page says how many matching entries lie before and after it. Each entry is one index line: its id, its kind, its author (→ recipients, or → everyone for a broadcast) and a clipped preview. An entry's id is the stored task message's id, so it never changes. Its kind is `user` (steering, or a message a bot relayed from the user's direct chat), `brief` (an assignment), `report` (a worker's report or failure, or the coordinator's result) or `message` (any other message, the coordinator's replies to the user included).
+- `read_entry`: one entry in full, by id.
+- `read_report`: a session's brief and its report (or result, or failure) in full, by session id, or by bot name for each of that bot's sessions on the task.
+
+The invariants:
+
+- **Own task only.** The tools read only the caller's task. An id from another task is refused like an unknown one, and a search never matches another task's entries. Listing or searching other tasks is not offered.
+- **Never a transcript.** A session's transcript (its reasoning, tool calls and tool output) is private to it: no tool reads another session's transcript, and no model call receives one.
+- **Read-only.** The tools change no record and wake no one; like every tool call, each call is recorded as events.
+- **Cache-stable.** Their definitions are the same for every session and run; ids and names are checked inside a tool, never listed in its schema.
+- **Redacted and capped.** What they read is redacted before any preview clips it, so a cut never leaves part of a secret; the result is capped at `JJ_OUTPUT_CAP_BYTES` and spilled to an artifact like any other tool output.
+- **Clean refusals.** An unknown id, another task's id, a NUL character in an argument or a failed read is a tool error the model can act on, never a database message.
 
 An execution session's context is compacted with pi's compaction when it nears its model's context window; direct chat sends a bounded history instead. The [runtime README](../packages/runtime/README.md#context-compaction) has the details; the invariants are:
 

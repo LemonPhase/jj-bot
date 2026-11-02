@@ -260,9 +260,9 @@ export function ProfileEditor({
             ))}
           </div>
           <p className="ui-field__hint">
-            Coding tools run inside the task's sandbox.{" "}
-            {COLLABORATION_TOOLS.join(", ")} are always available to task
-            sessions.
+            Coding tools run inside the task's sandbox. Collaboration tools (
+            {COLLABORATION_TOOLS.join(", ")}) are not set here: each task
+            session gets the ones its place in the task allows.
           </p>
         </fieldset>
 
