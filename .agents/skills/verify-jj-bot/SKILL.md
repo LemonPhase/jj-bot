@@ -14,10 +14,9 @@ Every command below runs from the repository root. `$RUN` is the run dir that `l
 
 ## Prerequisites
 
-- Linux or WSL: the helpers use `setsid`, `ss` and `/proc`, and `launch.sh` refuses other systems.
+- Linux, WSL or macOS, with bash 3.2 or newer (macOS's own bash works). The helpers use only `ps`, `kill`, `nohup`, `curl`, `git` and `node`, plus `lsof` (macOS, most Linux) or `ss` (Linux) for the port check.
 - `npm ci` has run in this checkout.
-- `playwright-cli` is on `PATH` (`npm install -g @playwright/cli`) with Playwright's bundled Chromium installed (`playwright-cli install-browser chromium` or `npx playwright install chromium`). `pw.sh` always opens `--browser=chromium`; the default `chrome` channel is usually missing on Linux and WSL.
-- `ss` and `curl` (doctor uses them).
+- `playwright-cli` is on `PATH` (`npm install -g @playwright/cli`) with Playwright's bundled Chromium installed (`playwright-cli install-browser chromium` or `npx playwright install chromium`). `pw.sh` always opens `--browser=chromium`; the default `chrome` channel needs Google Chrome installed, which is often missing.
 - Docker only for `--driver docker`. The daemon is found through `DOCKER_HOST` (and `DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`), which `launch.sh` passes through; a daemon reached only through a `docker context` needs `DOCKER_HOST` set to that context's address.
 
 ## Launch
@@ -28,7 +27,7 @@ RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --no-build) # reuse apps/we
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --driver docker)
 ```
 
-It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`/tmp/jj-verify/<id>`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, or readiness doesn't pass within 60 s, it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
+It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`$TMPDIR/jj-verify/<id>`, `/tmp/jj-verify/<id>` without `TMPDIR`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, or readiness doesn't pass within 60 s, it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
 
 Isolation, by construction:
 
@@ -96,7 +95,7 @@ Report the evidence path and the commit from `$RUN/commit`.
 .agents/skills/verify-jj-bot/scripts/stop.sh "$RUN"
 ```
 
-It closes the run's browser session, sends SIGTERM to the process group `launch.sh` started (the API hands running sessions back within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
+It closes the run's browser session, checks that the recorded pid still carries this run's `--jj-verify-run` tag, sends SIGTERM to the process group `launch.sh` started (the API hands running sessions back within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
 
 ## Helpers
 

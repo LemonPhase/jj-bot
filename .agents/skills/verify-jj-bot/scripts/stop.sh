@@ -15,7 +15,7 @@ playwright-cli -s="jjv-$(basename "$run")" close >/dev/null 2>&1 || true
 
 # Kill only if the pid is still this run's server: after a reboot or a long
 # gap the number can belong to an unrelated process group.
-ours() { grep -qzx "JJ_DATABASE_PATH=$run/data" "/proc/$pid/environ" 2>/dev/null; }
+ours() { ps -o command= -p "$pid" 2>/dev/null | grep -qF -- "--jj-verify-run=$run/"; }
 if ! kill -0 "$pid" 2>/dev/null; then
   echo "stop.sh: server already gone"
 elif ! ours; then
@@ -29,9 +29,10 @@ fi
 
 if [ "$(cat "$run/driver" 2>/dev/null)" = docker ]; then
   ns="jj-verify-$(basename "$run")"
-  docker ps -aq --filter "label=jj.sandbox.namespace=$ns" | xargs -r docker rm -f >/dev/null
-  docker network ls -q --filter "label=jj.sandbox.namespace=$ns" | xargs -r docker network rm >/dev/null
-  docker volume ls -q --filter "label=jj.sandbox.namespace=$ns" | xargs -r docker volume rm >/dev/null
+  label="label=jj.sandbox.namespace=$ns"
+  ids=$(docker ps -aq --filter "$label"); [ -n "$ids" ] && docker rm -f $ids >/dev/null
+  ids=$(docker network ls -q --filter "$label"); [ -n "$ids" ] && docker network rm $ids >/dev/null
+  ids=$(docker volume ls -q --filter "$label"); [ -n "$ids" ] && docker volume rm $ids >/dev/null
 fi
 
 cp "$run/server.log" "$run/evidence/server.log" 2>/dev/null

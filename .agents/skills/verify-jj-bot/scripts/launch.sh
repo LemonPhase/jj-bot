@@ -11,8 +11,6 @@
 # it except evidence/.
 set -euo pipefail
 
-[ "$(uname -s)" = Linux ] ||
-  { echo "launch.sh: Linux or WSL only (uses setsid, ss and /proc)" >&2; exit 2; }
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 build=1
 driver=local
@@ -26,7 +24,8 @@ while [ $# -gt 0 ]; do
 done
 case "$driver" in local | docker) ;; *) echo "launch.sh: --driver is local or docker" >&2; exit 2 ;; esac
 
-root=${JJ_VERIFY_ROOT:-${TMPDIR:-/tmp}/jj-verify}
+tmp=${TMPDIR:-/tmp}
+root=${JJ_VERIFY_ROOT:-${tmp%/}/jj-verify}
 id=$(date +%Y%m%d-%H%M%S)-$$
 run="$root/$id"
 mkdir -p "$run/data" "$run/sandbox" "$run/evidence"
@@ -56,14 +55,21 @@ git -C "$repo" status --porcelain -- . ':!.agents' ':!.claude' >"$run/dirty"
 echo "$driver" >"$run/driver"
 
 cd "$repo"
-env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=production \
+# Job control gives the server a process group of its own (pgid = pid), so
+# stop.sh can signal exactly that group; nohup keeps it alive when this shell
+# exits. nohup and env exec, so $! is the node process. The trailing
+# --jj-verify-run tag, which the API ignores, lets stop.sh confirm a pid
+# still belongs to this run with plain ps on Linux and macOS alike.
+set -m
+nohup env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=production \
   API_HOST=127.0.0.1 API_PORT=0 \
   JJ_DATABASE_PATH="$run/data" \
   JJ_ENABLE_SCRIPTED_MODEL=true \
   JJ_SANDBOX_DRIVERS="$driver" JJ_SANDBOX_ROOT="$run/sandbox" \
   ${docker_env[@]+"${docker_env[@]}"} \
-  setsid node --import tsx apps/api/src/index.ts >"$run/server.log" 2>&1 &
+  node --import tsx apps/api/src/index.ts "--jj-verify-run=$run/" >"$run/server.log" 2>&1 &
 echo $! >"$run/pid"
+set +m
 
 # A launch that fails after the server started tears it down, so a failed
 # attempt never strands a detached process; the run dir keeps the logs.

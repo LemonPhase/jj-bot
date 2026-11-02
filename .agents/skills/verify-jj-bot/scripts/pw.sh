@@ -22,5 +22,5 @@ if [ "${1:-}" = open ]; then
   set -- open --browser=chromium "$url/${2:-}"
 fi
 # Drop the update banner, which otherwise wraps every reply.
-playwright-cli -s="$session" "$@" 2>&1 | grep -v -E '^[╔╚║]|Update available|npm install -g @playwright'
+playwright-cli -s="$session" "$@" 2>&1 | grep -v -E '^(╔|╚|║)|Update available|npm install -g @playwright'
 exit "${PIPESTATUS[0]}"

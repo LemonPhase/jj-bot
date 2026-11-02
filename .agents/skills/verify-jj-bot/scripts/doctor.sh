@@ -19,7 +19,11 @@ port=${url##*:}
 kill -0 "$pid" 2>/dev/null && ok "process $pid is running" || bad "process $pid is gone; see $run/server.log"
 
 # The port must belong to the process we started, not some other server.
-owner=$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+if command -v lsof >/dev/null; then
+  owner=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | head -1)
+else
+  owner=$(ss -ltnpH "sport = :$port" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+fi
 [ "$owner" = "$pid" ] && ok "port $port is owned by pid $pid" || bad "port $port is owned by '${owner:-nobody}', not $pid"
 
 ready=$(curl -s "$url/health/ready")
