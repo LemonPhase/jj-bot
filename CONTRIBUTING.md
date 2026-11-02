@@ -6,10 +6,10 @@ Read [AGENTS.md](AGENTS.md) and the local docs (`docs/development.md`, `docs/pro
 
 ## Branches and pull requests
 
-- Branch from the latest `main`, one branch per issue, named `<kind>/<topic>` (`feat/compose`, `fix/artifacts-after-handoff`, `docs/demo-task`). Keep unrelated changes on separate branches.
-- Open the PR against `main` with `Closes #N`. Its description states the problem, the resulting behavior, the verification (commands and observed results, with what passed, failed or did not run) and known limits.
+- Branch from the latest `main`, one branch per change, named `<kind>/<topic>` (`feat/compose`, `fix/artifacts-after-handoff`, `docs/demo-task`). Keep unrelated changes on separate branches.
+- Open the PR against `main`, with `Closes #N` when it implements an issue; small self-contained changes need no issue ([AGENTS.md](AGENTS.md#work-tracking-github-issues)). Its description states the problem, the resulting behavior, the acceptance criteria when there is no issue to hold them, the verification (commands and observed results, with what passed, failed or did not run) and known limits.
 - Pull requests run CI on their merge result. Keep the branch current with `main` and re-run the checks after merging it in.
-- Agree changes to `packages/contracts` on the issue first, bump `CONTRACT_VERSION` and add an entry to [the contract changelog](docs/contract-changelog.md).
+- Changes to `packages/contracts` always start from an issue: agree them there first, bump `CONTRACT_VERSION` and add an entry to [the contract changelog](docs/contract-changelog.md).
 
 ## Required development verification loop
 
@@ -20,7 +20,7 @@ For substantive product work, define verification **before implementation** at t
 
 Follow **implement → verify → inspect failures → revise → reverify**. Stop only when the acceptance checks pass with evidence, or report the unresolved failure/blocker and next action. A model saying “done,” a clean compile, or one worker's local success does not establish integrated task success.
 
-Use checks appropriate to the change: typecheck/lint/build for integration errors; meaningful tests for domain/runtime behavior; the shared conformance suite for any sandbox driver; real API/browser observations for user flows; cited source comparisons for factual work; and explicit rubrics for qualitative output. Do not add tests that merely mirror implementation. Run relevant checks, then repeat or broaden only for new changes, failures or unresolved risk.
+Use checks appropriate to the change: typecheck/lint/build for integration errors; meaningful tests for domain/runtime behavior; the shared conformance suite for any sandbox driver; real API/browser observations for user flows (`.agents/skills/verify-jj-bot` launches an isolated instance and drives the web app); cited source comparisons for factual work; and explicit rubrics for qualitative output. Do not add tests that merely mirror implementation. Run relevant checks, then repeat or broaden only for new changes, failures or unresolved risk.
 
 Record **passed**, **failed** and **inconclusive/not run** distinctly. Keep command, observed result, evidence/artifact and limitations. Never present mocks as live model execution, an unrun test as passing, or a missing key as a successful integration. Recheck integrated output separately from worker results. If steering changes acceptance criteria, update the goal/check version and reject stale completion evidence.
 
@@ -39,7 +39,7 @@ Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, seman
 
 1. Run the checks the change needs, at least `npm run verify`, and the smoke scripts for runtime, API or deployment changes. Explain any check that could not run.
 2. Review the diff for credentials, generated files, unrelated changes and misleading readiness claims.
-3. Get an independent review of the diff, by a person or an agent session that did not write it, against the issue's acceptance criteria. Fix what it finds, re-run the affected checks, and record the findings and their fixes in the PR.
-4. Merge once CI passes and the acceptance criteria hold with evidence; the PR closes the issue. If you stop before then, comment on the issue with commit or PR links, results, blockers and the exact next action. Keep issues curated; do not paste conversation transcripts.
+3. Get an independent review of the diff, by a person or an agent session that did not write it, against the acceptance criteria (the issue's, or the PR's without one). Fix what it finds, re-run the affected checks, and record the findings and their fixes in the PR.
+4. Merge once CI passes and the acceptance criteria hold with evidence; the PR closes its issue, if any. If you stop before then, comment on the issue (or, without one, the PR) with commit or PR links, results, blockers and the exact next action. Keep issues curated; do not paste conversation transcripts.
 
 No API keys belong in code, issues or browser bundles. The API has one shared bearer token and no per-user identity: never expose it beyond loopback except behind HTTPS.

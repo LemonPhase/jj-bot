@@ -16,11 +16,12 @@ Product, architecture, contract and setup context lives in this repository. Read
 
 Work is tracked in [GitHub Issues](https://github.com/LemonPhase/jj-bot/issues), grouped into milestones by phase; [docs/workstreams.md](docs/workstreams.md) explains the milestones, labels and how to pick up an issue. Repository code and tests establish implementation behavior; issues hold status, ownership, dependencies and handoffs. The user's current instructions take precedence.
 
-- **Claim before starting.** Pick an issue with no open blockers — its native "blocked by" links are the source of truth — then assign yourself or comment to claim it. Record the accountable human owner and any agent or session.
-- **Define acceptance first.** If an issue lacks acceptance criteria and expected evidence, add them before implementing.
-- **One PR per issue.** Branch from the latest `main` per issue and open a PR against `main` that closes it (`Closes #N`); [CONTRIBUTING.md](CONTRIBUTING.md) has the PR description and the independent review. Coordinate before touching shared files: `packages/contracts`, root dependencies, and shared web layout and styles.
-- **Hand off on the issue.** When stopping before an issue is done, comment with links to commits or the PR, verification results (passed, failed, not run), blockers and the exact next action.
-- **New work gets a new issue,** with goal, scope, acceptance criteria and dependencies, rather than growing the current one.
+- **Use an issue when it earns its keep:** milestone work, work with dependencies or blockers, work someone else may pick up or hand off, and decisions. A small self-contained change (a contained fix, tooling, docs) can go straight to a PR, whose description then carries the goal, acceptance criteria and verification.
+- **Claim before starting.** When working from an issue, pick one with no open blockers — its native "blocked by" links are the source of truth — then assign yourself or comment to claim it. Record the accountable human owner and any agent or session.
+- **Define acceptance first,** in the issue or, without one, the PR description. If an issue lacks acceptance criteria and expected evidence, add them before implementing.
+- **One PR per change.** Branch from the latest `main` and open a PR against `main`; when it implements an issue, it closes it (`Closes #N`). [CONTRIBUTING.md](CONTRIBUTING.md) has the PR description and the independent review. Coordinate before touching shared files: `packages/contracts`, root dependencies, and shared web layout and styles.
+- **Hand off on the issue.** When stopping before an issue is done, comment with links to commits or the PR, verification results (passed, failed, not run), blockers and the exact next action. Without an issue, put the same handoff in the PR.
+- **Grow scope through a new issue or PR,** with goal, scope, acceptance criteria and dependencies, rather than growing the current one.
 - **Decisions are `decision` issues.** Once settled, write the resulting contract into the docs and close the issue.
 
 ## Keep issues curated
@@ -33,6 +34,16 @@ Issues and their comments are consolidated context for teammates and future agen
 - Write the smallest useful synthesis: the outcome, why it matters, and evidence or next action. Link artifacts instead of pasting them. Label proposals and uncertainty clearly, and never mark a proposal accepted without a decision.
 - Do not rewrite or close teammates' issues while tidying; keep decision history.
 - Never claim an issue or PR update succeeded unless the write succeeded.
+
+## Agent-agnostic repository
+
+Any coding agent (Claude Code, Cursor, Codex or another) must be able to work in this repository from what is committed. Changes to the repository stay agent-agnostic:
+
+- This file is the one source of agent instructions. Do not add instructions that only one agent reads, such as rules in `CLAUDE.md` or `.cursor/rules/`; if an agent needs its own entry file, it only points here.
+- Shared skills live in `.agents/skills/<name>/` in the Agent Skills format: a `SKILL.md` with `name` and `description` frontmatter, plus the scripts and references it uses. Write them in plain terms: repository-relative paths, shell commands and CLIs any agent can run, and no tool names, subagent types or models of one harness.
+- An agent that does not read `.agents/skills/` gets a symlink in its own folder, such as `.claude/skills/<name> -> ../../.agents/skills/<name>`, never a copy or a fork.
+- Personal and harness setup (model choices, permissions, plugins) stays in each user's own configuration, out of the repository.
+- `.agents/skills/verify-jj-bot` launches an isolated instance and drives the web app in a headless browser to prove a user-facing change; use it alongside `npm run verify` and `npm run smoke:e2e`.
 
 ## Repository development
 
