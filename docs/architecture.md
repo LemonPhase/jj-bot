@@ -88,7 +88,7 @@ Each task message is persisted once, with attribution and intent, in the task lo
 
 Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
 
-Message intents: discussion, assignment, result, steering and notification.
+Message intents: discussion, assignment, result, steering and notification. A bot's message with no recipient (a broadcast) is a notification; a coordinator's reply to the user is a discussion message with no recipient.
 
 ## Coordination
 
@@ -128,7 +128,7 @@ A session's prompt carries the bot's persona and memory, the goal at the session
 Every task session, coordinator and workers alike, can also look up its task's shared record with four read-only tools, and its prompt says when to use them:
 
 - `task_state`: the goal and goal version, the task's status (with its result or error once it has one), and each session's id, bot, role, status and the first line of its brief.
-- `task_log`: the task log, oldest first, filtered by kind and by text (ignoring case), paged with `after` and `limit`. Each entry is one index line: its id, its kind, its author (→ recipients) and a clipped preview. An entry's id is the stored task message's id, so it never changes. Its kind is `user` (steering, or a message a bot relayed from the user's direct chat), `brief` (an assignment), `report` (a worker's report or failure, or the coordinator's result) or `message` (any other message, the coordinator's replies to the user included).
+- `task_log`: the task log, shown oldest first, filtered by kind and by text (ignoring case), from the oldest or the newest entry and paged with `after`, `before` and `limit`; a page says how many matching entries lie before and after it. Each entry is one index line: its id, its kind, its author (→ recipients, or → everyone for a broadcast) and a clipped preview. An entry's id is the stored task message's id, so it never changes. Its kind is `user` (steering, or a message a bot relayed from the user's direct chat), `brief` (an assignment), `report` (a worker's report or failure, or the coordinator's result) or `message` (any other message, the coordinator's replies to the user included).
 - `read_entry`: one entry in full, by id.
 - `read_report`: a session's brief and its report (or result, or failure) in full, by session id, or by bot name for each of that bot's sessions on the task.
 
@@ -139,6 +139,7 @@ The invariants:
 - **Read-only.** The tools change no record and wake no one; like every tool call, each call is recorded as events.
 - **Cache-stable.** Their definitions are the same for every session and run; ids and names are checked inside a tool, never listed in its schema.
 - **Redacted and capped.** What they read is redacted before any preview clips it, so a cut never leaves part of a secret; the result is capped at `JJ_OUTPUT_CAP_BYTES` and spilled to an artifact like any other tool output.
+- **Clean refusals.** An unknown id, another task's id, a NUL character in an argument or a failed read is a tool error the model can act on, never a database message.
 
 An execution session's context is compacted with pi's compaction when it nears its model's context window; direct chat sends a bounded history instead. The [runtime README](../packages/runtime/README.md#context-compaction) has the details; the invariants are:
 
