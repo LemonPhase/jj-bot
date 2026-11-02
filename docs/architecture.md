@@ -88,6 +88,8 @@ Each task message is persisted once, with attribution and intent, in the task lo
 
 Delivery is separate from activation: only briefs, results and steering start or continue a run, while other messages ride along with the recipient's next turn and never launch work by themselves. This prevents acknowledgement loops and unbounded reply chains.
 
+A message to a teammate with no active session in the task, because its sessions have finished or it never had one, is refused: no bot would read it, so it is not posted, and the sender gets a tool error that says so and suggests `delegate` (or its report, when it cannot delegate). A broadcast is unchanged: it reaches every other active session, and is posted even when there is none. Nothing important exists only as a message: what a teammate or the coordinator must know goes in a brief, a report or a workspace file.
+
 Message intents: discussion, assignment, result, steering and notification. A bot's message with no recipient (a broadcast) is a notification; a coordinator's reply to the user is a discussion message with no recipient.
 
 ## Coordination
@@ -95,6 +97,8 @@ Message intents: discussion, assignment, result, steering and notification. A bo
 Every task has one coordinator, which delegates bounded work and delivers the consolidated task result: the bot the user names when creating the task, or the bot that created it from direct chat.
 
 Delegation creates a child **execution session** for the assignee bot. Its parent is the requesting session, its brief is the assignment, and its result is the assignment's result; there is no separate assignment record. Delegated sessions can delegate in turn, and the session tree is the task's execution graph.
+
+Shared decisions are settled in briefs. Before delegating pieces that share something (an interface, a naming or style convention, a data format), the coordinator decides it and states it in every affected brief, alongside the files each worker owns, rather than leaving workers to agree it between themselves. Inside its own piece, a worker decides. A worker that needs a shared decision changed says so in its report, or messages the session that delegated to it.
 
 When a child session finishes, its result is posted as a result message that activates the parent session. The parent resumes from its persisted transcript with the result in context, so it can react to each result as it arrives — re-delegate, correct, or follow up — rather than only after all work ends. A session that ends its turn is `waiting` until input arrives, and records what it waits for: the results of its open delegations, or the user. A waiting session holds no lease and no concurrency slot, so waiting parents cannot starve their children.
 
