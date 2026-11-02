@@ -492,6 +492,7 @@ describe("lookup tools", () => {
                 { name: "task_log", args: { kind: "user" } },
                 { name: "task_log", args: { query: "KIWI-7" } },
                 { name: "task_log", args: { limit: 2 } },
+                { name: "task_log", args: { kind: "brief", limit: 1 } },
               ],
             };
           case 2: {
@@ -549,6 +550,7 @@ describe("lookup tools", () => {
       ["task_log", true],
       ["task_log", true],
       ["task_log", true],
+      ["task_log", true],
       ["read_entry", true],
       ["read_report", true],
       ["read_report", true],
@@ -557,8 +559,17 @@ describe("lookup tools", () => {
       ["read_report", false],
       ["task_log", false],
     ]);
-    const [state, all, users, search, paged, entry, bobReport, rootReport] =
-      outputs.map((o) => o.output);
+    const [
+      state,
+      all,
+      users,
+      search,
+      paged,
+      briefs,
+      entry,
+      bobReport,
+      rootReport,
+    ] = outputs.map((o) => o.output);
     const sessionOf = (name: string) =>
       view.sessions.find(
         (s) => s.botId === team.byName[name],
@@ -593,7 +604,14 @@ describe("lookup tools", () => {
       [
         `${ids[0]} [message] ${ada}: Which palette?`,
         `${ids[1]} [user] user → ${ada}: ${USER_TEXT}`,
-        `(4 more after ${ids[1]}: call \`task_log\` again with after "${ids[1]}".)`,
+        `(4 more after ${ids[1]}: call \`task_log\` again with after "${ids[1]}", limit 2.)`,
+      ].join("\n"),
+    );
+    // The next-page hint keeps the filters it was listed with.
+    expect(briefs).toBe(
+      [
+        `${ids[2]} [brief] ${ada} → ${bob}: Write bob.txt`,
+        `(1 more after ${ids[2]}: call \`task_log\` again with after "${ids[2]}", kind "brief", limit 1.)`,
       ].join("\n"),
     );
     expect(entry).toBe(`${ids[1]} [user] user → ${ada}\n${USER_TEXT}`);
@@ -609,7 +627,7 @@ describe("lookup tools", () => {
     expect(rootReport).toContain(
       `Session ${sessionOf(ada).id}: ${ada} (coordinator), waiting for its delegations, goal version 1\nBrief (the task's goal when it started):\nWrite two files\nResult:\n(not reported yet: waiting for its delegations)`,
     );
-    expect(outputs.slice(8).map((o) => o.output)).toEqual([
+    expect(outputs.slice(9).map((o) => o.output)).toEqual([
       "No entry msg_unknown in this task's log. Entry ids come from `task_log`.",
       "No session sess_unknown on this task. Session ids come from `task_state`.",
       "Stranger is not on this task.",
@@ -764,7 +782,7 @@ describe("lookup tools", () => {
     for (const o of outputs) expect(o.output).not.toContain("kiwi-7");
   });
 
-  it("redact what they return themselves, before any runtime sees it", async () => {
+  it("redact what they read before a preview clips it, whatever the runtime does", async () => {
     const KEY = "sk-test-ghjkmnpqrstvwxyzGHJKMNPQ";
     const { engine, executor } = await setup({
       secrets: [{ name: "OPENAI_API_KEY", value: KEY }],
@@ -791,12 +809,15 @@ describe("lookup tools", () => {
       coordinatorBotId: team.byName[ada] as string,
     });
     await untilTask(engine, task.id, (v) => v.task.status === "waiting");
-    await engine.tasks.postMessage(task.id, { text: `It is ${KEY}.` });
+    // The user's text is stored as written, and the 160-character preview
+    // would cut through the key.
+    const pad = "x".repeat(150);
+    await engine.tasks.postMessage(task.id, { text: `${pad} ${KEY} is it.` });
     await untilTask(engine, task.id, (v) => v.task.status === "completed");
     expect(seen).toHaveLength(2);
-    expect(seen[0]).toContain(`It is ${REDACTED}.`);
-    expect(seen[1]).toContain(`It is ${REDACTED}.`);
-    for (const text of seen) expect(text).not.toContain(KEY);
+    expect(seen[0]?.endsWith(`: ${pad} [redacte…`)).toBe(true);
+    expect(seen[1]).toContain(`${pad} ${REDACTED} is it.`);
+    for (const text of seen) expect(text).not.toContain(KEY.slice(0, 7));
   });
 
   it("redact what they return and are capped and spilled like other tool output", async () => {

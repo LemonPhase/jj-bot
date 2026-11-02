@@ -19,6 +19,7 @@ import { lookupTools } from "./lookup-tools";
 import type { CompletionRequest } from "./outcomes";
 import { briefPointer, type RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
+import { textArg } from "./tool-args";
 
 export interface Teammate extends RosterMember {
   botId: string;
@@ -46,9 +47,6 @@ function findTeammate(team: readonly Teammate[], value: unknown) {
       member.name.toLowerCase() === wanted || member.botId === value.trim(),
   );
 }
-
-const textArg = (value: unknown) =>
-  typeof value === "string" && value.trim() ? value.trim() : undefined;
 
 /**
  * A session's delegations that have not reported yet: bot, brief summary and

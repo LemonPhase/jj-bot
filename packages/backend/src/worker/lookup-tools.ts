@@ -2,8 +2,10 @@
 // read_entry and read_report. They read the caller's own task through the
 // task log service and write nothing. Their definitions are constants, the
 // same for every session and run (tools lead the prompt cache): ids and names
-// are checked inside each tool, never listed in a schema. What they return is
-// redacted here, and capped and spilled like any tool output by the runtime.
+// are checked inside each tool, never listed in a schema. What they read is
+// redacted before it is formatted (previews clip, so a cut must never leave
+// part of a secret), and the runtime caps and spills the result like any tool
+// output.
 import type { CollabTool, CollabToolResult } from "../ports";
 import {
   formatEntry,
@@ -21,6 +23,7 @@ import {
   TASK_LOG_PAGE,
 } from "../services/task-log";
 import type { RunContext } from "./run-context";
+import { textArg } from "./tool-args";
 
 /** The lookup tools' names, in the order a session is offered them. */
 export const LOOKUP_TOOLS = [
@@ -29,9 +32,6 @@ export const LOOKUP_TOOLS = [
   "read_entry",
   "read_report",
 ] as const;
-
-const textArg = (value: unknown) =>
-  typeof value === "string" && value.trim() ? value.trim() : undefined;
 
 function limitArg(value: unknown): number | undefined {
   const number = typeof value === "string" ? Number(value) : value;
@@ -63,7 +63,7 @@ export function lookupTools(rc: RunContext): CollabTool[] {
       },
       summarize: () => "task",
       async execute() {
-        const state = await readTaskState(db, taskId);
+        const state = rc.redact(await readTaskState(db, taskId));
         return state ? ok(formatTaskState(state)) : refuse("No such task.");
       },
     },
@@ -105,14 +105,16 @@ export function lookupTools(rc: RunContext): CollabTool[] {
           return refuse(
             `Unknown kind ${kind}. Use one of: ${TASK_LOG_KINDS.join(", ")}.`,
           );
-        const query = textArg(args.query);
+        // Searched as written: spaces in a query can matter.
+        const query =
+          typeof args.query === "string" && args.query.trim()
+            ? args.query
+            : undefined;
         const after = textArg(args.after);
-        const page = await listTaskLog(db, taskId, {
-          kind,
-          query,
-          after,
-          limit: limitArg(args.limit),
-        });
+        const limit = limitArg(args.limit);
+        const page = rc.redact(
+          await listTaskLog(db, taskId, { kind, query, after, limit }),
+        );
         if (!page) return refuse(noEntry(after ?? ""));
         if (page.entries.length === 0)
           return ok(
@@ -122,10 +124,18 @@ export function lookupTools(rc: RunContext): CollabTool[] {
           );
         const lines = page.entries.map((entry) => indexLine(entry));
         const last = page.entries.at(-1)?.id;
-        if (page.more > 0)
+        if (page.more > 0) {
+          // The same filters, so the next page continues this listing.
+          const next = [
+            `after ${JSON.stringify(last)}`,
+            ...(kind ? [`kind ${JSON.stringify(kind)}`] : []),
+            ...(query ? [`query ${JSON.stringify(query)}`] : []),
+            ...(limit !== undefined ? [`limit ${limit}`] : []),
+          ];
           lines.push(
-            `(${page.more} more after ${last}: call \`task_log\` again with after "${last}".)`,
+            `(${page.more} more after ${last}: call \`task_log\` again with ${next.join(", ")}.)`,
           );
+        }
         return ok(lines.join("\n"));
       },
     },
@@ -148,7 +158,7 @@ export function lookupTools(rc: RunContext): CollabTool[] {
       async execute(args) {
         const id = textArg(args.id);
         if (!id) return refuse("Give the entry's id.");
-        const entry = await readTaskLogEntry(db, taskId, id);
+        const entry = rc.redact(await readTaskLogEntry(db, taskId, id));
         return entry ? ok(formatEntry(entry)) : refuse(noEntry(id));
       },
     },
@@ -175,7 +185,9 @@ export function lookupTools(rc: RunContext): CollabTool[] {
       async execute(args) {
         const sessionId = textArg(args.session);
         if (sessionId) {
-          const report = await readSessionReport(db, taskId, sessionId);
+          const report = rc.redact(
+            await readSessionReport(db, taskId, sessionId),
+          );
           return report
             ? ok(formatSessionReport(report))
             : refuse(
@@ -184,7 +196,7 @@ export function lookupTools(rc: RunContext): CollabTool[] {
         }
         const bot = textArg(args.bot);
         if (!bot) return refuse("Give a session id or a bot's name.");
-        const found = await readBotReports(db, taskId, bot);
+        const found = rc.redact(await readBotReports(db, taskId, bot));
         if (!found) return refuse(`${bot} is not on this task.`);
         if (found.reports.length === 0)
           return ok(`${found.bot} has no session on this task yet.`);

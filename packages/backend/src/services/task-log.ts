@@ -1,9 +1,10 @@
 // The task's shared record as its bots read it: the task state, the task log
 // (every task message, stored once and in order) and each session's brief and
-// report. Read-only and keyed by task id, so whoever reads a task (a task
-// session's lookup tools, direct chat, a child session's first input) reads
-// the same thing, and every query is scoped to that one task. Session
-// transcripts are never read here: they stay private to their session.
+// report. Read-only and keyed by task id, independent of any tool, so every
+// bot-facing reader of a task can share it (today the task sessions' lookup
+// tools); every query is scoped to that one task. Texts come back as stored:
+// a reader redacts them before formatting, since the formatters clip.
+// Session transcripts are never read here: they stay private to their session.
 import {
   type AuthorKind,
   bots,
@@ -17,7 +18,7 @@ import {
   tasks,
   type WaitingFor,
 } from "@jj/db";
-import { and, asc, count, eq, gt, ilike, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, ilike, inArray, sql } from "drizzle-orm";
 
 /** What a task log entry is: a user message, a brief, a report or a message. */
 export const TASK_LOG_KINDS = ["user", "brief", "report", "message"] as const;
@@ -191,19 +192,19 @@ export async function listTaskLog(
       ? undefined
       : gt(taskMessages.sequence, afterSequence),
   );
+  // The window counts every match before the limit cuts the page.
   const rows = await exec
-    .select(entryColumns)
+    .select({
+      ...entryColumns,
+      matches: sql<number>`count(*) over ()`.mapWith(Number),
+    })
     .from(taskMessages)
     .where(where)
     .orderBy(asc(taskMessages.sequence))
     .limit(limit);
-  const [total] = await exec
-    .select({ value: count() })
-    .from(taskMessages)
-    .where(where);
   return {
     entries: await toEntries(exec, rows),
-    more: Math.max(0, (total?.value ?? 0) - rows.length),
+    more: Math.max(0, (rows[0]?.matches ?? 0) - rows.length),
   };
 }
 
@@ -226,6 +227,7 @@ const header = (entry: TaskLogEntry) =>
 /**
  * An entry as one index line: id, kind, author (→ recipients) and a short
  * preview, such as `msg_… [brief] Ada → Grace: Write glossary-a.md …`.
+ * Redact the entry first: the preview cuts its text.
  */
 export const indexLine = (entry: TaskLogEntry, previewChars = PREVIEW_CHARS) =>
   `${header(entry)}: ${clipLine(entry.text, previewChars)}`;
@@ -269,7 +271,18 @@ export interface SessionReport extends SessionSummary {
 /** The task's sessions, oldest first, with bot and requester names. */
 async function sessionRows(exec: Executor, taskId: string) {
   const rows = await exec
-    .select()
+    .select({
+      id: sessions.id,
+      botId: sessions.botId,
+      parentSessionId: sessions.parentSessionId,
+      role: sessions.role,
+      status: sessions.status,
+      waitingFor: sessions.waitingFor,
+      goalVersion: sessions.goalVersion,
+      brief: sessions.brief,
+      result: sessions.result,
+      error: sessions.error,
+    })
     .from(sessions)
     .where(eq(sessions.taskId, taskId))
     .orderBy(asc(sessions.createdAt), asc(sessions.id));
@@ -375,7 +388,7 @@ const statusText = (session: SessionSummary) =>
 const sessionLabel = (session: SessionSummary) =>
   `${session.bot} (${session.role}${session.requester ? `, from ${session.requester}` : ""})`;
 
-/** The task state as text: goal, status, outcome and one line per session. */
+/** The task state as text: goal, status, outcome and one line per session. Redact the state first: it clips. */
 export function formatTaskState(state: TaskState): string {
   const lines = [
     `Task ${state.id} "${state.title}": ${state.status}`,

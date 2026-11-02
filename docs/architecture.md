@@ -138,9 +138,7 @@ The invariants:
 - **Never a transcript.** A session's transcript (its reasoning, tool calls and tool output) is private to it: no tool reads another session's transcript, and no model call receives one.
 - **Read-only.** The tools change no record and wake no one; like every tool call, each call is recorded as events.
 - **Cache-stable.** Their definitions are the same for every session and run; ids and names are checked inside a tool, never listed in its schema.
-- **Redacted and capped.** What they return is redacted, then capped at `JJ_OUTPUT_CAP_BYTES` and spilled to an artifact like any other tool output.
-
-The reading is one service keyed by task id, so every reader of a task reads the same record and the same index line format.
+- **Redacted and capped.** What they read is redacted before any preview clips it, so a cut never leaves part of a secret; the result is capped at `JJ_OUTPUT_CAP_BYTES` and spilled to an artifact like any other tool output.
 
 An execution session's context is compacted with pi's compaction when it nears its model's context window; direct chat sends a bounded history instead. The [runtime README](../packages/runtime/README.md#context-compaction) has the details; the invariants are:
 
