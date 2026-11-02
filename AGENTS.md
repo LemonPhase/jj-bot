@@ -5,6 +5,7 @@
 Product, architecture, contract and setup context lives in this repository. Read the local files first for coding, debugging and codebase questions:
 
 - `docs/development.md` — commands, workspace layout, environment variables, endpoints, checks and constraints
+- `docs/glossary.md` — what bot, task, coordinator, worker, session, run, transcript, inbox, brief, report, task log and the other execution terms mean
 - `docs/product-spec.md`, `docs/task-continuation.md` & `docs/milestone-1.md` — bot/task/session model, steering, continuation, cancellation, and milestone acceptance criteria
 - `docs/architecture.md` & `docs/tech-stack.md` — pi agent runtime, pluggable sandbox drivers, Hono, PostgreSQL/Drizzle and the native task event stream
 - `docs/verification.md` — opt-in task verification in the product; `CONTRIBUTING.md` — branches, PRs, review and the verification loop for development work
