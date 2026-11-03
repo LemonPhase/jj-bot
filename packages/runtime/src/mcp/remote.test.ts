@@ -28,6 +28,8 @@ const TOKEN = "secret-token-0123456789";
 const SECRET = `Bearer ${TOKEN}`;
 /** GET requests the server saw: pi-mcp resumes a cut event stream with GET. */
 let gets = 0;
+/** Response streams of `hold` calls, and whether the client has closed each. */
+const held: { closed: boolean }[] = [];
 let dir: string;
 let cert: string;
 let key: string;
@@ -121,6 +123,15 @@ function mcpServer() {
           );
         return;
       }
+      if (req.url === "/json200") {
+        // Not JSON, with the token where a parse error's excerpt would show it.
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(
+            `{"error": "bad", "echo": ${String(req.headers.authorization).replace(/^Bearer /, "")}}`,
+          );
+        return;
+      }
       if (req.url === "/cut") {
         // The key across the 500 characters pi-mcp keeps of an error body.
         res
@@ -157,6 +168,27 @@ function mcpServer() {
           .end(
             `id: 0\nretry: 0\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"x"}}\n\n`,
           );
+        return;
+      }
+      if (name === "cut_clean" || name === "cut_drop") {
+        // A stream that ends, or whose socket dies, before the answer.
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        if (name === "cut_clean") res.end(": started\n\n");
+        else {
+          res.write(": started\n\n");
+          setTimeout(() => res.socket?.destroy(), 50);
+        }
+        return;
+      }
+      if (name === "hold") {
+        // Never answers: the stream stays open until the client closes it.
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(": open\n\n");
+        const entry = { closed: false };
+        held.push(entry);
+        res.on("close", () => {
+          entry.closed = true;
+        });
         return;
       }
       if (name === "denied" && "id" in message) {
@@ -456,12 +488,61 @@ describe("remote MCP guard", () => {
     );
     // Resuming with GET looped (retry: 0) until the call's timeout, and after it.
     expect(Date.now() - started).toBeLessThan(1_000);
-    expect(error.kind).toBe("server");
-    expect(error.message).toContain(
-      "MCP response stream failed: stream ended without a response",
+    expect(error.kind).toBe("closed");
+    expect(error.interrupted).toBe("unknown");
+    expect(error.message).toBe(
+      "The answer to the MCP call stream_cut was cut off (stream ended without a response); whether it took effect is unknown.",
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(gets).toBe(0);
+  });
+
+  it.each([
+    ["ends", "cut_clean", "stream ended without a response"],
+    ["loses its connection", "cut_drop", "terminated"],
+  ])(
+    "reports a call whose answer stream %s as cut short, outcome unknown",
+    async (_label, tool, reason) => {
+      // pi-mcp answers such a request itself, with JSON-RPC error -32603: no server said so.
+      const { connection } = remote(`https://mcp.test:${port}/mcp`);
+      await connection.start();
+      const error = await failure(
+        connection.callTool(tool, {}, { timeoutMs: 5_000 }),
+      );
+      expect(error.kind).toBe("closed");
+      expect(error.interrupted).toBe("unknown");
+      expect(error.message).toContain(
+        `The answer to the MCP call ${tool} was cut off (${reason}`,
+      );
+    },
+  );
+
+  it("closes a call's response stream when the call times out or is aborted", async () => {
+    held.length = 0;
+    const { connection } = remote(`https://mcp.test:${port}/mcp`);
+    await connection.start();
+    await failure(connection.callTool("hold", {}, { timeoutMs: 200 }));
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200);
+    await failure(
+      connection.callTool(
+        "hold",
+        {},
+        { timeoutMs: 60_000, signal: controller.signal },
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(held).toEqual([{ closed: true }, { closed: true }]);
+    expect(connection.state).toBe("ready");
+  });
+
+  it("keeps a secret out of a parse error's excerpt of an invalid JSON answer", async () => {
+    const { connection } = remote(`https://mcp.test:${port}/json200`);
+    const error = await failure(connection.start());
+    expect(error.message).toBe(
+      "MCP server docs could not start: The MCP server answered with a body that is not valid JSON.",
+    );
+    expect(leaks(error.message, TOKEN)).toBe(false);
   });
 
   it("keeps a secret header's value out of an error that echoes it without its prefix", async () => {

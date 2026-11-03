@@ -146,8 +146,7 @@ describe("McpConnection: start and discovery", () => {
     const repeated = await looping.connection.listTools();
     expect(repeated.tools.map((tool) => tool.name)).toEqual(["again", "again"]);
     expect(repeated.warnings).toEqual([
-      "The server listed an entry that is not a tool (it needs a name and an input schema); it was skipped.",
-      "The server listed an entry that is not a tool (it needs a name and an input schema); it was skipped.",
+      "The server listed 2 entries that are not tools (each needs a name and an input schema); they were skipped.",
       "The server repeated a tools/list page cursor; the listing stopped there.",
     ]);
   });
@@ -360,6 +359,25 @@ describe("McpConnection: calls", () => {
     await connection.close();
     expect(ends).toEqual([{ reason: "requested" }]);
     expect(connection.state).toBe("closed");
+  });
+
+  it("counts entries that are not tools in one warning, however many pages hold them", async () => {
+    const { connection } = connect({
+      tools: [],
+      listPage: (cursor) => {
+        const page = cursor ? Number(cursor) : 0;
+        return {
+          tools: new Array(50_000).fill(0),
+          ...(page < 19 ? { nextCursor: String(page + 1) } : {}),
+        };
+      },
+    });
+    await connection.start();
+    const listed = await connection.listTools();
+    expect(listed.tools).toEqual([]);
+    expect(listed.warnings).toEqual([
+      "The server listed 1000000 entries that are not tools (each needs a name and an input schema); they were skipped.",
+    ]);
   });
 
   it("reads at most 200 tools, stopping at the page that passes them, with a warning", async () => {

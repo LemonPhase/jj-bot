@@ -128,6 +128,9 @@ export interface McpConnectionOptions {
 
 const CLIENT_INFO: Implementation = { name: "jj-bot", version: "1.0.0" };
 
+/** How pi-mcp words the error it answers a request with when that request's response stream failed. */
+const STREAM_FAILED = "MCP response stream failed: ";
+
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -190,6 +193,7 @@ export class McpConnection implements McpConnector {
   private stateValue: McpConnector["state"] = "idle";
   private serverInfoValue: McpServerInfo | undefined;
   private closing = false;
+  private closed: Promise<void> | undefined;
   private end: McpConnectionEnd | undefined;
   private readonly closeListeners = new Set<(end: McpConnectionEnd) => void>();
 
@@ -267,9 +271,21 @@ export class McpConnection implements McpConnector {
     const maxPages = options.maxPages ?? MCP_MAX_LIST_PAGES;
     const maxTools = options.maxTools ?? MAX_MCP_SNAPSHOT_TOOLS;
     const tools: Tool[] = [];
-    const warnings: string[] = [];
     const cursors = new Set<string>();
     let cursor: string | undefined;
+    /** Entries that are not tools: counted, so a listing of junk keeps one warning. */
+    let skipped = 0;
+    const done = (why?: string): McpToolList => ({
+      tools: tools.slice(0, maxTools),
+      warnings: [
+        ...(skipped > 0
+          ? [
+              `The server listed ${skipped} ${skipped === 1 ? "entry that is not a tool (it needs" : "entries that are not tools (each needs"} a name and an input schema); ${skipped === 1 ? "it was" : "they were"} skipped.`,
+            ]
+          : []),
+        ...(why ? [why] : []),
+      ],
+    });
     for (let page = 0; page < maxPages; page++) {
       let result: unknown;
       try {
@@ -298,23 +314,18 @@ export class McpConnection implements McpConnector {
           isObject(item.inputSchema)
         )
           tools.push(item as unknown as Tool);
-        else
-          warnings.push(
-            "The server listed an entry that is not a tool (it needs a name and an input schema); it was skipped.",
-          );
-        if (tools.length > maxTools) {
-          warnings.push(
+        else skipped++;
+        if (tools.length > maxTools)
+          return done(
             `The server lists more than ${maxTools} tools; only the first ${maxTools} listed were read.`,
           );
-          return { tools: tools.slice(0, maxTools), warnings };
-        }
       }
       // Some servers end with `null` or `""` instead of leaving the cursor out.
       const next =
         result.nextCursor === null || result.nextCursor === ""
           ? undefined
           : result.nextCursor;
-      if (next === undefined) return { tools, warnings };
+      if (next === undefined) return done();
       if (typeof next !== "string")
         throw new McpServerError(
           "protocol",
@@ -322,19 +333,16 @@ export class McpConnection implements McpConnector {
             `MCP server ${this.options.server} sent an invalid tools/list cursor.`,
           ),
         );
-      if (cursors.has(next)) {
-        warnings.push(
+      if (cursors.has(next))
+        return done(
           "The server repeated a tools/list page cursor; the listing stopped there.",
         );
-        return { tools, warnings };
-      }
       cursors.add(next);
       cursor = next;
     }
-    warnings.push(
+    return done(
       `The server lists more than ${maxPages} pages of tools; only the first ${maxPages} were read.`,
     );
-    return { tools, warnings };
   }
 
   async callTool(
@@ -380,15 +388,19 @@ export class McpConnection implements McpConnector {
     }
   }
 
-  async close(): Promise<void> {
+  /** Every call waits for the same close: none returns before the server is stopped. */
+  close(): Promise<void> {
     this.closing = true;
-    if (!this.client) {
-      // Never started: nothing to stop, but its end is still reported.
-      await this.options.transport.close().catch(() => {});
-      this.handleClose();
-      return;
-    }
-    await this.client.close();
+    this.closed ??= (async () => {
+      if (!this.client) {
+        // Never started: nothing to stop, but its end is still reported.
+        await this.options.transport.close().catch(() => {});
+        this.handleClose();
+        return;
+      }
+      await this.client.close();
+    })();
+    return this.closed;
   }
 
   onClose(listener: (end: McpConnectionEnd) => void): () => void {
@@ -547,6 +559,22 @@ export class McpConnection implements McpConnector {
         },
       );
     }
+    // pi-mcp answers a request whose response stream ended or broke before
+    // its answer itself, as JSON-RPC -32603: the server never said how the
+    // call went. A server sending these words itself only makes its own
+    // call's outcome unknown, which is the cautious reading.
+    if (
+      error instanceof McpError &&
+      error.code === -32603 &&
+      error.message.startsWith(STREAM_FAILED)
+    )
+      return new McpServerError(
+        "closed",
+        this.text(
+          `The answer to ${what} was cut off (${error.message.slice(STREAM_FAILED.length)}); whether it took effect is unknown.`,
+        ),
+        { interrupted: "unknown" },
+      );
     if (error instanceof McpError)
       return new McpServerError(
         "server",

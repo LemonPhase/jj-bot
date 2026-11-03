@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { lookup as systemLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
 import {
@@ -151,6 +152,13 @@ function refusalIn(error: unknown): McpRemoteRefusedError | undefined {
 const NULL_BODY = new Set([101, 204, 205, 304]);
 
 /**
+ * The signal of the request being sent, for the fetch it makes: pi-mcp's
+ * transport aborts it once the request is answered, cancelled or timed out,
+ * but fetches with its own transport-wide signal.
+ */
+const requestSignal = new AsyncLocalStorage<AbortSignal | undefined>();
+
+/**
  * A `fetch` for one server's transport that enforces the guard. `onTooLarge`
  * is called once a response body passes the cap, before the read fails.
  * The body of an error response is read whole (within the cap) and
@@ -302,10 +310,19 @@ export function createGuardedFetch(
     if (url.origin !== origin.origin)
       throw refused("Requests go only to the configured MCP server.");
     await precheck(hostOf(url));
+    // pi-mcp fetches with the transport's signal; the request's own (the
+    // call's timeout and abort) ends its response stream with the call.
+    const own = requestSignal.getStore();
+    const transportSignal = init?.signal ?? undefined;
+    const signal =
+      own && transportSignal
+        ? AbortSignal.any([transportSignal, own])
+        : (own ?? transportSignal);
     let response: Response;
     try {
       response = (await undiciFetch(url, {
         ...(init as Parameters<typeof undiciFetch>[1]),
+        ...(signal ? { signal } : {}),
         redirect: "manual",
         dispatcher,
       })) as unknown as Response;
@@ -337,16 +354,36 @@ export function createGuardedFetch(
       );
     }
     const capped = cap(response);
-    if (capped.ok || secrets.length === 0) return capped;
-    // An error body is shown in messages: scrubbed whole, before any cut.
-    const text = await capped.text().catch(() => "");
     const headers = new Headers(capped.headers);
     headers.delete("content-length");
-    return new Response(redactSecrets(text, secrets), {
+    const rewrapped = {
       status: capped.status,
       statusText: capped.statusText,
       headers,
-    });
+    };
+    if (!capped.ok) {
+      if (secrets.length === 0) return capped;
+      // An error body is shown in messages: scrubbed whole, before any cut.
+      const text = await capped.text().catch(() => "");
+      return new Response(redactSecrets(text, secrets), rewrapped);
+    }
+    const type = capped.headers
+      .get("content-type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase();
+    if (type !== "application/json") return capped;
+    // Parsed here first: a parse error's message quotes the text around the
+    // fault, which can be a secret the server echoed; this one quotes nothing.
+    const text = await capped.text();
+    try {
+      JSON.parse(text);
+    } catch {
+      throw new Error(
+        "The MCP server answered with a body that is not valid JSON.",
+      );
+    }
+    return new Response(text, rewrapped);
   };
 
   return {
@@ -437,7 +474,10 @@ export class GuardedHttpTransport
     if (bytes > this.max)
       throw new McpMessageTooLargeError(bytes, this.max, "out");
     try {
-      await this.inner.send(message, options);
+      // The request's own signal reaches its fetch: its response stream ends with it.
+      await requestSignal.run(options?.signal, () =>
+        this.inner.send(message, options),
+      );
     } catch (error) {
       // A response over the cap: the request fails as the connection closes.
       if (this.closingForSize) await this.closingForSize;
