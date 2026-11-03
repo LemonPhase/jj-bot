@@ -877,6 +877,38 @@ export const secrets = pgTable(
 
 export type SecretRow = typeof secrets.$inferSelect;
 
+/**
+ * Values `secrets` no longer holds: replaced or removed, kept only so they
+ * are still redacted from what runs persist (a file a task wrote with the
+ * old value can be printed after every sandbox holding it is released).
+ * Sealed like `secrets`, but bound to this table as associated data, so a
+ * retired ciphertext copied into `secrets` does not open: they are never
+ * injected nor answered back. Deleted 90 days after `retired_at`.
+ */
+export const retiredSecrets = pgTable(
+  "retired_secrets",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    kind: text("kind").$type<SecretKind>().notNull(),
+    /** The name it was stored under. */
+    name: text("name").notNull(),
+    keyId: text("key_id").notNull(),
+    nonce: bytea("nonce").notNull(),
+    /** The GCM ciphertext with its 16-byte tag appended. */
+    ciphertext: bytea("ciphertext").notNull(),
+    retiredAt: timestamp("retired_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("retired_secrets_owner_retired_idx").on(t.ownerId, t.retiredAt),
+    check("retired_secrets_kind_check", oneOf(t.kind, SECRET_KINDS)),
+  ],
+);
+
+export type RetiredSecretRow = typeof retiredSecrets.$inferSelect;
+
 /** Every table, for `drizzle(client, { schema: tables })` and the `Db` type. */
 export const tables = {
   runtimeProfiles,
@@ -900,4 +932,5 @@ export const tables = {
   jobs,
   instanceSettings,
   secrets,
+  retiredSecrets,
 };

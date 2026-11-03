@@ -1,7 +1,8 @@
 // Settings → Secrets and the stored provider keys: write-only values sealed
 // with the server's JJ_SECRET_KEY (see secrets/store.ts). No answer carries a
 // value; refusals name the secret, never its value. A model key never becomes
-// a sandbox secret, whichever is stored first.
+// a sandbox secret, whichever is stored first. A value replaced or removed is
+// retired in the same transaction: kept sealed, for redaction alone.
 import {
   type ModelsView,
   type ProviderInfo,
@@ -12,12 +13,20 @@ import {
   secretNameSchema,
   z,
 } from "@jj/contracts";
-import { runtimeProfiles, type SecretKind, secrets, type Tx } from "@jj/db";
+import {
+  retiredSecrets,
+  runtimeProfiles,
+  type SecretKind,
+  type SecretRow,
+  secrets,
+  type Tx,
+} from "@jj/db";
 import { and, eq } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { MIN_BARE_SECRET_LENGTH, type Secret } from "../redact";
+import { retiredBefore } from "../secrets/store";
 
 /**
  * The secret among `secrets` that `value` would carry into a sandbox: one
@@ -65,6 +74,34 @@ const rowOf = (ctx: EngineContext, kind: SecretKind, name: string) =>
     eq(secrets.name, name),
   );
 
+/**
+ * Keeps the value of `row`, which `replacement` (none: removal) takes the
+ * place of, as a retired value: what a task wrote or printed with it while
+ * it was current is still redacted once no sandbox holds it any more. Values
+ * retired longer ago than the retention period are deleted on the way.
+ */
+async function retire(
+  ctx: EngineContext,
+  tx: Tx,
+  row: SecretRow,
+  replacement?: string,
+): Promise<void> {
+  const now = ctx.clock();
+  await ctx.secretStore.purgeRetired(retiredBefore(now), tx);
+  const sealed = ctx.secretStore.sealRetired(row, replacement);
+  if (!sealed) return;
+  await tx.insert(retiredSecrets).values({
+    id: ctx.ids("retiredSecret"),
+    ownerId: row.ownerId,
+    kind: row.kind,
+    name: row.name,
+    keyId: sealed.keyId,
+    nonce: sealed.nonce,
+    ciphertext: sealed.ciphertext,
+    retiredAt: now,
+  });
+}
+
 /** Stores `value` under (kind, name), replacing what is there. True when it is new. */
 async function upsert(
   ctx: EngineContext,
@@ -76,7 +113,7 @@ async function upsert(
   const sealed = ctx.secretStore.seal(kind, name, value);
   const now = ctx.clock();
   const [existing] = await tx
-    .select({ name: secrets.name })
+    .select()
     .from(secrets)
     .where(rowOf(ctx, kind, name))
     .for("update");
@@ -100,6 +137,7 @@ async function upsert(
       target: [secrets.ownerId, secrets.kind, secrets.name],
       set: columns,
     });
+  if (existing) await retire(ctx, tx, existing, value);
   await hint(tx, { type: "secrets.changed" });
   return !existing;
 }
@@ -149,7 +187,7 @@ export async function putSecret(
 
 /**
  * `DELETE /api/secrets/:name`: removes the secret and, in the same
- * transaction, every profile's grant of it.
+ * transaction, every profile's grant of it. Its value is retired.
  */
 export async function deleteSecret(
   ctx: EngineContext,
@@ -160,8 +198,9 @@ export async function deleteSecret(
     const deleted = await tx
       .delete(secrets)
       .where(rowOf(ctx, "sandbox", name))
-      .returning({ name: secrets.name });
+      .returning();
     if (deleted.length === 0) throw notFound("Secret", name);
+    for (const row of deleted) await retire(ctx, tx, row);
     const profiles = await tx
       .select({ id: runtimeProfiles.id, secrets: runtimeProfiles.secrets })
       .from(runtimeProfiles);
@@ -235,7 +274,7 @@ export async function putProviderKey(
   return modelsView(ctx);
 }
 
-/** `DELETE /api/models/providers/:providerId/key`. */
+/** `DELETE /api/models/providers/:providerId/key`. Its value is retired. */
 export async function deleteProviderKey(
   ctx: EngineContext,
   providerId: string,
@@ -246,12 +285,13 @@ export async function deleteProviderKey(
     const deleted = await tx
       .delete(secrets)
       .where(rowOf(ctx, "provider", id))
-      .returning({ name: secrets.name });
+      .returning();
     if (deleted.length === 0)
       throw new DomainError(
         "NOT_FOUND",
         `No key is stored for ${provider.name}.`,
       );
+    for (const row of deleted) await retire(ctx, tx, row);
     await hint(tx, { type: "secrets.changed" });
   });
   return modelsView(ctx);
