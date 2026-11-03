@@ -4,9 +4,10 @@
 // - The Content-Security-Policy lets a page load and connect to this origin
 //   only, run no script but this origin's files and the web app's one inline
 //   script (by its hash), be framed by nobody (so its buttons, such as Approve
-//   on a held tool call, cannot be clickjacked), set no `<base>` and embed no
-//   plugin. A route that sets a stricter policy of its own keeps it, as
-//   artifact downloads do (`sandbox`).
+//   on a held tool call, cannot be clickjacked), set no `<base>`, embed no
+//   plugin and submit no form natively (the app's forms submit by script).
+//   A route that sets a stricter policy of its own keeps it, as artifact
+//   downloads do (`sandbox`).
 // - `X-Frame-Options: DENY` refuses framing in browsers that predate
 //   `frame-ancestors`; `Referrer-Policy: no-referrer` keeps an address that
 //   carries `?token=` out of `Referer`; `X-Content-Type-Options: nosniff`
@@ -35,6 +36,7 @@ export const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "object-src 'none'",
+  "form-action 'none'",
 ].join("; ");
 
 export const STRICT_TRANSPORT_SECURITY = "max-age=31536000";

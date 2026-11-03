@@ -171,6 +171,7 @@ describe("security headers", () => {
       "frame-ancestors": ["'none'"],
       "base-uri": ["'none'"],
       "object-src": ["'none'"],
+      "form-action": ["'none'"],
     });
   });
 

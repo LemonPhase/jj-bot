@@ -10,7 +10,10 @@
  *   An answer that is the app's own index.html (not redirected, and loading
  *   a hashed entry script) is stored as the shell; the stored shell is
  *   served only when the network fails or the server answers with a 5xx
- *   (down behind a proxy), so the app still opens and says so.
+ *   (down behind a proxy), so the app still opens and says so. It keeps the
+ *   security headers it was answered with (its Content-Security-Policy and
+ *   the others in SECURITY_HEADERS) and no other, so it runs under the same
+ *   policy offline as online.
  * - Vite's content-hashed build files (`/assets/<name>-<hash>.<ext>`) never
  *   change content under a name, so a stored one is served without asking,
  *   and one not stored yet is fetched and stored if the answer is really
@@ -31,6 +34,32 @@
  */
 const CACHE = "jj-shell-v2";
 const SHELL = "/index.html";
+
+/** The headers the stored shell keeps from the answer it was stored from. */
+const SECURITY_HEADERS = [
+  "content-security-policy",
+  "x-frame-options",
+  "referrer-policy",
+  "x-content-type-options",
+];
+
+/** The stored shell's headers: its type and the answer's security headers. */
+function shellHeaders(headers) {
+  const kept = new Headers({ "content-type": "text/html; charset=utf-8" });
+  for (const name of SECURITY_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null) kept.set(name, value);
+  }
+  return kept;
+}
+
+/** Whether a stored shell already is this page with these headers. */
+async function isStored(stored, html, headers) {
+  if (!stored || (await stored.text()) !== html) return false;
+  return SECURITY_HEADERS.every(
+    (name) => stored.headers.get(name) === headers.get(name),
+  );
+}
 
 const isApi = (path) =>
   path === "/api" ||
@@ -129,11 +158,11 @@ async function storedAssets(cache) {
   return new Set(stored ? shellAssets(await stored.text()) : []);
 }
 
-async function storeShell(html) {
+async function storeShell(html, answered) {
   if (!ENTRY.test(html)) return;
+  const headers = shellHeaders(answered);
   const cache = await caches.open(CACHE);
-  const stored = await cache.match(SHELL);
-  if (stored && (await stored.text()) === html) return;
+  if (await isStored(await cache.match(SHELL), html, headers)) return;
   const assets = shellAssets(html);
   // Throws when one does not arrive whole: the old shell, whose assets are
   // stored, stays until a later load stores this one.
@@ -148,12 +177,7 @@ async function storeShell(html) {
   );
   // A response of its own, with no URL: the address it was loaded from, a
   // `?token=` included, never reaches the cache.
-  await cache.put(
-    SHELL,
-    new Response(html, {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    }),
-  );
+  await cache.put(SHELL, new Response(html, { headers }));
   const others = (await cache.keys()).filter((request) => {
     const path = new URL(request.url).pathname;
     return path.startsWith("/assets/") && !assets.includes(path);
@@ -195,7 +219,7 @@ async function page(event) {
       response
         .clone()
         .text()
-        .then(storeShell)
+        .then((html) => storeShell(html, response.headers))
         .catch(() => {}),
     );
   return response;
@@ -216,7 +240,9 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     fetch("/", { cache: "no-store" })
       .then((response) =>
-        isShell(response) ? response.text().then(storeShell) : undefined,
+        isShell(response)
+          ? response.text().then((html) => storeShell(html, response.headers))
+          : undefined,
       )
       .catch(() => {})
       .then(() => self.skipWaiting()),
