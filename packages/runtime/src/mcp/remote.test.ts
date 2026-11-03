@@ -338,6 +338,15 @@ describe("remote MCP guard", () => {
     expect(endpoint.seen).toEqual([]);
   });
 
+  it("says why a name that resolves nowhere could not be reached", async () => {
+    const { connection } = remote(`https://nowhere.test:${port}/mcp`);
+    const error = await failure(connection.start());
+    expect(error.kind).toBe("startup");
+    expect(error.message).toBe(
+      "MCP server docs could not start: fetch failed: getaddrinfo ENOTFOUND nowhere.test",
+    );
+  });
+
   it("refuses a redirect, never following it", async () => {
     const { connection } = remote(`https://mcp.test:${port}/redirect`);
     const error = await failure(connection.start());

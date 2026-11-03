@@ -45,8 +45,14 @@ function sortedKeys(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sortedKeys);
   if (typeof value !== "object" || value === null) return value;
   const out: Record<string, unknown> = {};
+  // An own property even when named `__proto__`.
   for (const key of Object.keys(value).sort())
-    out[key] = sortedKeys((value as Record<string, unknown>)[key]);
+    Object.defineProperty(out, key, {
+      value: sortedKeys((value as Record<string, unknown>)[key]),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   return out;
 }
 

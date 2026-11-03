@@ -300,7 +300,14 @@ export function createGuardedFetch(
         dispatcher,
       })) as unknown as Response;
     } catch (error) {
-      throw refusalIn(error) ?? error;
+      const refusal = refusalIn(error);
+      if (refusal) throw refusal;
+      // undici's "fetch failed" says nothing; its cause says what failed.
+      // Still a TypeError, which pi-mcp treats as a network failure.
+      const cause = (error as { cause?: unknown }).cause;
+      if (error instanceof TypeError && cause instanceof Error)
+        throw new TypeError(`${error.message}: ${cause.message}`, { cause });
+      throw error;
     }
     if (
       response.type === "opaqueredirect" ||

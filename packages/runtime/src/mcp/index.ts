@@ -47,12 +47,7 @@ export {
   type RemoteTransportOptions,
   remoteMcpEnabled,
 } from "./remote";
-export {
-  mcpToolHash,
-  sanitizeDescription,
-  sanitizeInputSchema,
-  sanitizeTools,
-} from "./sanitize";
+export { mcpToolHash, sanitizeTools } from "./sanitize";
 export {
   type SandboxProcessLike,
   SandboxStdioTransport,

@@ -176,6 +176,18 @@ describe("sanitizeTools: hostile input schemas", () => {
     ]);
   });
 
+  it("keeps a property named __proto__ as a property, never as a prototype", () => {
+    const { schema } = sanitizeInputSchema(
+      JSON.parse(
+        '{"type":"object","properties":{"__proto__":{"type":"string","default":{"__proto__":1}}}}',
+      ),
+    );
+    expect(Object.keys(schema.properties as object)).toEqual(["__proto__"]);
+    expect(canonicalJson(schema)).toBe(
+      '{"properties":{"__proto__":{"default":{"__proto__":1},"type":"string"}},"type":"object"}',
+    );
+  });
+
   it("refuses a root that is not an object schema, and gives a missing root type one", () => {
     const { tools, warnings } = sanitizeTools("docs", [
       tool("text", { inputSchema: { type: "string" } }),

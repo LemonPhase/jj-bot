@@ -67,6 +67,18 @@ const TEXTS = new Set(["title", "description"]);
 
 class Refused extends Error {}
 
+/**
+ * Sets an own property, also one named `__proto__`, which a plain
+ * assignment would turn into the object's prototype instead.
+ */
+const put = (target: Record<string, unknown>, key: string, item: unknown) =>
+  Object.defineProperty(target, key, {
+    value: item,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+
 /** `text` cut to `max` UTF-16 code units, ending in `…`; a surrogate pair or a written-out character is never split. */
 function clip(text: string, max: number): { text: string; clipped: boolean } {
   if (text.length <= max) return { text, clipped: false };
@@ -134,7 +146,7 @@ function value(input: unknown, depth: number, walk: Walk): unknown {
       const name = visibleText(key);
       if (name !== key) walk.notes.add("wrote out invisible characters");
       grow(walk, name.length + 3);
-      out[name] = value(item, depth + 1, walk);
+      put(out, name, value(item, depth + 1, walk));
     }
     return out;
   }
@@ -161,7 +173,7 @@ function schema(input: unknown, depth: number, walk: Walk): unknown {
   const out: Record<string, unknown> = {};
   const keep = (key: string, kept: unknown) => {
     grow(walk, key.length + 3);
-    out[key] = kept;
+    put(out, key, kept);
   };
   for (const [key, raw] of Object.entries(input)) {
     if (key === "type") {
@@ -231,7 +243,7 @@ function schema(input: unknown, depth: number, walk: Walk): unknown {
           const shown = visibleText(name);
           if (shown !== name) walk.notes.add("wrote out invisible characters");
           grow(walk, shown.length + 3);
-          map[shown] = schema(item, depth + 1, walk);
+          put(map, shown, schema(item, depth + 1, walk));
         }
         keep(key, map);
       } else walk.dropped.add(key);
@@ -245,7 +257,10 @@ function schema(input: unknown, depth: number, walk: Walk): unknown {
   return out;
 }
 
-/** The reduced input schema of a tool, or why the tool is left out. */
+/**
+ * The reduced input schema of a tool and warnings about what changed.
+ * Throws, with the reason as its message, when the tool is to be left out.
+ */
 export function sanitizeInputSchema(input: Record<string, unknown>): {
   schema: Record<string, unknown>;
   warnings: string[];
