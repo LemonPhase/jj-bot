@@ -112,6 +112,12 @@ export type HeldCallDecision =
   | { toolCallId: string; approved: true }
   | { toolCallId: string; approved: false; text: string };
 
+/** One tool call of a model response, as `RunHooks.reviewTurn` sees it. */
+export interface TurnCall {
+  toolCallId: string;
+  tool: string;
+}
+
 export interface RunHooks {
   /** Awaited: the event is durable before the run goes on. */
   onEvent(event: ExecutorEvent): void | Promise<void>;
@@ -123,8 +129,13 @@ export interface RunHooks {
    * lease) ends the run.
    */
   onTurnComplete(entries: PiMessage[]): void | Promise<void>;
-  /** Undelivered inbox items, injected as user messages at the next turn boundary. */
-  drainInbox(): Promise<string[]>;
+  /**
+   * Undelivered inbox items, injected as user messages at the next turn
+   * boundary. `turnEnded`: the model just ended its turn (a turn that called
+   * no tools), so what this returns makes it take another; the engine then
+   * returns nothing unless a brief, result or steering is waiting.
+   */
+  drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores tool output over the cap as an `output` artifact; returns its id. */
   spillOutput(text: string, label: string): Promise<string>;
   /**
@@ -141,6 +152,16 @@ export interface RunHooks {
    * interrupted with an unknown outcome, never run again.
    */
   claimApprovedCall?(toolCallId: string): Promise<boolean>;
+  /**
+   * Asked once for each model response that calls tools, with all of its
+   * calls, before any of them runs or is reviewed: text ends the run at this
+   * turn (none of the calls runs or goes to `reviewToolCall`, so none is
+   * held; each gets the text as its error result, and the run ends `ended`
+   * with empty `finalText` without draining the inbox again), undefined
+   * lets them go on. Not asked for a response cut at the output limit. A
+   * rejection ends the run.
+   */
+  reviewTurn?(calls: readonly TurnCall[]): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -202,6 +223,7 @@ export type RunErrorCode =
   | "unknown";
 
 export type RunOutcome =
+  /** `finalText` is empty when `reviewTurn` ended the run. */
   | { kind: "ended"; finalText: string }
   /**
    * No inputs and an empty inbox: nothing ran. On a recovery run this means

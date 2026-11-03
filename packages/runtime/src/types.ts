@@ -140,6 +140,12 @@ export type HeldCallDecision =
   | { toolCallId: string; approved: true }
   | { toolCallId: string; approved: false; text: string };
 
+/** One tool call of a model response, as `RunHooks.reviewTurn` sees it. */
+export interface TurnCall {
+  toolCallId: string;
+  tool: string;
+}
+
 export interface RunHooks {
   onEvent(event: ExecutorEvent): void | Promise<void>;
   /**
@@ -156,8 +162,12 @@ export interface RunHooks {
    * New inbox items (results, steering, messages). Called before the first
    * model call and at every turn boundary while the run continues; returned
    * texts are injected as user messages before the next model call.
+   * `turnEnded` is true at the boundary after a model turn that called no
+   * tools, where the model ended its turn: anything returned there makes it
+   * take another, so the engine returns nothing unless input that continues
+   * a run is waiting.
    */
-  drainInbox(): Promise<string[]>;
+  drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores output over the cap in full. Returns the artifact id. */
   spillOutput(text: string, label: string): Promise<string>;
   /**
@@ -180,6 +190,19 @@ export interface RunHooks {
    * outcome and never run again.
    */
   claimApprovedCall?(toolCallId: string): Promise<boolean>;
+  /**
+   * Asked once for each model response that calls tools, with all of its
+   * calls, after the response is persisted and before any of them runs or
+   * is reviewed (absent: they all go on). Returns text to end the run at
+   * this turn, or undefined to go on. With text, none of the calls runs or
+   * is asked about (`reviewToolCall`), so none is held: each is answered
+   * with the text as its error result (its tool events reported as usual),
+   * and the run ends `ended` with empty `finalText` once the batch is
+   * answered, without draining the inbox again. Not asked for a response cut
+   * at the output limit, whose calls pi refuses itself. A rejection ends the
+   * run with an error outcome, like `onEvent`'s.
+   */
+  reviewTurn?(calls: readonly TurnCall[]): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -236,7 +259,10 @@ export interface RunInput {
 }
 
 export type RunOutcome =
-  /** The model ended its turn (or a tool ended the run); `finalText` is its last text. */
+  /**
+   * The model ended its turn, or a tool or `reviewTurn` ended the run;
+   * `finalText` is its last text (empty when `reviewTurn` ended it).
+   */
   | { kind: "ended"; finalText: string }
   /** Woken with no inputs and an empty inbox: nothing was run. */
   | { kind: "idle" }

@@ -290,6 +290,7 @@ async function startRun(
       taskFinished: false,
       redact,
       verificationAttempts: 0,
+      lookupTurns: 0,
     };
     return {
       kind: "run",
