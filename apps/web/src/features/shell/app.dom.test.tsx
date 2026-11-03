@@ -335,6 +335,49 @@ describe("direct chat", () => {
     });
     expect(card.textContent).not.toContain("Open the task");
   });
+
+  it("keeps a task card live, shows a finished task's result and the bot's update", async () => {
+    window.history.replaceState(null, "", "/#/bots/bot-kite");
+    const api = renderApp();
+    await heading("Kite");
+    const log = await screen.findByRole("log", { name: "Messages with Kite" });
+    const excerpt = (card: HTMLElement) =>
+      card.querySelector(".chat-task-card__excerpt")?.textContent ?? null;
+    // The seeded task finished before load: its card shows the result.
+    const seeded = await within(log).findByRole("link", {
+      name: /Summarise what changed/,
+    });
+    expect(seeded.textContent).toContain("done · v1");
+    expect(excerpt(seeded)).toMatch(/^Result · Demo result for “Summarise/);
+
+    send("Message Kite", "Write the release notes");
+    const card = await within(log).findByRole("link", {
+      name: /Write the release notes/,
+    });
+    expect(card.textContent).toContain("queued · v1");
+    expect(excerpt(card)).toBeNull();
+    const taskId = card.getAttribute("href")?.split("/").pop() as string;
+    for (let step = 0; step < 60; step += 1) {
+      if ((await api.getTask(taskId)).task.status === "completed") break;
+      await act(async () => {
+        await api.advanceDemoTask?.(taskId);
+      });
+    }
+    // The same card now shows the task as it is: done, with its result.
+    await waitFor(() => expect(card.textContent).toContain("done · v1"));
+    expect(excerpt(card)).toMatch(
+      /^Result · Demo result for “Write the release notes”/,
+    );
+    // Kite tells the user, with the task's card under its message.
+    expect(
+      await within(log).findByText(/^“Write the release notes” is done\./),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        within(log).getAllByRole("link", { name: /Write the release notes/ }),
+      ).toHaveLength(2),
+    );
+  });
 });
 
 describe("bot inspector", () => {

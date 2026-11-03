@@ -10,6 +10,7 @@ import { createDemoApi } from "../../api/demoApi";
 import { botActivity } from "./botActivity";
 import { DEFAULT_OPTION, modelOptions, profileOptions } from "./botOptions";
 import { dayLabel, groupByDay } from "./chat";
+import { taskExcerpt } from "./InlineTaskCard";
 
 const at = "2026-10-31T12:00:00.000Z";
 
@@ -233,5 +234,42 @@ describe("inspector options", () => {
       value: "gone",
       label: "gone (not found)",
     });
+  });
+});
+
+describe("task card excerpt", () => {
+  it("shows a completed task's result and a failed task's error, on one line", () => {
+    expect(
+      taskExcerpt({
+        status: "completed",
+        result: "Wrote notes.md\n\nwith  two sections.",
+        error: null,
+      }),
+    ).toEqual({ label: "Result", text: "Wrote notes.md with two sections." });
+    expect(
+      taskExcerpt({
+        status: "failed",
+        result: null,
+        error: "Ada failed: boom",
+      }),
+    ).toEqual({ label: "Error", text: "Ada failed: boom" });
+  });
+
+  it("shows nothing while a task works, waits or was stopped, or has no outcome text", () => {
+    for (const status of ["queued", "running", "waiting", "cancelled"] as const)
+      expect(taskExcerpt({ status, result: "x", error: "y" })).toBeNull();
+    expect(
+      taskExcerpt({ status: "completed", result: "  ", error: null }),
+    ).toBeNull();
+  });
+
+  it("cuts a long outcome", () => {
+    const excerpt = taskExcerpt({
+      status: "completed",
+      result: "word ".repeat(200),
+      error: null,
+    });
+    expect(excerpt?.text.length).toBeLessThanOrEqual(240);
+    expect(excerpt?.text.endsWith("…")).toBe(true);
   });
 });
