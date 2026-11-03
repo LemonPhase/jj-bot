@@ -56,6 +56,9 @@ export interface SecretStoreOptions {
 
 export class SecretStore {
   private entries = new Map<string, Entry>();
+  /** Refreshes started, and the newest whose read has been applied. */
+  private started = 0;
+  private applied = 0;
   private readonly db: Executor;
   /** Whose rows these are (`secrets.owner_id`). */
   readonly owner: string;
@@ -97,12 +100,18 @@ export class SecretStore {
     };
   }
 
-  /** Reads every stored row again, decrypting only those that changed. */
+  /**
+   * Reads every stored row again, decrypting only those that changed. A read
+   * that finishes after a later-started one has been applied is dropped, so
+   * an older snapshot never replaces a newer one.
+   */
   async refresh(exec: Executor = this.db): Promise<void> {
+    const generation = ++this.started;
     const rows = await exec
       .select()
       .from(secrets)
       .where(eq(secrets.ownerId, this.owner));
+    if (generation < this.applied) return;
     const next = new Map<string, Entry>();
     for (const row of rows) {
       const key = entryKey(row.kind, row.name);
@@ -125,6 +134,7 @@ export class SecretStore {
       );
     }
     this.entries = next;
+    this.applied = generation;
   }
 
   /** From the last refresh. */

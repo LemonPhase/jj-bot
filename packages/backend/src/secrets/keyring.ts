@@ -1,10 +1,11 @@
 // Encryption of stored secrets. The master key comes from the server's
 // environment (`JJ_SECRET_KEY`) and is never stored, so the database alone
-// reveals no value. Each value is sealed with AES-256-GCM under a key derived
-// from the master key, with a fresh random nonce, and bound to its row
-// (owner, kind, name) as associated data, so a ciphertext copied onto another
-// row does not open. Previous master keys (`JJ_SECRET_KEY_PREVIOUS`) still
-// open what they sealed, for rotation.
+// reveals no value: only its last four characters, kept as a hint, and its
+// length, which the ciphertext's gives away. Each value is sealed with
+// AES-256-GCM under a key derived from the master key, with a fresh random
+// nonce, and bound to its row (owner, kind, name) as associated data, so a
+// ciphertext copied onto another row does not open. Previous master keys
+// (`JJ_SECRET_KEY_PREVIOUS`) still open what they sealed, for rotation.
 import {
   createCipheriv,
   createDecipheriv,

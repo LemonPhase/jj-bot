@@ -399,6 +399,10 @@ export async function runSessionJob(
       );
       if (start.spec.workspace === "ephemeral")
         await claimHolder(ctx, rc.task.id);
+      // The sandbox keeps the values it started with, even once a stored
+      // secret is replaced or removed (or was changed after this run's
+      // redactor was built): redact them in everything this run persists.
+      if (hold.secrets.length > 0) rc.redact = await ctx.redactor(hold.secrets);
       call = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;

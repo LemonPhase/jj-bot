@@ -205,9 +205,13 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger: options.logger ?? consoleLogger,
-    redactor: async () => {
+    redactor: async (extra = []) => {
       await store.refresh();
-      return createRedactor([...(await secrets()), ...store.values()]);
+      return createRedactor([
+        ...(await secrets()),
+        ...store.values(),
+        ...extra,
+      ]);
     },
     secretStore: store,
     serverSecrets: secrets,

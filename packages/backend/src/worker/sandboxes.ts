@@ -11,6 +11,7 @@ import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
 import { inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
+import type { Secret } from "../redact";
 
 interface Entry {
   acquiring: Promise<Sandbox>;
@@ -18,6 +19,8 @@ interface Entry {
   controller: AbortController;
   sandbox?: Sandbox;
   spec: SandboxSpec;
+  /** The secrets given to the driver when it started, by name. */
+  secrets: Record<string, string>;
   refs: number;
   idleSince: number;
   /** Release once the last run lets go (the task finished). */
@@ -27,6 +30,12 @@ interface Entry {
 export interface SandboxHold {
   sandbox: Sandbox;
   spec: SandboxSpec;
+  /**
+   * The values injected into this sandbox when it started. Its commands see
+   * them for as long as it lives, even after the stored secret is replaced
+   * or removed, so whatever a run persists from it is redacted for them.
+   */
+  secrets: Secret[];
   /** Ends this run's use; the sandbox stays for the task's other runs. */
   done(): void;
 }
@@ -148,21 +157,23 @@ export class TaskSandboxes {
       const controller = new AbortController();
       const created: Entry = {
         spec,
+        secrets: {},
         controller,
         refs: 0,
         idleSince: Date.now(),
         finishing: false,
         acquiring: (secrets ? secrets() : Promise.resolve({}))
-          .then((values) =>
-            driver.acquire({
+          .then((values) => {
+            created.secrets = values;
+            return driver.acquire({
               taskId,
               sessionId,
               spec,
               workspaceKey: taskId,
               signal: controller.signal,
               ...(Object.keys(values).length > 0 ? { secrets: values } : {}),
-            }),
-          )
+            });
+          })
           .then((sandbox) => {
             created.sandbox = sandbox;
             return sandbox;
@@ -205,6 +216,10 @@ export class TaskSandboxes {
     return {
       sandbox,
       spec: held.spec,
+      secrets: Object.entries(held.secrets).map(([name, value]) => ({
+        name: `the sandbox secret ${name}`,
+        value,
+      })),
       done: () => {
         if (released) return;
         released = true;

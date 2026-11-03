@@ -109,7 +109,8 @@ export async function getProfile(
 
 /**
  * Granted secrets must be stored sandbox secrets, and a variable comes from
- * one place: a grant may not share its name with a `sandbox.env` entry.
+ * one place: a grant may not share its name with a `sandbox.env` entry. The
+ * newly granted secrets' rows are locked for the transaction.
  */
 async function checkGrants(
   ctx: EngineContext,
@@ -134,7 +135,10 @@ async function checkGrants(
         eq(secrets.kind, "sandbox"),
         inArray(secrets.name, [...added]),
       ),
-    );
+    )
+    // Held until this transaction ends, so a concurrent removal waits and
+    // then finds (and drops) the new grant instead of missing it.
+    .for("share");
   const missing = added.filter(
     (name) => !stored.some((row) => row.name === name),
   );

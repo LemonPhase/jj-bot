@@ -49,6 +49,8 @@ afterAll(async () => {
 });
 
 const TOKEN = "ghp_secretTokenValue0123456789abcdefXYZ";
+const API_TOKEN = "api-token-0123456789abcdefghijklmn";
+const LONG_DB_PASSWORD = "db-password-0123456789abcdef";
 const PROVIDER_KEY = "sk-stored-0123456789abcdefghijklmnopqrstuv";
 const ENV_KEY = "sk-env-0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -183,7 +185,16 @@ describe("sandbox secrets", () => {
     current = await testEngine(db.database, {
       start: false,
       secretStore: store(),
-      secrets: [{ name: "OPENAI_API_KEY", value: ENV_KEY }],
+      secrets: [
+        { name: "OPENAI_API_KEY", value: ENV_KEY },
+        { name: "API_TOKEN", value: API_TOKEN },
+        { name: "the DATABASE_URL password", value: "postgres", inUrl: true },
+        {
+          name: "the DATABASE_URL password",
+          value: LONG_DB_PASSWORD,
+          inUrl: true,
+        },
+      ],
     });
     const { engine } = current;
     const cases: [string, string, RegExp][] = [
@@ -195,6 +206,21 @@ describe("sandbox secrets", () => {
       ["JJ_ANYTHING", TOKEN, /reserved/],
       ["LD_PRELOAD", TOKEN, /reserved/],
       ["OPENAI_KEY_COPY", ENV_KEY, /OPENAI_API_KEY, a server secret/],
+      // Containing a server secret, or part of one, is refused too.
+      ["AUTH_HEADER", `Bearer ${ENV_KEY}`, /OPENAI_API_KEY, a server secret/],
+      [
+        "NPMRC_LINE",
+        `//registry.npmjs.org/:_authToken=${API_TOKEN}`,
+        /API_TOKEN, a server secret/,
+      ],
+      ["KEY_PIECE", ENV_KEY.slice(3, 30), /OPENAI_API_KEY, a server secret/],
+      // The database password: equal at any length, contained when long.
+      ["DB_PASSWORD", LONG_DB_PASSWORD, /DATABASE_URL password/],
+      [
+        "PG_URL",
+        `postgresql://jj:${LONG_DB_PASSWORD}@db/jj`,
+        /DATABASE_URL password/,
+      ],
     ];
     for (const [name, value, message] of cases) {
       const refused = await rejection(engine.secrets.put(name, { value }));
@@ -204,6 +230,11 @@ describe("sandbox secrets", () => {
       expect(text).not.toContain(value.slice(0, 10));
     }
     expect((await engine.secrets.list()).secrets).toEqual([]);
+    // A short database password is an ordinary word: containing it is fine.
+    await engine.secrets.put("PLAIN_TOKEN", {
+      value: "postgres-ghp_0123456789abcdef",
+    });
+    expect((await engine.secrets.list()).secrets).toHaveLength(1);
   });
 
   it("are granted by name to stored secrets only, without clashing with sandbox.env, and removal drops the grants", async () => {
@@ -558,6 +589,10 @@ describe("stored provider keys", () => {
       engine.putProviderKey("anthropic", { value: TOKEN }),
     );
     expect(reused.message).toContain("the sandbox secret GITHUB_TOKEN");
+    const containing = await rejection(
+      engine.putProviderKey("anthropic", { value: `sk-ant-${TOKEN}` }),
+    );
+    expect(containing.message).toContain("the sandbox secret GITHUB_TOKEN");
     const removed = await engine.deleteProviderKey("openai");
     expect(removed.providers.find((p) => p.id === "openai")).toMatchObject({
       configured: false,
@@ -589,5 +624,207 @@ describe("stored provider keys", () => {
       (await rejection(engine.putProviderKey("nope", { value: PROVIDER_KEY })))
         .code,
     ).toBe("NOT_FOUND");
+  });
+});
+
+describe("a sandbox that holds a value the store no longer has", () => {
+  for (const change of ["replace", "delete"] as const)
+    it(`keeps redacting it after the secret is ${change === "replace" ? "replaced" : "removed"}`, async () => {
+      const recording = await recordingDriver();
+      current = await testEngine(db.database, {
+        registry: createDriverRegistry([
+          { driver: recording.driver, label: "Local (unisolated)" },
+        ]),
+        secretStore: store(),
+      });
+      const { engine, executor } = current;
+      await engine.secrets.put("GH_TOKEN", { value: TOKEN });
+      const { profile } = await engine.profiles.create({
+        name: uniqueProfile("Tok"),
+        sandbox: { driver: "local", network: { mode: "open" } },
+        secrets: ["GH_TOKEN"],
+      });
+      const team = await createTeam(engine, ["Ada"]);
+      const [ada] = team.names as [string];
+      await engine.bots.update(team.byName[ada] as string, {
+        runtimeProfileId: profile.id,
+      });
+      executor.brain(ada, (view) => {
+        if (!said.heard(view, "again"))
+          return said.turns(view) === 0
+            ? {
+                calls: [
+                  { name: "bash", args: { command: 'echo "one $GH_TOKEN"' } },
+                ],
+              }
+            : { text: "first pass" };
+        if (
+          !said.results(view).some((result) => result.text.startsWith("two "))
+        )
+          return {
+            calls: [
+              { name: "bash", args: { command: 'echo "two $GH_TOKEN"' } },
+            ],
+          };
+        return lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : {
+              calls: [
+                {
+                  name: "complete_task",
+                  args: { result: lastResult(view)?.text ?? "" },
+                },
+              ],
+            };
+      });
+      const { task } = await engine.tasks.create({
+        goal: "Use the token twice",
+        coordinatorBotId: team.byName[ada] as string,
+      });
+      await untilTask(engine, task.id, (v) => v.task.status === "waiting");
+      if (change === "replace")
+        await engine.secrets.put("GH_TOKEN", { value: `${TOKEN}-rotated` });
+      else await engine.secrets.delete("GH_TOKEN");
+      await engine.tasks.postMessage(task.id, { text: "again" });
+      const view = await untilTask(
+        engine,
+        task.id,
+        (v) => v.task.status === "completed" || v.task.status === "failed",
+      );
+      expect(view.task.status).toBe("completed");
+      // The same sandbox ran both commands, with the value it started with.
+      expect(recording.requests).toHaveLength(1);
+      const page = await engine.tasks.events(task.id);
+      const outputs = page.events.flatMap((event) =>
+        event.type === "tool.finished" && event.payload.tool === "bash"
+          ? [event.payload.output ?? ""]
+          : [],
+      );
+      expect(outputs).toEqual([`one ${REDACTED}\n`, `two ${REDACTED}\n`]);
+      expect(view.task.result).toBe(`two ${REDACTED}`);
+      for (const text of await persisted(engine, view))
+        expect(text).not.toContain(TOKEN);
+    });
+
+  it("redacts a value stored after the run's redactor was built but before its sandbox started", async () => {
+    const recording = await recordingDriver();
+    const secretStore = store();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([
+        { driver: recording.driver, label: "Local (unisolated)" },
+      ]),
+      secretStore,
+    });
+    const { engine, executor } = current;
+    await engine.secrets.put("GH_TOKEN", { value: TOKEN });
+    const { profile } = await engine.profiles.create({
+      name: uniqueProfile("Race"),
+      sandbox: { driver: "local", network: { mode: "open" } },
+      secrets: ["GH_TOKEN"],
+    });
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    await engine.bots.update(team.byName[ada] as string, {
+      runtimeProfileId: profile.id,
+    });
+    // The new value lands as the sandbox starts: after the run built its
+    // redactor, before the grants are read.
+    const replaced = `${TOKEN}-raced`;
+    const read = secretStore.sandboxValues.bind(secretStore);
+    secretStore.sandboxValues = async (names, exec) => {
+      await engine.secrets.put("GH_TOKEN", { value: replaced });
+      return read(names, exec);
+    };
+    executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "bash", args: { command: 'echo "v=$GH_TOKEN"' } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : {
+              calls: [
+                {
+                  name: "complete_task",
+                  args: { result: lastResult(view)?.text ?? "" },
+                },
+              ],
+            },
+    );
+    const { task } = await engine.tasks.create({
+      goal: "Race the token",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(recording.requests[0]?.secrets).toEqual({ GH_TOKEN: replaced });
+    expect(view.task.result).toBe(`v=${REDACTED}`);
+    for (const text of await persisted(engine, view))
+      expect(text).not.toContain(replaced);
+  });
+});
+
+describe("a stored provider key in what a run persists", () => {
+  it("is redacted like the server's own keys", async () => {
+    const secretStore = store();
+    current = await testEngine(db.database, {
+      secretStore,
+      models: new ModelRegistry({ env: {}, storedKeys: secretStore }),
+    });
+    const { engine, executor } = current;
+    await engine.putProviderKey("openai", { value: PROVIDER_KEY });
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    executor.brain(ada, (view) =>
+      lastResult(view)?.name === "complete_task"
+        ? { text: `Used ${PROVIDER_KEY}.` }
+        : {
+            text: `The key is ${PROVIDER_KEY}`,
+            calls: [
+              {
+                name: "complete_task",
+                args: { result: `Key ${PROVIDER_KEY} works.` },
+              },
+            ],
+          },
+    );
+    const { task } = await engine.tasks.create({
+      goal: "Say the key",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(view.task.result).toBe(`Key ${REDACTED} works.`);
+    for (const text of await persisted(engine, view))
+      expect(text).not.toContain(PROVIDER_KEY);
+  });
+});
+
+describe("granting a secret while it is removed", () => {
+  it("never leaves a grant to a secret that is gone", async () => {
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(),
+    });
+    const { engine } = current;
+    const { profile } = await engine.profiles.create({
+      name: uniqueProfile("Grant race"),
+      sandbox: { driver: "local", network: { mode: "open" } },
+    });
+    for (let round = 0; round < 8; round += 1) {
+      await engine.secrets.put("RACE_TOKEN", { value: TOKEN });
+      await Promise.allSettled([
+        engine.profiles.update(profile.id, { secrets: ["RACE_TOKEN"] }),
+        engine.secrets.delete("RACE_TOKEN"),
+      ]);
+      const granted = (await engine.profiles.get(profile.id)).profile.secrets;
+      const stored = (await engine.secrets.list()).secrets.map((s) => s.name);
+      for (const name of granted) expect(stored).toContain(name);
+      await engine.profiles.update(profile.id, { secrets: [] });
+    }
   });
 });

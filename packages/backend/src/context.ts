@@ -39,10 +39,12 @@ export interface EngineContext {
   logger: Logger;
   /**
    * Builds a redactor over the server's secret values as they are now (a
-   * token generated after boot and the stored secrets included). Each run
-   * builds one at its start, which also refreshes the stored secrets.
+   * token generated after boot and the stored secrets included), plus
+   * `extra`. Each run builds one at its start, which also refreshes the
+   * stored secrets, and again with its sandbox's injected values once the
+   * sandbox is held.
    */
-  redactor: () => Promise<Redactor>;
+  redactor: (extra?: readonly Secret[]) => Promise<Redactor>;
   /** Provider keys and sandbox secrets entered through settings, encrypted at rest. */
   secretStore: SecretStore;
   /**

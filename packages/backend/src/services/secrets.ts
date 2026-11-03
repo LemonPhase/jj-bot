@@ -17,6 +17,26 @@ import { and, eq } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
+import { MIN_BARE_SECRET_LENGTH, type Secret } from "../redact";
+
+/**
+ * The secret among `secrets` that `value` would carry into a sandbox: one
+ * equal to it (a database password of any length included), one it contains
+ * or one that contains it ("Bearer <model key>", a line of an .npmrc, a
+ * piece of a key). Containment counts only secrets long enough to redact.
+ */
+export function overlappingSecret(
+  value: string,
+  secrets: readonly Secret[],
+): Secret | undefined {
+  return secrets.find(
+    (secret) =>
+      secret.value.length > 0 &&
+      (secret.value === value ||
+        (secret.value.length >= MIN_BARE_SECRET_LENGTH &&
+          (value.includes(secret.value) || secret.value.includes(value)))),
+  );
+}
 
 const NO_KEY =
   "This server has no JJ_SECRET_KEY, so it cannot store keys or secrets. Generate one with `openssl rand -base64 32`, set it as JJ_SECRET_KEY in the server's environment (.env) and restart the server.";
@@ -110,13 +130,11 @@ export async function putSecret(
     ...(await ctx.serverSecrets()),
     ...ctx.secretStore.values("provider"),
   ];
-  const match = server.find(
-    (secret) => !secret.inUrl && secret.value === value,
-  );
+  const match = overlappingSecret(value, server);
   if (match)
     throw new DomainError(
       "VALIDATION_FAILED",
-      `value: this is the value of ${match.name}, a server secret. Model keys, the API token and JJ_SECRET_KEY never enter a sandbox.`,
+      `value: it holds, or is part of, ${match.name}, a server secret. Model keys, the API token, the database password and JJ_SECRET_KEY never enter a sandbox.`,
     );
   const created = await ctx.db.transaction((tx) =>
     upsert(ctx, tx, "sandbox", name, value),
@@ -207,11 +225,11 @@ export async function putProviderKey(
     );
   const sandbox = ctx.secretStore
     .values("sandbox")
-    .find((secret) => secret.value === value);
+    .find((secret) => overlappingSecret(secret.value, [{ ...secret, value }]));
   if (sandbox)
     throw new DomainError(
       "VALIDATION_FAILED",
-      `value: this is the value of ${sandbox.name}, which sandboxes can be granted. A model key never enters a sandbox: store another value there first.`,
+      `value: it holds, or is part of, ${sandbox.name}, which sandboxes can be granted. A model key never enters a sandbox: store another value there first.`,
     );
   await ctx.db.transaction((tx) => upsert(ctx, tx, "provider", id, value));
   return modelsView(ctx);
@@ -272,12 +290,10 @@ export async function grantedSecrets(
     ...ctx.secretStore.values("provider"),
   ];
   for (const [name, value] of Object.entries(values)) {
-    const match = server.find(
-      (secret) => !secret.inUrl && secret.value === value,
-    );
+    const match = overlappingSecret(value, server);
     if (match)
       throw new Error(
-        `The sandbox secret ${name} holds the value of ${match.name}, a server secret that never enters a sandbox. Store another value for ${name}.`,
+        `The sandbox secret ${name} holds, or is part of, ${match.name}, a server secret that never enters a sandbox. Store another value for ${name}.`,
       );
   }
   return values;
