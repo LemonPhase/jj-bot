@@ -176,7 +176,10 @@ describe("beyond loopback without API_TOKEN", () => {
       );
       let token = "";
       try {
-        const deadline = Date.now() + 30_000;
+        // A fresh process transpiles the app and creates its database before
+        // it prints anything: like opening a server in-process, only from
+        // scratch, so it gets the whole opening budget.
+        const deadline = Date.now() + OPEN_TIMEOUT;
         let match: RegExpExecArray | null = null;
         while (!match) {
           match =
@@ -204,7 +207,8 @@ describe("beyond loopback without API_TOKEN", () => {
       expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(output.split(token).length - 1).toBe(1);
     },
-    OPEN_TIMEOUT,
+    // Its start, then the requests and the shutdown.
+    OPEN_TIMEOUT + 30_000,
   );
 });
 
