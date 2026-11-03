@@ -2,6 +2,7 @@ import type { AssistantMessage, RetryPolicy } from "@earendil-works/pi-ai";
 import { addUsage, emptyUsage, type ModelRef, type Usage } from "@jj/contracts";
 import { type RetryOptions, type RunErrorCode, retryPolicy } from "./errors";
 import { resolveOutputCap } from "./executor";
+import { ModelCallGate } from "./gate";
 import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
 import {
   type ModelRegistry,
@@ -30,6 +31,13 @@ export interface ChatReplyInput {
   tools: readonly CollabTool[];
   budgets?: { maxTurns?: number; deadline?: Date };
   signal: AbortSignal;
+  /**
+   * Asked before each model call of the reply; a refusal (a spend cap) is
+   * why the call may not start. A refused call is never sent.
+   */
+  admitModelCall?(): Promise<string | undefined>;
+  /** Each model call's usage as it finishes, failed replies included; awaited. */
+  onUsage?(usage: Usage, model: ModelRef): Promise<void>;
 }
 
 export interface ChatReply {
@@ -39,14 +47,15 @@ export interface ChatReply {
 }
 
 /**
- * Why a reply failed: cancelled, out of budget, or a model or request error
+ * Why a reply failed: cancelled, out of budget, refused at a spend cap
+ * (`spend_cap`, the message is the refusal), or a model or request error
  * classified like a run's (`auth`, `rate_limit`, `context_overflow`,
  * `network`, `provider`, `invalid_request`, `unknown`). Messages are redacted.
  */
 export class ChatReplyError extends Error {
   constructor(
     message: string,
-    readonly code: "aborted" | "budget" | RunErrorCode,
+    readonly code: "aborted" | "budget" | "spend_cap" | RunErrorCode,
   ) {
     super(message);
     this.name = "ChatReplyError";
@@ -124,6 +133,7 @@ export class ChatResponder {
       ),
     );
     const maxTurns = Math.min(CHAT_MAX_TURNS, Math.floor(requestedTurns));
+    const gate = new ModelCallGate(input.admitModelCall?.bind(input));
     const outcome = await runLoop({
       resolved,
       streamFn: this.models.streamFn,
@@ -136,14 +146,16 @@ export class ChatResponder {
       deadline:
         input.budgets?.deadline ??
         new Date(Date.now() + CHAT_DEFAULT_TIMEOUT_MS),
+      gate,
       signal: input.signal,
       retry: this.retry,
       endRequested: () => false,
       getSteering: async () => [],
       persist: async () => {},
       onEvent: async (event) => {
-        if (event.type === "model.finished")
-          usage = addUsage(usage, event.usage);
+        if (event.type !== "model.finished") return;
+        usage = addUsage(usage, event.usage);
+        await input.onUsage?.(event.usage, event.model);
       },
     });
     switch (outcome.kind) {
@@ -157,6 +169,11 @@ export class ChatResponder {
         // A tool that succeeded (create_task) is the reply: a retry must not repeat it.
         if (!outcome.finalText && toolText)
           return { text: toolText, model: resolved.ref, usage };
+        if (!outcome.finalText && outcome.limit === "spend")
+          throw new ChatReplyError(
+            outcome.reason ?? "A spend cap was reached.",
+            "spend_cap",
+          );
         if (!outcome.finalText)
           throw new ChatReplyError(
             `The reply did not finish within ${maxTurns} model calls.`,

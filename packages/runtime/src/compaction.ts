@@ -22,6 +22,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { ModelRef } from "@jj/contracts";
 import { classifyModelError, retryingStreamFn, streamOf } from "./errors";
+import { type ModelCallGate, ModelCallRefusedError } from "./gate";
 import { toContractUsage } from "./loop";
 import type {
   CompactionEntry,
@@ -260,6 +261,8 @@ export interface ContextCompactorOptions {
   scrub(text: string): string;
   /** Provider keys and key-shaped text, replaced in error text. */
   redactError(text: string): string;
+  /** Asked before each summary call; a refused call is never sent and the compaction fails. */
+  gate?: ModelCallGate;
 }
 
 /** Why a compaction did not happen: there was nothing to summarise, or the summary call failed. */
@@ -547,6 +550,8 @@ export class ContextCompactor {
       }
     };
     return async (model, context, streamOptions) => {
+      if (options.gate && !(await options.gate.admit()))
+        throw new ModelCallRefusedError(options.gate.refusal ?? "");
       await hook({ type: "model.started", model: options.ref });
       const message = await (
         await retrying(model, context, {
@@ -573,7 +578,7 @@ export class ContextCompactor {
         type: "model.finished",
         model: options.ref,
         stopReason: message.stopReason,
-        usage: toContractUsage(message.usage),
+        usage: toContractUsage(message.usage, options.model),
         text: clip(
           failure
             ? `Context compaction failed (about ${tokensBefore} tokens): ${failure}. Nothing was compacted.`
