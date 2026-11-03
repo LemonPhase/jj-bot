@@ -43,6 +43,7 @@ import {
   hasContinuingInput,
   lastAssistantText,
 } from "./runs";
+import { handOnUnread } from "./unread";
 
 export interface CompletionRequest {
   result: string;
@@ -91,6 +92,17 @@ export async function gatePassed(
 }
 
 const BUDGET_NOTE = "\n\n(Stopped at the turn budget.)";
+
+/** The messages a finishing session never read, handed to its parent (unread.ts), as a paragraph. */
+async function unreadNote(
+  tx: Tx,
+  ctx: EngineContext,
+  session: SessionRow,
+  name: string,
+) {
+  const note = await handOnUnread(tx, ctx, session, name);
+  return note ? `${note}\n\n` : "";
+}
 
 /** A turn a spend cap ended: what was reached, and what lets the work go on. */
 interface CapStop {
@@ -156,7 +168,7 @@ export async function failSessionTx(
       parent,
       {
         kind: "result",
-        text: `Failure from ${name} (session ${failed.id}):\n${error}\n\n${await openDelegationsText(tx, parent)}`,
+        text: `Failure from ${name} (session ${failed.id}):\n${error}\n\n${await unreadNote(tx, ctx, failed, name)}${await openDelegationsText(tx, parent)}`,
         sourceMessageId: message.id,
       },
       { wake: true, ctx },
@@ -408,7 +420,7 @@ async function endTurn(
     parent,
     {
       kind: "result",
-      text: `Result from ${rc.bot.name} (session ${session.id}):\n${message.text}${stale}\n\n${await openDelegationsText(tx, parent)}`,
+      text: `Result from ${rc.bot.name} (session ${session.id}):\n${message.text}${stale}\n\n${await unreadNote(tx, ctx, session, rc.bot.name)}${await openDelegationsText(tx, parent)}`,
       sourceMessageId: message.id,
     },
     { wake: true, ctx },

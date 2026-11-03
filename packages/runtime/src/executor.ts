@@ -217,8 +217,8 @@ export class PiSessionExecutor implements RunExecutor {
         }),
       ),
     ];
-    const drain = async () =>
-      (await hooks.drainInbox())
+    const drain = async (turnEnded = false) =>
+      (await hooks.drainInbox(turnEnded))
         .filter((text) => text.trim().length > 0)
         .map((text) => userMessage(text));
 
@@ -292,6 +292,7 @@ export class PiSessionExecutor implements RunExecutor {
         ? { reviewToolCall: hooks.reviewToolCall.bind(hooks) }
         : {}),
       ...(approved ? { approved } : {}),
+      ...(hooks.reviewTurn ? { reviewTurn: hooks.reviewTurn.bind(hooks) } : {}),
       ...(input.redact ? { redact: input.redact } : {}),
       getSteering: drain,
       persist: async (entries) => {
