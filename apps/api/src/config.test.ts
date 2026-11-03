@@ -1,6 +1,7 @@
-// Settings: defaults, listeners beyond loopback, API_PUBLIC_URL, and the
-// PostgreSQL requirement for a separate worker. The generated token is in
-// token.test.ts.
+// Settings: defaults, listeners beyond loopback, API_PUBLIC_URL, the
+// refusal of settings that would expose a tokenless API or send the token
+// over plain http, and the PostgreSQL requirement for a separate worker. The
+// generated token is in token.test.ts.
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { bootstrapSchema } from "@jj/contracts";
@@ -12,6 +13,7 @@ import {
   loadWorkerConfig,
   REPO_ROOT,
   redactEndpoint,
+  servesWithoutToken,
 } from "./config";
 import { startServer } from "./server";
 import { quietLogger } from "./testing";
@@ -149,9 +151,123 @@ describe("loadServerConfig", () => {
     expect(loadServerConfig({ API_HOST: "[::1]" }).host).toBe("::1");
     expect(loadServerConfig({}).allowedHosts).toEqual([]);
     expect(
-      loadServerConfig({ API_ALLOWED_HOSTS: " jj.example.com, proxy:8443 ,," })
-        .allowedHosts,
+      loadServerConfig({
+        API_ALLOWED_HOSTS: " jj.example.com, proxy:8443 ,,",
+        API_TOKEN: "t",
+      }).allowedHosts,
     ).toEqual(["jj.example.com", "proxy:8443"]);
+  });
+
+  describe("refuses to expose the API without a token or over plain http", () => {
+    const refused = (env: Record<string, string>, message: RegExp) => {
+      let error: unknown;
+      try {
+        loadServerConfig(env);
+      } catch (thrown) {
+        error = thrown;
+      }
+      expect(error, JSON.stringify(env)).toBeInstanceOf(ConfigError);
+      expect((error as Error).message).toMatch(message);
+    };
+
+    it("keeps plain local development: loopback without a token", () => {
+      for (const env of [
+        {},
+        { API_HOST: "localhost" },
+        { API_PUBLIC_URL: "http://127.0.0.1:3001" },
+        { API_PUBLIC_URL: "http://localhost:5173/" },
+        { API_HOST: "[::1]", API_PUBLIC_URL: "http://[::1]:3001" },
+      ])
+        expect(
+          servesWithoutToken(loadServerConfig(env)),
+          JSON.stringify(env),
+        ).toBe(true);
+      // The compose stack: beyond loopback in its container, so a generated
+      // token, and opened on the host's loopback.
+      const compose = loadServerConfig({
+        API_HOST: "0.0.0.0",
+        API_PUBLIC_URL: "http://127.0.0.1:3001",
+      });
+      expect(servesWithoutToken(compose)).toBe(false);
+    });
+
+    it("refuses API_ALLOWED_HOSTS on a tokenless loopback API", () => {
+      refused(
+        { API_ALLOWED_HOSTS: "jj.example.com" },
+        /^API_ALLOWED_HOSTS is set, but the API has no token: .*Set API_TOKEN/,
+      );
+      refused(
+        { API_HOST: "::1", API_ALLOWED_HOSTS: "proxy:8443" },
+        /^API_ALLOWED_HOSTS is set, but the API has no token/,
+      );
+      // A token, configured or generated (beyond loopback), protects it.
+      expect(
+        loadServerConfig({
+          API_ALLOWED_HOSTS: "jj.example.com",
+          API_TOKEN: "t",
+        }).allowedHosts,
+      ).toEqual(["jj.example.com"]);
+      expect(
+        loadServerConfig({
+          API_HOST: "0.0.0.0",
+          API_ALLOWED_HOSTS: "jj.example.com",
+        }).allowedHosts,
+      ).toEqual(["jj.example.com"]);
+    });
+
+    it("refuses a public URL beyond loopback on a tokenless loopback API, as behind tailscale serve", () => {
+      for (const url of [
+        "https://jj.tail1234.ts.net",
+        "https://jj.example.com/",
+        "https://192.168.1.10:8443",
+      ])
+        refused(
+          { API_PUBLIC_URL: url },
+          /^API_PUBLIC_URL names "[^"]+", beyond loopback, but the API has no token: .*Set API_TOKEN/,
+        );
+      expect(
+        loadServerConfig({
+          API_PUBLIC_URL: "https://jj.tail1234.ts.net",
+          API_TOKEN: "t",
+        }).publicUrl,
+      ).toBe("https://jj.tail1234.ts.net");
+      expect(
+        loadServerConfig({
+          API_HOST: "0.0.0.0",
+          API_PUBLIC_URL: "https://jj.example.com",
+        }).publicUrl,
+      ).toBe("https://jj.example.com");
+    });
+
+    it("refuses a plain-http public URL beyond loopback unless JJ_ALLOW_INSECURE_HTTP=true", () => {
+      const insecure: Record<string, string>[] = [
+        { API_PUBLIC_URL: "http://jj.example.com", API_TOKEN: "t" },
+        { API_PUBLIC_URL: "http://192.168.1.10:3001", API_HOST: "0.0.0.0" },
+        {
+          API_PUBLIC_URL: "http://jj.lan",
+          API_TOKEN: "t",
+          JJ_ALLOW_INSECURE_HTTP: "false",
+        },
+      ];
+      for (const env of insecure)
+        refused(
+          env,
+          /^API_PUBLIC_URL is plain http beyond loopback \("[^"]+"\), so the token would cross the network in the clear\..*JJ_ALLOW_INSECURE_HTTP=true/,
+        );
+      expect(
+        loadServerConfig({
+          API_PUBLIC_URL: "http://jj.lan:3001",
+          API_TOKEN: "t",
+          JJ_ALLOW_INSECURE_HTTP: "true",
+        }).publicUrl,
+      ).toBe("http://jj.lan:3001");
+      // The opt-in never stands in for a token.
+      refused(
+        { API_PUBLIC_URL: "http://jj.lan", JJ_ALLOW_INSECURE_HTTP: "true" },
+        /^API_PUBLIC_URL names "jj.lan", beyond loopback, but the API has no token/,
+      );
+      refused({ JJ_ALLOW_INSECURE_HTTP: "maybe" }, /JJ_ALLOW_INSECURE_HTTP/);
+    });
   });
 
   it("refuses a separate worker on PGlite, and malformed settings", () => {

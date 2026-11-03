@@ -4,7 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { test as base } from "@playwright/test";
+import { test as base, expect } from "@playwright/test";
 
 const exec = promisify(execFile);
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -68,6 +68,27 @@ export const test = base.extend<{ instance: Instance; secretStore: boolean }>({
   baseURL: async ({ instance }, use) => {
     await use(instance.url);
   },
+  /**
+   * The test's page fails the test on any Content-Security-Policy violation
+   * it reports: the app must work under the policy the server sends
+   * (apps/api/src/headers.ts), not merely load.
+   */
+  page: async ({ page }, use) => {
+    const violations: string[] = [];
+    await page.addInitScript(() => {
+      document.addEventListener("securitypolicyviolation", (event) => {
+        console.error(
+          `CSP violation: ${event.effectiveDirective} blocked ${event.blockedURI || "an inline resource"} at ${event.sourceFile}:${event.lineNumber}`,
+        );
+      });
+    });
+    page.on("console", (message) => {
+      if (/Content Security Policy|CSP violation/i.test(message.text()))
+        violations.push(message.text());
+    });
+    await use(page);
+    expect(violations, "Content-Security-Policy violations").toEqual([]);
+  },
 });
 
 /** Stops every launch.sh run under `root` that recorded a server pid. */
@@ -78,4 +99,4 @@ async function stopRuns(root: string) {
       await exec(join(scripts, "stop.sh"), [join(root, name)]).catch(() => {});
 }
 
-export { expect } from "@playwright/test";
+export { expect };

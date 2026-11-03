@@ -82,7 +82,7 @@ export interface ServerConfig extends ServicesConfig {
   apiToken?: string;
   /** Where users open the app, for the startup line: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
   publicUrl?: string;
-  /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token. */
+  /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token (refused at boot without one). */
   allowedHosts: string[];
   /** Run the job loop inside the API process. */
   embedWorker: boolean;
@@ -252,6 +252,51 @@ export function loadServicesConfig(env: Env): ServicesConfig {
   };
 }
 
+/**
+ * Whether the API answers without any token: no API_TOKEN and a loopback
+ * listener. Anywhere else it requires one, generating it when API_TOKEN is
+ * unset (see `resolveApiToken`).
+ */
+export const servesWithoutToken = (
+  config: Pick<ServerConfig, "apiToken" | "host">,
+) => !config.apiToken && isLoopbackHost(config.host);
+
+/**
+ * Refuses settings that would expose the API beyond this machine without a
+ * token, or send the token over plain http across a network:
+ *
+ * - API_ALLOWED_HOSTS or an API_PUBLIC_URL beyond loopback while the API
+ *   answers without a token. A reverse proxy or `tailscale serve` on the same
+ *   host forwards from loopback, so the listener alone cannot tell.
+ * - A plain-http API_PUBLIC_URL beyond loopback, unless
+ *   JJ_ALLOW_INSECURE_HTTP=true.
+ */
+function checkExposure(
+  env: Env,
+  config: Pick<
+    ServerConfig,
+    "apiToken" | "host" | "allowedHosts" | "publicUrl"
+  >,
+) {
+  const url = config.publicUrl ? new URL(config.publicUrl) : undefined;
+  const remote = url && !isLoopbackHost(url.hostname) ? url : undefined;
+  const allowInsecure = flag(env, "JJ_ALLOW_INSECURE_HTTP", false);
+  if (servesWithoutToken(config)) {
+    if (config.allowedHosts.length > 0)
+      throw new ConfigError(
+        "API_ALLOWED_HOSTS is set, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards those names to it (a reverse proxy, `tailscale serve`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.",
+      );
+    if (remote)
+      throw new ConfigError(
+        `API_PUBLIC_URL names "${remote.hostname}", beyond loopback, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards that address to it (a reverse proxy, \`tailscale serve\`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.`,
+      );
+  }
+  if (remote?.protocol === "http:" && !allowInsecure)
+    throw new ConfigError(
+      `API_PUBLIC_URL is plain http beyond loopback ("${remote.hostname}"), so the token would cross the network in the clear. Serve the app over HTTPS through a reverse proxy and set API_PUBLIC_URL to its https:// address, or set JJ_ALLOW_INSECURE_HTTP=true on a network that encrypts traffic itself.`,
+    );
+}
+
 /** An absolute http(s) URL without a trailing slash. */
 function publicUrl(env: Env): string | undefined {
   const value = text(env, "API_PUBLIC_URL");
@@ -274,7 +319,8 @@ function publicUrl(env: Env): string | undefined {
 /**
  * The API's settings. Beyond loopback without `API_TOKEN`, the server
  * generates a token on first boot (see `resolveApiToken`), so it never
- * listens there unauthenticated.
+ * listens there unauthenticated; settings that would expose a tokenless
+ * loopback API, or the token over plain http, are refused (`checkExposure`).
  */
 export function loadServerConfig(env: Env): ServerConfig {
   // `[::1]` names the address; listen() takes it without the brackets.
@@ -290,16 +336,23 @@ export function loadServerConfig(env: Env): ServerConfig {
     throw new ConfigError(
       "JJ_EMBED_WORKER=false needs PostgreSQL: PGlite is single-process, so no separate worker can open it. Set DATABASE_URL, or embed the worker.",
     );
+  const allowedHosts = (text(env, "API_ALLOWED_HOSTS") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  checkExposure(env, {
+    host,
+    allowedHosts,
+    ...(apiToken ? { apiToken } : {}),
+    ...(url ? { publicUrl: url } : {}),
+  });
   return {
     ...services,
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
     ...(url ? { publicUrl: url } : {}),
-    allowedHosts: (text(env, "API_ALLOWED_HOSTS") ?? "")
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean),
+    allowedHosts,
     embedWorker,
     webDist: existsSync(join(WEB_DIST, "index.html")) ? WEB_DIST : null,
   };

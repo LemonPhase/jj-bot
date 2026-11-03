@@ -6,6 +6,7 @@ import type { Engine, Logger } from "@jj/backend";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { originGuard, requireJson } from "./guard";
+import { securityHeaders } from "./headers";
 import { healthRoutes } from "./health";
 import { bearerAuth, errorResponse, onError } from "./http";
 import { requestLog } from "./request-log";
@@ -33,6 +34,8 @@ export interface AppConfig {
   webDist?: string | null;
   /** Largest request body. Default 1 MiB. */
   bodyLimitBytes?: number;
+  /** Send Strict-Transport-Security: users open the app over https (API_PUBLIC_URL). */
+  strictTransportSecurity?: boolean;
 }
 
 export interface AppOptions {
@@ -68,6 +71,13 @@ export function createApp({
   app.onError(handleError);
   // First, so every line a request logs carries its id.
   app.use("*", requestLog(logger));
+  // On every answer, errors and the SPA fallback included (headers.ts).
+  app.use(
+    "*",
+    securityHeaders({
+      strictTransportSecurity: config.strictTransportSecurity ?? false,
+    }),
+  );
   app.route(
     "/health",
     healthRoutes(

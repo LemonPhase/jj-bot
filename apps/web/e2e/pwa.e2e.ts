@@ -178,6 +178,18 @@ test("serves the shell from its cache and never /api, even offline", async ({
   await page.context().setOffline(true);
   const offline = await page.reload();
   expect(offline?.fromServiceWorker()).toBe(true);
+  // The stored shell runs under the security headers the server sent with
+  // it, so offline the page is no easier to frame or inject into.
+  const served = (await request.get("/")).headers();
+  const shellHeaders = offline?.headers() ?? {};
+  expect(served["content-security-policy"]).toContain("frame-ancestors 'none'");
+  for (const name of [
+    "content-security-policy",
+    "x-frame-options",
+    "referrer-policy",
+    "x-content-type-options",
+  ])
+    expect(shellHeaders[name], name).toBe(served[name]);
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
   expect(failed.map((url) => new URL(url).pathname)).toContain(
     "/api/bootstrap",

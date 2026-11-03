@@ -15,6 +15,7 @@ import {
   redactEndpoint,
   type ServerConfig,
 } from "./config";
+import { sendsHsts } from "./headers";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
 import { startTracing, type Tracing } from "./tracing";
 import { openServices, type Services } from "./wiring";
@@ -109,6 +110,7 @@ export async function startServer(
         allowedHosts: config.allowedHosts,
         workerEmbedded: config.embedWorker,
         webDist: config.webDist,
+        strictTransportSecurity: sendsHsts(config.publicUrl),
       },
     });
     // Listen first: a port clash fails before the worker claims any run.
