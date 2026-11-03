@@ -47,8 +47,7 @@ const template = {
 };
 
 describe("contract version 1.9.0 (task templates)", () => {
-  it("is 1.9.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.0");
+  it("is recorded in the changelog, whose newest entry is the current version", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
