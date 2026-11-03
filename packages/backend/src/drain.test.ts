@@ -447,4 +447,61 @@ describe("a run still going when the drain times out", () => {
     expect(drained.secondRan).toEqual(["cat count.txt"]);
     expect(drained.resumedResults).toEqual(["exit 0"]);
   });
+
+  it("spends none of the job's attempts, however often it times out", async () => {
+    // Each run starts a long command, cut off by a 0 s drain (a dev reload),
+    // until five are; then it completes. The job allows three attempts.
+    const cutOff: Brain = (view) => {
+      if (lastResult(view)?.name === "complete_task") return { text: "done" };
+      const cut = said.results(view).length;
+      return cut < 5
+        ? { calls: [{ name: "bash", args: { command: `sleep 30 # ${cut}` } }] }
+        : {
+            calls: [
+              { name: "complete_task", args: { result: `after ${cut}` } },
+            ],
+          };
+    };
+    let current = await worker({ config: { leaseMs: 120_000 } });
+    const team = await createTeam(current.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    current.executor.brain(ada, cutOff);
+    const { task } = await current.engine.tasks.create({
+      goal: "Outlast five reloads",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    for (let cut = 0; cut < 5; cut += 1) {
+      await untilTask(
+        current.engine,
+        task.id,
+        (view) =>
+          view.events.some(
+            (e) =>
+              e.type === "tool.started" &&
+              e.payload.summary === `sleep 30 # ${cut}`,
+          ),
+        `command ${cut}`,
+      );
+      await current.engine.worker.drain(0);
+      current = await worker({ config: { leaseMs: 120_000 } });
+      current.executor.brain(ada, cutOff);
+      // Call ids are per executor: keep them unique across the workers.
+      (current.executor as unknown as { calls: number }).calls =
+        100 * (cut + 1);
+    }
+    const view = await untilTask(
+      current.engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(view.task.error ?? null).toBeNull();
+    expect(view.task.result).toBe("after 5");
+    expect(
+      (await runRows(task.id)).map((run) => [run.reason, run.status]),
+    ).toEqual([
+      ["start", "failed"],
+      ...Array.from({ length: 4 }, () => ["recovery", "failed"]),
+      ["recovery", "completed"],
+    ]);
+  });
 });

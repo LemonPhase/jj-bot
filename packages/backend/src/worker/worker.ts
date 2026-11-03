@@ -8,10 +8,10 @@ import {
   claim,
   complete,
   enqueue,
-  expireLease,
   heartbeat,
   pruneWorkerHeartbeats,
   recordWorkerHeartbeat,
+  releaseLease,
   removeWorkerHeartbeat,
   sessions,
   tasks,
@@ -55,9 +55,10 @@ export interface Worker {
    * stop requests still apply; each running session stops at its next turn
    * boundary, handed back as `stop` hands it back, and a chat reply runs to
    * its end. What still runs after `timeoutMs` is interrupted as a lost
-   * lease is: fenced, so it writes nothing more, and its lease expired once
-   * it has stopped, so the next worker reclaims it at once and resumes its
-   * session from the last completed turn. Then sandboxes are released.
+   * lease is: fenced, so it writes nothing more, and its lease released once
+   * it has stopped (`releaseLease`, which costs the job no attempt), so the
+   * next worker reclaims it at once and resumes its session from the last
+   * completed turn. Then sandboxes are released.
    * Resolves once all of that is done.
    */
   drain(timeoutMs: number): Promise<void>;
@@ -413,11 +414,12 @@ export function createWorker(
     }
     await shutDown("shutdown");
     // Only now, with each job stopped, so no write-back can follow: the next
-    // claim finds these leases expired, as after a crash, without waiting.
+    // claim finds these leases expired, as after a crash, without waiting,
+    // and the interruption costs none of the job's attempts.
     for (const entry of interrupted)
-      await expireLease(ctx.db, entry.job.lease).catch((error: unknown) =>
+      await releaseLease(ctx.db, entry.job.lease).catch((error: unknown) =>
         ctx.logger.warn(
-          `Expiring the lease of job ${entry.job.id} failed; it is reclaimed once the lease runs out`,
+          `Releasing the lease of job ${entry.job.id} failed; it is reclaimed once the lease runs out`,
           { error: errorMessage(error) },
         ),
       );

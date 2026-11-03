@@ -269,12 +269,16 @@ export async function heartbeat(
 }
 
 /**
- * Give the lease up without finishing the job: it expires now, so the next
- * claim reclaims the job (attempts permitting) exactly as it would once a
- * dead owner's lease ran out. The job's records are left as they are, for
- * the next runner's recovery. Returns false when the lease is no longer held.
+ * Give the lease up without finishing the job, as a worker that stops on
+ * purpose does: it expires now, so the next claim reclaims the job as it
+ * would once a dead owner's lease ran out, with a new attempt that fences
+ * the old holder out. Unlike an expiry, it costs the job none of its
+ * attempts (`max_attempts` goes up by one with the attempt the reclaim
+ * takes), so a job given up any number of times is never failed as
+ * exhausted for it. The job's records are left as they are, for the next
+ * runner's recovery. Returns false when the lease is no longer held.
  */
-export async function expireLease(
+export async function releaseLease(
   exec: Executor,
   lease: Lease,
 ): Promise<boolean> {
@@ -282,6 +286,7 @@ export async function expireLease(
     .update(jobs)
     .set({
       leaseUntil: sql`now() - interval '1 millisecond'`,
+      maxAttempts: sql`${jobs.maxAttempts} + 1`,
       updatedAt: sql`now()`,
     })
     .where(held(lease))
