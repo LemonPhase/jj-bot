@@ -5,7 +5,7 @@
 // without API_TOKEN stays unauthenticated.
 import { randomBytes } from "node:crypto";
 import { type Executor, instanceSetting } from "@jj/db";
-import { isLoopbackHost, type ServerConfig } from "./config";
+import { type ServerConfig, servesWithoutToken } from "./config";
 
 /** The instance setting that holds the generated token. */
 export const GENERATED_TOKEN_KEY = "api_token";
@@ -23,7 +23,7 @@ export async function resolveApiToken(
   db: Executor,
 ): Promise<ApiAuth> {
   if (config.apiToken) return { kind: "configured", token: config.apiToken };
-  if (isLoopbackHost(config.host)) return { kind: "none" };
+  if (servesWithoutToken(config)) return { kind: "none" };
   const { value, created } = await instanceSetting(
     db,
     GENERATED_TOKEN_KEY,
