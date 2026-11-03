@@ -172,7 +172,7 @@ function Studio({ bot }: { bot: Bot | null }) {
                   : "Save changes"
                 : busy
                   ? "Creating…"
-                  : "Create bot"}
+                  : "Save bot"}
             </Button>
           </>
         }
