@@ -22,6 +22,12 @@ export interface McpTransportDiagnostics {
   readonly closeReason?: string;
   /** The latest stderr the server wrote (stdio); `cut` when older output was dropped. */
   stderrTail?(): { text: string; cut: boolean };
+  /**
+   * Secret values the transport sends (a remote server's header values,
+   * without their prefixes): the connection replaces them in everything it
+   * reports, before the server's own redactor runs.
+   */
+  readonly secrets?: readonly string[];
 }
 
 /** A message over MCP_MAX_MESSAGE_BYTES. Received, it closes the connection; to be sent, it is refused. */

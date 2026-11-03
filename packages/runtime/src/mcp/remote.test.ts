@@ -24,7 +24,10 @@ import {
 } from "./remote";
 import { ScriptedMcpServer } from "./test-server";
 
-const SECRET = "Bearer secret-token-0123456789";
+const TOKEN = "secret-token-0123456789";
+const SECRET = `Bearer ${TOKEN}`;
+/** GET requests the server saw: pi-mcp resumes a cut event stream with GET. */
+let gets = 0;
 let dir: string;
 let cert: string;
 let key: string;
@@ -66,6 +69,7 @@ interface Seen {
   host: string;
   servername: string | false;
   authorization: string;
+  apiKey: string;
   rpc?: string;
 }
 
@@ -94,6 +98,7 @@ function mcpServer() {
           (req.socket as TLSSocket & { servername?: string | false })
             .servername ?? false,
         authorization: String(req.headers.authorization ?? ""),
+        apiKey: String(req.headers["x-api-key"] ?? ""),
         ...(message && "method" in message ? { rpc: message.method } : {}),
       });
       if (req.url === "/redirect") {
@@ -104,6 +109,32 @@ function mcpServer() {
         res
           .writeHead(403, { "content-type": "text/plain" })
           .end(`refused credentials ${req.headers.authorization}`);
+        return;
+      }
+      const apiKey = String(req.headers["x-api-key"] ?? "");
+      if (req.url === "/bare") {
+        // The token without the prefix its header carries.
+        res
+          .writeHead(403, { "content-type": "text/plain" })
+          .end(
+            `Invalid token: ${String(req.headers.authorization).replace(/^Bearer /, "")}`,
+          );
+        return;
+      }
+      if (req.url === "/cut") {
+        // The key across the 500 characters pi-mcp keeps of an error body.
+        res
+          .writeHead(403, { "content-type": "text/plain" })
+          .end(`${"x".repeat(499 - apiKey.length + 2)}${apiKey} trailing`);
+        return;
+      }
+      if (req.method === "GET") {
+        gets++;
+        res
+          .writeHead(200, { "content-type": "text/event-stream" })
+          .end(
+            `id: ${gets}\nretry: 0\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"x"}}\n\n`,
+          );
         return;
       }
       if (req.method === "DELETE" || !message) {
@@ -119,6 +150,28 @@ function mcpServer() {
         "params" in message
           ? (message.params as { name?: string } | undefined)?.name
           : undefined;
+      if (name === "stream_cut") {
+        // An event stream that ends before the answer, with an event id: resumable.
+        res
+          .writeHead(200, { "content-type": "text/event-stream" })
+          .end(
+            `id: 0\nretry: 0\ndata: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"x"}}\n\n`,
+          );
+        return;
+      }
+      if (name === "denied" && "id" in message) {
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: {
+              code: -32000,
+              message: `denied for ${req.headers.authorization}`,
+            },
+          }),
+        );
+        return;
+      }
       if (name === "huge" || name === "huge_stream") {
         const size = 5 * 1024 * 1024;
         res.writeHead(200, {
@@ -216,7 +269,7 @@ function remote(url: string, options: Partial<RemoteTransportOptions> = {}) {
   const resolved: string[] = [];
   const transport = createRemoteTransport({
     url,
-    secretHeaders: { Authorization: SECRET },
+    secretHeaders: { Authorization: { prefix: "Bearer ", value: TOKEN } },
     env: {},
     ca: cert,
     isAllowedAddress: allowLoopback,
@@ -233,10 +286,19 @@ function remote(url: string, options: Partial<RemoteTransportOptions> = {}) {
     server: "docs",
     transport,
     startupTimeoutMs: 5_000,
+    // The engine's redactor knows nothing of these secrets: the connector must scrub them itself.
+    redact: (text) => text,
   });
   open.push(connection);
   return { connection, transport, resolved };
 }
+
+/** True when the text holds any 6 characters in a row of the secret. */
+const leaks = (text: string, secret: string) => {
+  for (let at = 0; at + 6 <= secret.length; at++)
+    if (text.includes(secret.slice(at, at + 6))) return true;
+  return false;
+};
 
 const failure = async (promise: Promise<unknown>) => {
   try {
@@ -384,11 +446,58 @@ describe("remote MCP guard", () => {
     },
   );
 
+  it("fails a call whose answer stream ends early at once, never re-opening the stream", async () => {
+    gets = 0;
+    const { connection } = remote(`https://mcp.test:${port}/mcp`);
+    await connection.start();
+    const started = Date.now();
+    const error = await failure(
+      connection.callTool("stream_cut", {}, { timeoutMs: 2_000 }),
+    );
+    // Resuming with GET looped (retry: 0) until the call's timeout, and after it.
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(error.kind).toBe("server");
+    expect(error.message).toContain(
+      "MCP response stream failed: stream ended without a response",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(gets).toBe(0);
+  });
+
+  it("keeps a secret header's value out of an error that echoes it without its prefix", async () => {
+    const { connection } = remote(`https://mcp.test:${port}/bare`);
+    const error = await failure(connection.start());
+    expect(error.message).toContain("status 403: Invalid token: [redacted]");
+    expect(leaks(error.message, TOKEN)).toBe(false);
+  });
+
+  it("keeps a secret header's value out of an error body that pi-mcp cuts through it", async () => {
+    const key = "zq9vH2kLm4Np7Rs1Tu3W";
+    const { connection } = remote(`https://mcp.test:${port}/cut`, {
+      secretHeaders: { "X-Api-Key": { value: key } },
+    });
+    const error = await failure(connection.start());
+    expect(endpoint.seen[0]?.apiKey).toBe(key);
+    expect(error.message).toContain("status 403");
+    expect(leaks(error.message, key)).toBe(false);
+  });
+
+  it("keeps a secret header's value out of a JSON-RPC error the server answers with", async () => {
+    const { connection } = remote(`https://mcp.test:${port}/mcp`);
+    await connection.start();
+    const error = await failure(
+      connection.callTool("denied", {}, { timeoutMs: 5_000 }),
+    );
+    expect(error.kind).toBe("server");
+    expect(error.message).toContain("denied for Bearer [redacted]");
+    expect(leaks(error.message, TOKEN)).toBe(false);
+  });
+
   it("keeps the secret header values out of errors", async () => {
     const { connection } = remote(`https://mcp.test:${port}/forbidden`);
     const error = await failure(connection.start());
     expect(error.message).toContain(
-      "status 403: refused credentials [redacted]",
+      "status 403: refused credentials Bearer [redacted]",
     );
     expect(error.message).not.toContain("secret-token");
   });

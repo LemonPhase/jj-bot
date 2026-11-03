@@ -25,6 +25,7 @@ function connect(
     server: "docs",
     transport: pair.client,
     startupTimeoutMs: 2_000,
+    redact: (text) => text,
     ...extra,
   });
   open.push(connection);
@@ -350,6 +351,30 @@ describe("McpConnection: calls", () => {
       connection.callTool("any", {}, { timeoutMs: 100 }),
     );
     expect(error.kind).toBe("closed");
+  });
+
+  it("reports the end of a connection closed before it started", async () => {
+    const { connection } = connect({ tools: [] });
+    const ends: unknown[] = [];
+    connection.onClose((end) => ends.push(end));
+    await connection.close();
+    expect(ends).toEqual([{ reason: "requested" }]);
+    expect(connection.state).toBe("closed");
+  });
+
+  it("reads at most 200 tools, stopping at the page that passes them, with a warning", async () => {
+    const tools = Array.from({ length: 1_000 }, (_, index) => ({
+      name: `tool_${index}`,
+    }));
+    const { connection, server } = connect({ tools, pageSize: 70 });
+    await connection.start();
+    const listed = await connection.listTools();
+    expect(listed.tools).toHaveLength(200);
+    expect(listed.tools.at(-1)?.name).toBe("tool_199");
+    expect(methods(server, "tools/list")).toHaveLength(3);
+    expect(listed.warnings).toEqual([
+      "The server lists more than 200 tools; only the first 200 listed were read.",
+    ]);
   });
 });
 

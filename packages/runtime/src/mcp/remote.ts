@@ -38,8 +38,12 @@ import {
  *   worker cannot resolve goes to the proxy, which resolves it itself. A
  *   name that resolves differently for the proxy (DNS rebinding) is limited
  *   by TLS: the request is only sent once a certificate valid for the name
- *   is presented, so an internal address gets at most a TLS handshake. What
- *   the proxy lets through is the operator's egress policy;
+ *   is presented, so an internal address gets at most a TLS handshake. Not
+ *   so through a proxy that intercepts TLS (its CA in NODE_EXTRA_CA_CERTS):
+ *   the worker checks the proxy's certificate, and only the proxy checks the
+ *   server's. What the proxy lets through is the operator's egress policy;
+ * - a response stream that ends before its answer fails that request; it is
+ *   never resumed;
  * - every response body is capped at 4 MiB (and so is every message sent);
  *   one over it closes the connection;
  * - `JJ_MCP_REMOTE=off` refuses every remote server.
@@ -81,11 +85,13 @@ export interface RemoteTransportOptions extends RemoteGuardOptions {
   /** Its non-secret `headers`. */
   headers?: Readonly<Record<string, string>>;
   /**
-   * Its `secretHeaders`, each value the stored secret with its prefix,
-   * read by the caller. Sent to the configured origin only, and kept out of
-   * every message: errors are redacted of them.
+   * Its `secretHeaders`: each header is `prefix` and then `value`, the
+   * stored secret the caller read. Sent to the configured origin only. The
+   * values (without their prefixes) are kept out of every message: error
+   * bodies are scrubbed of them before anything cuts them, and the
+   * connection scrubs every text it reports (`McpTransportDiagnostics.secrets`).
    */
-  secretHeaders?: Readonly<Record<string, string>>;
+  secretHeaders?: Readonly<Record<string, { prefix?: string; value: string }>>;
 }
 
 const first = (...values: (string | undefined)[]) =>
@@ -147,11 +153,15 @@ const NULL_BODY = new Set([101, 204, 205, 304]);
 /**
  * A `fetch` for one server's transport that enforces the guard. `onTooLarge`
  * is called once a response body passes the cap, before the read fails.
+ * The body of an error response is read whole (within the cap) and
+ * `secrets` are replaced in it, so no later cut, such as pi-mcp's
+ * 500-character excerpt in its error message, can leave part of one.
  */
 export function createGuardedFetch(
   origin: URL,
   options: RemoteGuardOptions,
   onTooLarge: (error: McpMessageTooLargeError) => void,
+  secrets: readonly string[] = [],
 ): { fetch: McpFetch; close(): Promise<void> } {
   const env = options.env ?? process.env;
   const allow = options.isAllowedAddress ?? isPublicAddress;
@@ -326,7 +336,17 @@ export function createGuardedFetch(
         `The MCP server answered with a redirect (${response.status}); redirects are not followed.`,
       );
     }
-    return cap(response);
+    const capped = cap(response);
+    if (capped.ok || secrets.length === 0) return capped;
+    // An error body is shown in messages: scrubbed whole, before any cut.
+    const text = await capped.text().catch(() => "");
+    const headers = new Headers(capped.headers);
+    headers.delete("content-length");
+    return new Response(redactSecrets(text, secrets), {
+      status: capped.status,
+      statusText: capped.statusText,
+      headers,
+    });
   };
 
   return {
@@ -341,7 +361,9 @@ export function createGuardedFetch(
  * pi-mcp's `StreamableHttpTransport` behind the guard. A message over the
  * cap closes it (`closeReason` says why); errors are redacted of the secret
  * header values. Refusals (`McpRemoteRefusedError`) happen at `start` for
- * what the URL alone shows, else at the request the guard stops.
+ * what the URL alone shows, else at the request the guard stops. A response
+ * stream that ends before its answer fails that request at once: it is
+ * never resumed, since a server could keep a resume going without end.
  */
 export class GuardedHttpTransport
   implements McpTransport, McpTransportDiagnostics
@@ -351,7 +373,8 @@ export class GuardedHttpTransport
   private readonly inner: StreamableHttpTransport;
   private readonly guard: ReturnType<typeof createGuardedFetch>;
   private readonly max: number;
-  private readonly secrets: string[];
+  /** The secret header values, without their prefixes. */
+  readonly secrets: readonly string[];
   private readonly errorListeners = new Set<McpTransportErrorListener>();
   private closeReasonValue: string | undefined;
   private closingForSize: Promise<void> | undefined;
@@ -360,18 +383,33 @@ export class GuardedHttpTransport
     this.options = options;
     this.url = new URL(options.url);
     this.max = options.maxMessageBytes ?? MCP_MAX_MESSAGE_BYTES;
-    this.secrets = Object.values(options.secretHeaders ?? {}).filter(
-      (value) => value.length > 0,
-    );
-    this.guard = createGuardedFetch(this.url, options, (error) =>
-      this.tooLarge(error),
+    const secretHeaders = Object.entries(options.secretHeaders ?? {});
+    this.secrets = secretHeaders
+      .map(([, header]) => header.value)
+      .filter((value) => value.length > 0);
+    this.guard = createGuardedFetch(
+      this.url,
+      options,
+      (error) => this.tooLarge(error),
+      this.secrets,
     );
     this.inner = new StreamableHttpTransport({
       url: this.url,
-      headers: { ...options.headers, ...options.secretHeaders },
+      headers: {
+        ...options.headers,
+        ...Object.fromEntries(
+          secretHeaders.map(([name, header]) => [
+            name,
+            `${header.prefix ?? ""}${header.value}`,
+          ]),
+        ),
+      },
       fetch: this.guard.fetch,
       // Nothing is asked of the server outside a request: no standing stream.
       openGetStream: false,
+      // A cut response stream is not resumed: one that keeps ending (with
+      // `retry: 0`) would be re-opened without end, during and after its call.
+      reconnect: { maxRetries: 0 },
       maxMessageBytes: this.max,
     });
   }
@@ -446,6 +484,10 @@ export class GuardedHttpTransport
       error instanceof Error ? error : new Error(String(error));
     if (this.secrets.some((secret) => normalized.message.includes(secret)))
       normalized.message = redactSecrets(normalized.message, this.secrets);
+    // McpHttpError keeps the error body too.
+    const body = (normalized as { body?: unknown }).body;
+    if (typeof body === "string")
+      Object.assign(normalized, { body: redactSecrets(body, this.secrets) });
     return normalized;
   }
 }

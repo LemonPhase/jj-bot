@@ -12,6 +12,8 @@ import {
   type Root,
   type Tool,
 } from "@earendil-works/pi-mcp";
+import { MAX_MCP_SNAPSHOT_TOOLS } from "@jj/contracts";
+import { redactSecrets } from "../errors";
 import type { CutEdges } from "../tools";
 import {
   MCP_STDERR_TAIL_CHARS,
@@ -45,6 +47,8 @@ export interface McpListOptions {
   timeoutMs?: number;
   /** Default MCP_MAX_LIST_PAGES. */
   maxPages?: number;
+  /** Most tools read, in listing order; default MAX_MCP_SNAPSHOT_TOOLS. */
+  maxTools?: number;
 }
 
 export interface McpToolList {
@@ -111,8 +115,12 @@ export interface McpConnectionOptions {
   startupTimeoutMs: number;
   /** Offered to the server only when given (the workspace); otherwise no `roots` capability. */
   roots?: readonly Root[];
-  /** Applied to every message and stderr tail this connection reports. */
-  redact?: McpRedact;
+  /**
+   * The server's secrets redactor, applied to every message and stderr tail
+   * this connection reports, after the transport's own secrets (a remote
+   * server's header values) are replaced.
+   */
+  redact: McpRedact;
   /** Default MCP_MAX_IN_FLIGHT. */
   maxInFlight?: number;
   clientInfo?: Implementation;
@@ -187,7 +195,13 @@ export class McpConnection implements McpConnector {
 
   constructor(options: McpConnectionOptions) {
     this.options = options;
-    this.redact = options.redact ?? ((text) => text);
+    const secrets = options.transport.secrets ?? [];
+    // The transport's own secrets first, whole, then the server's.
+    this.redact = (text, cut) =>
+      options.redact(
+        secrets.length > 0 ? redactSecrets(text, secrets) : text,
+        cut,
+      );
     this.slots = new Slots(
       Math.max(1, options.maxInFlight ?? MCP_MAX_IN_FLIGHT),
     );
@@ -251,6 +265,7 @@ export class McpConnection implements McpConnector {
   async listTools(options: McpListOptions = {}): Promise<McpToolList> {
     const client = this.ready();
     const maxPages = options.maxPages ?? MCP_MAX_LIST_PAGES;
+    const maxTools = options.maxTools ?? MAX_MCP_SNAPSHOT_TOOLS;
     const tools: Tool[] = [];
     const warnings: string[] = [];
     const cursors = new Set<string>();
@@ -287,6 +302,12 @@ export class McpConnection implements McpConnector {
           warnings.push(
             "The server listed an entry that is not a tool (it needs a name and an input schema); it was skipped.",
           );
+        if (tools.length > maxTools) {
+          warnings.push(
+            `The server lists more than ${maxTools} tools; only the first ${maxTools} listed were read.`,
+          );
+          return { tools: tools.slice(0, maxTools), warnings };
+        }
       }
       // Some servers end with `null` or `""` instead of leaving the cursor out.
       const next =
@@ -335,6 +356,17 @@ export class McpConnection implements McpConnector {
     } catch {
       throw notSent();
     }
+    // It waited for a slot while the connection ended: it was never sent.
+    if (this.stateValue !== "ready") {
+      release();
+      throw new McpServerError(
+        "closed",
+        this.text(
+          `${this.cause().text.replace(/\.$/, "")} before the MCP call ${name} was sent; it did not run.`,
+        ),
+        { interrupted: "yes" },
+      );
+    }
     try {
       return await client.callTool(name, args, {
         ...(options.signal ? { signal: options.signal } : {}),
@@ -351,8 +383,9 @@ export class McpConnection implements McpConnector {
   async close(): Promise<void> {
     this.closing = true;
     if (!this.client) {
-      this.stateValue = "closed";
+      // Never started: nothing to stop, but its end is still reported.
       await this.options.transport.close().catch(() => {});
+      this.handleClose();
       return;
     }
     await this.client.close();
