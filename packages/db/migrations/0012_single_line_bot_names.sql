@@ -1,19 +1,26 @@
--- Bot names are one line of plain text (contract 1.8.0). Names stored before
--- that rule are normalised here, archived bots' too, since task logs still
--- show them:
--- - each run of refused characters (every control character, LS and PS,
---   bidirectional controls and zero-width characters) becomes one space;
--- - the result is trimmed as JavaScript's trim() trims, and an empty one
---   becomes "Bot";
+-- Bot names and roles are one line of plain text (contract 1.8.0). Those
+-- stored before that rule are normalised here, archived bots' too, since task
+-- logs still show them:
+-- - each run of refused characters becomes one space. The set is the
+--   contract's (a test compares the two over every code point): every
+--   control character, LS and PS, the Bidi_Control set, the invisible U+180E,
+--   U+200B, U+2060 to U+2064, U+206A to U+206F, U+FEFF and U+FFF9 to U+FFFB,
+--   and the tag characters. Lone surrogates, which the contract also refuses,
+--   cannot be stored in a UTF8 database;
+-- - the result is trimmed as JavaScript's trim() trims. An empty name becomes
+--   "Bot"; an empty role stays empty;
 -- - an active bot whose new name another active bot of its owner holds,
 --   ignoring case, takes " (2)", " (3)", ...: the first number free. Names
 --   that were already valid never change, and among the renamed bots the
---   oldest (created_at, then id) goes first, so it keeps the plain name;
+--   oldest (created_at, then id) goes first, so it keeps the plain name.
+--   Roles are not unique and take no number;
 -- - the base is cut, and trimmed again, so that the name stays within the
 --   contract's 60 characters, counted in UTF-16 code units as it counts them.
+-- The patterns' code points mean characters only in a UTF8 database, so any
+-- other encoding is refused before anything changes.
 DO $$
 DECLARE
-  refused CONSTANT text := E'[\\u0001-\\u001F\\u007F-\\u009F\\u2028\\u2029\\u202A-\\u202E\\u2066-\\u2069\\u200B-\\u200D\\uFEFF]+';
+  refused CONSTANT text := E'[\\u0001-\\u001F\\u007F-\\u009F\\u061C\\u180E\\u200B\\u200E\\u200F\\u2028-\\u202E\\u2060-\\u2064\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB\\U000E0000-\\U000E007F]+';
   -- What trim() still finds once the refused characters are spaces.
   blank CONSTANT text := E'[ \\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000]+';
   astral CONSTANT text := E'[^\\U00010000-\\U0010FFFF]';
@@ -24,6 +31,17 @@ DECLARE
   candidate text;
   n integer;
 BEGIN
+  IF current_setting('server_encoding') <> 'UTF8' THEN
+    RAISE EXCEPTION 'JJ Bot needs a UTF8 database, and this one is encoded as %: migration 0012 cannot read bot names and roles in it without corrupting them. Create a database with ENCODING ''UTF8'' and restore a backup into it.', current_setting('server_encoding');
+  END IF;
+
+  UPDATE bots
+  SET role = regexp_replace(
+        regexp_replace(role, refused, ' ', 'g'),
+        '^' || blank || '|' || blank || '$', '', 'g'),
+      updated_at = now()
+  WHERE role ~ refused;
+
   FOR bot IN
     SELECT id, owner_id, name, archived_at FROM bots
     WHERE name ~ refused
