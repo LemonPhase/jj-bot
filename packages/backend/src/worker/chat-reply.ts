@@ -44,11 +44,13 @@ import { conversationHistory } from "../services/chat";
 import {
   answerTaskUpdate,
   fallbackText,
+  isOvertaken,
   type PendingUpdate,
   pendingTaskUpdate,
   pendingTaskUpdates,
   updateInput,
 } from "../services/task-updates";
+import { appendEntry, modelHistory, stripCardNotes } from "./chat-history";
 import { type ChatState, chatReadTools, chatTools } from "./chat-tools";
 import { chatPrompt } from "./prompts";
 import {
@@ -133,19 +135,9 @@ async function taskCards(exec: Executor, history: ConversationMessageRow[]) {
   return new Map(rows.map((row) => [row.id, row.title]));
 }
 
-/**
- * A past message as the model sees it: a reply with a task card says which
- * task, as the user sees the card under it, so a follow-up can name it.
- */
-function withCard(
-  message: ConversationMessageRow,
-  cards: Map<string, string>,
-  redact: (text: string) => string,
-) {
-  if (message.role !== "assistant" || !message.taskId) return message.text;
-  const title = cards.get(message.taskId);
-  return `${message.text}\n\n[Task card: ${message.taskId}${title === undefined ? "" : ` ${JSON.stringify(redact(title))}`}]`;
-}
+/** The one task a reply looked up, if it looked up exactly one: its card goes under the answer. */
+const onlyTaskLookedAt = (state: ChatState) =>
+  state.lookedAt.size === 1 ? ([...state.lookedAt][0] ?? null) : null;
 
 /** The bot's unfinished tasks, and how many of them it coordinates. */
 async function unfinishedTasks(exec: Executor, botId: string) {
@@ -180,7 +172,8 @@ async function storeMessage(
     botId,
     sequence,
     role: "assistant",
-    text: values.text.trim() ? values.text : "(no text)",
+    // The engine attaches the card; a note the model imitated is not stored.
+    text: stripCardNotes(values.text) || "(no text)",
     taskId: values.taskId,
     createdAt: ctx.clock(),
   });
@@ -245,6 +238,12 @@ export async function runChatJob(
       ? await conversationHistory(ctx.db, botId, ctx.config.chatHistoryLimit)
       : [];
     input = bot ? await nextInput(ctx.db, botId) : undefined;
+    // A waiting update whose question was answered meanwhile is not told.
+    while (input?.kind === "update" && isOvertaken(input.update)) {
+      const overtaken = input.update.id;
+      await write((tx) => answerTaskUpdate(tx, ctx, overtaken, null));
+      input = await nextInput(ctx.db, botId);
+    }
     if (!bot || !input) {
       // Archived, or a coalesced wake whose input was already answered.
       await write((tx) => complete(tx, job.lease));
@@ -266,23 +265,27 @@ export async function runChatJob(
 
     const everyone = await activeBotRows(ctx.db);
     const memory = await memoryText(ctx.db, botId);
-    const state: ChatState = { triggerId: answering, linkedTaskId: null };
+    const state: ChatState = {
+      triggerId: answering,
+      linkedTaskId: null,
+      lookedAt: new Set(),
+    };
     const tools =
       input.kind === "user"
         ? chatTools({ ctx, write, bot, redact, everyone, state })
-        : chatReadTools({ ctx, bot, redact });
+        : chatReadTools({ ctx, bot, redact, state });
     // The waiting messages go last, after any reply stored while they waited.
     const waitingIds = new Set(
       input.kind === "user" ? input.waiting.map((message) => message.id) : [],
     );
-    const cards = await taskCards(ctx.db, history);
-    const past = [
-      ...history.filter((message) => !waitingIds.has(message.id)),
-      ...(input.kind === "user" ? input.waiting : []),
-    ].map((message) => ({
-      role: message.role,
-      text: withCard(message, cards, redact),
-    }));
+    const past = modelHistory(
+      [
+        ...history.filter((message) => !waitingIds.has(message.id)),
+        ...(input.kind === "user" ? input.waiting : []),
+      ],
+      await taskCards(ctx.db, history),
+      redact,
+    );
     const reply = await responder.reply({
       systemPrompt: chatPrompt({
         bot,
@@ -295,10 +298,10 @@ export async function runChatJob(
       history:
         input.kind === "user"
           ? past
-          : [
-              ...past,
-              { role: "user", text: updateInput(input.update, redact) },
-            ],
+          : appendEntry(past, {
+              role: "user",
+              text: updateInput(input.update, redact),
+            }),
       model: bot.model,
       tools,
       budgets: {
@@ -320,7 +323,7 @@ export async function runChatJob(
           text: reply.text,
           taskId:
             answered.kind === "user"
-              ? state.linkedTaskId
+              ? (state.linkedTaskId ?? onlyTaskLookedAt(state))
               : answered.update.taskId,
         });
         await storeUsage(tx, ctx, botId, reply);

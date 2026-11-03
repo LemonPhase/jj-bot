@@ -74,6 +74,8 @@ export interface ChatState {
   triggerId: string;
   /** The task the reply created, continued or stopped: its card goes under the reply. */
   linkedTaskId: string | null;
+  /** Tasks the reply opened with `get_task` or `read_task_log`. */
+  lookedAt: Set<string>;
 }
 
 export type Write = <T>(fn: (tx: Tx) => Promise<T>) => Promise<T>;
@@ -82,6 +84,8 @@ export interface ChatToolsInput {
   ctx: EngineContext;
   bot: { id: string; name: string };
   redact: Redact;
+  /** Records the tasks the reply opens. */
+  state?: Pick<ChatState, "lookedAt">;
 }
 
 export interface ChatActInput extends ChatToolsInput {
@@ -275,6 +279,7 @@ export function chatReadTools(input: ChatToolsInput): CollabTool[] {
       execute: guarded(async (args) => {
         const id = textArg(args.id) ?? "";
         const member = await membership(db, bot.id, id);
+        if (member) input.state?.lookedAt.add(id);
         if (!member) return refuse(notYours(id));
         const state = await readTaskState(db, id);
         if (!state) return refuse(notYours(id));
@@ -325,6 +330,7 @@ export function chatReadTools(input: ChatToolsInput): CollabTool[] {
       execute: guarded(async (args) => {
         const id = textArg(args.id) ?? "";
         if (!(await membership(db, bot.id, id))) return refuse(notYours(id));
+        input.state?.lookedAt.add(id);
         const noEntry = (entryId: string) =>
           `No entry ${JSON.stringify(entryId)} in the log of ${id}. Entry ids look like msg_… and start each index line.`;
         const entryId = textArg(args.entry);

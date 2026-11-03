@@ -196,6 +196,7 @@ describe("prompts", () => {
       "call `create_task` once",
       "pass it on with `send_to_task`: the task continues in its own workspace, with its files and history.",
       "A new task starts with an empty workspace.",
+      "never write a card, or a task id for it.",
       "`stop_task` stops a task you coordinate; use it only when the user asks.",
       "The client prefers Markdown.",
       "- Bob (Researcher)",

@@ -259,9 +259,10 @@ export const conversationMessages = pgTable(
  * or waits for the user. Recorded in the transaction that changes the task,
  * so each event has exactly one row, keyed by the task and the task's event
  * sequence at that moment (a task that continues and waits again is a new
- * event). A chat reply answers it: `message_id` is set in the transaction
- * that stores the conversation message telling the user (the bot's reply, or
- * the engine's fallback), so an update is answered once.
+ * event). A chat reply answers it: `answered_at` and `message_id` are set in
+ * the transaction that stores the conversation message telling the user (the
+ * bot's reply, or the engine's fallback), so an update is answered once. An
+ * update a later event of its task overtook is closed without a message.
  */
 export const chatTaskUpdates = pgTable(
   "chat_task_updates",
@@ -280,8 +281,9 @@ export const chatTaskUpdates = pgTable(
     /** The result, error or the coordinator's question, as stored then, clipped. */
     text: text("text").notNull(),
     createdAt: createdAt(),
-    /** The conversation message that answered it; null while pending (attribution, not a foreign key). */
+    /** The conversation message that told it; null while pending or when overtaken (attribution, not a foreign key). */
     messageId: text("message_id"),
+    /** When it was told, or overtaken by a later event of its task; null while pending. */
     answeredAt: optionalTime("answered_at"),
   },
   (t) => [
@@ -289,7 +291,7 @@ export const chatTaskUpdates = pgTable(
     unique("chat_task_updates_task_event").on(t.taskId, t.taskEventSeq),
     index("chat_task_updates_pending_idx")
       .on(t.botId, t.createdAt)
-      .where(sql`${t.messageId} is null`),
+      .where(sql`${t.answeredAt} is null`),
     check("chat_task_updates_event_check", oneOf(t.event, TASK_UPDATE_EVENTS)),
   ],
 );

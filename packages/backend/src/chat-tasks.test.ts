@@ -33,6 +33,7 @@ import {
   untilTask,
 } from "./testing/harness";
 import { createTeam, lastResult } from "./testing/scenarios";
+import { HISTORY_START } from "./worker/chat-history";
 import { type ChatState, chatTools } from "./worker/chat-tools";
 
 let db: TestDatabase;
@@ -63,7 +64,21 @@ async function engineOn(options: Parameters<typeof testEngine>[1] = {}) {
 
 const UPDATE = "[Task update]";
 const lastInput = (input: ChatReplyInput) => input.history.at(-1)?.text ?? "";
-const isUpdate = (input: ChatReplyInput) => lastInput(input).startsWith(UPDATE);
+/** The engine's update input (it may follow an unanswered user message in one entry). */
+const updateText = (input: ChatReplyInput) => {
+  const text = lastInput(input);
+  const at = text.indexOf(UPDATE);
+  return at < 0 ? "" : text.slice(at);
+};
+const isUpdate = (input: ChatReplyInput) => updateText(input) !== "";
+/** The result, error or question an update input quotes (its first line). */
+const updateBody = (input: ChatReplyInput) => {
+  const lines = updateText(input).split("\n");
+  const header = lines.findIndex((line) =>
+    line.endsWith("as the task recorded it:"),
+  );
+  return lines[header + 1] ?? "";
+};
 const toolNames = (input: ChatReplyInput) =>
   input.tools.map((tool) => tool.name);
 const READ_TOOLS = ["list_tasks", "get_task", "read_task_log"];
@@ -88,7 +103,11 @@ function toolsFor(
   triggerId = "cmsg_test",
 ) {
   const ctx = engine.engine.context;
-  const state: ChatState = { triggerId, linkedTaskId: null };
+  const state: ChatState = {
+    triggerId,
+    linkedTaskId: null,
+    lookedAt: new Set(),
+  };
   const tools = chatTools({
     ctx,
     bot,
@@ -512,7 +531,7 @@ const hangUntilAborted = (input: ChatReplyInput) =>
 /** Answers updates in its own words and the user plainly. */
 const politeBrain: ChatBrain = (input) =>
   isUpdate(input)
-    ? { text: `In my words: ${lastInput(input).split("\n")[3] ?? ""}` }
+    ? { text: `In my words: ${updateBody(input)}` }
     : { text: `You said: ${lastInput(input)}` };
 
 describe("task updates in the coordinator's chat", () => {
@@ -732,8 +751,10 @@ describe("task updates in the coordinator's chat", () => {
     const answer = chat.inputs.find(
       (input) => lastInput(input) === "and next?",
     ) as ChatReplyInput;
-    // The model sees the card under a reply, as the user does.
+    // The model sees the card under a reply, as the user does; the history
+    // starts with the user, as every provider accepts.
     expect(answer.history).toEqual([
+      { role: "user", text: HISTORY_START },
       {
         role: "assistant",
         text: `In my words: Shipped.\n\n[Task card: ${task.id} "Ship it"]`,
@@ -742,7 +763,7 @@ describe("task updates in the coordinator's chat", () => {
     ]);
   });
 
-  it("do not answer a user message again after its reply failed", async () => {
+  it("do not answer a user message again after its reply failed, and keep its error in view", async () => {
     const engine = await engineOn();
     const team = await createTeam(engine.engine, ["Ada"]);
     const [ada] = team.names as [string];
@@ -769,7 +790,14 @@ describe("task updates in the coordinator's chat", () => {
     expect(
       engine.chat.inputs.filter((input) => lastInput(input) === "hello?"),
     ).toHaveLength(1);
-    expect(view.lastReplyError).toBeNull();
+    // The update reply succeeded, but the user's message is still unanswered.
+    expect(view.lastReplyError?.message).toBe("provider overloaded");
+    // Writing again answers it, and the error goes.
+    engine.chat.brain(ada, politeBrain);
+    await engine.engine.bots.sendMessage(adaId, { text: "hello again?" });
+    const answered = await untilReplies(engine, adaId, 2);
+    expect(answered.messages.at(-1)?.text).toBe("You said: hello again?");
+    expect(answered.lastReplyError).toBeNull();
   });
 
   it("post no duplicate when the worker crashes before the reply is written", async () => {
@@ -901,7 +929,8 @@ describe("direct chat on the scripted model", () => {
     view = await say("How did it go?", 3);
     expect(view.messages[4]).toMatchObject({
       text: `${title} is completed. Result: Wrote penguins.md with three sections.`,
-      taskId: null,
+      // It looked up exactly this task: its card goes under the answer.
+      taskId,
     });
 
     view = await say("Please also add a diet section to the task.", 5);
@@ -966,5 +995,242 @@ describe("a waiting task's question", () => {
     const done = await summaryOf();
     expect(done.question).toBeUndefined();
     expect("question" in done).toBe(false);
+  });
+});
+
+describe("chat replies and updates, after review", () => {
+  it("never store a card note the model imitated, and show each card once in the history", async () => {
+    const engine = await engineOn();
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    let taskId = "";
+    engine.chat.brain(ada, (input) =>
+      isUpdate(input)
+        ? {
+            text: `In my words: ${updateBody(input)}\n\n[Task card: ${taskId} "Ship it"]`,
+          }
+        : { text: `You said: ${lastInput(input)}` },
+    );
+    engine.executor.brain(ada, completes("Shipped."));
+    taskId = (
+      await engine.engine.tasks.create({
+        goal: "Ship it",
+        coordinatorBotId: adaId,
+      })
+    ).task.id;
+    const view = await untilReplies(engine, adaId, 1);
+    expect(view.messages[0]).toMatchObject({
+      text: "In my words: Shipped.",
+      taskId,
+    });
+    await engine.engine.bots.sendMessage(adaId, { text: "ok?" });
+    await untilReplies(engine, adaId, 2);
+    const reply = engine.chat.inputs.find(
+      (input) => lastInput(input) === "ok?",
+    ) as ChatReplyInput;
+    const notes = reply.history
+      .map((entry) => entry.text)
+      .join("\n")
+      .match(/\[Task card:/g);
+    expect(notes).toHaveLength(1);
+  });
+
+  it("drop a waiting update that a later event of its task overtook", async () => {
+    const chat = new GatedChat();
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    engine.executor.brain(ada, (view) =>
+      said.heard(view, "blue")
+        ? completes("Painted it blue.")(view)
+        : { text: "Which colour?" },
+    );
+    chat.hold();
+    await engine.engine.bots.sendMessage(adaId, { text: "busy?" });
+    await until(() => chat.order.includes("start busy?"), {
+      what: "the user's reply to start",
+    });
+    const { task } = await engine.engine.tasks.create({
+      goal: "Paint",
+      coordinatorBotId: adaId,
+    });
+    await untilTask(engine.engine, task.id, (v) => v.task.status === "waiting");
+    // The user answers in the task before the chat told the question.
+    await engine.engine.tasks.postMessage(task.id, { text: "blue" });
+    await untilTask(
+      engine.engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    chat.let();
+    const view = await untilReplies(engine, adaId, 2);
+    await sleep(200);
+    expect(
+      (await conversation(engine, adaId)).messages.map((m) => m.text),
+    ).toEqual(["busy?", "You said: busy?", "In my words: Painted it blue."]);
+    expect(view.messages.some((m) => m.text.includes("Which colour"))).toBe(
+      false,
+    );
+    const updates = await updatesOf(task.id);
+    expect(updates.map((u) => [u.event, u.messageId !== null])).toEqual([
+      ["waiting", false],
+      ["completed", true],
+    ]);
+    expect(updates[0]?.answeredAt).not.toBeNull();
+  });
+
+  it("drop a waiting update whose question the user answered from chat first", async () => {
+    const chat = new GatedChat();
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    let taskId = "";
+    chat.brain(ada, (input) =>
+      !isUpdate(input) && lastInput(input).includes("blue")
+        ? {
+            calls: [
+              { name: "send_to_task", args: { id: taskId, text: "blue" } },
+            ],
+            text: "Passed it on.",
+          }
+        : politeBrain(input),
+    );
+    engine.executor.brain(ada, (view) =>
+      said.heard(view, "blue")
+        ? said.turns(view) < 2
+          ? { calls: [{ name: "gate", args: { name: "paint" } }] }
+          : completes("Painted it blue.")(view)
+        : { text: "Which colour?" },
+    );
+    chat.hold();
+    await engine.engine.bots.sendMessage(adaId, { text: "busy?" });
+    await until(() => chat.order.includes("start busy?"), {
+      what: "the user's reply to start",
+    });
+    taskId = (
+      await engine.engine.tasks.create({
+        goal: "Paint",
+        coordinatorBotId: adaId,
+      })
+    ).task.id;
+    await untilTask(engine.engine, taskId, (v) => v.task.status === "waiting");
+    // The answer reaches the chat before the update is told.
+    await engine.engine.bots.sendMessage(adaId, { text: "blue" });
+    chat.let();
+    await engine.executor.gate("paint").reached;
+    await until(
+      async () =>
+        (await updatesOf(taskId)).every((update) => update.answeredAt !== null),
+      { what: "the waiting update to be dropped" },
+    );
+    const told = await updatesOf(taskId);
+    expect(told).toMatchObject([{ event: "waiting", messageId: null }]);
+    expect(chat.inputs.filter(isUpdate)).toEqual([]);
+    engine.executor.gate("paint").open();
+    const view = await untilReplies(engine, adaId, 3);
+    expect(view.messages.map((m) => m.text)).toEqual([
+      "busy?",
+      "blue",
+      "You said: busy?",
+      "Passed it on.",
+      "In my words: Painted it blue.",
+    ]);
+  });
+
+  it("say in an update's input when the task has moved on since", async () => {
+    const chat = new GatedChat();
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    engine.executor.brain(ada, (view) =>
+      said.heard(view, "one more")
+        ? { calls: [{ name: "gate", args: { name: "more" } }] }
+        : completes("Shipped.")(view),
+    );
+    chat.hold();
+    await engine.engine.bots.sendMessage(adaId, { text: "busy?" });
+    await until(() => chat.order.includes("start busy?"), {
+      what: "the user's reply to start",
+    });
+    const { task } = await engine.engine.tasks.create({
+      goal: "Ship it",
+      coordinatorBotId: adaId,
+    });
+    await untilTask(
+      engine.engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    await engine.engine.tasks.postMessage(task.id, { text: "one more" });
+    await engine.executor.gate("more").reached;
+    chat.let();
+    await until(() => chat.inputs.some(isUpdate), { what: "the update reply" });
+    const update = updateText(chat.inputs.find(isUpdate) as ChatReplyInput);
+    expect(update).toContain(
+      "Status now: running; it has moved on since this update.",
+    );
+    expect(update).toContain("\nShipped.\n");
+    engine.executor.gate("more").open();
+  });
+
+  it("tell an update that shared a queued reply with a user message", async () => {
+    const chat = new GatedChat();
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    engine.executor.brain(ada, completes("Shipped."));
+    chat.hold();
+    await engine.engine.bots.sendMessage(adaId, { text: "first" });
+    await until(() => chat.order.includes("start first"), {
+      what: "the first reply to start",
+    });
+    // Both wait on the one queued reply job.
+    await engine.engine.bots.sendMessage(adaId, { text: "second" });
+    const { task } = await engine.engine.tasks.create({
+      goal: "Ship it",
+      coordinatorBotId: adaId,
+    });
+    await until(async () => (await updatesOf(task.id)).length === 1, {
+      what: "the update",
+    });
+    chat.let();
+    const view = await untilReplies(engine, adaId, 3);
+    expect(view.messages.map((m) => m.text)).toEqual([
+      "first",
+      "second",
+      "You said: first",
+      "You said: second",
+      "In my words: Shipped.",
+    ]);
+  });
+
+  it("answer several waiting messages in one reply, once", async () => {
+    const chat = new GatedChat();
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    chat.hold();
+    await engine.engine.bots.sendMessage(adaId, { text: "first" });
+    await until(() => chat.order.includes("start first"), {
+      what: "the first reply to start",
+    });
+    await engine.engine.bots.sendMessage(adaId, { text: "second" });
+    await engine.engine.bots.sendMessage(adaId, { text: "third" });
+    chat.let();
+    await untilReplies(engine, adaId, 2);
+    await sleep(300);
+    // One reply took up both, as one turn of the user.
+    expect(chat.inputs.map(lastInput)).toEqual(["first", "second\n\nthird"]);
+    expect((await conversation(engine, adaId)).messages).toHaveLength(5);
   });
 });

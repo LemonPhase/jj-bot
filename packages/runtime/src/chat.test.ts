@@ -226,6 +226,7 @@ describe("ChatResponder with the scripted model", () => {
       [
         "[Task update] This comes from JJ Bot, not from the user: a task you coordinate completed.",
         'Task: task_7 "Penguin report"',
+        "Status now: completed.",
         "Result, as the task recorded it:",
         "Wrote penguins.md with three sections.",
         "",

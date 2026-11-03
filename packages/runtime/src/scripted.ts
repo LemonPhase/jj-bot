@@ -761,7 +761,10 @@ function updateAnswer(text: string): string {
   } catch {
     // Keep the id.
   }
-  const body = clip((lines[3] ?? "").trim(), 300);
+  const header = lines.findIndex((line) =>
+    line.endsWith("as the task recorded it:"),
+  );
+  const body = clip((lines[header + 1] ?? "").trim(), 300);
   if (happened === "is waiting for the user")
     return `"${title}" needs your input: ${body}`;
   return `Update on "${title}": it ${happened}. ${body}`.trim();
@@ -792,7 +795,9 @@ function chatTurn(conversation: Conversation): ScriptedTurn {
     }
   }
 
-  if (text.startsWith(UPDATE)) return { text: updateAnswer(text) };
+  // An update may follow an unanswered user message in the same turn.
+  const update = text.indexOf(UPDATE);
+  if (update >= 0) return { text: updateAnswer(text.slice(update)) };
   const isWork = WORK.test(text);
   if (!isWork && GREETING.test(text))
     return {

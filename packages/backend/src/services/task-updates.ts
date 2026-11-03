@@ -11,6 +11,7 @@ import {
   type Executor,
   enqueue,
   type TaskRow,
+  type TaskStatus,
   type TaskUpdateEvent,
   type Tx,
   tasks,
@@ -55,6 +56,16 @@ export async function recordTaskUpdate(
     .select({ eventSeq: tasks.eventSeq })
     .from(tasks)
     .where(eq(tasks.id, task.id));
+  // A later event overtakes the task's updates that were not told yet.
+  await tx
+    .update(chatTaskUpdates)
+    .set({ answeredAt: ctx.clock() })
+    .where(
+      and(
+        eq(chatTaskUpdates.taskId, task.id),
+        isNull(chatTaskUpdates.answeredAt),
+      ),
+    );
   await tx.insert(chatTaskUpdates).values({
     id: ctx.ids("taskUpdate"),
     botId: task.coordinatorBotId,
@@ -72,7 +83,39 @@ export async function recordTaskUpdate(
   });
 }
 
-export type PendingUpdate = ChatTaskUpdateRow & { title: string };
+export type PendingUpdate = ChatTaskUpdateRow & {
+  title: string;
+  /** The task's status now, which may have moved on since the event. */
+  status: TaskStatus;
+  cancelRequestedAt: Date | null;
+};
+
+const pendingColumns = {
+  update: chatTaskUpdates,
+  title: tasks.title,
+  status: tasks.status,
+  cancelRequestedAt: tasks.cancelRequestedAt,
+};
+
+const toPending = (row: {
+  update: ChatTaskUpdateRow;
+  title: string;
+  status: TaskStatus;
+  cancelRequestedAt: Date | null;
+}): PendingUpdate => ({
+  ...row.update,
+  title: row.title,
+  status: row.status,
+  cancelRequestedAt: row.cancelRequestedAt,
+});
+
+/**
+ * A waiting update whose task no longer waits for the user: its question was
+ * answered (in the task or from chat), so telling it would be stale.
+ */
+export const isOvertaken = (update: PendingUpdate) =>
+  update.event === "waiting" &&
+  (update.status !== "waiting" || update.cancelRequestedAt !== null);
 
 /** A bot's unanswered updates, oldest first. */
 export async function pendingTaskUpdates(
@@ -81,15 +124,15 @@ export async function pendingTaskUpdates(
   limit = 1,
 ): Promise<PendingUpdate[]> {
   const rows = await exec
-    .select({ update: chatTaskUpdates, title: tasks.title })
+    .select(pendingColumns)
     .from(chatTaskUpdates)
     .innerJoin(tasks, eq(tasks.id, chatTaskUpdates.taskId))
     .where(
-      and(eq(chatTaskUpdates.botId, botId), isNull(chatTaskUpdates.messageId)),
+      and(eq(chatTaskUpdates.botId, botId), isNull(chatTaskUpdates.answeredAt)),
     )
     .orderBy(asc(chatTaskUpdates.createdAt), asc(chatTaskUpdates.id))
     .limit(limit);
-  return rows.map((row) => ({ ...row.update, title: row.title }));
+  return rows.map(toPending);
 }
 
 /** One update while it is unanswered; undefined once answered or when there is none. */
@@ -98,33 +141,41 @@ export async function pendingTaskUpdate(
   updateId: string,
 ): Promise<PendingUpdate | undefined> {
   const [row] = await exec
-    .select({ update: chatTaskUpdates, title: tasks.title })
+    .select(pendingColumns)
     .from(chatTaskUpdates)
     .innerJoin(tasks, eq(tasks.id, chatTaskUpdates.taskId))
     .where(
-      and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.messageId)),
+      and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.answeredAt)),
     );
-  return row ? { ...row.update, title: row.title } : undefined;
+  return row ? toPending(row) : undefined;
 }
 
 /**
- * Marks the update answered by `messageId`. False when it already was: the
- * caller then stores no message.
+ * Marks the update told by `messageId`, or closed without a message (null)
+ * when it was overtaken. False when it already was: the caller then stores
+ * no message.
  */
 export async function answerTaskUpdate(
   tx: Tx,
   ctx: EngineContext,
   updateId: string,
-  messageId: string,
+  messageId: string | null,
 ): Promise<boolean> {
   const rows = await tx
     .update(chatTaskUpdates)
     .set({ messageId, answeredAt: ctx.clock() })
     .where(
-      and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.messageId)),
+      and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.answeredAt)),
     )
     .returning({ id: chatTaskUpdates.id });
   return rows.length > 0;
+}
+
+/** The task's status now, as an update input names it. */
+function statusNow(update: PendingUpdate): string {
+  if (update.cancelRequestedAt && update.status !== "cancelled")
+    return "stopping";
+  return update.status === "waiting" ? "waiting for the user" : update.status;
 }
 
 const HAPPENED: Record<TaskUpdateEvent, string> = {
@@ -154,6 +205,9 @@ export function updateInput(update: PendingUpdate, redact: Redact): string {
     [
       `${UPDATE_MARKER} This comes from JJ Bot, not from the user: a task you coordinate ${HAPPENED[update.event]}.`,
       `Task: ${update.taskId} ${JSON.stringify(update.title)}`,
+      update.status === update.event && !update.cancelRequestedAt
+        ? `Status now: ${statusNow(update)}.`
+        : `Status now: ${statusNow(update)}; it has moved on since this update.`,
       `${BODY[update.event]}, as the task recorded it:`,
       update.text,
       "",

@@ -202,5 +202,6 @@ export function chatPrompt(input: ChatPromptInput): string {
     "- `stop_task` stops a task you coordinate; use it only when the user asks.",
     "- If the request is unclear, ask one short question first.",
     "- Keep replies brief, and say what you did.",
+    "- JJ Bot shows a task's card under a reply about that task by itself: never write a card, or a task id for it. The `[Task card: …]` notes in your past replies stand for those cards.",
   ].join("\n");
 }

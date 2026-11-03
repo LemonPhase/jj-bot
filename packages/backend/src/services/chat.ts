@@ -13,7 +13,7 @@ import {
   jobs,
   nextConversationSequence,
 } from "@jj/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { parseCommand } from "../errors";
 import { hint, wakeWorkers } from "../events";
@@ -54,7 +54,11 @@ export async function sendBotMessage(
   return { message: toConversationMessage(row) };
 }
 
-/** The latest chat.reply job of a bot: whether it is replying and why the last reply failed. */
+/**
+ * A bot's chat.reply jobs: whether it is replying, and why a reply failed:
+ * the reply to the user's latest message while that failure stands (it is
+ * not answered again until the user writes more), else the latest reply.
+ */
 async function replyState(exec: Executor, botId: string) {
   const [pending] = await exec
     .select({ id: jobs.id })
@@ -67,25 +71,46 @@ async function replyState(exec: Executor, botId: string) {
       ),
     )
     .limit(1);
+  const finished = and(
+    eq(jobs.botId, botId),
+    eq(jobs.kind, "chat.reply"),
+    inArray(jobs.status, ["done", "failed"]),
+  );
+  const [latestUser] = await exec
+    .select({ id: conversationMessages.id })
+    .from(conversationMessages)
+    .where(
+      and(
+        eq(conversationMessages.botId, botId),
+        eq(conversationMessages.role, "user"),
+      ),
+    )
+    .orderBy(desc(conversationMessages.sequence))
+    .limit(1);
+  const [forUser] = latestUser
+    ? await exec
+        .select()
+        .from(jobs)
+        .where(
+          and(finished, sql`${jobs.payload}->>'answering' = ${latestUser.id}`),
+        )
+        .orderBy(desc(jobs.updatedAt), desc(jobs.id))
+        .limit(1)
+    : [];
   const [last] = await exec
     .select()
     .from(jobs)
-    .where(
-      and(
-        eq(jobs.botId, botId),
-        eq(jobs.kind, "chat.reply"),
-        inArray(jobs.status, ["done", "failed"]),
-      ),
-    )
+    .where(finished)
     .orderBy(desc(jobs.updatedAt), desc(jobs.id))
     .limit(1);
+  const failed = forUser?.status === "failed" ? forUser : last;
   return {
     replying: pending !== undefined,
     lastReplyError:
-      last?.status === "failed"
+      failed?.status === "failed"
         ? {
-            message: last.lastError ?? "The reply failed.",
-            at: last.updatedAt.toISOString(),
+            message: failed.lastError ?? "The reply failed.",
+            at: failed.updatedAt.toISOString(),
           }
         : null,
   };
