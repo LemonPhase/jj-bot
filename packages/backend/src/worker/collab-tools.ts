@@ -146,7 +146,9 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         });
         if (capped)
           return refuse(
-            `${capped.message} ${assignee.name} cannot start this work now; give it to another teammate, do it yourself, or tell the user.`,
+            capped.scope === "bot"
+              ? `${capped.message} ${assignee.name} cannot start this work now; give it to another teammate, do it yourself, or tell the user.`
+              : `${capped.message} No teammate can start work now, and your own next model call stops too; end your turn so the task waits for the user. ${capped.advice}`,
           );
         const attribution = attributionOf(rc);
         // What the child starts on (first-input.ts): the task log so far, the

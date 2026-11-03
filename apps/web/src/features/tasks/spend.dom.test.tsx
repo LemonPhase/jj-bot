@@ -185,6 +185,48 @@ describe("the usage badge's wording and reach", () => {
     expect(tipOf(control)).not.toContain("Stopped");
   });
 
+  const reopened = {
+    ...cappedEvent,
+    id: "e-reopened",
+    sequence: 10,
+    type: "task.reopened" as const,
+    payload: { previous: "waiting" as const },
+  };
+  const tipFor = (view: TaskView) => {
+    renderWith({}, <SpendControl view={view} />);
+    return tipOf(screen.getByRole("button", { name: /Usage:/ }));
+  };
+
+  it("says stopped while the current cap's stop stands", () => {
+    expect(tipFor(viewWith(0.6, 0.5, { events: [cappedEvent] }))).toContain(
+      "Stopped at its spend cap of $0.50",
+    );
+  });
+
+  it("says at or past, not stopped, for a waiting task no cap stopped", () => {
+    const tip = tipFor(viewWith(0.6, 0.5));
+    expect(tip).toContain("At or past its spend cap of $0.50");
+    expect(tip).not.toContain("Stopped");
+  });
+
+  it("no longer says stopped once the cap was raised after the stop", () => {
+    const tip = tipFor(viewWith(0.6, 0.8, { events: [cappedEvent] }));
+    expect(tip).toContain("Spend cap $0.80");
+    expect(tip).not.toContain("Stopped");
+  });
+
+  it("says stopped only for the cap that stopped it, not a changed one still passed", () => {
+    const tip = tipFor(viewWith(0.6, 0.55, { events: [cappedEvent] }));
+    expect(tip).toContain("At or past its spend cap of $0.55");
+    expect(tip).not.toContain("Stopped");
+  });
+
+  it("no longer says stopped once the user continued the task", () => {
+    const tip = tipFor(viewWith(0.6, 0.5, { events: [cappedEvent, reopened] }));
+    expect(tip).toContain("At or past its spend cap of $0.50");
+    expect(tip).not.toContain("Stopped");
+  });
+
   it("keeps the breakdown reachable on a cancelled task, and opens no dialog", () => {
     const updateTask = vi.fn();
     renderWith(

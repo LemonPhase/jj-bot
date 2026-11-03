@@ -383,6 +383,37 @@ describe("a bot's daily spend cap", () => {
     expect(delegated?.payload.ok).toBe(false);
   });
 
+  it("words a delegation refused by the task's cap as a stop for everyone", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "delegate", args: { bot: bob, brief: "Count." } }] }
+        : { text: "Done." },
+    );
+    // The delegating call itself reaches the $0.01 cap.
+    const { task } = await engine.tasks.create({
+      goal: "Delegate the counting.",
+      coordinatorBotId: team.ids[0] as string,
+      participantBotIds: team.ids,
+      spendCapUsd: 0.01,
+    });
+    const view = await untilTask(engine, task.id, waitingForUser);
+    expect(view.sessions).toHaveLength(1);
+    // Snapshot events drop output previews; the event page has them.
+    const delegated = (await engine.tasks.events(task.id)).events.find(
+      (event) =>
+        event.type === "tool.finished" && event.payload.tool === "delegate",
+    );
+    const output =
+      delegated?.type === "tool.finished" ? delegated.payload.output : "";
+    expect(output).toContain(
+      "The task reached its spend cap: $0.01 of $0.01 spent. No teammate can start work now",
+    );
+    expect(output).not.toContain("another teammate");
+  });
+
   it("fails a chat reply that reaches the worker after the cap, and records the usage of failed replies", async () => {
     const { engine, chat } = await setup({ start: false });
     const profile = await profileWith(engine, { maxUsdPerBotPerDay: 0.01 });
@@ -476,22 +507,19 @@ describe("direct chat replies and spend", () => {
       name: `Thrifty${Date.now()}`,
       runtimeProfileId: profile.id,
     });
-    executor.brain(bot.name, finisher);
+    executor.brain(bot.name, tireless);
     const asked: string[] = [];
     chat.brain(bot.name, () => {
       asked.push("called");
       return { text: "Told in my words." };
     });
-    // The task's one call ($0.01) brings the bot to its daily cap.
+    // The task's first call ($0.01) brings the bot to its daily cap, so the
+    // task waits at it, and the reply that would tell the chat is refused too.
     const { task } = await engine.tasks.create({
-      goal: "Finish.",
+      goal: "Count forever.",
       coordinatorBotId: bot.id,
     });
-    await untilTask(
-      engine,
-      task.id,
-      (view) => view.task.status === "completed",
-    );
+    await untilTask(engine, task.id, waitingForUser);
     const view = await until(async () => {
       const current = await engine.bots.conversation(bot.id);
       return current.messages.length > 0 ? current : undefined;
@@ -499,6 +527,11 @@ describe("direct chat replies and spend", () => {
     expect(view.messages[0]?.text).toContain(
       "(Posted automatically: the reply to this update failed.)",
     );
+    // A stop at a cap reads as a stop, never as a question.
+    expect(view.messages[0]?.text).toContain(
+      "stopped at a spend cap and is waiting for you.\n\nWhy it stopped:\nStopped: ",
+    );
+    expect(view.messages[0]?.text).not.toContain("Question:");
     expect(view.messages[0]?.taskId).toBe(task.id);
     expect(asked).toEqual([]);
     expect(await chatRows(bot.id)).toHaveLength(0);
@@ -520,8 +553,9 @@ describe("direct chat replies and spend", () => {
     });
     await untilTask(engine, task.id, waitingForUser);
     await until(() => updates.length > 0);
+    expect(updates[0]).toContain("a spend cap stopped it");
     expect(updates[0]).toContain(
-      "Stopped: The task reached its spend cap: $0.02 of $0.015 spent.",
+      "Why it stopped, as the task recorded it:\nStopped: The task reached its spend cap: $0.02 of $0.015 spent.",
     );
   });
 });

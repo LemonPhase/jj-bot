@@ -35,15 +35,23 @@ export function readCapInput(
 }
 
 /**
- * True while the task waits because its own cap refused a model call: a
- * `spend.capped` of the task's scope since the user last continued it.
+ * True while the task waits because its own cap, as it is now, refused a
+ * model call: a `spend.capped` of the task's scope for the current cap since
+ * the user last continued it, with the spend still at or past that cap. A cap
+ * raised (or cleared) after the stop no longer counts.
  */
 export function stoppedAtCap(view: TaskView): boolean {
-  if (view.task.status !== "waiting") return false;
+  const { task, usage } = view;
+  if (task.status !== "waiting" || task.spendCapUsd === null) return false;
+  if (usage.total.costUsd < task.spendCapUsd) return false;
   for (let index = view.events.length - 1; index >= 0; index -= 1) {
     const event = view.events[index];
     if (event?.type === "task.reopened") return false;
-    if (event?.type === "spend.capped" && event.payload.scope === "task")
+    if (
+      event?.type === "spend.capped" &&
+      event.payload.scope === "task" &&
+      event.payload.capUsd === task.spendCapUsd
+    )
       return true;
   }
   return false;
