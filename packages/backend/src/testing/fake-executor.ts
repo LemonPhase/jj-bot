@@ -16,10 +16,18 @@ import type {
 
 export type FakeMessage =
   | { role: "user"; text: string }
-  /** Text in pi's content-block shape, as the engine reads it on recovery. */
+  /** Text and calls in pi's content-block shape too, as the engine reads them on recovery. */
   | {
       role: "assistant";
-      content: { type: "text"; text: string }[];
+      content: (
+        | { type: "text"; text: string }
+        | {
+            type: "toolCall";
+            id: string;
+            name: string;
+            arguments: Record<string, unknown>;
+          }
+      )[];
       calls: FakeCall[];
     }
   | {
@@ -172,7 +180,10 @@ export class FakeExecutor implements RunExecutor {
     );
     const tail = messages.at(-1);
     if (inputs.length === 0 && (!tail || tail.role === "assistant")) {
-      inputs = (await hooks.drainInbox()).map((text) => ({
+      // Like the runtime: a transcript that ends with an answer is where the
+      // model ended its turn.
+      const turnEnded = tail?.role === "assistant" && tail.calls.length === 0;
+      inputs = (await hooks.drainInbox(turnEnded)).map((text) => ({
         role: "user",
         text,
       }));
@@ -216,7 +227,15 @@ export class FakeExecutor implements RunExecutor {
       const text = decision.text ?? "";
       const assistant: FakeMessage = {
         role: "assistant",
-        content: text ? [{ type: "text", text }] : [],
+        content: [
+          ...(text ? [{ type: "text" as const, text }] : []),
+          ...calls.map((call) => ({
+            type: "toolCall" as const,
+            id: call.id,
+            name: call.name,
+            arguments: call.args,
+          })),
+        ],
         calls,
       };
       lastText = text;

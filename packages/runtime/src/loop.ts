@@ -269,7 +269,7 @@ const toolCallsOf = (message: AssistantMessage) =>
   message.content.filter(
     (block): block is ToolCall => block.type === "toolCall",
   );
-const hasToolCalls = (message: AssistantMessage) =>
+export const hasToolCalls = (message: AssistantMessage) =>
   toolCallsOf(message).length > 0;
 
 /** The result recorded for a call the run stopped before it started. */

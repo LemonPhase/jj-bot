@@ -1,8 +1,9 @@
 // Run rows and what a run reads at its end: closing a run, reporting what it
 // left in flight (a command running when a run ended abnormally is reported as
 // interrupted with an unknown outcome and never re-run), the transcript's last
-// text and input that continues a run.
+// text and how its last turn ended, and input that continues a run.
 import {
+  type Executor,
   type RunRow,
   type RunStatus,
   runs,
@@ -12,9 +13,20 @@ import {
   type Tx,
   taskEvents,
 } from "@jj/db";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  max,
+  sql,
+} from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit } from "../events";
+import { isParkedText } from "./parking";
 
 const OUTCOME: Record<
   Exclude<RunStatus, "running">,
@@ -120,11 +132,11 @@ export async function closeStaleRun(
 }
 
 /**
- * The text of the transcript's last message when it is a final assistant
- * message. Compaction entries are checkpoints, not messages, and are skipped.
+ * The transcript's last message. Compaction entries are checkpoints, not
+ * messages, and are skipped.
  */
-export async function lastAssistantText(tx: Tx, sessionId: string) {
-  const [row] = await tx
+async function lastEntry(exec: Executor, sessionId: string) {
+  const [row] = await exec
     .select({ entry: sessionEntries.entry })
     .from(sessionEntries)
     .where(
@@ -135,7 +147,95 @@ export async function lastAssistantText(tx: Tx, sessionId: string) {
     )
     .orderBy(desc(sessionEntries.seq))
     .limit(1);
-  return row ? assistantText(row.entry) : undefined;
+  return row?.entry;
+}
+
+/** The text of the transcript's last message when it is a final assistant message. */
+export async function lastAssistantText(tx: Tx, sessionId: string) {
+  const entry = await lastEntry(tx, sessionId);
+  return entry ? assistantText(entry) : undefined;
+}
+
+/**
+ * How a transcript's last turn ended: `answer` when it ends with the model's
+ * answer (an assistant message that calls no tools), `engine` when the
+ * engine ended the turn after its calls (a parked turn, whose calls are
+ * answered with `parkedText`, or a `complete_task` that succeeded, which
+ * ends the run). Undefined while the turn is open: an empty transcript,
+ * input the model has not answered, or results of its calls it has not
+ * seen. Compaction entries are checkpoints, not messages, and are skipped.
+ */
+export function turnEnd(entries: readonly unknown[]): TurnEnd | undefined {
+  const messages = entries.filter((entry) => roleOf(entry) !== "compaction");
+  let start = messages.length - 1;
+  while (start >= 0 && roleOf(messages[start]) !== "assistant") start -= 1;
+  if (start < 0) return undefined;
+  const after = messages.slice(start + 1);
+  if (!callsTools(messages[start]))
+    return after.length === 0 ? "answer" : undefined;
+  if (
+    after.length === 0 ||
+    after.some((entry) => roleOf(entry) !== "toolResult")
+  )
+    return undefined;
+  return after.some(endsRun) ? "engine" : undefined;
+}
+
+export type TurnEnd = "answer" | "engine";
+
+const roleOf = (entry: unknown) =>
+  entry && typeof entry === "object"
+    ? (entry as { role?: unknown }).role
+    : undefined;
+
+const blocksOf = (entry: unknown): { type?: unknown; text?: unknown }[] => {
+  const content = (entry as { content?: unknown }).content;
+  return Array.isArray(content) ? content : [];
+};
+
+const callsTools = (entry: unknown) =>
+  blocksOf(entry).some((block) => block?.type === "toolCall");
+
+/** A tool result with which the engine ended the turn, or the run. */
+function endsRun(entry: unknown): boolean {
+  const result = entry as { toolName?: unknown; isError?: unknown };
+  if (result.isError !== true) return result.toolName === "complete_task";
+  const text = blocksOf(entry)
+    .flatMap((block) =>
+      block?.type === "text" && typeof block.text === "string"
+        ? [block.text]
+        : [],
+    )
+    .join("");
+  return isParkedText(text);
+}
+
+/** How the session's transcript's last turn ended (`turnEnd`), read from its tail. */
+export async function endedTurn(
+  exec: Executor,
+  sessionId: string,
+): Promise<TurnEnd | undefined> {
+  const [last] = await exec
+    .select({ seq: max(sessionEntries.seq) })
+    .from(sessionEntries)
+    .where(
+      and(
+        eq(sessionEntries.sessionId, sessionId),
+        sql`${sessionEntries.entry}->>'role' = 'assistant'`,
+      ),
+    );
+  if (last?.seq == null) return undefined;
+  const rows = await exec
+    .select({ entry: sessionEntries.entry })
+    .from(sessionEntries)
+    .where(
+      and(
+        eq(sessionEntries.sessionId, sessionId),
+        gte(sessionEntries.seq, last.seq),
+      ),
+    )
+    .orderBy(asc(sessionEntries.seq));
+  return turnEnd(rows.map((row) => row.entry));
 }
 
 /** A pi assistant message's text blocks, joined; undefined for any other entry. */
