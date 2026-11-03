@@ -30,6 +30,85 @@ describe("ModelRegistry", () => {
     ).toEqual(["openai"]);
   });
 
+  it("uses a stored key when the variable is unset, and the variable when both are set", () => {
+    const stored = new Map([
+      [
+        "openai",
+        {
+          value: "sk-stored-0123456789",
+          hint: "6789",
+          updatedAt: "2026-11-03T00:00:00.000Z",
+        },
+      ],
+      [
+        "anthropic",
+        {
+          value: undefined,
+          hint: "dead",
+          updatedAt: "2026-11-03T00:00:00.000Z",
+        },
+      ],
+      [
+        "google",
+        {
+          value: "AIza-stored-0123456789",
+          hint: "6789",
+          updatedAt: "2026-11-03T00:00:00.000Z",
+        },
+      ],
+    ]);
+    const storedKeys = { providerKey: (id: string) => stored.get(id) };
+    const registry = new ModelRegistry({
+      env: { GEMINI_API_KEY: "AIza-env-0123456789" },
+      storedKeys,
+    });
+    const providers = registry.providers();
+    for (const provider of providers) providerInfoSchema.parse(provider);
+    const byId = (id: string) =>
+      providers.find((provider) => provider.id === id);
+    expect(byId("openai")).toMatchObject({
+      configured: true,
+      keySource: "stored",
+      storedKey: { hint: "6789", readable: true },
+    });
+    // A stored key the server cannot decrypt configures nothing.
+    expect(byId("anthropic")).toMatchObject({
+      configured: false,
+      keySource: null,
+      storedKey: { hint: "dead", readable: false },
+    });
+    // The variable wins; the stored key is still described.
+    expect(byId("google")).toMatchObject({
+      configured: true,
+      keySource: "env",
+      storedKey: { readable: true },
+    });
+    expect(byId("mistral")).toMatchObject({
+      configured: false,
+      keySource: null,
+      storedKey: null,
+    });
+    const openai = registry.resolve("openai/gpt-6-luna");
+    expect(openai.getApiKey()).toBe("sk-stored-0123456789");
+    expect(registry.resolve("google/gemini-2.5-flash").getApiKey()).toBe(
+      "AIza-env-0123456789",
+    );
+    expect(() => registry.resolve("anthropic/claude-haiku-4-5")).toThrow(
+      /store its key in Settings → Models/,
+    );
+    // Read per call: a key replaced after resolution is the one used.
+    stored.set("openai", {
+      value: "sk-replaced-0123456789",
+      hint: "6789",
+      updatedAt: "2026-11-03T00:00:01.000Z",
+    });
+    expect(openai.getApiKey()).toBe("sk-replaced-0123456789");
+    // Stored keys are not the registry's env secrets: the store redacts its own.
+    expect(registry.secretValues()).toEqual([
+      { name: "GEMINI_API_KEY", value: "AIza-env-0123456789" },
+    ]);
+  });
+
   it("reads keys only from the env it was given", async () => {
     process.env.OPENAI_API_KEY = "sk-from-process";
     try {

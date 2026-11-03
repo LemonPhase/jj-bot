@@ -24,8 +24,14 @@ export interface Instance {
  * `page.goto("/#/settings")` and `request.get("/api/bots")` reach that
  * instance. A failed test gets the server log attached.
  */
-export const test = base.extend<{ instance: Instance }>({
-  instance: async ({}, use, testInfo) => {
+export const test = base.extend<{ instance: Instance; secretStore: boolean }>({
+  /**
+   * `test.use({ secretStore: true })` launches with `--secret-store`: the
+   * instance gets a fresh random JJ_SECRET_KEY, so Settings can store keys
+   * and secrets.
+   */
+  secretStore: [false, { option: true }],
+  instance: async ({ secretStore }, use, testInfo) => {
     if (!existsSync(join(repo, "apps/web/dist/index.html")))
       throw new Error(
         "apps/web/dist is missing: build the web app first (npm run test:browser does)",
@@ -33,9 +39,11 @@ export const test = base.extend<{ instance: Instance }>({
     const root = testInfo.outputPath("run");
     let stdout: string;
     try {
-      ({ stdout } = await exec(join(scripts, "launch.sh"), ["--no-build"], {
-        env: { ...process.env, JJ_VERIFY_ROOT: root },
-      }));
+      ({ stdout } = await exec(
+        join(scripts, "launch.sh"),
+        ["--no-build", ...(secretStore ? ["--secret-store"] : [])],
+        { env: { ...process.env, JJ_VERIFY_ROOT: root } },
+      ));
     } catch (error) {
       // launch.sh stops a server it started when it fails or is interrupted;
       // this also covers it being killed before it could.

@@ -4,7 +4,12 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { configFromEnv, type EngineConfigInput } from "@jj/backend";
+import {
+  configFromEnv,
+  type EngineConfigInput,
+  MasterKeyError,
+  parseMasterKey,
+} from "@jj/backend";
 import { nodeDataDirectory } from "@jj/db";
 import { parseSubnetPool } from "@jj/sandbox";
 
@@ -42,7 +47,17 @@ export interface ServicesConfig {
   dockerEgressSubnetPool?: string;
   /** Registers the keyless `scripted/team` test model. */
   enableScripted: boolean;
+  /** The secrets store's master keys; absent without `JJ_SECRET_KEY`. */
+  secretKeys?: SecretKeys;
   engine: EngineConfigInput;
+}
+
+/** `JJ_SECRET_KEY` and `JJ_SECRET_KEY_PREVIOUS`, decoded, with their text for redaction. */
+export interface SecretKeys {
+  current: Buffer;
+  previous: Buffer[];
+  /** The variables' values as written, redacted like the server's other secrets. */
+  texts: string[];
 }
 
 export interface ServerConfig extends ServicesConfig {
@@ -127,6 +142,38 @@ function driverList(env: Env): SandboxDriverId[] {
   return [...new Set(ids)] as SandboxDriverId[];
 }
 
+/**
+ * The master key of the secrets store, and the keys it replaced. Unset: the
+ * store is off. A key that cannot be used stops the process, naming the
+ * variable and never the value.
+ */
+export function secretKeys(env: Env): SecretKeys | undefined {
+  const current = text(env, "JJ_SECRET_KEY");
+  const previous = (text(env, "JJ_SECRET_KEY_PREVIOUS") ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!current) {
+    if (previous.length > 0)
+      throw new ConfigError(
+        "JJ_SECRET_KEY_PREVIOUS is set without JJ_SECRET_KEY: set the new key as JJ_SECRET_KEY and keep the old ones in JJ_SECRET_KEY_PREVIOUS.",
+      );
+    return undefined;
+  }
+  try {
+    return {
+      current: parseMasterKey(current, "JJ_SECRET_KEY"),
+      previous: previous.map((value, index) =>
+        parseMasterKey(value, `JJ_SECRET_KEY_PREVIOUS (entry ${index + 1})`),
+      ),
+      texts: [current, ...previous],
+    };
+  } catch (error) {
+    if (error instanceof MasterKeyError) throw new ConfigError(error.message);
+    throw error;
+  }
+}
+
 export function loadServicesConfig(env: Env): ServicesConfig {
   const database = databaseSetting(env);
   let engine: EngineConfigInput;
@@ -137,6 +184,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
       error instanceof Error ? error.message : String(error),
     );
   }
+  const keys = secretKeys(env);
   const sandboxRoot = text(env, "JJ_SANDBOX_ROOT");
   const egressPool = text(env, "JJ_DOCKER_EGRESS_SUBNET_POOL");
   if (egressPool !== undefined)
@@ -156,6 +204,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     dockerAllowInsecureTcp: flag(env, "JJ_DOCKER_ALLOW_INSECURE_TCP", false),
     ...(egressPool ? { dockerEgressSubnetPool: egressPool } : {}),
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),
+    ...(keys ? { secretKeys: keys } : {}),
     engine,
   };
 }

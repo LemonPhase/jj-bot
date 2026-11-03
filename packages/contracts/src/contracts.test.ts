@@ -15,13 +15,20 @@ import {
   emptyUsage,
   formatSpendAgainstCap,
   formatUsd,
+  isReservedSecretName,
+  MIN_SECRET_LENGTH,
   modelRefSchema,
+  modelsViewSchema,
   parseTaskEvent,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
+  putSecretCommandSchema,
   questionExcerpt,
+  runtimeProfileSchema,
   sandboxSpecPatchSchema,
   sandboxSpecSchema,
+  secretGrantsSchema,
+  secretNameSchema,
   stopTaskCommandSchema,
   TASK_EVENT_TYPES,
   TASK_QUESTION_LIMIT,
@@ -40,6 +47,7 @@ import {
   usageReportSchema,
   usageSchema,
   waitingQuestion,
+  workspaceHintSchema,
 } from "./index";
 
 const at = "2026-10-31T12:00:00.000Z";
@@ -232,8 +240,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.4.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.4.0");
+  it("is version 1.5.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.5.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -873,5 +881,94 @@ describe("spend caps and usage (1.3.0)", () => {
       models: [{ model: "openai/gpt", last30d: zero }],
     });
     expect(report.bots[0]?.capUsdPerDay).toBe(20);
+  });
+});
+
+describe("secrets store (1.5.0)", () => {
+  it("names sandbox secrets like environment variables, refusing the reserved ones", () => {
+    for (const name of ["GITHUB_TOKEN", "NPM_TOKEN", "A", "X1_2"])
+      expect(secretNameSchema.safeParse(name).success, name).toBe(true);
+    for (const name of [
+      "github_token",
+      "1TOKEN",
+      "_TOKEN",
+      "MY-TOKEN",
+      "A".repeat(65),
+      "PATH",
+      "HOME",
+      "HTTPS_PROXY",
+      "NO_PROXY",
+      "JJ_SECRET_KEY",
+      "LD_PRELOAD",
+      "NODE_OPTIONS",
+      "BASH_ENV",
+    ])
+      expect(secretNameSchema.safeParse(name).success, name).toBe(false);
+    expect(isReservedSecretName("GITHUB_TOKEN")).toBe(false);
+    expect(
+      secretGrantsSchema.safeParse(["GITHUB_TOKEN", "GITHUB_TOKEN"]).success,
+    ).toBe(false);
+  });
+
+  it("takes one trimmed line of at least 16 characters, and never repeats it in an issue", () => {
+    const value = "ghp_0123456789abcdef";
+    expect(putSecretCommandSchema.parse({ value: `  ${value}\n` })).toEqual({
+      value,
+    });
+    for (const bad of [
+      "x".repeat(MIN_SECRET_LENGTH - 1),
+      `${value}\n${value}`,
+      `${value}\u0000`,
+      "y".repeat(4097),
+    ]) {
+      const parsed = putSecretCommandSchema.safeParse({ value: bad });
+      expect(parsed.success).toBe(false);
+      expect(JSON.stringify(parsed.error?.issues)).not.toContain(
+        bad.slice(0, 12),
+      );
+    }
+  });
+
+  it("reads older answers: providers without a key source, profiles without grants, capabilities without the store", () => {
+    const view = modelsViewSchema.parse({
+      defaultModel: null,
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          configured: false,
+          envVars: [],
+          models: [],
+        },
+      ],
+    });
+    expect(view.providers[0]).toMatchObject({
+      keySource: null,
+      storedKey: null,
+    });
+    expect(
+      runtimeProfileSchema.parse({
+        id: "p",
+        name: "P",
+        sandbox: { driver: "local" },
+        budgets: {},
+        isDefault: true,
+        status: { driverAvailable: true, isolated: false },
+        createdAt: at,
+        updatedAt: at,
+      }).secrets,
+    ).toEqual([]);
+    expect(
+      bootstrapSchema.shape.capabilities.parse({
+        agentExecution: false,
+        persistence: true,
+        streaming: true,
+        verification: false,
+        drivers: [],
+      }).secretStore,
+    ).toBe(false);
+    expect(workspaceHintSchema.parse({ type: "secrets.changed" })).toEqual({
+      type: "secrets.changed",
+    });
   });
 });

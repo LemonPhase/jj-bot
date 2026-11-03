@@ -29,6 +29,8 @@ const view: ModelsView = {
       name: "Anthropic",
       configured: false,
       envVars: ["ANTHROPIC_API_KEY"],
+      keySource: null,
+      storedKey: null,
       models: [model("anthropic", "haiku", "Claude Haiku")],
     },
     {
@@ -36,6 +38,8 @@ const view: ModelsView = {
       name: "OpenAI",
       configured: true,
       envVars: ["OPENAI_API_KEY"],
+      keySource: null,
+      storedKey: null,
       models: [model("openai", "gpt-mini", "GPT Mini")],
     },
     {
@@ -43,6 +47,8 @@ const view: ModelsView = {
       name: "Scripted",
       configured: true,
       envVars: [],
+      keySource: null,
+      storedKey: null,
       models: [model("scripted", "team", "Scripted test model")],
     },
   ],

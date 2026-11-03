@@ -16,6 +16,8 @@ export const capabilitiesSchema = z.object({
    * with VERIFICATION_UNAVAILABLE.
    */
   verification: z.boolean(),
+  /** Keys and sandbox secrets can be stored encrypted: the server has `JJ_SECRET_KEY`. */
+  secretStore: z.boolean().default(false),
   drivers: z.array(
     z.object({ id: idSchema, available: z.boolean(), isolated: z.boolean() }),
   ),
@@ -46,6 +48,7 @@ export const API_ERROR_CODES = [
   "MODEL_NOT_CONFIGURED",
   "PROFILE_UNSUPPORTED",
   "PROFILE_IN_USE",
+  "SECRET_STORE_UNAVAILABLE",
   "UNAUTHORIZED",
   "INTERNAL",
 ] as const;
@@ -73,6 +76,8 @@ export const workspaceHintSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("tasks.changed"), taskId: idSchema }),
   z.object({ type: z.literal("conversation.changed"), botId: idSchema }),
   z.object({ type: z.literal("profiles.changed") }),
+  /** A sandbox secret or a stored provider key changed: refetch secrets and models. */
+  z.object({ type: z.literal("secrets.changed") }),
 ]);
 
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
