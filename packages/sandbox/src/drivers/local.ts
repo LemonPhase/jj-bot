@@ -303,7 +303,13 @@ const statFields = (line: string) =>
 const STARTTIME = 19;
 /** Index of field 9, `flags`, in `statFields`. */
 const FLAGS = 6;
-/** The kernel's PF_EXITING task flag: the process has begun to exit and runs no more user code. */
+/**
+ * The kernel's PF_EXITING task flag: the task has begun to exit and runs no
+ * more user code. `/proc/<pid>/stat` shows the main thread's flags, so this
+ * holds for the main thread only: other threads of a multi-threaded process
+ * may still run. Known limit, the same as for a zombie thread-group leader,
+ * which the scan also counts as gone.
+ */
 const PF_EXITING = 0x4;
 
 /** Whether a process is gone, a zombie, or has begun to exit. */
@@ -313,6 +319,8 @@ async function hasExited(pid: number): Promise<boolean> {
     const [state] = fields;
     return (
       state === "Z" ||
+      // Dead: shown only for the moment between the process being reaped and
+      // its pid leaving /proc, so rare, but it can be read.
       state === "X" ||
       (Number(fields[FLAGS]) & PF_EXITING) !== 0
     );

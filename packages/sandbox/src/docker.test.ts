@@ -1198,12 +1198,18 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         });
         // Independent, so acquired together: each is two containers and a
         // network, which a daemon other suites share is slow to make.
-        const [orphan, mine] = (await Promise.all([
+        const made = await Promise.allSettled([
           crashed.acquire(request(allowlist("example.com"))),
           current.acquire(request(allowlist("example.com"))),
-        ])) as DockerSandbox[];
+        ]);
+        // Released after the test even when the other acquire failed.
+        for (const result of made)
+          if (result.status === "fulfilled") live.push(result.value);
+        const [orphan, mine] = made.map((result) => {
+          if (result.status === "rejected") throw result.reason;
+          return result.value as DockerSandbox;
+        });
         if (!orphan || !mine) throw new Error("no sandboxes");
-        live.push(orphan, mine);
 
         const { removed } = await current.reapOrphans();
         expect([...removed].sort()).toEqual(
@@ -1502,6 +1508,57 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           ),
         ).rejects.toThrow(/exited as it started \(exit code 137\)/);
         expect(stale).toBe(false);
+        expect(await ownedBy(taskId)).toEqual({
+          containers: [],
+          networks: [],
+        });
+      });
+
+      it("cleans up a failed sandbox at once while its proxy's check still waits for it to listen", async () => {
+        // A proxy that runs but never listens holds its check for 15 s, then
+        // 5 s more while the engine may record an exit. Here the sandbox's
+        // start fails meanwhile: the acquire must not wait for the check.
+        const stuck = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+        });
+        const stuckEngine = (stuck as unknown as { engine: DockerEngine })
+          .engine;
+        const json = stuckEngine.json.bind(stuckEngine);
+        let failedAt = Number.NaN;
+        stuckEngine.json = (async (
+          method: string,
+          path: string,
+          init?: Parameters<DockerEngine["json"]>[2],
+        ) => {
+          const name = String(init?.query?.name ?? "");
+          if (path === "/containers/create" && /-egress-/.test(name))
+            return json(method, path, {
+              ...init,
+              body: {
+                ...(init?.body as object),
+                Entrypoint: ["sleep", "3600"],
+              },
+            });
+          const result = await json(method, path, init);
+          if (
+            method === "POST" &&
+            /^\/containers\/[0-9a-f]{64}\/start$/.test(path)
+          ) {
+            failedAt = Date.now();
+            throw new Error("injected sandbox start failure");
+          }
+          return result;
+        }) as DockerEngine["json"];
+        const taskId = `stuck-${Math.random().toString(36).slice(2)}`;
+        await expect(
+          stuck.acquire(
+            request(allowlist("example.com"), uniqueKey("stuck"), { taskId }),
+          ),
+        ).rejects.toThrow("injected sandbox start failure");
+        // The removals alone: far less than what is left of the check's wait.
+        expect(Date.now() - failedAt).toBeLessThan(10_000);
         expect(await ownedBy(taskId)).toEqual({
           containers: [],
           networks: [],

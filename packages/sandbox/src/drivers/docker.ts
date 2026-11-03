@@ -610,6 +610,16 @@ interface RunningCommand {
   done: Promise<void>;
 }
 
+/** A started egress proxy (`startEgress`). */
+interface EgressProxy {
+  /** Its address on the sandbox's internal network. */
+  address: string;
+  /** Resolves once it listens; rejects if it does not, or once its check is stopped. */
+  ready: Promise<void>;
+  /** Stops waiting for its listening check. */
+  stopCheck(): void;
+}
+
 /** The egress proxy container and internal network of an allowlist sandbox, by name. */
 interface EgressResources {
   proxyName: string;
@@ -1636,7 +1646,8 @@ export class DockerSandboxDriver implements SandboxDriver {
    * sandbox meanwhile, and `ready`, which resolves once the proxy listens.
    * Fails closed: a network that would not isolate the sandbox, or a proxy
    * that exits or does not start listening, fails the acquire. The caller
-   * awaits `ready` and removes `egress` on failure.
+   * awaits `ready` and removes `egress` on failure; `stopCheck` makes `ready`
+   * reject at once, for a caller that fails for another reason first.
    */
   private async startEgress(
     engine: DockerEngine,
@@ -1644,7 +1655,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     hosts: readonly string[],
     labels: Record<string, string>,
     signal?: AbortSignal,
-  ): Promise<{ address: string; ready: Promise<void> }> {
+  ): Promise<EgressProxy> {
     const subnet = await this.createEgressNetwork(
       engine,
       egress,
@@ -1675,13 +1686,13 @@ export class DockerSandboxDriver implements SandboxDriver {
           );
         throw error;
       });
-    const inspectProxy = () =>
+    const inspectProxy = (on = signal) =>
       engine.json<{
         State?: { Running?: boolean; ExitCode?: number };
         NetworkSettings?: {
           Networks?: Record<string, { IPAddress?: string }> | null;
         };
-      }>("GET", `/containers/${proxy}/json`, { signal });
+      }>("GET", `/containers/${proxy}/json`, { signal: on });
     // An image without node exits at once, possibly before it has an address.
     const exited = (state: Awaited<ReturnType<typeof inspectProxy>>) =>
       state.State?.Running === true
@@ -1698,6 +1709,12 @@ export class DockerSandboxDriver implements SandboxDriver {
       throw new Error(
         `Egress proxy ${egress.proxyName} has no address on ${egress.networkName}`,
       );
+    // `stopCheck` only stops waiting for the check: its exec in the proxy
+    // runs on until the caller removes the proxy, which ends it.
+    const stopped = new AbortController();
+    const check = signal
+      ? AbortSignal.any([signal, stopped.signal])
+      : stopped.signal;
     const listening = async () => {
       const ready = await withSignal(
         engine
@@ -1714,7 +1731,7 @@ export class DockerSandboxDriver implements SandboxDriver {
               stderr: Buffer.from(errorMessage(error)),
             }),
           ),
-        signal,
+        check,
       );
       if (ready.exitCode === 0) return;
       // Running right after a failed check proves nothing: the engine may not
@@ -1723,14 +1740,14 @@ export class DockerSandboxDriver implements SandboxDriver {
       const recorded = Date.now() + PROXY_EXIT_RECORD_MS;
       for (let pause = 25; ; pause = Math.min(pause * 2, 250)) {
         const late = exited(
-          await inspectProxy().catch(() => {
-            signal?.throwIfAborted();
+          await inspectProxy(check).catch(() => {
+            check.throwIfAborted();
             return {};
           }),
         );
         if (late) throw late;
         if (Date.now() >= recorded) break;
-        await withSignal(delay(pause), signal);
+        await withSignal(delay(pause), check);
       }
       throw new Error(
         `Egress proxy ${egress.proxyName} did not start listening (${needsNode})` +
@@ -1742,7 +1759,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     const ready = listening();
     // The caller awaits it after starting the sandbox, which may fail first.
     ready.catch(() => {});
-    return { address, ready };
+    return { address, ready, stopCheck: () => stopped.abort() };
   }
 
   /**
@@ -1868,7 +1885,7 @@ export class DockerSandboxDriver implements SandboxDriver {
         }
       : undefined;
     let containerId: string | undefined;
-    let proxy: { address: string; ready: Promise<void> } | undefined;
+    let proxy: EgressProxy | undefined;
     // The sandbox starts while the proxy's listening check runs: it runs no
     // command before acquire returns. A failed check stops it at its next step.
     let proxyFailed = false;
@@ -1962,6 +1979,12 @@ export class DockerSandboxDriver implements SandboxDriver {
       signal?.throwIfAborted();
       return sandbox;
     } catch (error) {
+      // Waiting out the check would hold this cleanup for up to
+      // PROXY_START_MS and PROXY_EXIT_RECORD_MS when the proxy never listens.
+      // Only the check is stopped: it runs nothing but a command inside the
+      // proxy, which removing the proxy ends, and every other request of
+      // this acquire has settled.
+      proxy?.stopCheck();
       await proxy?.ready.catch(() => {});
       // By name, so a container the daemon created while the call failed (an
       // abort mid-request) goes too, before the network it is attached to.
