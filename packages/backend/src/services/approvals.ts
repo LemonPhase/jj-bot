@@ -441,6 +441,8 @@ export async function expireApprovals(
         eq(approvals.taskId, taskId),
         inArray(approvals.status, ["pending", "approved"] as ApprovalStatus[]),
         isNull(approvals.startedAt),
+        // Already answered in the transcript (refused before it started): left as it is.
+        isNull(approvals.resolvedAt),
         lt(approvals.goalVersion, goalVersion),
       ),
     )
@@ -479,6 +481,8 @@ export async function cancelApprovals(
         eq(approvals.sessionId, session.id),
         inArray(approvals.status, ["pending", "approved"] as ApprovalStatus[]),
         isNull(approvals.startedAt),
+        // Already answered in the transcript (refused before it started): left as it is.
+        isNull(approvals.resolvedAt),
       ),
     );
   const reason =

@@ -358,6 +358,50 @@ describe("approvals", () => {
     expect(await pushes(root, task.id)).toBe(0);
   });
 
+  it("leaves a started call alone when the goal changes: it may have run", async () => {
+    const root = await workspace();
+    const { engine, task, approval } = await startedThenLost(root);
+    await engine.engine.tasks.postMessage(task.id, {
+      text: "Tag it instead.",
+      goal: "Tag the release",
+      observedGoalVersion: 1,
+    });
+    const view = await engine.engine.tasks.get(task.id);
+    const row = view.approvals.find((a) => a.id === approval.id);
+    expect(row?.status).toBe("approved");
+    expect(row?.startedAt).not.toBeNull();
+  });
+
+  it("leaves an approval answered before it started alone on a goal change or a stop", async () => {
+    const root = await workspace();
+    const first = await start(root, [callTool("bash", { command: PUSH })]);
+    const { task, approval } = await heldTask(first.engine);
+    await first.dispose();
+    engines.splice(engines.indexOf(first), 1);
+    const second = await start(root, [], { start: false });
+    await second.engine.tasks.decideApproval(task.id, approval.id, {
+      decision: "approve",
+    });
+    // As a run leaves a call refused before it started (a cut-off response).
+    const refused = { ok: false, refused: "Not run: cut off." };
+    await db.database.db
+      .update(approvals)
+      .set({ outcome: refused, resolvedAt: new Date() })
+      .where(eq(approvals.id, approval.id));
+    await second.engine.tasks.postMessage(task.id, {
+      text: "Tag it instead.",
+      goal: "Tag the release",
+      observedGoalVersion: 1,
+    });
+    await second.engine.tasks.stop(task.id);
+    const view = await second.engine.tasks.get(task.id);
+    expect(view.approvals.find((a) => a.id === approval.id)).toMatchObject({
+      status: "approved",
+      outcome: refused,
+      startedAt: null,
+    });
+  });
+
   it("returns a denial to the model as a tool error carrying the reason", async () => {
     const root = await workspace();
     let seen = "";

@@ -82,6 +82,9 @@ describe("approval rules", () => {
     ["git push", "cd repo && git push", true],
     ["git push", "sh -c 'git   push --force'", true],
     ["git push", "git pull", false],
+    // Parts never overlap: the space after `git` is not the one before `push`.
+    ["git * push", "git push", false],
+    ["git * push", "git  -C repo push", true],
     ["git push", "GIT PUSH", false],
     ["git*push", "git -C repo push", true],
     ["git*push", "git status; echo push", true],
