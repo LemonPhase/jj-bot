@@ -46,6 +46,7 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 | Term                | Meaning                                                                                                                                 |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | **Goal version**    | A number that increases each time a task's goal or acceptance criteria change. Work done for an older version cannot complete the task. |
-| **Runtime profile** | Settings that decide how a bot executes: its sandbox driver and limits, its coding tools and its budgets.                               |
+| **Runtime profile** | Settings that decide how a bot executes: its sandbox driver and limits, its coding tools, its budgets and its spend caps.               |
+| **Spend cap**       | A limit on priced model spend: a task's own, a bot's over any 24 hours, or the server's. At it, no model call starts.                   |
 | **Sandbox**         | Where agent commands and file access run, provided by a sandbox driver (`local` or `docker`). A task's sessions share one sandbox.      |
 | **Artifact**        | A workspace file or a spilled tool output, stored with the task.                                                                        |
