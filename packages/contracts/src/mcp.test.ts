@@ -140,6 +140,10 @@ describe("MCP server configuration", () => {
     expect(url("https://mcp.example.com/mcp?team=core&page=2")).toBe(
       "https://mcp.example.com/mcp?team=core&page=2",
     );
+    // The check reads names only: a secret written into the path is not seen.
+    expect(url("https://mcp.example.com/sk-live-abc123/mcp;v=2")).toBe(
+      "https://mcp.example.com/sk-live-abc123/mcp;v=2",
+    );
     // A non-ASCII host is stored as punycode, so a look-alike shows as such.
     expect(url("https://bücher.example/mcp")).toBe(
       "https://xn--bcher-kva.example/mcp",
@@ -162,6 +166,19 @@ describe("MCP server configuration", () => {
       "https://mcp.example.com/mcp?auth=abc",
       // The name pattern is broad on purpose: a false positive only moves a value to secretHeaders.
       "https://mcp.example.com/mcp?author=me",
+      "https://mcp.example.com/mcp?key=abc",
+      "https://mcp.example.com/mcp?X-Amz-Signature=abc",
+      "https://mcp.example.com/mcp?sig=abc",
+      "https://mcp.example.com/mcp?code=abc",
+      "https://mcp.example.com/mcp?pwd=abc",
+      "https://mcp.example.com/mcp?pass=abc",
+      "https://mcp.example.com/mcp?subscription-key=abc",
+      // Encoded names are decoded, and `;` separates parameters too.
+      "https://mcp.example.com/mcp?t%6Fken=abc",
+      "https://mcp.example.com/mcp?a=1;token=abc",
+      "https://mcp.example.com/mcp;token=abc",
+      "https://mcp.example.com/v1;session=1;api_key=abc/mcp",
+      "https://mcp.example.com/mcp#access_token=abc",
       // URL parsing would drop the newline and tab, and read \ as /.
       "https://mcp.exa\nmple.com/mcp",
       "https://mcp.example.com/m\tcp",
@@ -299,6 +316,14 @@ describe("MCP server configuration", () => {
       "X-Client-Secret",
       "X-Password",
       "X-Passwd",
+      "X-Access-Key",
+      "Ocp-Apim-Subscription-Key",
+      "Key",
+      "X-Signature",
+      "X-Sig",
+      "X-Pass",
+      "X-Pwd",
+      "X-Auth-Code",
     ]) {
       const plain = server({ headers: { [name]: "value" } }, http);
       expect(plain.success, name).toBe(false);
@@ -613,11 +638,21 @@ describe("MCP snapshots and discoveries", () => {
       "search",
       "mcp__docs__a-b",
       `mcp__${"x".repeat(60)}`,
+      // No tool after the server's prefix, or no prefix at all.
+      "mcp__docs__",
+      "mcp__docs",
+      "mcp____x",
+      "mcp__Docs__search",
     ])
       expect(
         mcpToolSchema.safeParse({ ...base, exposedName }).success,
         exposedName,
       ).toBe(false);
+    for (const exposedName of ["mcp__docs___x", "mcp__docs__a_b_63617bb9"])
+      expect(
+        mcpToolSchema.safeParse({ ...base, exposedName }).success,
+        exposedName,
+      ).toBe(true);
     expect(
       mcpToolSchema.safeParse({ ...base, description: "x".repeat(2001) })
         .success,

@@ -100,11 +100,13 @@ const RESERVED_HEADERS = new Set([
 ]);
 
 /**
- * Header and query parameter names that carry credentials. Plain `headers`
- * and the URL are stored and shown in the clear, so these go in
- * `secretHeaders` instead.
+ * Header and URL parameter names that look like they carry credentials.
+ * Plain `headers` and the URL are stored and shown in the clear, so these
+ * go in `secretHeaders` instead. A check of names only: it cannot see a
+ * secret under an unusual name, or one written into the path itself.
  */
-const CREDENTIAL_NAME = /(api[-_]?key|token|secret|password|passwd|auth)/i;
+const CREDENTIAL_NAME =
+  /(key|token|secret|password|passwd|pass|pwd|auth|sig|signature|code)/i;
 const CREDENTIAL_HEADERS = new Set([
   "authorization",
   "proxy-authorization",
@@ -232,13 +234,42 @@ const parseUrl = (value: string): URL | undefined => {
 const IN_THE_CLEAR =
   "put credentials in secretHeaders, since the URL is stored and shown in the clear.";
 
+const decodeName = (name: string) => {
+  try {
+    return decodeURIComponent(name.replace(/\+/g, " "));
+  } catch {
+    return name;
+  }
+};
+
 /**
- * An https URL without credentials in it (no user or password, no query
- * parameter named like a key, token, secret, password or auth), and without
- * control characters or backslashes, which URL parsing would silently drop
- * or turn into `/`. Stored normalized (`new URL(url).href`), so a host with
- * non-ASCII letters is stored and shown as punycode (`xn--…`) and a
- * look-alike host is visible as such.
+ * The names of a URL's parameters: of the query and the fragment, split on
+ * `&` and `;`, and of each path segment's `;` parameters (`/mcp;token=x`).
+ */
+function urlParameterNames(url: URL): string[] {
+  const names = (part: string) =>
+    part
+      .split(/[&;]/)
+      .filter(Boolean)
+      .map((pair) => decodeName(pair.split("=")[0] ?? ""));
+  return [
+    ...names(url.search.slice(1)),
+    ...names(url.hash.slice(1)),
+    ...url.pathname
+      .split("/")
+      .flatMap((segment) => names(segment.split(";").slice(1).join(";"))),
+  ];
+}
+
+/**
+ * An https URL without a user or password, without a parameter named like
+ * a credential (a key, token, secret, password, auth, signature or code;
+ * `urlParameterNames`), and without control characters or backslashes,
+ * which URL parsing would silently drop or turn into `/`. The name check
+ * cannot see a secret under an unusual name or written into the path
+ * itself, so any credential belongs in `secretHeaders`. Stored normalized
+ * (`new URL(url).href`), so a host with non-ASCII letters is stored and
+ * shown as punycode (`xn--…`) and a look-alike host is visible as such.
  */
 const mcpUrlSchema = z
   .string()
@@ -264,10 +295,10 @@ const mcpUrlSchema = z
   .refine(
     (value) => {
       const url = parseUrl(value);
-      return !url || ![...url.searchParams.keys()].some(isCredentialName);
+      return !url || !urlParameterNames(url).some(isCredentialName);
     },
     {
-      message: `A query parameter of the URL carries credentials: ${IN_THE_CLEAR}`,
+      message: `A parameter of the URL is named like a credential: ${IN_THE_CLEAR}`,
     },
   )
   .transform((value) => parseUrl(value)?.href ?? value);
@@ -417,7 +448,7 @@ export const mcpToolSchema = z.object({
   exposedName: z
     .string()
     .max(MCP_TOOL_NAME_LIMIT)
-    .regex(/^mcp__[A-Za-z0-9_]+$/),
+    .regex(/^mcp__[a-z](?:_?[a-z0-9])*__[A-Za-z0-9_]+$/),
   title: z.string().max(200).optional(),
   /** Clipped to MCP_TOOL_DESCRIPTION_LIMIT, with invisible characters written out (`visibleText`). */
   description: z.string().max(MCP_TOOL_DESCRIPTION_LIMIT),

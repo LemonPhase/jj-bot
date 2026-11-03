@@ -84,8 +84,10 @@ export const MAX_APPROVAL_RULES = 50;
  * (`mcp__<server>__*`). Rules guide a cooperative model; they are not a
  * security boundary: a command can reach the same effect in ways no text
  * rule foresees, such as a script it wrote. The sandbox and its network
- * policy remain the boundary. On a remote MCP server's tools a rule does
- * stop the effect, since only the worker holds that server's credentials.
+ * policy remain the boundary. On a remote MCP server's tools a rule without
+ * `match` does stop the effect, since only the worker holds that server's
+ * credentials. A rule with `match` is a text check there too: a call can
+ * evade it, for instance by splitting a value across keys, as with bash.
  */
 export const approvalRuleSchema = z.object({
   tool: z.union([toolNameSchema, mcpToolSelectorSchema]),

@@ -174,6 +174,10 @@ function refuseMcpAndSkills(command: {
     );
   // An exact MCP rule must name a tool of its server's pinned snapshot, and
   // no profile holds a server here, so none does; `mcp__<server>__*` may.
+  // This checks the command's own `approvals` only. Once profiles hold
+  // servers (#29 step 4), check the merged profile instead: its rules
+  // against its servers and their pinned snapshots, also when a patch
+  // changes only `mcpServers`.
   const rules = command.approvals ?? [];
   const unknown = mcpRulesWithoutTool(rules, [], []);
   if (unknown.length > 0)
