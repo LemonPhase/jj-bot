@@ -172,27 +172,40 @@ export async function stopTask(
 ): Promise<{ task: Task }> {
   const command = parseCommand(stopTaskCommandSchema, input);
   const row = await ctx.db.transaction(async (tx) => {
-    let task = await lockTask(tx, taskId);
+    const task = await lockTask(tx, taskId);
     if (!task) throw notFound("Task", taskId);
-    if (task.status === "cancelled" || task.cancelRequestedAt) return task;
-    if (task.status === "completed" || task.status === "failed")
-      throw new DomainError(
-        "CONFLICT",
-        `The task already ${task.status}; there is nothing to stop.`,
-      );
-    task = await updateTask(tx, ctx, task, {
-      cancelRequestedAt: ctx.clock(),
-      cancelReason: command.reason ?? null,
-    });
-    await emit(tx, taskId, {
-      type: "cancellation.requested",
-      payload: { reason: command.reason ?? null },
-    });
-    await cancelWhere(tx, { taskId });
-    await notify(tx, "jj_control", { kind: "cancel", taskId });
-    return (await settleCancellation(tx, ctx, task)) ?? task;
+    return requestStopTx(tx, ctx, task, command.reason ?? null);
   });
   return { task: toTask(row, await participantIds(ctx.db, taskId)) };
+}
+
+/**
+ * Requests the stop of a task locked by the caller, as `POST /api/tasks/:id/stop`
+ * does: idempotent while stopping or cancelled, CONFLICT once completed or failed.
+ */
+export async function requestStopTx(
+  tx: Tx,
+  ctx: EngineContext,
+  task: TaskRow,
+  reason: string | null,
+): Promise<TaskRow> {
+  if (task.status === "cancelled" || task.cancelRequestedAt) return task;
+  if (task.status === "completed" || task.status === "failed")
+    throw new DomainError(
+      "CONFLICT",
+      `The task already ${task.status}; there is nothing to stop.`,
+    );
+  const requested = await updateTask(tx, ctx, task, {
+    cancelRequestedAt: ctx.clock(),
+    cancelReason: reason,
+  });
+  await emit(tx, task.id, {
+    type: "cancellation.requested",
+    payload: { reason },
+  });
+  await cancelWhere(tx, { taskId: task.id });
+  await notify(tx, "jj_control", { kind: "cancel", taskId: task.id });
+  return (await settleCancellation(tx, ctx, requested)) ?? requested;
 }
 
 type Stopped = TaskEventOf<"cancellation.completed">["payload"]["stopped"];

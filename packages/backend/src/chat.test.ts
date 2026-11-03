@@ -40,22 +40,26 @@ async function setup(options: Parameters<typeof testEngine>[1] = {}) {
 
 const lastUser = (input: ChatReplyInput) => input.history.at(-1)?.text ?? "";
 
-/** Greets, creates a task for "build …", forwards "also …" to an active task. */
-function chatBrain(helper: string) {
+/**
+ * Greets, creates a task for "build …", forwards "also …" to the task
+ * `current` names, and acknowledges a task update.
+ */
+function chatBrain(
+  helper: string,
+  current: () => string | undefined = () => undefined,
+) {
   return (input: ChatReplyInput) => {
     const text = lastUser(input);
+    if (text.startsWith("[Task update]"))
+      return { text: "Your task moved on." };
     if (/^(hi|hello|thanks)/i.test(text))
       return { text: "Hello! How can I help?" };
-    const forward = input.tools.find((tool) => tool.name === "send_to_task");
-    if (text.startsWith("also") && forward) {
-      const taskId = (
-        forward.parameters as { properties: { taskId: { enum: string[] } } }
-      ).properties.taskId.enum[0];
+    const id = current();
+    if (text.startsWith("also") && id)
       return {
-        calls: [{ name: "send_to_task", args: { taskId, text } }],
+        calls: [{ name: "send_to_task", args: { id, text } }],
         text: "Forwarded.",
       };
-    }
     if (text.startsWith("build"))
       return {
         calls: [
@@ -98,7 +102,11 @@ describe("direct chat", () => {
     const team = await createTeam(engine, ["Ada", "Bob"]);
     const [ada, bob] = team.names as [string, string];
     const adaId = team.byName[ada] as string;
-    chat.brain(ada, chatBrain(bob));
+    let taskId: string | undefined;
+    chat.brain(
+      ada,
+      chatBrain(bob, () => taskId),
+    );
     executor.brain(ada, (view) => {
       if (
         said.heard(
@@ -119,12 +127,18 @@ describe("direct chat", () => {
     expect(await createdBy(adaId)).toEqual([]);
 
     await engine.bots.sendMessage(adaId, { text: "build a landing page" });
-    view = await replies(engine, adaId, 2);
+    // The reply that created the task, then the update when it waits.
+    view = await replies(engine, adaId, 3);
     const created = await createdBy(adaId);
     expect(created).toHaveLength(1);
-    const taskId = created[0]?.id as string;
-    expect(view.messages.at(-1)).toMatchObject({ role: "assistant", taskId });
-    const toolInput = chat.inputs.at(-1);
+    taskId = created[0]?.id as string;
+    expect(view.messages.slice(-2)).toMatchObject([
+      { role: "assistant", taskId },
+      { role: "assistant", text: "Your task moved on.", taskId },
+    ]);
+    const toolInput = chat.inputs.find((input) =>
+      lastUser(input).startsWith("build"),
+    );
     const createTool = toolInput?.tools.find(
       (tool) => tool.name === "create_task",
     );
@@ -147,15 +161,9 @@ describe("direct chat", () => {
     expect((await engine.bots.get(adaId)).bot.activeTaskIds).toEqual([taskId]);
 
     await engine.bots.sendMessage(adaId, { text: "also add a footer" });
-    view = await replies(engine, adaId, 3);
-    expect(view.messages.at(-1)).toMatchObject({ text: "Forwarded.", taskId });
+    view = await replies(engine, adaId, 4);
+    expect(view.messages[6]).toMatchObject({ text: "Forwarded.", taskId });
     expect(await createdBy(adaId)).toHaveLength(1);
-    const sendTool = chat.inputs
-      .at(-1)
-      ?.tools.find((tool) => tool.name === "send_to_task");
-    expect(sendTool?.parameters).toMatchObject({
-      properties: { taskId: { enum: [taskId] } },
-    });
     const taskView = await untilTask(engine, taskId, (v) =>
       v.messages.some((m) => m.text === "Footer noted; anything else?"),
     );
@@ -172,7 +180,14 @@ describe("direct chat", () => {
       .select()
       .from(usage)
       .where(and(eq(usage.botId, adaId), isNull(usage.taskId)));
-    expect(chatUsage).toHaveLength(3);
+    // Three answers to the user and the update replies (one per wait).
+    await replies(engine, adaId, 5);
+    const chatUsageAll = await db.database.db
+      .select()
+      .from(usage)
+      .where(and(eq(usage.botId, adaId), isNull(usage.taskId)));
+    expect(chatUsage.length).toBeGreaterThanOrEqual(4);
+    expect(chatUsageAll).toHaveLength(5);
   });
 
   it("enforces the per-bot task creation limit", async () => {

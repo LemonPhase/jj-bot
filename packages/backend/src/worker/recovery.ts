@@ -2,10 +2,11 @@
 // its transcript, see session-run.ts); jobs whose lease expired too often are
 // returned as exhausted and fail their session or chat reply visibly.
 import { isFinishedStatus } from "@jj/contracts";
-import type { JobRow, SessionRow, TaskRow } from "@jj/db";
+import { enqueue, type JobRow, type SessionRow, type TaskRow } from "@jj/db";
 import type { EngineContext } from "../context";
-import { hint } from "../events";
+import { hint, wakeWorkers } from "../events";
 import { getSession, lockTask } from "../services/sessions";
+import { pendingTaskUpdates } from "../services/task-updates";
 import { settleCancellation } from "../services/tasks";
 import { failSessionTx } from "./outcomes";
 import { closeStaleRun, runningRun } from "./runs";
@@ -19,8 +20,16 @@ export async function handleExhausted(
   job: JobRow,
 ): Promise<{ finishedTaskId?: string }> {
   if (job.kind === "chat.reply") {
-    if (job.botId)
-      await hint(ctx.db, { type: "conversation.changed", botId: job.botId });
+    const botId = job.botId;
+    if (!botId) return {};
+    await ctx.db.transaction(async (tx) => {
+      // Task updates still waiting get their reply (or their fallback) from a new job.
+      if ((await pendingTaskUpdates(tx, botId)).length > 0) {
+        await enqueue(tx, { kind: "chat.reply", botId });
+        await wakeWorkers(tx);
+      }
+      await hint(tx, { type: "conversation.changed", botId });
+    });
     return {};
   }
   if (!job.sessionId) return {};

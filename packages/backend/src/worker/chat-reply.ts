@@ -1,31 +1,43 @@
-// One `chat.reply` job: the bot answers its direct chat with the user. It can
-// create a task (rate-limited per bot, counted under the bot row lock) or
-// forward a follow-up to one of its active tasks.
-import { isFinishedStatus } from "@jj/contracts";
+// One `chat.reply` job: the bot answers its direct chat. A job answers one
+// input: the user's unanswered message (with every chat task tool), else the
+// oldest unanswered task update (with the read tools only). Jobs of one bot
+// run one at a time, so an update that arrives during a reply is answered
+// after it, by a reply that sees both. While more inputs wait, each job
+// enqueues the next. An update whose reply fails is still told: the engine
+// posts it as a plain message instead.
+
+import { FINISHED_TASK_STATUSES } from "@jj/contracts";
 import {
   bots,
   type ClaimedJob,
+  type ConversationMessageRow,
   complete,
   conversationMessages,
+  type Executor,
   enqueue,
   fail,
+  jobs,
   nextConversationSequence,
   type Tx,
-  taskMessages,
   taskParticipants,
   tasks,
   usage,
 } from "@jj/db";
-import { and, count, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, isNull, notInArray, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
-import { DomainError, errorMessage } from "../errors";
+import { errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
-import type { ChatResponder, CollabTool, CollabToolResult } from "../ports";
-import { activeBotRows, memoryText, presenceOf } from "../services/bots";
+import type { ChatReply, ChatResponder } from "../ports";
+import { activeBotRows, memoryText } from "../services/bots";
 import { conversationHistory } from "../services/chat";
-import { continueTask, deliver, postMessage } from "../services/messages";
-import { lockTask } from "../services/sessions";
-import { createTaskTx } from "../services/tasks";
+import {
+  answerTaskUpdate,
+  fallbackText,
+  type PendingUpdate,
+  pendingTaskUpdates,
+  updateInput,
+} from "../services/task-updates";
+import { type ChatState, chatReadTools, chatTools } from "./chat-tools";
 import { chatPrompt } from "./prompts";
 import {
   fencedWrite,
@@ -34,17 +46,133 @@ import {
   type WorkerDeps,
 } from "./run-context";
 
-const HOUR_MS = 60 * 60_000;
-const refuse = (text: string): CollabToolResult => ({ text, isError: true });
+/** What one job answers. */
+type ChatInput =
+  | { kind: "user"; message: ConversationMessageRow }
+  /** `gaveUp`: an earlier job died answering it too often; post the fallback. */
+  | { kind: "update"; update: PendingUpdate; gaveUp: boolean };
 
-interface ChatState {
-  /**
-   * The user message being answered. Side effects are keyed by it, so a reply
-   * that runs again after a hand-off or crash does not repeat them.
-   */
-  triggerId: string;
-  /** The task the reply created or forwarded to. */
-  linkedTaskId: string | null;
+/**
+ * Whether a failed reply job of the bot was answering this input (its id is
+ * in the job's payload). A failed user message is not answered again until
+ * the user writes more; an update is then posted as the fallback.
+ */
+async function gaveUpOn(exec: Executor, botId: string, inputId: string) {
+  const [row] = await exec
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.botId, botId),
+        eq(jobs.kind, "chat.reply"),
+        eq(jobs.status, "failed"),
+        sql`${jobs.payload}->>'answering' = ${inputId}`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+async function nextInput(
+  exec: Executor,
+  botId: string,
+  history: ConversationMessageRow[],
+): Promise<ChatInput | undefined> {
+  const last = history.at(-1);
+  if (last?.role === "user" && !(await gaveUpOn(exec, botId, last.id)))
+    return { kind: "user", message: last };
+  const [update] = await pendingTaskUpdates(exec, botId);
+  if (update)
+    return {
+      kind: "update",
+      update,
+      gaveUp: await gaveUpOn(exec, botId, update.id),
+    };
+  return undefined;
+}
+
+/** Enqueues the bot's next reply while task updates wait (coalesced with a queued one). */
+async function continueWithUpdates(tx: Tx, botId: string) {
+  if ((await pendingTaskUpdates(tx, botId)).length === 0) return;
+  await enqueue(tx, { kind: "chat.reply", botId });
+  await wakeWorkers(tx);
+}
+
+/** The bot's unfinished tasks, and how many of them it coordinates. */
+async function unfinishedTasks(exec: Executor, botId: string) {
+  const [row] = await exec
+    .select({
+      total: count(),
+      coordinated: sql<number>`count(*) filter (where ${tasks.coordinatorBotId} = ${botId})`,
+    })
+    .from(taskParticipants)
+    .innerJoin(tasks, eq(tasks.id, taskParticipants.taskId))
+    .where(
+      and(
+        eq(taskParticipants.botId, botId),
+        notInArray(tasks.status, [...FINISHED_TASK_STATUSES]),
+      ),
+    );
+  return {
+    total: Number(row?.total ?? 0),
+    coordinated: Number(row?.coordinated ?? 0),
+  };
+}
+
+async function storeMessage(
+  tx: Tx,
+  ctx: EngineContext,
+  botId: string,
+  values: { id: string; text: string; taskId: string | null },
+) {
+  const sequence = await nextConversationSequence(tx, botId);
+  await tx.insert(conversationMessages).values({
+    id: values.id,
+    botId,
+    sequence,
+    role: "assistant",
+    text: values.text.trim() ? values.text : "(no text)",
+    taskId: values.taskId,
+    createdAt: ctx.clock(),
+  });
+}
+
+async function storeUsage(
+  tx: Tx,
+  ctx: EngineContext,
+  botId: string,
+  reply: ChatReply,
+) {
+  await tx.insert(usage).values({
+    id: ctx.ids("usage"),
+    taskId: null,
+    botId,
+    model: reply.model,
+    inputTokens: reply.usage.inputTokens,
+    outputTokens: reply.usage.outputTokens,
+    cacheReadTokens: reply.usage.cacheReadTokens,
+    cacheWriteTokens: reply.usage.cacheWriteTokens,
+    costUsd: reply.usage.costUsd,
+    createdAt: ctx.clock(),
+  });
+}
+
+/** Posts the update as the engine's plain message; false when it was already told. */
+async function postFallback(
+  tx: Tx,
+  ctx: EngineContext,
+  botId: string,
+  update: PendingUpdate,
+  redact: (text: string) => string,
+): Promise<boolean> {
+  const id = ctx.ids("conversationMessage");
+  if (!(await answerTaskUpdate(tx, ctx, update.id, id))) return false;
+  await storeMessage(tx, ctx, botId, {
+    id,
+    text: fallbackText(update, redact),
+    taskId: update.taskId,
+  });
+  return true;
 }
 
 export async function runChatJob(
@@ -57,6 +185,8 @@ export async function runChatJob(
   const botId = job.botId as string;
   const write = <T>(fn: (tx: Tx) => Promise<T>) =>
     fencedWrite(ctx, job.lease, control, fn);
+  let input: ChatInput | undefined;
+  let redact: (text: string) => string = (text) => text;
   try {
     const [bot] = await ctx.db
       .select()
@@ -65,27 +195,45 @@ export async function runChatJob(
     const history = bot
       ? await conversationHistory(ctx.db, botId, ctx.config.chatHistoryLimit)
       : [];
-    if (!bot || history.at(-1)?.role !== "user") {
-      // Archived, or a coalesced wake whose message was already answered.
+    input = bot ? await nextInput(ctx.db, botId, history) : undefined;
+    if (!bot || !input) {
+      // Archived, or a coalesced wake whose input was already answered.
       await write((tx) => complete(tx, job.lease));
       return;
     }
-    const everyone = await activeBotRows(ctx.db);
-    const presence = await presenceOf(ctx.db, [botId]);
-    const activeIds = presence.get(botId)?.activeTaskIds ?? [];
-    const active =
-      activeIds.length > 0
-        ? await ctx.db.select().from(tasks).where(inArray(tasks.id, activeIds))
-        : [];
-    const memory = await memoryText(ctx.db, botId);
-    const trigger = history.at(-1) as { id: string };
-    const state: ChatState = { triggerId: trigger.id, linkedTaskId: null };
-    const tools: CollabTool[] = [
-      createTaskTool(ctx, write, bot, everyone, state),
-    ];
-    if (active.length > 0)
-      tools.push(sendToTaskTool(ctx, write, bot, active, state));
+    const redactor = await ctx.redactor();
+    redact = (text) => redactor(text);
+    if (input.kind === "update" && input.gaveUp) {
+      const update = input.update;
+      await write(async (tx) => {
+        await postFallback(tx, ctx, botId, update, redact);
+        await complete(tx, job.lease);
+        await continueWithUpdates(tx, botId);
+        await hint(tx, { type: "conversation.changed", botId });
+      });
+      return;
+    }
+    // Recorded before the model call, so a failed or abandoned job says what it answered.
+    const answering =
+      input.kind === "user" ? input.message.id : input.update.id;
+    await write((tx) =>
+      tx
+        .update(jobs)
+        .set({ payload: { ...job.payload, answering } })
+        .where(eq(jobs.id, job.id)),
+    );
 
+    const everyone = await activeBotRows(ctx.db);
+    const memory = await memoryText(ctx.db, botId);
+    const state: ChatState = { triggerId: answering, linkedTaskId: null };
+    const tools =
+      input.kind === "user"
+        ? chatTools({ ctx, write, bot, redact, everyone, state })
+        : chatReadTools({ ctx, bot, redact });
+    const past = history.map((message) => ({
+      role: message.role,
+      text: message.text,
+    }));
     const reply = await responder.reply({
       systemPrompt: chatPrompt({
         bot,
@@ -93,17 +241,15 @@ export async function runChatJob(
         team: everyone
           .filter((other) => other.id !== botId)
           .map((other) => ({ name: other.name, role: other.role })),
-        activeTasks: active.map((task) => ({
-          id: task.id,
-          title: task.title,
-          status: task.status,
-          coordinator: task.coordinatorBotId === botId,
-        })),
+        unfinishedTasks: await unfinishedTasks(ctx.db, botId),
       }),
-      history: history.map((message) => ({
-        role: message.role,
-        text: message.text,
-      })),
+      history:
+        input.kind === "user"
+          ? past
+          : [
+              ...past,
+              { role: "user", text: updateInput(input.update, redact) },
+            ],
       model: bot.model,
       tools,
       budgets: {
@@ -113,30 +259,25 @@ export async function runChatJob(
       signal: control.controller.signal,
     });
     if (control.reason) throw control.controller.signal.reason;
+    const answered = input;
     await write(async (tx) => {
-      const sequence = await nextConversationSequence(tx, botId);
-      await tx.insert(conversationMessages).values({
-        id: ctx.ids("conversationMessage"),
-        botId,
-        sequence,
-        role: "assistant",
-        text: reply.text.trim() ? reply.text : "(no text)",
-        taskId: state.linkedTaskId,
-        createdAt: ctx.clock(),
-      });
-      await tx.insert(usage).values({
-        id: ctx.ids("usage"),
-        taskId: null,
-        botId,
-        model: reply.model,
-        inputTokens: reply.usage.inputTokens,
-        outputTokens: reply.usage.outputTokens,
-        cacheReadTokens: reply.usage.cacheReadTokens,
-        cacheWriteTokens: reply.usage.cacheWriteTokens,
-        costUsd: reply.usage.costUsd,
-        createdAt: ctx.clock(),
-      });
+      const id = ctx.ids("conversationMessage");
+      const told =
+        answered.kind === "user" ||
+        (await answerTaskUpdate(tx, ctx, answered.update.id, id));
+      if (told) {
+        await storeMessage(tx, ctx, botId, {
+          id,
+          text: reply.text,
+          taskId:
+            answered.kind === "user"
+              ? state.linkedTaskId
+              : answered.update.taskId,
+        });
+        await storeUsage(tx, ctx, botId, reply);
+      }
       await complete(tx, job.lease);
+      await continueWithUpdates(tx, botId);
       await hint(tx, { type: "conversation.changed", botId });
     });
   } catch (error) {
@@ -155,216 +296,16 @@ export async function runChatJob(
       typeof code === "string"
         ? `Reply failed (${code}): ${errorMessage(error)}`
         : errorMessage(error);
+    const failed = input;
     await write(async (tx) => {
+      // The update is never lost: the engine tells it plainly instead.
+      if (failed?.kind === "update")
+        await postFallback(tx, ctx, botId, failed.update, redact);
       await fail(tx, job.lease, reason);
+      await continueWithUpdates(tx, botId);
       await hint(tx, { type: "conversation.changed", botId });
     }).catch((failure: unknown) => {
       if (!(failure instanceof LeaseLostError)) throw failure;
     });
   }
-}
-
-type Write = <T>(fn: (tx: Tx) => Promise<T>) => Promise<T>;
-
-function createTaskTool(
-  ctx: EngineContext,
-  write: Write,
-  bot: { id: string; name: string },
-  everyone: readonly { id: string; name: string; model: string | null }[],
-  state: ChatState,
-): CollabTool {
-  const names = everyone.map((member) => member.name);
-  return {
-    name: "create_task",
-    description:
-      "Start a task that you coordinate, for work that needs commands or files. Call it once per request.",
-    parameters: {
-      type: "object",
-      properties: {
-        goal: {
-          type: "string",
-          description:
-            "What the task must achieve, with any acceptance criteria.",
-        },
-        title: { type: "string", description: "A short title (optional)." },
-        participants: {
-          type: "array",
-          items: { type: "string", enum: names },
-          description:
-            "Teammates who should help, by name. You are always included.",
-        },
-      },
-      required: ["goal", "participants"],
-      additionalProperties: false,
-    },
-    summarize: (args) =>
-      String(args.title ?? args.goal ?? "a task").slice(0, 120),
-    async execute(args) {
-      const goal = typeof args.goal === "string" ? args.goal.trim() : "";
-      if (!goal) return refuse("Give the task a goal.");
-      const wanted = Array.isArray(args.participants)
-        ? args.participants.map(String)
-        : [];
-      const chosen = wanted.map((name) =>
-        everyone.find(
-          (member) => member.name.toLowerCase() === name.trim().toLowerCase(),
-        ),
-      );
-      const unknown = wanted.filter((_, index) => !chosen[index]);
-      if (unknown.length > 0)
-        return refuse(
-          `No bot named ${unknown.join(", ")}. Choose from: ${names.join(", ")}.`,
-        );
-      for (const member of chosen) {
-        if (!member) continue;
-        try {
-          ctx.models.resolve(member.model);
-        } catch (error) {
-          return refuse(`${member.name} cannot run: ${errorMessage(error)}`);
-        }
-      }
-      return write(async (tx) => {
-        // Lock the bot row, then count, so concurrent creations cannot both pass.
-        await tx
-          .select({ id: bots.id })
-          .from(bots)
-          .where(eq(bots.id, bot.id))
-          .for("update");
-        const [existing] = await tx
-          .select()
-          .from(tasks)
-          .where(
-            and(
-              eq(tasks.createdByBotId, bot.id),
-              eq(tasks.createdFromMessageId, state.triggerId),
-            ),
-          );
-        if (existing) {
-          // This reply already created its task (it ran before a hand-off or crash).
-          state.linkedTaskId = existing.id;
-          return {
-            text: `Created task "${existing.title}" (${existing.id}). You coordinate it; it has started.`,
-          };
-        }
-        const since = new Date(ctx.clock().getTime() - HOUR_MS);
-        const [recent] = await tx
-          .select({ value: count() })
-          .from(tasks)
-          .where(
-            and(eq(tasks.createdByBotId, bot.id), gt(tasks.createdAt, since)),
-          );
-        if ((recent?.value ?? 0) >= ctx.config.tasksPerBotPerHour)
-          return refuse(
-            `You have created ${recent?.value} tasks in the last hour, the limit. Tell the user to wait or start the task themselves.`,
-          );
-        const { task } = await createTaskTx(tx, ctx, {
-          goal,
-          title:
-            typeof args.title === "string"
-              ? args.title.slice(0, 120)
-              : undefined,
-          coordinatorBotId: bot.id,
-          participantBotIds: chosen.flatMap((member) =>
-            member ? [member.id] : [],
-          ),
-          createdByBotId: bot.id,
-          createdFromMessageId: state.triggerId,
-        });
-        state.linkedTaskId = task.id;
-        return {
-          text: `Created task "${task.title}" (${task.id}). You coordinate it; it has started.`,
-        };
-      });
-    },
-  };
-}
-
-function sendToTaskTool(
-  ctx: EngineContext,
-  write: Write,
-  bot: { id: string; name: string },
-  active: readonly { id: string; title: string }[],
-  state: ChatState,
-): CollabTool {
-  return {
-    name: "send_to_task",
-    description: `Forward the user's message to one of your active tasks; its coordinator picks it up. Active tasks:\n${active.map((task) => `- ${task.id}: ${task.title}`).join("\n")}`,
-    parameters: {
-      type: "object",
-      properties: {
-        taskId: {
-          type: "string",
-          enum: active.map((task) => task.id),
-          description: "The task to send it to.",
-        },
-        text: { type: "string", description: "What to tell the task." },
-      },
-      required: ["taskId", "text"],
-      additionalProperties: false,
-    },
-    summarize: (args) => String(args.taskId ?? ""),
-    async execute(args) {
-      const taskId = typeof args.taskId === "string" ? args.taskId : "";
-      const text = typeof args.text === "string" ? args.text.trim() : "";
-      if (!text) return refuse("The message is empty.");
-      return write(async (tx) => {
-        const task = await lockTask(tx, taskId);
-        if (!task) return refuse(`There is no task ${taskId}.`);
-        const [member] = await tx
-          .select({ botId: taskParticipants.botId })
-          .from(taskParticipants)
-          .where(
-            and(
-              eq(taskParticipants.taskId, taskId),
-              eq(taskParticipants.botId, bot.id),
-            ),
-          );
-        if (!member) return refuse("You do not take part in that task.");
-        const [relayed] = await tx
-          .select({ id: taskMessages.id })
-          .from(taskMessages)
-          .where(
-            and(
-              eq(taskMessages.taskId, taskId),
-              eq(taskMessages.relayedFromMessageId, state.triggerId),
-            ),
-          );
-        if (relayed) {
-          // Already relayed by this reply before a hand-off or crash.
-          state.linkedTaskId = taskId;
-          return { text: `Sent to the task "${task.title}".` };
-        }
-        if (isFinishedStatus(task.status) && task.status !== "cancelled")
-          return refuse("That task has finished; create a new one instead.");
-        let root: Awaited<ReturnType<typeof continueTask>>["root"];
-        try {
-          root = (await continueTask(tx, ctx, task)).root;
-        } catch (error) {
-          if (error instanceof DomainError) return refuse(error.message);
-          throw error;
-        }
-        const message = await postMessage(tx, ctx, {
-          taskId,
-          authorKind: "bot",
-          authorBotId: bot.id,
-          intent: "discussion",
-          text,
-          recipientBotIds: [task.coordinatorBotId],
-          relayedFromMessageId: state.triggerId,
-        });
-        await deliver(
-          tx,
-          root,
-          {
-            kind: "steering",
-            text: `Message from ${bot.name}, relayed from the user's direct chat:\n${text}`,
-            sourceMessageId: message.id,
-          },
-          { wake: true, ctx },
-        );
-        state.linkedTaskId = taskId;
-        return { text: `Sent to the task "${task.title}".` };
-      });
-    },
-  };
 }
