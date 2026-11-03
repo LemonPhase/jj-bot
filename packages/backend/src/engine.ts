@@ -56,7 +56,7 @@ import {
   type Secret,
   tooShortToRedact,
 } from "./redact";
-import { SecretStore, warnUnreadable } from "./secrets/store";
+import { retiredBefore, SecretStore, warnUnreadable } from "./secrets/store";
 import { decideApproval } from "./services/approvals";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
@@ -219,6 +219,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       return createRedactor([
         ...(await secrets()),
         ...store.values(),
+        ...store.retiredValues(),
         ...ctx.heldSecrets(),
         ...extra,
       ]);
@@ -231,6 +232,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     ctx.logger.warn(
       `${name} is shorter than ${MIN_BARE_SECRET_LENGTH} characters, so it is not redacted from task history: a value that short is too likely to be an ordinary word. Use a longer value.`,
     );
+  await store.purgeRetired(retiredBefore(ctx.clock()));
   await store.rotate(ctx.logger);
   await store.refresh();
   warnUnreadable(store, ctx.logger);

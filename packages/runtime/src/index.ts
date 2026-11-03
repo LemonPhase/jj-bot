@@ -10,6 +10,7 @@ export * from "./proxy";
 export { createSandboxTools } from "./sandbox-tools";
 export * from "./scripted";
 export {
+  type CutEdges,
   capToolOutput,
   isSandboxReleased,
   type OutputPolicy,

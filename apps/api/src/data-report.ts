@@ -1,6 +1,7 @@
 // What a database holds, read without migrating or writing anything: its
 // migration level against this build, its records, and whether the configured
-// JJ_SECRET_KEY opens its stored secrets. `scripts/backup.sh` records it in a
+// JJ_SECRET_KEY opens its stored secrets and the replaced or removed values it
+// keeps for redaction. `scripts/backup.sh` records it in a
 // backup's manifest and `scripts/restore.sh` runs it as the restore check;
 // `apps/api/src/data-check.ts` is the command.
 import { readFileSync } from "node:fs";
@@ -67,6 +68,12 @@ export interface DataReport {
     keyConfigured: boolean;
     /** Rows the configured keys cannot open, by kind and name. */
     unreadable: { kind: string; name: string }[];
+    /**
+     * Replaced or removed values kept for redaction (`retired_secrets`), and
+     * how many of them the configured keys cannot open: those are no longer
+     * redacted. Zero before that table's migration.
+     */
+    retired: { stored: number; unreadable: number };
   };
   /** The docker driver's namespace: its task workspaces are `<namespace>-task-<taskId>`. */
   dockerNamespace: string;
@@ -84,6 +91,33 @@ async function present(exec: Db, table: string): Promise<boolean> {
   )) as unknown as { rows: { present: boolean }[] };
   return result.rows[0]?.present === true;
 }
+
+interface SealedRow {
+  kind: SecretKind;
+  name: string;
+  key_id: string;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+}
+
+/** A table's sealed values, read with SQL: the database may be of another schema version. */
+async function sealedRows(
+  exec: Db,
+  table: "secrets" | "retired_secrets",
+): Promise<SealedRow[]> {
+  const result = (await exec.execute(
+    sql`select kind, name, key_id, nonce, ciphertext from ${sql.identifier(table)} where owner_id = ${LOCAL_OWNER} order by kind, name`,
+  )) as unknown as { rows: SealedRow[] };
+  return result.rows;
+}
+
+const sealedOf = (row: SealedRow) => ({
+  kind: row.kind,
+  name: row.name,
+  keyId: row.key_id,
+  nonce: new Uint8Array(row.nonce),
+  ciphertext: new Uint8Array(row.ciphertext),
+});
 
 async function count(exec: Db, query: string): Promise<number> {
   const result = (await exec.execute(sql.raw(query))) as unknown as {
@@ -140,34 +174,21 @@ export async function reportOn(
       owner: LOCAL_OWNER,
     });
     // Raw SQL, not the current schema: the database may be an older one.
-    const rows = (
-      (await exec.execute(
-        sql`select kind, name, key_id, nonce, ciphertext from secrets where owner_id = ${LOCAL_OWNER} order by kind, name`,
-      )) as unknown as {
-        rows: {
-          kind: SecretKind;
-          name: string;
-          key_id: string;
-          nonce: Uint8Array;
-          ciphertext: Uint8Array;
-        }[];
-      }
-    ).rows;
+    const rows = await sealedRows(exec, "secrets");
+    const retired = (await present(exec, "retired_secrets"))
+      ? await sealedRows(exec, "retired_secrets")
+      : [];
     report.secrets = {
       stored: rows.length,
       keyConfigured: keys !== undefined,
       unreadable: rows
-        .filter(
-          (row) =>
-            !store.opens({
-              kind: row.kind,
-              name: row.name,
-              keyId: row.key_id,
-              nonce: new Uint8Array(row.nonce),
-              ciphertext: new Uint8Array(row.ciphertext),
-            }),
-        )
+        .filter((row) => !store.opens(sealedOf(row)))
         .map((row) => ({ kind: row.kind, name: row.name })),
+      retired: {
+        stored: retired.length,
+        unreadable: retired.filter((row) => !store.opensRetired(sealedOf(row)))
+          .length,
+      },
     };
   }
   return report;
@@ -245,6 +266,16 @@ export function formatReport(report: DataReport): string {
           ? `Secrets: ${unreadable.length} of ${plural(stored, "stored value")} cannot be read with the configured JJ_SECRET_KEY (${names}): they were stored under another key. Set the key they were stored with as JJ_SECRET_KEY, or in JJ_SECRET_KEY_PREVIOUS to move them to a new key, or store them again in Settings.`
           : `Secrets: ${plural(stored, "stored value")} (${names}), but JJ_SECRET_KEY is not set, so none can be read. Set the key they were stored with; a backup never holds it.`,
       );
+    const { retired } = report.secrets;
+    const kept = plural(retired.stored, "value");
+    if (retired.stored > 0)
+      lines.push(
+        retired.unreadable === 0
+          ? `Replaced or removed secrets: ${kept} kept for redaction, all readable with the configured JJ_SECRET_KEY.`
+          : keyConfigured
+            ? `Replaced or removed secrets: ${retired.unreadable} of ${kept} kept for redaction cannot be read with the configured JJ_SECRET_KEY, so they are no longer redacted from task history. Set the key that sealed them as JJ_SECRET_KEY, or in JJ_SECRET_KEY_PREVIOUS to move them to a new key.`
+            : `Replaced or removed secrets: ${kept} kept for redaction, but JJ_SECRET_KEY is not set, so none is redacted from task history. Set the key they were sealed with; a backup never holds it.`,
+      );
   }
   return lines.join("\n");
 }
@@ -269,6 +300,8 @@ export function formatEnv(report: DataReport): string {
     ["artifact_bytes", report.records?.artifactBytes ?? 0],
     ["secrets_stored", report.secrets?.stored ?? 0],
     ["secrets_unreadable", report.secrets?.unreadable.length ?? 0],
+    ["secrets_retired", report.secrets?.retired.stored ?? 0],
+    ["secrets_retired_unreadable", report.secrets?.retired.unreadable ?? 0],
     ["docker_namespace", report.dockerNamespace],
   ];
   return entries.map(([key, value]) => `${key}=${value}`).join("\n");
