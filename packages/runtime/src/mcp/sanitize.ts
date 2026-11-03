@@ -93,6 +93,20 @@ function readable(text: string, max: number) {
   return clip(visibleText(text), max);
 }
 
+/**
+ * Server text shown as data in a warning: as it is when it is a plain
+ * name, otherwise quoted as JSON (so a newline cannot start a line of its
+ * own) with invisible characters written out, at most `max` characters.
+ */
+function shown(text: string, max: number): string {
+  if (text.length <= max && /^[A-Za-z0-9_$.-]+$/.test(text)) return text;
+  const cut = text.length > max ? `${text.slice(0, max)}…` : text;
+  return visibleText(JSON.stringify(cut));
+}
+
+/** Most left-out keyword names one warning lists. */
+const MAX_DROPPED_SHOWN = 12;
+
 interface Walk {
   /** Keywords left out, for one warning per tool. */
   dropped: Set<string>;
@@ -100,27 +114,32 @@ interface Walk {
   notes: Set<string>;
   /** Characters kept so far, to stop early on a schema far over the cap. */
   size: number;
+  /** Set for the walk over the schema with its references expanded. */
+  expanded?: boolean;
 }
 
-const tooLarge = () =>
+const once = (walk: Pick<Walk, "expanded">) =>
+  walk.expanded ? "once its references are expanded" : "once reduced";
+
+const tooLarge = (walk: Pick<Walk, "expanded">) =>
   new Refused(
-    `its input schema is larger than ${MCP_SCHEMA_BYTES_LIMIT} bytes once reduced`,
+    `its input schema is larger than ${MCP_SCHEMA_BYTES_LIMIT} bytes ${once(walk)}`,
   );
 
 function grow(walk: Walk, by: number) {
   walk.size += by;
   // A rough count of the reduced schema's JSON: twice the cap is surely over it.
-  if (walk.size > MCP_SCHEMA_BYTES_LIMIT * 2) throw tooLarge();
+  if (walk.size > MCP_SCHEMA_BYTES_LIMIT * 2) throw tooLarge(walk);
 }
 
-const deep = () =>
+const deep = (walk: Pick<Walk, "expanded">) =>
   new Refused(
-    `its input schema nests deeper than ${MCP_SCHEMA_DEPTH_LIMIT} levels`,
+    `its input schema nests deeper than ${MCP_SCHEMA_DEPTH_LIMIT} levels${walk.expanded ? " once its references are expanded" : ""}`,
   );
 
 /** A JSON value the model may read (`const`, `default`, `enum` items), with its strings made visible. */
 function value(input: unknown, depth: number, walk: Walk): unknown {
-  if (depth > MCP_SCHEMA_DEPTH_LIMIT) throw deep();
+  if (depth > MCP_SCHEMA_DEPTH_LIMIT) throw deep(walk);
   if (typeof input === "string") {
     const shown = visibleText(input);
     if (shown !== input) walk.notes.add("wrote out invisible characters");
@@ -159,7 +178,7 @@ const isLocalRef = (ref: unknown): ref is string =>
 
 /** One schema (an object, or `true`/`false`), reduced to the allowlist. */
 function schema(input: unknown, depth: number, walk: Walk): unknown {
-  if (depth > MCP_SCHEMA_DEPTH_LIMIT) throw deep();
+  if (depth > MCP_SCHEMA_DEPTH_LIMIT) throw deep(walk);
   if (typeof input === "boolean") {
     grow(walk, 5);
     return input;
@@ -252,8 +271,129 @@ function schema(input: unknown, depth: number, walk: Walk): unknown {
         keep(key, raw);
         grow(walk, raw.length);
       } else walk.dropped.add("$ref (not local)");
-    } else walk.dropped.add(key);
+    } else walk.dropped.add(shown(key, 40));
   }
+  return out;
+}
+
+/** The node a local JSON pointer (`#`, `#/$defs/a`) names in `root`, or undefined. */
+function pointed(root: unknown, ref: string): unknown {
+  if (ref === "#") return root;
+  let node: unknown = root;
+  for (const raw of ref.slice(2).split("/")) {
+    let part: string;
+    try {
+      part = decodeURIComponent(raw).replace(/~1/g, "/").replace(/~0/g, "~");
+    } catch {
+      return undefined;
+    }
+    if (Array.isArray(node) && /^(?:0|[1-9]\d*)$/.test(part))
+      node = node[Number(part)];
+    else if (
+      typeof node === "object" &&
+      node !== null &&
+      !Array.isArray(node) &&
+      Object.hasOwn(node, part)
+    )
+      node = (node as Record<string, unknown>)[part];
+    else return undefined;
+  }
+  return node;
+}
+
+interface Expansion {
+  root: Record<string, unknown>;
+  /** References expanded so far, with what each added to the size. */
+  done: Map<string, { schema: unknown; size: number }>;
+  /** References being expanded: meeting one again is a loop. */
+  open: Set<string>;
+  /** Characters of the expanded schema so far. */
+  size: number;
+  dangling: boolean;
+}
+
+const expandedWalk = { expanded: true };
+
+function spend(state: Expansion, by: number) {
+  state.size += by;
+  if (state.size > MCP_SCHEMA_BYTES_LIMIT * 2) throw tooLarge(expandedWalk);
+}
+
+/** What a reference stands for, expanded; each one is expanded once and reused, its size counted at every use. */
+function expandRef(ref: string, state: Expansion): unknown {
+  const done = state.done.get(ref);
+  if (done) {
+    spend(state, done.size);
+    return done.schema;
+  }
+  if (state.open.has(ref))
+    throw new Refused("its input schema refers to itself");
+  const target = pointed(state.root, ref);
+  if (target === undefined) {
+    state.dangling = true;
+    spend(state, 5);
+    return false;
+  }
+  state.open.add(ref);
+  const before = state.size;
+  const expanded = expand(target, state);
+  state.open.delete(ref);
+  state.done.set(ref, { schema: expanded, size: state.size - before });
+  return expanded;
+}
+
+/**
+ * A reduced schema with every local reference replaced by what it names,
+ * and `$defs` and `definitions` dropped, so the declared schema holds no
+ * reference for a validator to follow. A reference beside other keywords
+ * joins them under `allOf`. Refuses a loop, and stops as soon as the result
+ * passes twice the size cap, so a small schema whose references multiply
+ * (each definition naming the next twice) costs little to refuse.
+ */
+function expand(node: unknown, state: Expansion): unknown {
+  if (typeof node !== "object" || node === null || Array.isArray(node)) {
+    spend(state, 5);
+    return node;
+  }
+  spend(state, 2);
+  const out: Record<string, unknown> = {};
+  const set = (key: string, item: unknown) => {
+    spend(state, key.length + 3);
+    put(out, key, item);
+  };
+  for (const [key, raw] of Object.entries(node)) {
+    if (key === "$ref" || key === "$defs" || key === "definitions") continue;
+    if (key === "items" && Array.isArray(raw))
+      set(
+        key,
+        raw.map((item) => expand(item, state)),
+      );
+    else if (key === "items" || SCHEMA_VALUED.has(key))
+      set(key, expand(raw, state));
+    else if (SCHEMA_LISTS.has(key) && Array.isArray(raw))
+      set(
+        key,
+        raw.map((item) => expand(item, state)),
+      );
+    else if (key === "properties" && typeof raw === "object" && raw !== null) {
+      const map: Record<string, unknown> = {};
+      for (const [name, item] of Object.entries(raw)) {
+        spend(state, name.length + 3);
+        put(map, name, expand(item, state));
+      }
+      set(key, map);
+    } else {
+      // Values (types, bounds, enum, const, default, text), already reduced.
+      spend(state, JSON.stringify(raw)?.length ?? 4);
+      set(key, raw);
+    }
+  }
+  const ref = (node as Record<string, unknown>).$ref;
+  if (typeof ref !== "string") return out;
+  const target = expandRef(ref, state);
+  if (Object.keys(out).length === 0) return target;
+  const all = Array.isArray(out.allOf) ? out.allOf : [];
+  put(out, "allOf", [...all, target]);
   return out;
 }
 
@@ -274,16 +414,44 @@ export function sanitizeInputSchema(input: Record<string, unknown>): {
     reduced.type = "object";
     walk.notes.add('set the missing root type to "object"');
   }
-  const json = canonicalJson(reduced);
+  const written = canonicalJson(reduced);
+  if (
+    written === undefined ||
+    Buffer.byteLength(written) > MCP_SCHEMA_BYTES_LIMIT
+  )
+    throw tooLarge(walk);
+  // References expanded, then held to the same caps as written out in full.
+  const state: Expansion = {
+    root: reduced,
+    done: new Map(),
+    open: new Set(["#"]),
+    size: 0,
+    dangling: false,
+  };
+  const expanded = expand(reduced, state);
+  const checked = schema(expanded, 1, {
+    dropped: new Set(),
+    notes: new Set(),
+    size: 0,
+    expanded: true,
+  }) as Record<string, unknown>;
+  const json = canonicalJson(checked);
   if (json === undefined || Buffer.byteLength(json) > MCP_SCHEMA_BYTES_LIMIT)
-    throw tooLarge();
-  const warnings: string[] = [];
-  if (walk.dropped.size > 0)
-    warnings.push(
-      `left out schema keywords ${[...walk.dropped].sort().join(", ")}`,
+    throw tooLarge(expandedWalk);
+  if (state.dangling)
+    walk.notes.add(
+      "a reference names nothing in the schema; no value is accepted there",
     );
+  const warnings: string[] = [];
+  if (walk.dropped.size > 0) {
+    const names = [...walk.dropped].sort();
+    const more = names.length - MAX_DROPPED_SHOWN;
+    warnings.push(
+      `left out schema keywords ${names.slice(0, MAX_DROPPED_SHOWN).join(", ")}${more > 0 ? ` and ${more} more` : ""}`,
+    );
+  }
   warnings.push(...[...walk.notes].sort());
-  return { schema: reduced, warnings };
+  return { schema: checked, warnings };
 }
 
 /** The tool's description as the model reads it: invisible characters written out, at most 2000 characters. */
@@ -330,38 +498,48 @@ const warning = (text: string) => clip(text, WARNING_LIMIT).text;
 
 /**
  * The tools a snapshot of `server` keeps from what the server listed, sorted
- * by name, and warnings about what was changed or left out. A tool is left
- * out (with a warning) when its name is empty, longer than 128 characters
- * or listed twice, or its input schema is not an object schema, is larger
- * than MCP_SCHEMA_BYTES_LIMIT once reduced, or nests deeper than
- * MCP_SCHEMA_DEPTH_LIMIT. At most MAX_MCP_SNAPSHOT_TOOLS are kept, the first
- * by name. Annotations are kept as the server's unverified hints.
+ * by name, and warnings about what was changed or left out. Names are
+ * checked and chosen first, so only the tools kept are ever sanitized: a
+ * name must have 1 to 128 characters and a tool listed twice keeps its
+ * first entry, and the first MAX_MCP_SNAPSHOT_TOOLS by name are chosen. A
+ * chosen tool is left out (with a warning) when its input schema is not an
+ * object schema, refers to itself, or is larger than MCP_SCHEMA_BYTES_LIMIT
+ * or deeper than MCP_SCHEMA_DEPTH_LIMIT once reduced and its references
+ * expanded. Annotations are kept as the server's unverified hints.
  */
 export function sanitizeTools(
   server: string,
   listed: readonly Tool[],
 ): { tools: McpTool[]; warnings: string[] } {
   const warnings: string[] = [];
-  const kept = new Map<string, Omit<McpTool, "exposedName">>();
+  const label = (name: string) => shown(name, 80) || "(unnamed)";
+  const named = new Map<string, Tool>();
   for (const tool of listed) {
-    const name = typeof tool.name === "string" ? tool.name : "";
-    const label = visibleText(name.slice(0, 80)) || "(unnamed)";
-    if (name.length === 0 || name.length > NAME_LIMIT) {
+    const name = typeof tool?.name === "string" ? tool.name : "";
+    if (name.length === 0 || name.length > NAME_LIMIT)
       warnings.push(
-        `${label}: left out, since a tool name has 1 to ${NAME_LIMIT} characters.`,
+        `${label(name)}: left out, since a tool name has 1 to ${NAME_LIMIT} characters.`,
       );
-      continue;
-    }
-    if (kept.has(name)) {
-      warnings.push(`${label}: listed more than once; the first is kept.`);
-      continue;
-    }
+    else if (named.has(name))
+      warnings.push(
+        `${label(name)}: listed more than once; the first is kept.`,
+      );
+    else named.set(name, tool);
+  }
+  const names = [...named.keys()].sort();
+  if (names.length > MAX_MCP_SNAPSHOT_TOOLS)
+    warnings.push(
+      `The server lists ${names.length} tools; the first ${MAX_MCP_SNAPSHOT_TOOLS} by name are kept.`,
+    );
+  const kept = new Map<string, Omit<McpTool, "exposedName">>();
+  for (const name of names.slice(0, MAX_MCP_SNAPSHOT_TOOLS)) {
+    const tool = named.get(name) as Tool;
     let reduced: ReturnType<typeof sanitizeInputSchema>;
     try {
       reduced = sanitizeInputSchema(tool.inputSchema);
     } catch (error) {
       if (!(error instanceof Refused)) throw error;
-      warnings.push(`${label}: left out, since ${error.message}.`);
+      warnings.push(`${label(name)}: left out, since ${error.message}.`);
       continue;
     }
     const description = sanitizeDescription(tool.description);
@@ -372,7 +550,7 @@ export function sanitizeTools(
       notes.push(
         `clipped its description to ${MCP_TOOL_DESCRIPTION_LIMIT} characters`,
       );
-    if (notes.length > 0) warnings.push(`${label}: ${notes.join("; ")}.`);
+    if (notes.length > 0) warnings.push(`${label(name)}: ${notes.join("; ")}.`);
     const rawTitle = tool.title ?? tool.annotations?.title;
     const title =
       typeof rawTitle === "string" && rawTitle.trim() !== ""
@@ -388,12 +566,8 @@ export function sanitizeTools(
     };
     kept.set(name, { ...entry, hash: mcpToolHash(entry) });
   }
-  const names = [...kept.keys()].sort();
-  if (names.length > MAX_MCP_SNAPSHOT_TOOLS)
-    warnings.push(
-      `The server lists ${names.length} tools; the first ${MAX_MCP_SNAPSHOT_TOOLS} by name are kept.`,
-    );
-  const chosen = names.slice(0, MAX_MCP_SNAPSHOT_TOOLS);
+  // Kept in name order; exposed names among the tools kept.
+  const chosen = [...kept.keys()];
   const exposed = mcpToolNames(server, chosen);
   const tools = chosen.map((name) => ({
     ...(kept.get(name) as Omit<McpTool, "exposedName">),
