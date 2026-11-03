@@ -8,7 +8,10 @@
 //   server refuses to start with API_ALLOWED_HOSTS and no token (config.ts).
 // - POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise).
 //   A cross-origin JSON request needs a CORS preflight, and the API sends no
-//   CORS headers, so the browser never sends it.
+//   CORS headers, so the browser never sends it. The one write whose body is
+//   raw bytes, `POST /api/uploads`, needs `application/octet-stream` instead,
+//   which is not CORS-safelisted either, so it needs the same preflight;
+//   multipart and form bodies are refused like every other type.
 import type { Context, MiddlewareHandler } from "hono";
 import { errorResponse } from "./http";
 
@@ -86,13 +89,30 @@ export function originGuard(options: GuardOptions): MiddlewareHandler {
   };
 }
 
-/** POST, PUT and PATCH need `Content-Type: application/json`, body or not. */
+/** The media type `POST /api/uploads` takes: raw bytes, never a form. */
+export const UPLOAD_MEDIA_TYPE = "application/octet-stream";
+
+/** `POST /api/uploads`: the only write whose body is not JSON. */
+export const isUploadWrite = (c: Context) =>
+  c.req.method === "POST" && c.req.path === "/api/uploads";
+
+/**
+ * POST, PUT and PATCH need `Content-Type: application/json`, body or not;
+ * `POST /api/uploads` needs `application/octet-stream`.
+ */
 export function requireJson(): MiddlewareHandler {
   return async (c, next) => {
-    if (
-      BODY_METHODS.has(c.req.method) &&
-      mediaType(c.req.header("Content-Type")) !== "application/json"
-    )
+    if (!BODY_METHODS.has(c.req.method)) return next();
+    const type = mediaType(c.req.header("Content-Type"));
+    if (isUploadWrite(c)) {
+      if (type !== UPLOAD_MEDIA_TYPE)
+        return errorResponse(
+          c,
+          415,
+          "VALIDATION_FAILED",
+          `POST /api/uploads takes the file's bytes as Content-Type: ${UPLOAD_MEDIA_TYPE}, not a form or JSON.`,
+        );
+    } else if (type !== "application/json")
       return errorResponse(
         c,
         415,

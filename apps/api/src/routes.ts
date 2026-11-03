@@ -4,6 +4,7 @@ import type { Engine, Logger } from "@jj/backend";
 import { type Context, Hono } from "hono";
 import {
   attachmentDisposition,
+  contentLength,
   idParam,
   jsonBody,
   pageQuery,
@@ -200,6 +201,27 @@ export function apiRoutes({
       await engine.templates.start(idParam(c, "id"), (await command(c)) ?? {}),
       201,
     ),
+  );
+
+  // Uploads (1.10.0). `POST /uploads` is the one write whose body is raw
+  // bytes (guard.ts); its Content-Length is required and checked against
+  // the limits before any of the body is read.
+  api.post("/uploads", async (c) =>
+    c.json(
+      await engine.uploads.stage({
+        name: c.req.query("name"),
+        sizeBytes: contentLength(c),
+        body: c.req.raw.body as AsyncIterable<Uint8Array> | null,
+      }),
+      201,
+    ),
+  );
+  api.delete("/uploads/:id", async (c) => {
+    await engine.uploads.delete(idParam(c, "id"));
+    return c.body(null, 204);
+  });
+  api.post("/tasks/:id/uploads", async (c) =>
+    c.json(await engine.tasks.upload(idParam(c, "id"), await command(c)), 201),
   );
 
   api.get("/tasks/:id/artifacts/:artifactId/content", async (c) => {
