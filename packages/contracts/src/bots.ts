@@ -81,8 +81,69 @@ export function defaultAppearanceFor(seed: string): BotAppearance {
   };
 }
 
-const botNameSchema = z.string().trim().min(1).max(60);
-const botRoleSchema = z.string().trim().max(80);
+/**
+ * Characters a bot's name and role never hold. Both appear unquoted in
+ * model-facing text (the persona line, the team roster, the `delegate` and
+ * `message` tool descriptions, entry headers, `task_log` index lines and
+ * handoff notes), where any of these could forge a line, reorder what a
+ * reader sees or hide text a model still reads:
+ * - every control character (`\p{Cc}`: LF, CR, VT, FF and NEL among them),
+ *   and LS and PS;
+ * - Unicode's Bidi_Control set: U+061C, U+200E, U+200F, U+202A to U+202E and
+ *   U+2066 to U+2069;
+ * - the invisible U+180E, U+200B, U+2060 to U+2064, U+206A to U+206F, U+FEFF
+ *   and U+FFF9 to U+FFFB;
+ * - the tag characters U+E0000 to U+E007F;
+ * - lone surrogates.
+ * ZWNJ and ZWJ (U+200C, U+200D) are allowed: scripts and emoji need them.
+ * Migration 0012 refuses the same set (a test compares the two over every
+ * code point) and normalised the names and roles stored before this rule.
+ */
+const NOT_ONE_LINE =
+  /[\p{Cc}\u061C\u180E\u200B\u200E\u200F\u2028-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB\u{E0000}-\u{E007F}\uD800-\uDFFF]/u;
+
+const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/;
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/;
+
+/** What a refused character is, for the field error. */
+function refusedKind(character: string): string {
+  const code = character.codePointAt(0) ?? 0;
+  if (LINE_BREAKS.test(character)) return "a line break";
+  if (character === "\t") return "a tab";
+  if (BIDI_CONTROLS.test(character)) return "a bidirectional control";
+  if (code >= 0xe0000) return "a tag character";
+  if (code >= 0xd800 && code <= 0xdfff) return "a lone surrogate";
+  if (code <= 0x9f) return "a control character";
+  return "an invisible character";
+}
+
+const codePoint = (character: string) =>
+  `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`;
+
+/** Refines a text to one line of plain text, naming the first refused character. */
+const oneLine =
+  (noun: string) => (text: string, context: z.RefinementCtx<string>) => {
+    const refused = NOT_ONE_LINE.exec(text)?.[0];
+    if (refused !== undefined)
+      context.addIssue({
+        code: "custom",
+        message: `${noun} is one line of plain text: remove ${codePoint(refused)} (${refusedKind(refused)}).`,
+      });
+  };
+
+/** One line of plain text, 1 to 60 characters once trimmed. */
+const botNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(60)
+  .superRefine(oneLine("A bot name"));
+/** One line of plain text, at most 80 characters once trimmed. */
+const botRoleSchema = z
+  .string()
+  .trim()
+  .max(80)
+  .superRefine(oneLine("A bot role"));
 const botInstructionsSchema = z.string().trim().max(COMMAND_TEXT_LIMIT);
 
 /** Derived by the server: `working` while the bot has a queued or running session. */
