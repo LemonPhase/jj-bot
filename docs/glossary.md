@@ -39,7 +39,7 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 | **Wake**         | Start a new run of a waiting session. Briefs, results and steering wake a session; a message never does, and it waits for the recipient's next run.                          |
 | **Task log**     | Every message of a task, stored once and in order: user messages, briefs, reports and teammate messages. The task chat in the UI shows it.                                   |
 | **Workspace**    | The task's shared folder of files. Every session in the task reads and writes it through its coding tools.                                                                   |
-| **Handoff note** | A short note added to a brief when a bot gets more work in a task it has worked on before: its previous brief and report. It points to that work rather than summarising it. |
+| **Handoff note** | A note delivered with a brief when a bot gets more work from a session it reported to before: its last brief and report. It points to that work, rather than summarising it. |
 
 ## Settings and records
 
