@@ -108,9 +108,13 @@ export interface TaskLogPage {
 /** No stored id or text holds a NUL, and the databases refuse one in a query. */
 export const hasNul = (text: string) => text.includes("\u0000");
 
-/** `text` on one line, cut near `max` characters (never inside a surrogate pair). */
+/**
+ * `text` on one line, cut near `max` characters (never inside a surrogate
+ * pair). Every break a model may read as one, NEL (U+0085) included, which
+ * `\s` does not match, becomes a space.
+ */
 export function clipLine(text: string, max: number): string {
-  const line = text.replace(/\s+/g, " ").trim();
+  const line = text.replace(/[\s\u0085]+/g, " ").trim();
   if (line.length <= max) return line;
   return `${line
     .slice(0, max - 1)
@@ -299,7 +303,8 @@ export async function readTaskLogEntry(
   return (await toEntries(exec, rows))[0];
 }
 
-const header = (entry: TaskLogEntry, redact: Redact) =>
+/** An entry's id, kind and author (→ recipients), as its index line starts. */
+export const entryHeader = (entry: TaskLogEntry, redact: Redact) =>
   redact(
     `${entry.id} [${entry.kind}] ${entry.author}${
       entry.everyone
@@ -318,11 +323,12 @@ export const indexLine = (
   entry: TaskLogEntry,
   redact: Redact,
   previewChars = PREVIEW_CHARS,
-) => `${header(entry, redact)}: ${clipLine(redact(entry.text), previewChars)}`;
+) =>
+  `${entryHeader(entry, redact)}: ${clipLine(redact(entry.text), previewChars)}`;
 
 /** An entry in full: its index header, then its whole text. */
 export const formatEntry = (entry: TaskLogEntry, redact: Redact) =>
-  `${header(entry, redact)}\n${redact(entry.text)}`;
+  `${entryHeader(entry, redact)}\n${redact(entry.text)}`;
 
 export interface TaskLogPageFormat {
   redact: Redact;

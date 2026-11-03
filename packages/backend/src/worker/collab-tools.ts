@@ -15,10 +15,10 @@ import {
   openChildren,
 } from "../services/sessions";
 import { briefSummary } from "../services/task-log";
-import { handoffNote } from "./handoff";
+import { childFirstInput } from "./first-input";
 import { lookupTools } from "./lookup-tools";
 import type { CompletionRequest } from "./outcomes";
-import { briefPointer, type RosterMember } from "./prompts";
+import type { RosterMember } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import { textArg } from "./tool-args";
 
@@ -139,12 +139,18 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
             `This task already has ${ctx.config.maxSessionsPerTask} sessions, the limit. Use the results you have or do the work yourself.`,
           );
         const attribution = attributionOf(rc);
-        // A bot that already reported to this session starts on a note that
-        // points at its latest earlier session (handoff.ts).
-        const note = await handoffNote(
+        // What the child starts on (first-input.ts): the task log so far, the
+        // user's messages, a handoff note when the bot reported to this
+        // session before, and a pointer to its brief. Read before the
+        // assignment is posted, so the log holds what came before it.
+        const firstInput = await childFirstInput(
           tx,
           task,
-          { parentSessionId: rc.session.id, botId: assignee.botId },
+          {
+            parentSessionId: rc.session.id,
+            botId: assignee.botId,
+            requester: rc.bot.name,
+          },
           rc.redact,
         );
         const child = await insertSession(
@@ -182,11 +188,9 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           {
             kind: "brief",
             // The brief itself is in the assignee's prompt, sent with every
-            // request; this only starts the session, after the handoff note
-            // when there is one. Neither changes the stored brief.
-            text: note
-              ? `${note}\n\n${briefPointer(rc.bot.name)}`
-              : briefPointer(rc.bot.name),
+            // request; this item starts the session and leaves the stored
+            // brief as written.
+            text: firstInput,
             sourceMessageId: message.id,
           },
           { wake: true, ctx },
