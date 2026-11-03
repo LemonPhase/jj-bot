@@ -18,8 +18,10 @@ import {
   openDatabase,
   runtimeProfiles,
   sessionInbox,
+  sessions,
   taskEvents,
   taskGoalVersions,
+  taskMessages,
   taskParticipants,
   tasks,
   taskTemplates,
@@ -99,65 +101,77 @@ async function written() {
   };
 }
 
-/** A task as created: everything but ids, times and `templateId`. */
+/** Ids the engine mints for a new task's records; bots and profiles are shared, so they stay. */
+const MINTED =
+  /^(task|sess|run|inbox|msg|evt|art|use|appr|chk|job|upd)_[0-9A-Z]{26}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+
+/**
+ * Everything a task holds once created: its whole view (task, sessions,
+ * messages, events with their payloads, usage) and every row the creation
+ * wrote, with the ids it minted numbered by first appearance, times blanked
+ * and `templateId` (`template_id`) nulled. Two tasks created alike read the
+ * same.
+ */
 async function created(view: TaskView) {
-  const { task, sessions } = view;
-  const [root] = sessions;
-  const inbox = root
-    ? await db.database.db
-        .select({ kind: sessionInbox.kind, text: sessionInbox.text })
-        .from(sessionInbox)
-        .where(eq(sessionInbox.sessionId, root.id))
-        .orderBy(asc(sessionInbox.createdAt))
-    : [];
-  const versions = await db.database.db
-    .select({
-      version: taskGoalVersions.version,
-      goal: taskGoalVersions.goal,
-      verificationPlan: taskGoalVersions.verificationPlan,
-      author: taskGoalVersions.author,
-    })
-    .from(taskGoalVersions)
-    .where(eq(taskGoalVersions.taskId, task.id));
-  const participants = await db.database.db
-    .select({ botId: taskParticipants.botId })
-    .from(taskParticipants)
-    .where(eq(taskParticipants.taskId, task.id))
-    .orderBy(asc(taskParticipants.botId));
-  const queued = await db.database.db
-    .select({ kind: jobs.kind, status: jobs.status })
-    .from(jobs)
-    .where(eq(jobs.taskId, task.id));
-  return {
-    task: {
-      title: task.title,
-      goal: task.goal,
-      goalVersion: task.goalVersion,
-      coordinatorBotId: task.coordinatorBotId,
-      participantBotIds: task.participantBotIds,
-      status: task.status,
-      result: task.result,
-      error: task.error,
-      verificationPlan: task.verificationPlan,
-      spendCapUsd: task.spendCapUsd,
-      finishedAt: task.finishedAt,
-    },
-    sessions: sessions.map((session) => ({
-      botId: session.botId,
-      parentSessionId: session.parentSessionId,
-      role: session.role,
-      brief: session.brief,
-      goalVersion: session.goalVersion,
-      depth: session.depth,
-      status: session.status,
-    })),
-    inbox,
-    versions,
-    participants,
-    jobs: queued,
-    events: view.events.map((event) => event.type),
-    messages: view.messages.length,
+  const taskId = view.task.id;
+  const rows = {
+    task: await db.database.db.select().from(tasks).where(eq(tasks.id, taskId)),
+    participants: await db.database.db
+      .select()
+      .from(taskParticipants)
+      .where(eq(taskParticipants.taskId, taskId))
+      .orderBy(asc(taskParticipants.botId)),
+    versions: await db.database.db
+      .select()
+      .from(taskGoalVersions)
+      .where(eq(taskGoalVersions.taskId, taskId))
+      .orderBy(asc(taskGoalVersions.version)),
+    sessions: await db.database.db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.taskId, taskId))
+      .orderBy(asc(sessions.id)),
+    inbox: await db.database.db
+      .select()
+      .from(sessionInbox)
+      .where(eq(sessionInbox.taskId, taskId))
+      .orderBy(asc(sessionInbox.id)),
+    messages: await db.database.db
+      .select()
+      .from(taskMessages)
+      .where(eq(taskMessages.taskId, taskId))
+      .orderBy(asc(taskMessages.sequence)),
+    events: await db.database.db
+      .select()
+      .from(taskEvents)
+      .where(eq(taskEvents.taskId, taskId))
+      .orderBy(asc(taskEvents.sequence)),
+    jobs: await db.database.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.taskId, taskId))
+      .orderBy(asc(jobs.id)),
   };
+  const ids = new Map<string, string>();
+  const walk = (value: unknown, key?: string): unknown => {
+    if (key === "templateId") return null;
+    if (value instanceof Date) return "<time>";
+    if (typeof value === "string") {
+      if (ISO_TIME.test(value)) return "<time>";
+      if (!MINTED.test(value)) return value;
+      if (!ids.has(value))
+        ids.set(value, `<${value.split("_")[0]} ${ids.size + 1}>`);
+      return ids.get(value);
+    }
+    if (Array.isArray(value)) return value.map((item) => walk(item));
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([name, item]) => [name, walk(item, name)]),
+      );
+    return value;
+  };
+  return walk({ view, rows }) as { view: TaskView; rows: typeof rows };
 }
 
 const templateHints = (hints: WorkspaceHint[]) =>
@@ -441,9 +455,19 @@ describe("starting a template", () => {
       expect(fromTemplate.task.templateId).toBe(template.id);
       const shape = await created(fromTemplate);
       expect(shape).toEqual(await created(fromForm));
-      // What the equivalence covers: the roster, goal version 1 and the root brief.
-      expect(shape.task.participantBotIds).toEqual([lead.id, helper]);
-      expect(shape.versions).toEqual([
+      // What the equivalence covers, among the rest: the roster, the
+      // task.created payload, goal version 1 and the root brief.
+      expect(shape.view.task.participantBotIds).toEqual([lead.id, helper]);
+      const [createdEvent] = shape.rows.events;
+      expect(createdEvent?.type).toBe("task.created");
+      expect(createdEvent?.payload).toMatchObject({
+        task: {
+          participantBotIds: [lead.id, helper],
+          verificationPlan: plan,
+          spendCapUsd: started.task.spendCapUsd,
+        },
+      });
+      expect(shape.rows.versions).toMatchObject([
         {
           version: 1,
           goal: fields.goal,
@@ -451,13 +475,15 @@ describe("starting a template", () => {
           author: "user",
         },
       ]);
-      expect(shape.inbox).toEqual([
+      expect(shape.rows.inbox).toMatchObject([
         {
           kind: "brief",
           text: expect.stringContaining(`Goal (version 1):\n${fields.goal}`),
         },
       ]);
-      expect(shape.jobs).toEqual([{ kind: "session.run", status: "queued" }]);
+      expect(shape.rows.jobs).toMatchObject([
+        { kind: "session.run", status: "queued" },
+      ]);
       await engine.profiles.update(profile.id, {
         budgets: { maxUsdPerTask: 1.5 },
       });
