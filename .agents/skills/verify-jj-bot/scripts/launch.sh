@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Start an isolated JJ Bot instance for verification and print its run dir.
 #
-#   .agents/skills/verify-jj-bot/scripts/launch.sh [--no-build] [--driver local|docker]
+#   .agents/skills/verify-jj-bot/scripts/launch.sh [--no-build] [--driver local|docker] [--secret-store]
 #
 # One process serves the API, the embedded worker and the built web app on a
 # free loopback port. It never reads the repository's .env: the environment is
 # cleared, so provider keys, API_TOKEN and DATABASE_URL from your shell or .env
 # never reach it. The only model is the keyless scripted test model.
+# --secret-store gives the instance a fresh random JJ_SECRET_KEY, so keys and
+# secrets can be stored in Settings; it is never written to disk.
 # Data, sandbox workspaces and logs live in the run dir; stop.sh removes all of
 # it except evidence/.
 set -euo pipefail
@@ -14,10 +16,12 @@ set -euo pipefail
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 build=1
 driver=local
+secret_store=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build) build=0 ;;
     --driver) driver=$2; shift ;;
+    --secret-store) secret_store=1 ;;
     *) echo "launch.sh: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -50,9 +54,17 @@ if [ "$driver" = docker ]; then
   done
 fi
 
+# A master key for this run only, so the secrets store is on. Kept in the
+# server's environment alone, like a real deployment's.
+secret_env=()
+if [ "$secret_store" = 1 ]; then
+  secret_env=(JJ_SECRET_KEY="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64"))')")
+fi
+
 git -C "$repo" rev-parse HEAD >"$run/commit"
 git -C "$repo" status --porcelain -- . ':!.agents' ':!.claude' >"$run/dirty"
 echo "$driver" >"$run/driver"
+echo "$secret_store" >"$run/secret-store"
 
 cd "$repo"
 # Job control gives the server a process group of its own (pgid = pid), so
@@ -67,6 +79,7 @@ nohup env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=product
   JJ_ENABLE_SCRIPTED_MODEL=true \
   JJ_SANDBOX_DRIVERS="$driver" JJ_SANDBOX_ROOT="$run/sandbox" \
   ${docker_env[@]+"${docker_env[@]}"} \
+  ${secret_env[@]+"${secret_env[@]}"} \
   node --import tsx apps/api/src/index.ts "--jj-verify-run=$run/" >"$run/server.log" 2>&1 &
 echo $! >"$run/pid"
 set +m
