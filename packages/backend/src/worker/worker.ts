@@ -1,5 +1,6 @@
 // The job loop: claims up to `concurrency` jobs, heartbeats their leases,
-// aborts runs on stop requests, and recovers what a crashed worker left.
+// aborts runs on stop requests, recovers what a crashed worker left, and
+// drains: stops claiming and lets running sessions reach a turn boundary.
 // Waiting sessions hold no job, so they never take a slot.
 import { isFinishedStatus } from "@jj/contracts";
 import {
@@ -11,6 +12,7 @@ import {
   type JobKind,
   pruneWorkerHeartbeats,
   recordWorkerHeartbeat,
+  releaseLease,
   removeWorkerHeartbeat,
   sessions,
   tasks,
@@ -56,12 +58,26 @@ export interface Worker {
    */
   stop(): Promise<void>;
   /**
+   * Graceful drain, then `stop`. No new claims, while leases are kept and
+   * stop requests still apply; each running session stops at its next turn
+   * boundary, handed back as `stop` hands it back, and a chat reply runs to
+   * its end. What still runs after `timeoutMs` is interrupted as a lost
+   * lease is: fenced, so it writes nothing more, and its lease released once
+   * it has stopped (`releaseLease`, which costs the job no attempt), so the
+   * next worker reclaims it at once and resumes its session from the last
+   * completed turn. Then sandboxes are released.
+   * Resolves once all of that is done.
+   */
+  drain(timeoutMs: number): Promise<void>;
+  /**
    * Stops at once, as a crash would: every run is fenced first, so none starts
    * a new write (one already open, and a claim pass in flight, still commit),
    * leases are left to expire and another worker reclaims the runs. For tests
    * and fatal exits.
    */
   abandon(): Promise<void>;
+  /** From the start of a drain until the worker has stopped. */
+  readonly draining: boolean;
   /** Jobs currently running in this worker. */
   readonly activeJobs: number;
   /**
@@ -110,6 +126,9 @@ export function createWorker(
   const unsubscribers: Unsubscribe[] = [];
   let started = false;
   let stopping = false;
+  /** Claims nothing more; running jobs go on to a turn boundary (`drain`). */
+  let draining = false;
+  let drained: Promise<void> | undefined;
   let pumping = false;
   let again = false;
   let crashing = false;
@@ -153,13 +172,13 @@ export function createWorker(
       control,
       done: run.finally(() => {
         active.delete(job.id);
-        if (!stopping) void pump();
+        if (!stopping && !draining) void pump();
       }),
     };
     active.set(job.id, entry);
   }
 
-  /** A job claimed while stopping goes straight back to the queue. */
+  /** A job claimed while stopping or draining goes straight back to the queue. */
   async function handBack(job: ClaimedJob) {
     if (crashing) return;
     await ctx.db
@@ -187,7 +206,7 @@ export function createWorker(
   const pump = (): Promise<void> => withLogFields({}, claimPass, true);
 
   async function claimPass(): Promise<void> {
-    if (stopping) return;
+    if (stopping || draining) return;
     if (pumping) {
       again = true;
       return;
@@ -196,7 +215,7 @@ export function createWorker(
     try {
       do {
         again = false;
-        while (!stopping && active.size < ctx.config.concurrency) {
+        while (!stopping && !draining && active.size < ctx.config.concurrency) {
           // Session runs and chat replies first; discoveries only into their
           // own slots, so they never hold the ones runs and replies need.
           const free = ctx.config.concurrency - active.size;
@@ -209,11 +228,13 @@ export function createWorker(
             ctx.config.maxConcurrentDiscoveries - discovering,
           );
           const discoveries =
-            slots > 0 && !stopping ? await claimOf(slots, DISCOVERY_KINDS) : 0;
+            slots > 0 && !stopping && !draining
+              ? await claimOf(slots, DISCOVERY_KINDS)
+              : 0;
           if (work + discoveries === 0) break;
         }
-      } while (again && !stopping);
-      if (!stopping) {
+      } while (again && !stopping && !draining);
+      if (!stopping && !draining) {
         lastPollAt = new Date();
         await beat();
       }
@@ -256,7 +277,7 @@ export function createWorker(
           job.kind,
           (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
         );
-      if (stopping) await handBack(job);
+      if (stopping || draining) await handBack(job);
       else launch(job);
     }
     return jobs.length;
@@ -383,6 +404,58 @@ export function createWorker(
     }
   }
 
+  /**
+   * Stops claiming, lets running jobs reach a turn boundary or their end for
+   * up to `timeoutMs`, interrupts the rest as a lost lease, then stops.
+   */
+  async function drainThenStop(timeoutMs: number) {
+    if (!started || stopping) return;
+    // From here no job is launched (a claim pass in flight hands back what
+    // it claims), so these are all the jobs left to finish.
+    draining = true;
+    const running = [...active.values()];
+    for (const entry of running) entry.control.draining = true;
+    // The loop no longer polls, which readiness reports.
+    lastPollAt = null;
+    while (pumping) await new Promise((resolve) => setTimeout(resolve, 5));
+    // An API without an embedded worker no longer counts this one as polling.
+    if (ctx.config.workerHeartbeat)
+      await removeWorkerHeartbeat(ctx.db, ctx.config.workerId).catch(
+        (error: unknown) =>
+          ctx.logger.warn("Removing the worker heartbeat failed", {
+            error: errorMessage(error),
+          }),
+      );
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(running.map((entry) => entry.done)),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+    clearTimeout(timer);
+    const interrupted = [...active.values()];
+    if (interrupted.length > 0) {
+      ctx.logger.warn(
+        `The drain timed out after ${timeoutMs} ms: interrupting ${interrupted.length} job(s) as a lost lease does; the next worker resumes them`,
+        { jobIds: interrupted.map((entry) => entry.job.id) },
+      );
+      for (const entry of interrupted) entry.control.abort("lease-lost");
+    }
+    await shutDown("shutdown");
+    // Only now, with each job stopped, so no write-back can follow: the next
+    // claim finds these leases expired, as after a crash, without waiting,
+    // and the interruption costs none of the job's attempts.
+    for (const entry of interrupted)
+      await releaseLease(ctx.db, entry.job.lease).catch((error: unknown) =>
+        ctx.logger.warn(
+          `Releasing the lease of job ${entry.job.id} failed; it is reclaimed once the lease runs out`,
+          { error: errorMessage(error) },
+        ),
+      );
+    draining = false;
+  }
+
   async function shutDown(reason: AbortReason) {
     if (!started) return;
     stopping = true;
@@ -416,10 +489,15 @@ export function createWorker(
     get lastPollAt() {
       return lastPollAt;
     },
+    get draining() {
+      return draining;
+    },
     async start() {
       if (started) return;
       started = true;
       stopping = false;
+      draining = false;
+      drained = undefined;
       crashing = false;
       lastBeatAt = 0;
       if (ctx.config.workerHeartbeat)
@@ -461,6 +539,10 @@ export function createWorker(
       await pump();
     },
     stop: () => shutDown("shutdown"),
+    drain(timeoutMs) {
+      drained ??= drainThenStop(timeoutMs);
+      return drained;
+    },
     abandon: () => shutDown("crash"),
   };
 }

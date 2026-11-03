@@ -1,0 +1,180 @@
+name: Image
+
+# The JJ Bot image (the root Dockerfile) and the jj-sandbox base image
+# (packages/sandbox/images/base). Pull requests that change how the images
+# are built build both for linux/amd64 and push nothing; the CI Compose jobs
+# build the app image from every pull request's source anyway. A version tag
+# (v1.2.3, or v1.2.3-rc.1) on a commit of main builds them for linux/amd64
+# and linux/arm64 and, once the `release` environment lets it, publishes
+# them to GHCR as ghcr.io/<owner>/jj-bot and ghcr.io/<owner>/jj-sandbox,
+# tagged with the version (1.2.3) and, unless it is a pre-release, `latest`,
+# each with an SBOM and provenance attached. By hand (workflow_dispatch) both
+# platforms build without pushing, to prove arm64 before tagging a release:
+# arm64 builds under emulation, too slow for pull requests.
+# docs/development.md, "From the published image".
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker/**
+      - packages/sandbox/images/**
+      - package.json
+      - package-lock.json
+      - "**/package.json"
+      - .github/workflows/image.yml
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A release build is never cancelled by a later push of the same ref.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    # Proves the images build, attestations included; nothing leaves the
+    # runner, and the token can only read the repository.
+    if: ${{ github.event_name != 'push' }}
+    name: Build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: jj-bot
+            context: .
+            file: Dockerfile
+          - image: jj-sandbox
+            context: packages/sandbox/images/base
+            file: packages/sandbox/images/base/Dockerfile
+    env:
+      PLATFORMS: ${{ github.event_name == 'workflow_dispatch' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        if: ${{ contains(env.PLATFORMS, 'arm64') }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Exported to a file on the runner, so the SBOM and provenance are
+      # generated as a release generates them.
+      - name: Build ${{ matrix.image }} (${{ env.PLATFORMS }})
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: ${{ env.PLATFORMS }}
+          outputs: type=oci,dest=${{ runner.temp }}/${{ matrix.image }}.tar
+          sbom: true
+          provenance: mode=max
+          # The final layers only: intermediate stages would crowd the
+          # repository's cache, which CI's npm cache shares.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+
+  publish:
+    # Only a version tag publishes, and only this job may write packages. It
+    # runs in the `release` environment, where the owner requires a review
+    # before it starts. This file is the tagged commit's own, so these checks
+    # catch mistakes; the owner's tag ruleset and the environment's reviewers
+    # are the controls (docs/development.md, "From the published image").
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    name: Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [jj-bot, jj-sandbox]
+    env:
+      CONTEXT: ${{ matrix.image == 'jj-bot' && '.' || 'packages/sandbox/images/base' }}
+    steps:
+      # The whole history, to check where the tag points.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # Only what main holds is published: a tag on any other commit fails.
+      - name: Check the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_SHA is not on main; tag a commit of main to publish it"
+            exit 1
+          fi
+
+      # GHCR names are lowercase; the tag must be a semantic version, which
+      # becomes the image tag without its "v".
+      - name: Check the tag and name the image
+        id: name
+        env:
+          TAG: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is not a version tag such as v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          echo "image=ghcr.io/${OWNER,,}/$IMAGE" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ steps.name.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ steps.name.outputs.latest }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # From scratch, without the pull requests' build cache.
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ env.CONTEXT }}
+          file: ${{ env.CONTEXT }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          sbom: true
+          provenance: mode=max

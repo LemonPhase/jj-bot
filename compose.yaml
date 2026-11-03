@@ -3,8 +3,10 @@
 # run `docker compose up -d --build --wait`, then
 # open the link `docker compose logs app | grep -o 'Open JJ Bot: [^"]*'` prints. Compose
 # reads .env only to fill the variables below. `docker compose up -d postgres`
-# alone starts just the database for `npm run dev`. Details:
-# docs/development.md, "Docker Compose".
+# alone starts just the database for `npm run dev`. Two optional files go
+# with this one: compose.image.yaml runs the published images instead of
+# building, and compose.socket-proxy.yaml puts a socket proxy between the app
+# and the Docker daemon. Details: docs/development.md, "Docker Compose".
 name: jj-bot
 
 services:
@@ -30,6 +32,10 @@ services:
   app:
     build:
       context: .
+      args:
+        # The app user's uid and gid, 10001 by default. No host account may
+        # have it (docs/development.md, "Docker socket proxy").
+        JJ_APP_UID: ${JJ_APP_UID:-10001}
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +87,13 @@ services:
       JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
       JJ_MAX_USD_PER_DAY: ${JJ_MAX_USD_PER_DAY:-}
       JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
+      # How long a stop lets running sessions reach a turn boundary; 20 s
+      # when unset. Raising it, raise JJ_STOP_GRACE_PERIOD (stop_grace_period
+      # below) with it, to at least 25 s more.
+      JJ_DRAIN_TIMEOUT_SEC: ${JJ_DRAIN_TIMEOUT_SEC:-}
+      # The same value as stop_grace_period below, so the app warns at boot
+      # when it is too short for the drain.
+      JJ_STOP_GRACE_PERIOD: ${JJ_STOP_GRACE_PERIOD:-45s}
       # JSON lines by default; `pretty` for reading by eye.
       JJ_LOG_LEVEL: ${JJ_LOG_LEVEL:-}
       JJ_LOG_FORMAT: ${JJ_LOG_FORMAT:-}
@@ -109,7 +122,7 @@ services:
       - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # The entrypoint joins the socket's group and drops to uid 10001 (SETUID,
+    # The entrypoint joins the socket's group and drops to JJ_APP_UID (SETUID,
     # SETGID), and init forwards stop signals to the app (KILL). The app
     # itself runs with no capabilities.
     cap_drop: [ALL]
@@ -120,9 +133,12 @@ services:
     tmpfs:
       - /tmp
     init: true
-    # Longer than the API's own 20 s shutdown limit, so running sessions are
-    # handed back cleanly on `docker compose stop` or `restart`.
-    stop_grace_period: 30s
+    # `docker compose stop` or `restart` sends SIGTERM: the app drains for
+    # JJ_DRAIN_TIMEOUT_SEC (default 20 s), then may take up to 20 s more to
+    # release sandboxes and close (its own limit), so give this at least
+    # JJ_DRAIN_TIMEOUT_SEC + 25 s; its default covers the default drain.
+    # Past it, Docker kills the app, and its sessions resume as after a crash.
+    stop_grace_period: ${JJ_STOP_GRACE_PERIOD:-45s}
     restart: unless-stopped
 
   # Builds the sandbox base image on the host's daemon, where the docker

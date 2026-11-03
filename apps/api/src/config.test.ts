@@ -11,9 +11,11 @@ import {
   isLoopbackHost,
   loadServerConfig,
   loadWorkerConfig,
+  parseDuration,
   REPO_ROOT,
   redactEndpoint,
   servesWithoutToken,
+  stopGraceWarning,
 } from "./config";
 import { startServer } from "./server";
 import { quietLogger } from "./testing";
@@ -76,6 +78,60 @@ describe("loadServerConfig", () => {
     expect(config.engine.persistence).toBe(true);
     // No other process can open PGlite, so no worker heartbeat is written.
     expect(config.engine.workerHeartbeat).toBe(false);
+    expect(config.drainTimeoutMs).toBe(20_000);
+  });
+
+  it("reads JJ_STOP_GRACE_PERIOD as compose writes durations, and warns when it is too short for the drain", () => {
+    expect(parseDuration("45s")).toBe(45_000);
+    expect(parseDuration("1m10s")).toBe(70_000);
+    expect(parseDuration("1h")).toBe(3_600_000);
+    expect(parseDuration("1.5s")).toBe(1_500);
+    expect(parseDuration("500ms")).toBe(500);
+    for (const value of ["45", "s", "45 s", "-5s", "1m 10s", "1d"])
+      expect(parseDuration(value), value).toBeUndefined();
+    expect(() => loadServerConfig({ JJ_STOP_GRACE_PERIOD: "45" })).toThrow(
+      'JJ_STOP_GRACE_PERIOD must be a duration such as 45s or 1m30s; got "45".',
+    );
+    expect(loadServerConfig({}).stopGracePeriodMs).toBeUndefined();
+    // compose.yaml's defaults: a 20 s drain and 45 s to stop.
+    const fits = loadServerConfig({ JJ_STOP_GRACE_PERIOD: "45s" });
+    expect(fits.stopGracePeriodMs).toBe(45_000);
+    expect(stopGraceWarning(fits)).toBeUndefined();
+    expect(stopGraceWarning(loadServerConfig({}))).toBeUndefined();
+    expect(
+      stopGraceWarning(
+        loadServerConfig({
+          JJ_DRAIN_TIMEOUT_SEC: "60",
+          JJ_STOP_GRACE_PERIOD: "1m",
+        }),
+      ),
+    ).toBe(
+      "JJ_STOP_GRACE_PERIOD (60 s) is less than JJ_DRAIN_TIMEOUT_SEC (60 s) plus 25 s: a stop can be killed before it drains and shuts down, and its sessions then resume only once their leases run out. Raise the stop grace period (compose: JJ_STOP_GRACE_PERIOD) or lower JJ_DRAIN_TIMEOUT_SEC.",
+    );
+    expect(
+      stopGraceWarning(
+        loadServerConfig({
+          JJ_DRAIN_TIMEOUT_SEC: "60",
+          JJ_STOP_GRACE_PERIOD: "1m25s",
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("reads JJ_DRAIN_TIMEOUT_SEC in whole seconds, 0 to an hour", () => {
+    expect(loadServerConfig({ JJ_DRAIN_TIMEOUT_SEC: "0" }).drainTimeoutMs).toBe(
+      0,
+    );
+    expect(
+      loadWorkerConfig({
+        DATABASE_URL: "postgresql://localhost/jj",
+        JJ_DRAIN_TIMEOUT_SEC: " 90 ",
+      }).drainTimeoutMs,
+    ).toBe(90_000);
+    for (const value of ["-1", "1.5", "3601", "soon"])
+      expect(() => loadServerConfig({ JJ_DRAIN_TIMEOUT_SEC: value })).toThrow(
+        `JJ_DRAIN_TIMEOUT_SEC must be a whole number of seconds from 0 to 3600; got "${value}".`,
+      );
   });
 
   it("uses PostgreSQL when DATABASE_URL is set", () => {
@@ -331,6 +387,29 @@ describe("loadWorkerConfig", () => {
 });
 
 describe("JJ_DEFAULT_MODEL", () => {
+  it("warns at boot when the stop grace period is too short for the drain", async () => {
+    const warnings: string[] = [];
+    const server = await startServer({
+      logger: { ...quietLogger, warn: (message) => warnings.push(message) },
+      env: {
+        API_PORT: "0",
+        JJ_DATABASE_PATH: "memory://",
+        JJ_SANDBOX_DRIVERS: "local",
+        JJ_DRAIN_TIMEOUT_SEC: "30",
+        JJ_STOP_GRACE_PERIOD: "45s",
+      },
+    });
+    try {
+      expect(
+        warnings.filter((line) => line.startsWith("JJ_STOP_GRACE_PERIOD")),
+      ).toEqual([
+        "JJ_STOP_GRACE_PERIOD (45 s) is less than JJ_DRAIN_TIMEOUT_SEC (30 s) plus 25 s: a stop can be killed before it drains and shuts down, and its sessions then resume only once their leases run out. Raise the stop grace period (compose: JJ_STOP_GRACE_PERIOD) or lower JJ_DRAIN_TIMEOUT_SEC.",
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("warns at boot when it is not used, and bootstrap reports the default in use", async () => {
     const warnings: string[] = [];
     const server = await startServer({

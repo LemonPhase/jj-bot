@@ -91,6 +91,7 @@ nohup env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=product
   API_HOST=127.0.0.1 API_PORT=0 \
   JJ_DATABASE_PATH="$run/data" \
   JJ_ENABLE_SCRIPTED_MODEL=true \
+  JJ_DRAIN_TIMEOUT_SEC=0 \
   JJ_SANDBOX_DRIVERS="$driver" JJ_SANDBOX_ROOT="$run/sandbox" \
   ${docker_env[@]+"${docker_env[@]}"} \
   ${secret_env[@]+"${secret_env[@]}"} \

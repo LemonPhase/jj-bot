@@ -25,6 +25,12 @@ export const DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock";
 const MIN_API_VERSION = "1.41";
 const MAX_API_VERSION = "1.47";
 const REQUEST_TIMEOUT_MS = 60_000;
+/**
+ * An idle kept-alive connection is closed after this long, before a socket
+ * proxy's own keep-alive limit (10 s in tecnativa/docker-socket-proxy) can
+ * close it under a request that is just reusing it.
+ */
+const IDLE_CONNECTION_MS = 5_000;
 
 export interface DockerHostOptions {
   /** The `DOCKER_TLS_VERIFY` value; any non-empty value other than `0` is refused. */
@@ -111,6 +117,30 @@ export class DockerApiError extends Error {
   }
 }
 
+/**
+ * A refusal that did not come from the Docker Engine, whose errors are JSON
+ * with a `message`: a filtering socket proxy in front of the daemon (such as
+ * the one `compose.socket-proxy.yaml` runs) does not allow the call.
+ */
+export class DockerProxyRefusedError extends DockerApiError {
+  constructor(
+    status: number,
+    readonly method: string,
+    readonly path: string,
+    endpoint: string,
+  ) {
+    super(
+      status,
+      `${endpoint} refused ${method} ${path} (HTTP ${status}) without a Docker Engine error: a socket proxy in front of the daemon does not allow this call. ` +
+        "The docker driver needs the Engine API's containers, exec, images, networks and volumes endpoints, with POST, PUT and DELETE (docs/development.md, Docker socket proxy).",
+    );
+    this.name = "DockerProxyRefusedError";
+  }
+}
+
+/** Statuses a filtering proxy answers a call it does not allow with. */
+const REFUSALS = new Set([401, 403, 405, 407]);
+
 /** A driver helper produced more output than the caller allowed; the connection was dropped. */
 export class DockerOutputLimitError extends Error {
   constructor(readonly limit: number) {
@@ -157,7 +187,14 @@ async function readBody(response: IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
-function apiError(status: number, body: Buffer): DockerApiError {
+interface Call {
+  method: string;
+  /** Without the API version prefix or the query. */
+  path: string;
+  endpoint: DockerEndpoint;
+}
+
+function apiError(status: number, body: Buffer, call: Call): DockerApiError {
   const text = body.toString("utf8").trim();
   try {
     const parsed = JSON.parse(text) as { message?: unknown };
@@ -166,6 +203,13 @@ function apiError(status: number, body: Buffer): DockerApiError {
   } catch {
     // Not JSON.
   }
+  if (REFUSALS.has(status))
+    return new DockerProxyRefusedError(
+      status,
+      call.method,
+      call.path,
+      describeEndpoint(call.endpoint),
+    );
   return new DockerApiError(status, text || `HTTP ${status}`);
 }
 
@@ -246,7 +290,11 @@ export class DockerEngine {
   private versionPrefix?: Promise<string>;
 
   constructor(readonly endpoint: DockerEndpoint) {
-    this.agent = new Agent({ keepAlive: true, maxSockets: 64 });
+    this.agent = new Agent({
+      keepAlive: true,
+      maxSockets: 64,
+      timeout: IDLE_CONNECTION_MS,
+    });
   }
 
   private target(): RequestOptions {
@@ -351,7 +399,8 @@ export class DockerEngine {
     const response = await this.send(method, path, init);
     const body = await readBody(response);
     const status = response.statusCode ?? 0;
-    if (status < 200 || status >= 300) throw apiError(status, body);
+    if (status < 200 || status >= 300)
+      throw apiError(status, body, { method, path, endpoint: this.endpoint });
     if (body.length === 0) return undefined as T;
     const type = response.headers["content-type"] ?? "";
     if (!type.includes("json")) return body.toString("utf8") as T;
@@ -375,7 +424,12 @@ export class DockerEngine {
     });
     const body = await readBody(response);
     const status = response.statusCode ?? 0;
-    if (status < 200 || status >= 300) throw apiError(status, body);
+    if (status < 200 || status >= 300)
+      throw apiError(status, body, {
+        method: "POST",
+        path: "/images/create",
+        endpoint: this.endpoint,
+      });
     for (const line of body.toString("utf8").split("\n")) {
       if (!line.trim()) continue;
       try {
@@ -527,7 +581,11 @@ export class DockerEngine {
             reject(
               status >= 200 && status < 300
                 ? new Error("Docker daemon did not upgrade the exec connection")
-                : apiError(status, body),
+                : apiError(status, body, {
+                    method: "POST",
+                    path: `/exec/${execId}/start`,
+                    endpoint: this.endpoint,
+                  }),
             ),
           reject,
         );
