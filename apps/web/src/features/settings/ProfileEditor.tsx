@@ -1,6 +1,8 @@
 import {
   CODING_TOOLS,
   COLLABORATION_TOOLS,
+  describeApprovalRule,
+  matchingApprovalRule,
   type RuntimeProfile,
   type SandboxDriverInfo,
   type ToolName,
@@ -25,6 +27,8 @@ import {
   isolationLabel,
 } from "./isolation";
 import {
+  type ApprovalRuleDraft,
+  approvalMatchKey,
   BUDGETS,
   type BudgetKey,
   createProfileCommand,
@@ -322,6 +326,12 @@ export function ProfileEditor({
           </p>
         </fieldset>
 
+        <ApprovalRules
+          rules={draft.approvals}
+          errors={errors}
+          onChange={(approvals) => set({ approvals })}
+        />
+
         {profile?.isDefault ? (
           <p className="settings-hint">
             This is the default profile. Make another profile the default to
@@ -364,6 +374,115 @@ export function ProfileEditor({
         </div>
       </form>
     </section>
+  );
+}
+
+const TOOL_OPTIONS: SelectOption<ToolName>[] = CODING_TOOLS.map((tool) => ({
+  value: tool,
+  label: tool,
+}));
+
+/**
+ * The profile's approval rules: calls of its bots that wait for the user's
+ * approval before they run. None by default. A preview says whether a bash
+ * command would ask, with the same matcher the server uses.
+ */
+function ApprovalRules({
+  rules,
+  errors,
+  onChange,
+}: {
+  rules: readonly ApprovalRuleDraft[];
+  errors: ProfileErrors;
+  onChange: (rules: ApprovalRuleDraft[]) => void;
+}) {
+  const [sample, setSample] = useState("");
+  const update = (index: number, change: Partial<ApprovalRuleDraft>) =>
+    onChange(
+      rules.map((rule, at) => (at === index ? { ...rule, ...change } : rule)),
+    );
+  const parsed = rules.map((rule) =>
+    rule.match.trim()
+      ? { tool: rule.tool, match: rule.match.trim() }
+      : { tool: rule.tool },
+  );
+  const matched = sample.trim()
+    ? matchingApprovalRule(parsed, "bash", { command: sample })
+    : undefined;
+  return (
+    <fieldset className="settings-group">
+      <legend className="ui-field__label">Approvals</legend>
+      {rules.length === 0 ? (
+        <p className="ui-field__hint">
+          No rules: every call runs without asking.
+        </p>
+      ) : (
+        <ul className="settings-approvals" aria-label="Approval rules">
+          {rules.map((rule, index) => (
+            <li key={index} className="settings-approvals__rule">
+              <Select
+                label={`Rule ${index + 1} tool`}
+                value={rule.tool}
+                options={TOOL_OPTIONS}
+                onChange={(tool) => update(index, { tool })}
+              />
+              <Input
+                label={`Rule ${index + 1} match`}
+                placeholder="Every call"
+                value={rule.match}
+                error={errors[approvalMatchKey(index)]}
+                onChange={(event) =>
+                  update(index, { match: event.target.value })
+                }
+              />
+              <Button
+                onClick={() => onChange(rules.filter((_, at) => at !== index))}
+                aria-label={`Remove rule ${index + 1}`}
+              >
+                Remove
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {errors.approvals && (
+        <p className="ui-field__error">{errors.approvals}</p>
+      )}
+      <div>
+        <Button
+          onClick={() => onChange([...rules, { tool: "bash", match: "" }])}
+        >
+          Add a rule
+        </Button>
+      </div>
+      <p className="ui-field__hint">
+        A call that matches a rule waits for your approval in the task before it
+        runs. The match is case-sensitive text found anywhere in the call: the
+        command for bash, the pattern and path for grep and find, the path for
+        the other file tools; <code>*</code> stands for any text, and an empty
+        match asks before every call of the tool. Rules guide a cooperative bot;
+        they are not a security boundary, since a command can reach the same
+        effect another way (a script it wrote). The sandbox and its network
+        policy remain the boundary.
+      </p>
+      {rules.length > 0 && (
+        <div className="settings-approvals__preview">
+          <Input
+            label="Check a bash command"
+            placeholder="git push origin main"
+            value={sample}
+            onChange={(event) => setSample(event.target.value)}
+          />
+          {sample.trim() && (
+            <p className="ui-field__hint" role="status">
+              {matched
+                ? `Asks for approval: ${describeApprovalRule(matched)}.`
+                : "Runs without asking."}
+            </p>
+          )}
+        </div>
+      )}
+    </fieldset>
   );
 }
 

@@ -1124,6 +1124,31 @@ describe("reviewTurn", () => {
     );
   });
 
+  it("ends a turn before the approval review: none of its calls is held", async () => {
+    const recorded = recordingHooks();
+    const reviewedForApproval: string[] = [];
+    faux.setResponses([
+      callTool("bash", { command: "echo one > one.txt" }),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          reviewTurn: async () => "Parked.",
+          reviewToolCall: async (call) => {
+            reviewedForApproval.push(call.tool);
+            return "hold";
+          },
+        },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "" });
+    expect(reviewedForApproval).toEqual([]);
+    expect(textOf(toolResults(recorded.entries)[0])).toBe("Parked.");
+    await expect(workspace.sandbox.fs.read("one.txt")).rejects.toThrow();
+  });
+
   it("is not asked about a response cut at the output limit", async () => {
     const recorded = recordingHooks();
     let asked = 0;

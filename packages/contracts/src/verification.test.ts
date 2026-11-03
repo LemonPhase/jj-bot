@@ -400,6 +400,7 @@ describe("applyTaskEvent and verification checks", () => {
     sessions: [],
     messages: [],
     artifacts: [],
+    approvals: [],
     verificationChecks: [],
     usage: {
       total: {

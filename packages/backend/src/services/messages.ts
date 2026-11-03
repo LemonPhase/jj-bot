@@ -30,6 +30,7 @@ import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import { planOf, toMessage } from "../records";
+import { expireApprovals, pendingApproval } from "./approvals";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
 import { describePlan } from "./verification";
@@ -192,7 +193,9 @@ export async function rootSession(
  * task (and its coordinator session) and wakes the coordinator. Refused with
  * TASK_TERMINAL once the task is cancelled or being stopped, and with
  * SPEND_CAP_REACHED while the coordinator could not make a model call (the
- * task's, its bot's or the instance's cap is reached).
+ * task's, its bot's or the instance's cap is reached). A coordinator that
+ * holds a call for the user's approval is left waiting: the message reaches
+ * it with the answer.
  */
 export async function continueTask(
   tx: Tx,
@@ -207,6 +210,9 @@ export async function continueTask(
   });
   let root = await rootSession(tx, task.id);
   if (!root) throw new Error(`Task ${task.id} has no coordinator session.`);
+  // A coordinator holding a call for approval reads the message with the
+  // user's answer: nothing reopens, and the message waits in its inbox.
+  if (await pendingApproval(tx, root.id)) return { task, root };
   if (
     task.status === "waiting" ||
     task.status === "completed" ||
@@ -339,6 +345,8 @@ export async function postTaskMessage(
           verificationPlan: nextPlan,
         },
       });
+      // Calls made for an older goal version never run now.
+      await expireApprovals(tx, ctx, taskId, version);
       goalChange = {
         version,
         ...(goal !== undefined ? { goal } : {}),

@@ -93,6 +93,7 @@ const view = (
   sessions,
   messages: [],
   artifacts: [],
+  approvals: [],
   verificationChecks: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
@@ -534,7 +535,9 @@ describe("chat timeline", () => {
       timeline.map((entry) =>
         entry.kind === "notice"
           ? entry.text
-          : `${entry.message.text}${entry.goalVersion ? ` (v${entry.goalVersion})` : ""}`,
+          : entry.kind === "approval"
+            ? `approval ${entry.approval.id}`
+            : `${entry.message.text}${entry.goalVersion ? ` (v${entry.goalVersion})` : ""}`,
       ),
     ).toEqual([
       "Before the window",

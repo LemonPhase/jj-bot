@@ -33,6 +33,13 @@ import {
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
 import { describePlan } from "../services/verification";
+import {
+  claimCall,
+  hasDecision,
+  parkIfHeld,
+  reviewCall,
+  runDecision,
+} from "./approvals";
 import { snapshotArtifacts } from "./artifacts";
 import { sessionTools, type Teammate } from "./collab-tools";
 import { runVerificationGate } from "./gate";
@@ -151,10 +158,18 @@ async function startRun(
       };
     }
 
-    // Only briefs, results and steering start a run. A plain message waiting
-    // in the inbox rides along with a run that happens anyway; it never makes
-    // a coalesced wake launch one (notification semantics).
-    const hasInput = await hasContinuingInput(tx, sessionId);
+    // A session holding a call for approval does not run until the user answers.
+    if (await parkIfHeld(tx, ctx, session, stale)) {
+      await complete(tx, job.lease);
+      return { kind: "skip", taskFinished: false };
+    }
+
+    // Only briefs, results, steering and an approval's answer start a run. A
+    // plain message waiting in the inbox rides along with a run that happens
+    // anyway; it never makes a coalesced wake launch one (notification semantics).
+    const hasInput =
+      (await hasContinuingInput(tx, sessionId)) ||
+      (await hasDecision(tx, sessionId));
     const recovering =
       stale !== undefined ||
       session.status === "running" ||
@@ -316,6 +331,7 @@ async function prepare(
     profileFor(ctx.db, rc.bot.runtimeProfileId),
   ]);
   const ownSettings = own ? profileSettings(own) : undefined;
+  rc.approvalRules = ownSettings?.approvals ?? [];
   const parent = rc.session.parentSessionId
     ? await getSession(ctx.db, rc.session.parentSessionId)
     : undefined;
@@ -333,6 +349,9 @@ async function prepare(
   const call = async (inputs: string[]): Promise<RunOutcome> => {
     // Rebuilt every call: a new goal version brings its own plan.
     const plan = planOf(rc.task.verificationPlan);
+    // The prompt below gives the model the task's goal as it is now.
+    rc.goalVersionSeen = rc.task.goalVersion;
+    const decided = await runDecision(rc);
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -353,7 +372,8 @@ async function prepare(
         ...(plan ? { verificationPlan: describePlan(plan) } : {}),
       }),
       transcript: await loadTranscript(ctx, rc.session.id),
-      inputs,
+      inputs: [...decided.inputs, ...inputs],
+      ...(decided.decision ? { decision: decided.decision } : {}),
       model: rc.bot.model,
       sandbox: hold.sandbox,
       sandboxLimits: hold.spec.limits,
@@ -364,7 +384,11 @@ async function prepare(
         deadline,
       },
       signal: rc.control.controller.signal,
-      hooks: runHooks(rc),
+      hooks: {
+        ...runHooks(rc),
+        reviewToolCall: (pending) => reviewCall(rc, pending),
+        claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
+      },
       redact: (text: string) => rc.redact(text),
     });
     return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;

@@ -340,3 +340,43 @@
 .bot-chat__activity:empty {
   margin-top: calc(var(--sp-9) * -1);
 }
+
+/* Calls waiting for approval, under a task's card in direct chat. */
+.chat-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin: 0 0 0 34px;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: 8px 12px;
+  border: 1px solid var(--status-verifying);
+  border-radius: var(--r-lg);
+}
+
+.chat-approval__text,
+.chat-approval__answer {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.chat-approval__call {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+
+.chat-approval__actions {
+  display: flex;
+  gap: var(--sp-4);
+}

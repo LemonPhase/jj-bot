@@ -1,6 +1,19 @@
-import { questionExcerpt, type TaskSummary } from "@jj/contracts";
-import { useId } from "react";
-import { Icon, StatusSquare } from "../../components/ui";
+import {
+  type PendingApproval,
+  questionExcerpt,
+  type TaskSummary,
+  visibleText,
+} from "@jj/contracts";
+import { useId, useState } from "react";
+import { useApi } from "../../api/ApiContext";
+import { isApiError } from "../../api/client";
+import {
+  Button,
+  buttonClass,
+  ErrorBanner,
+  Icon,
+  StatusSquare,
+} from "../../components/ui";
 import { statusTitle, statusTone, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { taskHref } from "../shell/router";
@@ -38,11 +51,55 @@ export function taskExcerpt(
  * goal version and, for a task with checks, where they stand ("verified ·
  * 3/3" only when it completed with every check passed).
  */
-export function InlineTaskCard({ taskId }: { taskId: string }) {
+export function InlineTaskCard({
+  taskId,
+  approvals = true,
+}: {
+  taskId: string;
+  /** Shows the task's calls waiting for approval, with Approve and Deny. */
+  approvals?: boolean;
+}) {
   const { getTask } = useWorkspace();
   const excerptId = useId();
   const task = getTask(taskId);
   const excerpt = task ? taskExcerpt(task) : null;
+  return (
+    <>
+      <TaskCardLink
+        taskId={taskId}
+        task={task}
+        excerpt={excerpt}
+        excerptId={excerptId}
+      />
+      {approvals && task && task.pendingApprovals.length > 0 && (
+        <ul
+          className="chat-approvals"
+          aria-label={`Calls in ${task.title} waiting for your approval`}
+        >
+          {task.pendingApprovals.map((approval) => (
+            <ChatApproval
+              key={approval.id}
+              taskId={taskId}
+              approval={approval}
+            />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function TaskCardLink({
+  taskId,
+  task,
+  excerpt,
+  excerptId,
+}: {
+  taskId: string;
+  task: TaskSummary | undefined;
+  excerpt: ReturnType<typeof taskExcerpt>;
+  excerptId: string;
+}) {
   const checks = task
     ? verificationDisplay(task, task.verification)
     : undefined;
@@ -79,5 +136,97 @@ export function InlineTaskCard({ taskId }: { taskId: string }) {
       )}
       <Icon name="arrow-right" size={15} className="chat-task-card__arrow" />
     </a>
+  );
+}
+
+/**
+ * A call waiting for the user's approval, under the task's card: what it
+ * runs, with Approve and Deny. Approve is offered here only when the summary
+ * is the whole call; otherwise "Review in the task" opens the task, whose
+ * card shows all of it. Only the user answers; a reason for a denial is given
+ * in the task chat.
+ */
+function ChatApproval({
+  taskId,
+  approval,
+}: {
+  taskId: string;
+  approval: PendingApproval;
+}) {
+  const api = useApi();
+  const { getBot } = useWorkspace();
+  const [answer, setAnswer] = useState<"approved" | "denied" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const name = getBot(approval.botId)?.name ?? "A bot";
+  const decide = async (decision: "approve" | "deny") => {
+    setBusy(true);
+    setFailure(null);
+    try {
+      const answered = await api.decideApproval(taskId, approval.id, {
+        decision,
+      });
+      setAnswer(answered.status === "approved" ? "approved" : "denied");
+    } catch (error) {
+      setFailure(isApiError(error) ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <li className="chat-approval">
+      <p className="chat-approval__text">
+        <StatusSquare tone={answer ? "idle" : "verifying"} />
+        <span>
+          {name} asks to run {approval.tool}:{" "}
+          <code className="chat-approval__call">
+            {visibleText(approval.summary)}
+          </code>
+          {!approval.shownInFull &&
+            " (shortened: the task shows the whole call)"}
+        </span>
+      </p>
+      {answer ? (
+        <p className="chat-approval__answer" role="status">
+          {answer === "approved" ? "Approved" : "Denied"}: the task goes on.
+        </p>
+      ) : (
+        <div className="chat-approval__actions">
+          {approval.shownInFull ? (
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy}
+              onClick={() => void decide("approve")}
+              aria-label={`Approve: ${approval.summary}`}
+            >
+              Approve
+            </Button>
+          ) : (
+            // The summary is not the whole call: approve it where all of it shows.
+            <a
+              className={buttonClass({ variant: "primary", size: "sm" })}
+              href={taskHref(taskId)}
+              aria-label={`Review in the task: ${visibleText(approval.summary)}`}
+            >
+              Review in the task
+            </a>
+          )}
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => void decide("deny")}
+            aria-label={`Deny: ${visibleText(approval.summary)}`}
+          >
+            Deny
+          </Button>
+        </div>
+      )}
+      {failure && (
+        <ErrorBanner word="Not sent" onDismiss={() => setFailure(null)}>
+          {failure}
+        </ErrorBanner>
+      )}
+    </li>
   );
 }

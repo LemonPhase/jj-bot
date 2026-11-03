@@ -2,7 +2,9 @@
 // these, so a view folded from events equals a fresh snapshot.
 import {
   type Activity,
+  type ApprovalRule,
   type Artifact,
+  approvalRuleSchema,
   type Bot,
   type BotAppearance,
   type ConversationMessage,
@@ -222,6 +224,7 @@ export interface StoredProfile {
   sandbox: SandboxSpec;
   tools: ToolName[];
   budgets: ProfileBudgets;
+  approvals: ApprovalRule[];
   /** Granted sandbox secrets, by name. */
   secrets: string[];
 }
@@ -232,6 +235,7 @@ export function profileSettings(row: RuntimeProfileRow): StoredProfile {
     sandbox: sandboxSpecSchema.parse(row.sandbox),
     tools: row.tools as ToolName[],
     budgets: profileBudgetsSchema.parse(row.budgets),
+    approvals: approvalRuleSchema.array().parse(row.approvals ?? []),
     secrets: Array.isArray(row.secrets)
       ? row.secrets.filter((name) => typeof name === "string")
       : [],
@@ -250,6 +254,7 @@ export function toProfile(
     sandbox: settings.sandbox,
     tools: settings.tools,
     budgets: settings.budgets,
+    approvals: settings.approvals,
     secrets: settings.secrets,
     isDefault: row.isDefault,
     status,

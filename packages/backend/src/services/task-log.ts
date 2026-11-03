@@ -41,6 +41,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { planOf } from "../records";
+import { pendingApprovals } from "./approvals";
 import { criterionRule, latestChecks, summaryLine } from "./verification";
 
 /** What a task log entry is: a user message, a brief, a report or a message. */
@@ -398,6 +399,8 @@ export interface SessionSummary {
   requester: string | null;
   /** The goal version the session works to. */
   goalVersion: number;
+  /** While it waits for the user's approval: the held call, on one line. */
+  approval?: string;
 }
 
 export interface SessionReport extends SessionSummary {
@@ -447,6 +450,12 @@ async function sessionReports(
     .from(sessions)
     .where(eq(sessions.taskId, taskId))
     .orderBy(asc(sessions.createdAt), asc(sessions.id));
+  const held = new Map(
+    (await pendingApprovals(exec, [taskId])).map((row) => [
+      row.sessionId,
+      `${row.tool}: ${row.summary}`,
+    ]),
+  );
   const botOf = new Map(rows.map((row) => [row.id, row.botId]));
   const names = await botNames(
     exec,
@@ -466,6 +475,7 @@ async function sessionReports(
       waitingFor: row.waitingFor,
       requester: parentBot ? name(parentBot) : null,
       goalVersion: row.goalVersion,
+      ...(held.has(row.id) ? { approval: held.get(row.id) } : {}),
       brief: row.brief,
       report: row.result,
       error: row.error,
@@ -576,9 +586,15 @@ export async function readBotReports(
   return { bot: member.name, reports };
 }
 
+const WAITING_FOR_TEXT = {
+  user: "the user",
+  delegations: "its delegations",
+  approval: "the user's approval",
+} as const;
+
 const statusText = (session: SessionSummary) =>
   session.waitingFor
-    ? `waiting for ${session.waitingFor === "user" ? "the user" : "its delegations"}`
+    ? `waiting for ${WAITING_FOR_TEXT[session.waitingFor]}${session.approval ? ` of ${clipLine(session.approval, 200)}` : ""}`
     : session.status;
 
 const sessionLabel = (session: SessionSummary) =>

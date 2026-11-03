@@ -31,6 +31,37 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.6.0 — 2026-11-03 — Approvals for held tool calls
+
+**Changed by:** backend and frontend ([#87](https://github.com/LemonPhase/jj-bot/issues/87), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/87#issuecomment-6595622906)) · **Compatibility:** additive
+
+- `approvalRuleSchema` (`{ tool, match? }`, `match` at most `APPROVAL_MATCH_LIMIT` = 200
+  characters) and `runtimeProfileSchema.approvals` (at most `MAX_APPROVAL_RULES` = 50, default
+  empty), also in `createRuntimeProfileCommandSchema` and, replaced whole,
+  `updateRuntimeProfileCommandSchema`, next to 1.5.0's `secrets` grants. The pure matchers `approvalSubject`, `approvalRuleMatches`,
+  `matchingApprovalRule` and `describeApprovalRule` decide which calls a rule holds, on the server
+  and in the profile editor alike.
+- `waitingForSchema` gains `approval`: a session waiting for the user's answer to the call it
+  holds.
+- `approvalSchema`, `approvalStatusSchema` (`pending`, `approved`, `denied`, `expired`,
+  `cancelled`), `approvalOutcomeSchema` (`ok`, `exitCode`, `interrupted`, and `refused` for an
+  approved call refused before it ran) and `pendingApprovalSchema` (with `shownInFull`: the
+  summary is the whole call, with no character a reader cannot see, so a client may offer
+  Approve from it). `pendingApprovalOf` and `shownInFull` build them; `visibleText` writes the
+  characters a reader cannot see as code points, and `hasInvisible` finds them.
+- `taskSummarySchema.pendingApprovals` and `taskViewSchema.approvals`, both parsed as empty from
+  servers before approvals; `applyTaskEvent` folds approvals into the view.
+- Events `approval.requested` and `approval.updated`, each carrying the whole record.
+- `decideApprovalCommandSchema` (`{ decision: "approve" | "deny", reason? }`, a reason only with a
+  denial) for `POST /api/tasks/:taskId/approvals/:approvalId`, which answers `{ approval }`.
+- API error code `APPROVAL_NOT_PENDING` (409) for an approval answered, expired or cancelled; a
+  stopping or stopped task answers `TASK_TERMINAL` (409).
+
+**Action required (frontend):** show held calls and answer them (task chat card, header badge,
+task list, chat task card); edit approval rules in the profile editor. Done in the same change.
+**Action required (backend):** none beyond this change; a client built against 1.5.0 that parses
+sessions strictly must accept `waitingFor: "approval"`.
+
 ## 1.5.0 — 2026-11-03 — Secrets store: encrypted provider keys and sandbox secrets
 
 **Changed by:** backend and frontend ([#30](https://github.com/LemonPhase/jj-bot/issues/30), design agreed on the issue) · **Compatibility:** additive
@@ -66,6 +97,7 @@ rather than landing it and announcing it afterwards.
 replaces or removes one; a Secrets section lists, stores and removes sandbox secrets; the profile
 editor grants them. Values are typed once and never shown again.
 **Action required (backend):** none beyond this change.
+
 ## 1.4.0 — 2026-11-03 — Verification plans and checks
 
 **Changed by:** backend & frontend ([#31](https://github.com/LemonPhase/jj-bot/issues/31), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/31#issuecomment-6594684999)) · **Compatibility:** additive (one reshaped command schema; see below)

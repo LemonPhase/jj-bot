@@ -6,6 +6,7 @@ import {
   type AgentTool,
   runAgentLoop,
   runAgentLoopContinue,
+  runToolCall,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -19,8 +20,10 @@ import {
   type RetryPolicy,
   type TextContent,
   type ToolCall,
+  type ToolResultMessage,
   toToolDeclaration,
   type UserMessage,
+  validateToolArguments,
 } from "@earendil-works/pi-ai";
 import {
   type ModelRef,
@@ -49,11 +52,14 @@ import {
   type OutputPolicy,
   type ToolCallDetails,
 } from "./tools";
+import { interruptedResult, repairTranscript } from "./transcript";
 import type {
   CollabTool,
   ExecutorEvent,
+  PendingToolCall,
   PiMessage,
   RunOutcome,
+  ToolCallVerdict,
   TranscriptEntry,
   TurnCall,
 } from "./types";
@@ -160,6 +166,35 @@ export function summarizeCall(
   return clip(redact(summary).replace(/\s+/g, " ").trim() || tool, 300);
 }
 
+/** An approved call to run before the first model call (see `RunInput.decision`). */
+export interface ApprovedCall {
+  call: ToolCall;
+  /** The assistant message that made it. */
+  assistant: AssistantMessage;
+  /** True when this run may start it; false when an earlier run claimed it. */
+  claim(): Promise<boolean>;
+}
+
+/** The arguments a tool will receive, or undefined when pi will refuse the call. */
+function validatedArgs(
+  tools: readonly AgentTool[],
+  call: ToolCall,
+): Record<string, unknown> | undefined {
+  const tool = tools.find((candidate) => candidate.name === call.name);
+  if (!tool) return undefined;
+  try {
+    const prepared = tool.prepareArguments
+      ? { ...call, arguments: tool.prepareArguments(call.arguments) }
+      : call;
+    const args = validateToolArguments(tool, prepared as ToolCall);
+    return args && typeof args === "object"
+      ? (args as Record<string, unknown>)
+      : {};
+  } catch {
+    return undefined;
+  }
+}
+
 export interface LoopSpec {
   resolved: ResolvedModel;
   streamFn: StreamFn;
@@ -190,10 +225,14 @@ export interface LoopSpec {
   retry: RetryPolicy;
   /** True once a tool asked to end the run. */
   endRequested(): boolean;
+  /** Asked before each call runs; see `ToolCallVerdict`. Absent: every call runs. */
+  reviewToolCall?: (call: PendingToolCall) => Promise<ToolCallVerdict>;
+  /** Run before the first model call; its result joins the transcript. */
+  approved?: ApprovedCall;
   /**
-   * Asked for each response that calls tools, before any call runs: text
-   * ends the run at this turn, answering every call with it (see
-   * `RunHooks.reviewTurn`). Absent: every call runs.
+   * Asked for each response that calls tools, before any call runs or is
+   * reviewed: text ends the run at this turn, answering every call with it
+   * (see `RunHooks.reviewTurn`). Absent: every call runs.
    */
   reviewTurn?: (calls: readonly TurnCall[]) => Promise<string | undefined>;
   /** The inbox at a turn boundary; `turnEnded` after a turn that called no tools. */
@@ -220,6 +259,13 @@ const hasToolCalls = (message: AssistantMessage) =>
 
 /** The result recorded for a call the run stopped before it started. */
 export const NOT_STARTED_TEXT = "Not started: the run was stopped.";
+
+/** The result of an approved call from a response cut at the output limit: it never runs. */
+export const TRUNCATED_CALL_TEXT =
+  "Not run: the response that made this call hit the output token limit, so its arguments may be cut off. Make the call again with complete arguments.";
+
+/** pi's in-memory result for a held call; it is never persisted or sent. */
+const HELD_TEXT = "Waiting for the user's approval.";
 
 /** The error text of the stand-in answer for a model call the gate refused; it is never reported. */
 const REFUSED_CALL = "The model call was refused before it was sent.";
@@ -351,6 +397,14 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   let cutWarning: string | undefined;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
+  /** Calls waiting for the user's approval: they never run and are never answered. */
+  const held = new Set<string>();
+  /** Calls the review refused, with their error result. */
+  const refused = new Map<string, string>();
+  /** The assistant message whose calls are running. */
+  let batch: AssistantMessage | undefined;
+  /** Results persisted as their tools finished, by call. */
+  const stored = new Map<string, ToolResultMessage>();
   /** The latest turn was answered without tool calls: the model ended its turn. */
   let turnEnded = false;
   /** Set when `reviewTurn` ended the run: the text that answers each call of that turn. */
@@ -407,17 +461,21 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           });
           // The call must be durable before its tools run.
           if (persistable(message) && hasToolCalls(message)) {
+            batch = message;
             await flush();
             // pi refuses every call of a response cut at the output limit.
             if (spec.reviewTurn && message.stopReason !== "length") {
-              const batch = toolCallsOf(message);
+              const turnCalls = toolCallsOf(message);
               const text = await spec.reviewTurn(
-                batch.map((call) => ({ toolCallId: call.id, tool: call.name })),
+                turnCalls.map((call) => ({
+                  toolCallId: call.id,
+                  tool: call.name,
+                })),
               );
               if (text !== undefined)
                 turnEnd = {
                   text,
-                  calls: new Set(batch.map((call) => call.id)),
+                  calls: new Set(turnCalls.map((call) => call.id)),
                 };
             }
           }
@@ -433,6 +491,40 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           scrub,
         );
         calls.set(event.toolCallId, { tool: event.toolName, summary });
+        // pi refuses every call of a response cut at the output limit (its
+        // arguments may be cut off), so such a call is never held; nor is a
+        // call of a turn `reviewTurn` ended, which never runs.
+        if (
+          spec.reviewToolCall &&
+          event.toolCallId !== spec.approved?.call.id &&
+          batch?.stopReason !== "length" &&
+          !turnEnd?.calls.has(event.toolCallId)
+        ) {
+          const call: ToolCall = {
+            type: "toolCall",
+            id: event.toolCallId,
+            name: event.toolName,
+            arguments: args as ToolCall["arguments"],
+          };
+          // A call pi will refuse (unknown tool, invalid arguments) is not reviewed.
+          const valid = validatedArgs(spec.tools, call);
+          if (valid) {
+            const verdict = await spec.reviewToolCall({
+              toolCallId: event.toolCallId,
+              tool: event.toolName,
+              args: valid,
+              summary,
+              text: batch ? clip(scrub(assistantText(batch)), 2000) : "",
+            });
+            if (verdict === "hold") {
+              held.add(event.toolCallId);
+              answered.add(event.toolCallId);
+              return;
+            }
+            if (typeof verdict === "object")
+              refused.set(event.toolCallId, verdict.refuse);
+          }
+        }
         await spec.onEvent({
           type: "tool.started",
           toolCallId: event.toolCallId,
@@ -442,6 +534,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         return;
       }
       case "tool_execution_end": {
+        // A held call did not run: no result, no event.
+        if (held.has(event.toolCallId)) return;
         const call = calls.get(event.toolCallId) ?? {
           tool: event.toolName,
           summary: event.toolName,
@@ -454,7 +548,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         // turn a finished command into "outcome unknown".
         if (!answered.has(event.toolCallId)) {
           answered.add(event.toolCallId);
-          pending.push({
+          const message: ToolResultMessage = {
             role: "toolResult",
             toolCallId: event.toolCallId,
             toolName: event.toolName,
@@ -465,7 +559,9 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
               ? { durationMs: event.durationMs }
               : {}),
             timestamp: Date.now(),
-          });
+          };
+          stored.set(event.toolCallId, message);
+          pending.push(message);
           await flush();
         }
         const details = result.details ?? {};
@@ -538,11 +634,18 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     // Keys come from the registry's env, per call; pi's own env lookup is never relied on.
     getApiKey: () => resolved.getApiKey(),
     toolExecution: "parallel",
-    // A turn `reviewTurn` ended runs none of its calls: each is answered with its text.
-    beforeToolCall: async ({ toolCall }) =>
-      turnEnd?.calls.has(toolCall.id)
-        ? { block: true, reason: turnEnd.text }
-        : undefined,
+    // Decided before the call runs: a turn `reviewTurn` ended runs none of
+    // its calls (each is answered with its text); otherwise the review at
+    // tool_execution_start decided.
+    beforeToolCall: async ({ toolCall }) => {
+      if (turnEnd?.calls.has(toolCall.id))
+        return { block: true, reason: turnEnd.text };
+      if (held.has(toolCall.id)) return { block: true, reason: HELD_TEXT };
+      const refusal = refused.get(toolCall.id);
+      return refusal === undefined
+        ? undefined
+        : { block: true, reason: refusal };
+    },
     prepareRequest: async (request) => {
       await flush();
       latestContext = request.context;
@@ -575,6 +678,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       turnEnded = persistable(turn.message) && !hasToolCalls(turn.message);
       if (signal.aborted) return { action: "end" };
       if (turnEnd) return { action: "end" };
+      // A call waits for the user: the run ends after this batch.
+      if (held.size > 0) return { action: "end" };
       const wantsMore =
         hasToolCalls(turn.message) && turn.toolResults.length > 0;
       if (spec.endRequested()) return { action: "end" };
@@ -598,13 +703,74 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     tools.map(toToolDeclaration),
   );
   const summary = spec.compactor?.summaryMessage;
+  const lead = [...(system ? [system] : []), ...(summary ? [summary] : [])];
   const context: AgentContext = {
-    messages: [
-      ...(system ? [system] : []),
-      ...(summary ? [summary] : []),
-      ...spec.transcript,
-    ],
+    messages: [...lead, ...spec.transcript],
     tools,
+  };
+  /**
+   * Runs the approved call as the model's own calls run (same events, its
+   * result persisted as soon as it finishes), unless an earlier run claimed
+   * it: that one may have started it, so it is answered as interrupted.
+   */
+  const runApproved = async ({ call, assistant, claim }: ApprovedCall) => {
+    let result: ToolResultMessage;
+    if (assistant.stopReason === "length") {
+      // A call of a response cut at the output limit may be cut off: never run it.
+      result = {
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: TRUNCATED_CALL_TEXT }],
+        details: { truncated: false, refused: true },
+        isError: true,
+        timestamp: Date.now(),
+      };
+      answered.add(call.id);
+      pending.push(result);
+      await flush();
+    } else if (!(await claim())) {
+      result = interruptedResult(call, Date.now());
+      answered.add(call.id);
+      pending.push(result);
+      await flush();
+    } else {
+      await emit({
+        type: "tool_execution_start",
+        toolCallId: call.id,
+        toolName: call.name,
+        args: call.arguments,
+      });
+      const outcome = await runToolCall(call, {
+        tools,
+        assistantMessage: assistant,
+        context,
+        signal,
+      });
+      // pi refused it without running it (an unknown tool, invalid arguments).
+      const refused = outcome.durationMs === undefined;
+      await emit({
+        type: "tool_execution_end",
+        toolCallId: call.id,
+        toolName: call.name,
+        result: refused
+          ? {
+              ...outcome.result,
+              details: { ...(outcome.result.details ?? {}), refused: true },
+            }
+          : outcome.result,
+        isError: outcome.isError,
+        ...(outcome.durationMs !== undefined
+          ? { durationMs: outcome.durationMs }
+          : {}),
+      });
+      result = stored.get(call.id) as ToolResultMessage;
+    }
+    // Results go back in call order.
+    context.messages = [
+      ...lead,
+      ...repairTranscript([...spec.transcript, result]),
+    ];
   };
   const providerStream = retryingStreamFn(spec.streamFn, spec.retry);
   // A call the gate refused is answered here, so it never reaches the provider.
@@ -644,51 +810,58 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
 
   let loopError: unknown;
   try {
+    if (spec.approved) await runApproved(spec.approved);
     let resume: AgentContext | undefined;
-    for (;;) {
-      if (resume)
-        await runAgentLoopContinue(resume, config, emit, signal, streamFn);
-      else if (spec.inputs.length > 0)
-        await runAgentLoop(
-          spec.inputs,
-          context,
-          config,
-          emit,
-          signal,
-          streamFn,
-        );
-      else await runAgentLoopContinue(context, config, emit, signal, streamFn);
+    // Stopped while the approved call ran: the inputs are kept for the next run.
+    if (signal.aborted) {
+      pending.push(...spec.inputs);
       await flush();
-      const failed = produced.at(-1);
-      if (
-        !compactor ||
-        signal.aborted ||
-        failed?.role !== "assistant" ||
-        !overflowed(failed)
-      )
-        break;
-      if (overflowRetried) {
-        overflowNote =
-          "The context still exceeded the model's context window after it was compacted.";
-        break;
+    } else
+      for (;;) {
+        if (resume)
+          await runAgentLoopContinue(resume, config, emit, signal, streamFn);
+        else if (spec.inputs.length > 0)
+          await runAgentLoop(
+            spec.inputs,
+            context,
+            config,
+            emit,
+            signal,
+            streamFn,
+          );
+        else
+          await runAgentLoopContinue(context, config, emit, signal, streamFn);
+        await flush();
+        const failed = produced.at(-1);
+        if (
+          !compactor ||
+          signal.aborted ||
+          failed?.role !== "assistant" ||
+          !overflowed(failed)
+        )
+          break;
+        if (overflowRetried) {
+          overflowNote =
+            "The context still exceeded the model's context window after it was compacted.";
+          break;
+        }
+        // Compact and retry the overflowed call once; it does not count as a turn.
+        overflowRetried = true;
+        const result = await compactor.compact(
+          latestContext?.messages ?? [],
+          signal,
+        );
+        if (!result.ok) {
+          overflowNote =
+            result.reason === "nothing_to_summarize"
+              ? "Compacting the context could not make room: there was nothing older to summarise."
+              : `Compacting the context failed: ${result.error ?? "unknown error"}`;
+          break;
+        }
+        turns = Math.max(0, turns - 1);
+        resume = { ...(latestContext ?? context), messages: result.messages };
+        latestContext = resume;
       }
-      // Compact and retry the overflowed call once; it does not count as a turn.
-      overflowRetried = true;
-      const result = await compactor.compact(
-        latestContext?.messages ?? [],
-        signal,
-      );
-      if (!result.ok) {
-        overflowNote =
-          result.reason === "nothing_to_summarize"
-            ? "Compacting the context could not make room: there was nothing older to summarise."
-            : `Compacting the context failed: ${result.error ?? "unknown error"}`;
-        break;
-      }
-      turns = Math.max(0, turns - 1);
-      resume = { ...(latestContext ?? context), messages: result.messages };
-      latestContext = resume;
-    }
   } catch (error) {
     loopError = error;
   } finally {
@@ -719,6 +892,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       reason: spec.gate.refusal,
       finalText,
     };
+  // Before the turn budget and the deadline: the next run, after the user's answer, gets fresh ones.
+  if (held.size > 0 && loopError === undefined) return { kind: "held" };
   if (deadlineHit || budgetHit)
     return {
       kind: "budget",

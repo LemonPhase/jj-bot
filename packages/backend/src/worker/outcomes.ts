@@ -34,6 +34,7 @@ import {
   summaryLine,
   taskVerification,
 } from "../services/verification";
+import { parkHeld, settleApprovalWait } from "./approvals";
 import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import {
@@ -533,6 +534,7 @@ export async function finishRun(
     )
       return "continue";
     if (stopped) await cancelRun(tx, rc, task, session);
+    else if (outcome.kind === "held") await parkHeld(tx, rc, session);
     else if (outcome.kind === "idle") {
       if (rc.reason === "recovery")
         // The last turn ended before the restart; finish it now (nothing was posted yet).
@@ -581,6 +583,8 @@ export async function finishRun(
       );
       if (failed.taskFinished) rc.taskFinished = true;
     }
+    // Nothing left running but calls waiting for approval: the task waits for the user.
+    await settleApprovalWait(tx, ctx, task.id, attributionOf(rc));
     if (snapshotted)
       await tx
         .update(runs)

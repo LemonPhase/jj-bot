@@ -2,6 +2,7 @@
 // shapes, plus the worker. `apps/api` validates nothing twice: every command
 // is parsed here with its contract schema.
 import {
+  type Approval,
   type Artifact,
   type Bootstrap,
   type Bot,
@@ -11,6 +12,7 @@ import {
   type CreateBotCommand,
   type CreateRuntimeProfileCommand,
   type CreateTaskCommand,
+  type DecideApprovalCommand,
   type ModelsView,
   type PostTaskMessageCommand,
   type PutSecretCommand,
@@ -55,6 +57,7 @@ import {
   tooShortToRedact,
 } from "./redact";
 import { SecretStore, warnUnreadable } from "./secrets/store";
+import { decideApproval } from "./services/approvals";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
@@ -168,6 +171,12 @@ export interface Engine {
     stop(taskId: string, command?: StopTaskCommand): Promise<{ task: Task }>;
     /** `PATCH /api/tasks/:id`: the spend cap. */
     update(taskId: string, command: UpdateTaskCommand): Promise<{ task: Task }>;
+    /** `POST /api/tasks/:id/approvals/:approvalId`: the user's answer to a held call. */
+    decideApproval(
+      taskId: string,
+      approvalId: string,
+      command: DecideApprovalCommand,
+    ): Promise<{ approval: Approval }>;
     /** `GET /api/tasks/:id/events?after=`. */
     events(
       taskId: string,
@@ -301,6 +310,8 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       postMessage: (taskId, command) => postTaskMessage(ctx, taskId, command),
       stop: (taskId, command = {}) => stopTask(ctx, taskId, command),
       update: (taskId, command) => updateTaskSettings(ctx, taskId, command),
+      decideApproval: (taskId, approvalId, command) =>
+        decideApproval(ctx, taskId, approvalId, command),
       events: (taskId, options) => eventPage(ctx, taskId, options),
       subscribe: (taskId, options) => subscribeTask(ctx, taskId, options),
       artifactContent: (taskId, artifactId) =>

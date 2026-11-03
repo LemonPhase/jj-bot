@@ -57,6 +57,7 @@ const view = (messages: TaskMessage[], current: Task = task): TaskView => ({
   sessions: [],
   messages,
   artifacts: [],
+  approvals: [],
   verificationChecks: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
@@ -112,6 +113,7 @@ describe("optimistic task updates", () => {
       activeSessionCount: 0,
       sessionCount: 1,
       usage: emptyUsage(),
+      pendingApprovals: [],
       question: "Which colour?",
     };
     const stopped = mergeTask(summary, {
