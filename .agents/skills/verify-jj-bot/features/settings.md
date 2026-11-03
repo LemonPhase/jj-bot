@@ -37,6 +37,7 @@ Preconditions:
 
 - Provider counts reflect the cleared environment of a verification instance, not your `.env`.
 - Deleting a profile asks for confirmation in a dialog titled `Delete <profile name>?`, confirmed with `Delete profile`.
-- The profile editor (`New profile`, `Edit`) and delete flows haven't been driven yet: take a snapshot of the editor before writing assertions against its fields.
+- A profile's `Edit` replaces the list with the region `Edit <profile name>`: the textboxes `Name` and `Description`, the sandbox fields, the chips of the group `Granted secrets` (only when a secret is stored), the spinbuttons `Max turns per run`, `Max minutes per run`, `Spend cap per task (USD)` and `Spend cap per bot per day (USD)` (empty for no cap), and `Save changes`, disabled (with the status `No changes to save.`) until a field changes. Saving returns to the list.
+- `New profile` and the delete flow haven't been driven yet: take a snapshot before writing assertions against them.
 - Values are write-only: after `Store …` the input is cleared and nothing on the page or in any answer shows the value again. Check the page source and the API answers for it, not only what is visible.
 - A key stored for a provider the scripted instance cannot reach is not a working key; only the provider's status changes. A live provider call is out of scope here.

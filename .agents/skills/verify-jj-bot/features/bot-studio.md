@@ -34,5 +34,5 @@ Preconditions:
 - A new draft's parts are randomized once the workspace loads, so a snapshot taken during `Loading workspace…` shows different parts from what gets saved. Read the parts from the preview right before `Create bot`, or set every radiogroup explicitly when a check depends on them.
 - `New bot` appears twice when the workspace is empty (sidebar header and empty state); use `.first()` or scope the locator.
 - Only the scripted model is selectable. Every provider option is disabled with "Set <KEY> on the server", which is expected on a verification instance, not a bug.
-- `studio-edit` hasn't been driven yet: confirm its button names from a snapshot before relying on them.
+- `studio-edit` is reached from the bot's chat: `Profile`, then the link `Edit in Studio`. The form is named `Edit <name>`, and `Save changes` stays disabled until something changes; saving returns to the chat.
 - The `Profile` button on a bot's chat screen does not open Studio. It opens the bot inspector on the same screen ([bot-chat.md](bot-chat.md)).
