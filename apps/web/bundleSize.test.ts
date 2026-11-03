@@ -7,11 +7,14 @@ import { build } from "vite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type AssetSize,
+  type ChunkModules,
   chunkModules,
   formatReport,
   htmlAssets,
   initialJs,
   LAZY_MODULES,
+  type LazyModule,
+  lazyRules,
   MODULES_FILE,
   measureBundle,
   moduleName,
@@ -134,46 +137,46 @@ describe("web bundle size", () => {
   });
 });
 
-/** What the fixture app below must load on demand. */
-const FIXTURE_LAZY = {
-  "lazy.js": "the lazy module",
-  "@lazy/pkg": "its dependency",
+/** What the fixture apps below must load on demand. */
+const FIXTURE_LAZY: Record<string, LazyModule> = {
+  "lazy.js": { what: "the lazy module" },
+  "@lazy/pkg": { what: "its dependency" },
 };
 
+const pkg = (name: string, code: string) => ({
+  [`node_modules/${name}/package.json`]: JSON.stringify({
+    name,
+    type: "module",
+    main: "index.js",
+  }),
+  [`node_modules/${name}/index.js`]: code,
+});
+
+const lines = (...code: (string | false)[]) => code.filter(Boolean).join("\n");
+
+const LAZY_JS = lines(
+  'import { big } from "@lazy/pkg";',
+  "export const lazyWord = `lazy ${big}`;",
+);
+
 /**
- * A tiny app built by Vite with `chunkModules`, into its `dist`: `main.js`
- * loads `lazy.js` with import(), and with `eager` also imports it statically,
- * the regression the lazy-module check is for.
+ * A tiny app built by Vite with `chunkModules`, into its `dist`: `index.html`
+ * loads `main.js`, with `files` and two packages, `eagerpkg` and `@lazy/pkg`.
  */
-async function buildApp({ eager }: { eager: boolean }): Promise<string> {
+async function buildApp(
+  files: Record<string, string>,
+  { sharedChunk }: { sharedChunk?: RegExp } = {},
+): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "jj-bundle-app-"));
   dirs.push(root);
-  const pkg = (name: string, code: string) => ({
-    [`node_modules/${name}/package.json`]: JSON.stringify({
-      name,
-      type: "module",
-      main: "index.js",
-    }),
-    [`node_modules/${name}/index.js`]: code,
-  });
-  const files: Record<string, string> = {
+  const all: Record<string, string> = {
     "index.html":
       '<!doctype html><script type="module" src="/main.js"></script>',
-    "main.js": [
-      eager && 'import { lazyWord } from "./lazy.js";',
-      'import { word } from "eagerpkg";',
-      eager && "console.log(lazyWord);",
-      "console.log(word);",
-      'document.body.onclick = () => import("./lazy.js").then((m) => console.log(m.lazyWord));',
-    ]
-      .filter(Boolean)
-      .join("\n"),
-    "lazy.js":
-      'import { big } from "@lazy/pkg";\nexport const lazyWord = `lazy ${big}`;',
     ...pkg("eagerpkg", 'export const word = "eager";'),
     ...pkg("@lazy/pkg", 'export const big = "x".repeat(10);'),
+    ...files,
   };
-  for (const [file, content] of Object.entries(files)) {
+  for (const [file, content] of Object.entries(all)) {
     await mkdir(dirname(join(root, file)), { recursive: true });
     await writeFile(join(root, file), content);
   }
@@ -182,9 +185,69 @@ async function buildApp({ eager }: { eager: boolean }): Promise<string> {
     configFile: false,
     logLevel: "silent",
     plugins: [chunkModules()],
+    // `sharedChunk` groups the modules it matches into one chunk, `shared`.
+    build: sharedChunk && {
+      rolldownOptions: {
+        output: {
+          codeSplitting: { groups: [{ name: "shared", test: sharedChunk }] },
+        },
+      },
+    },
   });
   return join(root, "dist");
 }
+
+/**
+ * `main.js` loads `lazy.js` with import(), and with `eager` also imports it
+ * statically, the regression the lazy-module check is for.
+ */
+const lazyApp = ({ eager }: { eager: boolean }) => ({
+  "main.js": lines(
+    eager && 'import { lazyWord } from "./lazy.js";',
+    'import { word } from "eagerpkg";',
+    eager && "console.log(lazyWord);",
+    "console.log(word);",
+    'document.body.onclick = () => import("./lazy.js").then((m) => console.log(m.lazyWord));',
+  ),
+  "lazy.js": LAZY_JS,
+});
+
+/** The office loads on demand from either screen, which load on demand too. */
+const OFFICE_LAZY: Record<string, LazyModule> = {
+  "screen.js": { what: "the screen" },
+  "office.js": { what: "the office", after: ["screen.js"] },
+  "@lazy/pkg": { what: "its dependency", after: ["screen.js"] },
+};
+
+/**
+ * `main.js` opens `screen.js` or `other.js` on demand, and each opens
+ * `office.js` on demand; with `eager` both also import it statically, so it
+ * lands in a chunk the two screens' chunks import.
+ */
+const officeApp = ({ eager }: { eager: boolean }) => {
+  const screen = (name: string) =>
+    lines(
+      eager && 'import { officeWord } from "./office.js";',
+      eager && `console.log("${name}", officeWord);`,
+      'export const open = () => import("./office.js").then((m) => console.log(m.officeWord));',
+    );
+  return {
+    "main.js": lines(
+      'document.body.onclick = () => import("./screen.js").then((m) => m.open());',
+      'document.body.onkeydown = () => import("./other.js").then((m) => m.open());',
+    ),
+    "screen.js": screen("screen"),
+    "other.js": screen("other"),
+    "office.js": lines(
+      'import { big } from "@lazy/pkg";',
+      "export const officeWord = `office ${big}`;",
+    ),
+  };
+};
+
+/** The built chunk that carries `id`. */
+const chunkOf = (chunks: ChunkModules, id: string) =>
+  Object.keys(chunks).find((file) => chunks[file]?.modules.includes(id));
 
 describe("modules that must load on demand", () => {
   it("names a module by its path under the Vite root, or its npm package", () => {
@@ -207,27 +270,32 @@ describe("modules that must load on demand", () => {
     expect(moduleName("\0vite/preload-helper.js", root)).toBe(
       "vite/preload-helper.js",
     );
+    // A file imported as its source text, a URL or a worker is not the file.
+    expect(
+      moduleName("/repo/apps/web/src/features/office/Office3D.tsx?raw", root),
+    ).toBe("src/features/office/Office3D.tsx?raw");
   });
 
-  it("lists every chunk's modules from a real build", async () => {
-    const dist = await buildApp({ eager: false });
+  it("lists every chunk's modules and static imports from a real build", async () => {
+    const dist = await buildApp(lazyApp({ eager: false }));
     const sizes = measureBundle(dist);
     const chunks = readChunkModules(dist);
     const js = sizes.filter((size) => size.file.endsWith(".js"));
     const entry = js.find((size) => size.initial) as AssetSize;
     const lazy = js.find((size) => !size.initial) as AssetSize;
-    expect(chunks?.[entry.file]).toEqual(
+    expect(chunks?.[entry.file]?.modules).toEqual(
       expect.arrayContaining(["main.js", "eagerpkg"]),
     );
-    expect(chunks?.[entry.file]).not.toContain("lazy.js");
-    expect(chunks?.[lazy.file]).toEqual(
+    expect(chunks?.[entry.file]?.modules).not.toContain("lazy.js");
+    expect(chunks?.[entry.file]?.imports).toEqual([]);
+    expect(chunks?.[lazy.file]?.modules).toEqual(
       expect.arrayContaining(["lazy.js", "@lazy/pkg"]),
     );
     expect(notLazy(sizes, chunks, FIXTURE_LAZY)).toEqual([]);
   });
 
   it("fails a module a static import pulls into the initial load, however small", async () => {
-    const dist = await buildApp({ eager: true });
+    const dist = await buildApp(lazyApp({ eager: true }));
     const sizes = measureBundle(dist);
     expect(overBudget(sizes)).toEqual([]);
     expect(notLazy(sizes, readChunkModules(dist), FIXTURE_LAZY)).toEqual([
@@ -237,6 +305,65 @@ describe("modules that must load on demand", () => {
       expect.stringMatching(
         /^@lazy\/pkg \(its dependency\) is in the initial load \(assets\/[\w-]+\.js\)/,
       ),
+    ]);
+  });
+
+  it("fails a lazy module in a shared chunk the entry imports statically", async () => {
+    // The app's entry imports shared chunks (contracts, React): a lazy
+    // module that lands in one loads with the entry. Here a code-splitting
+    // group puts lazy.js in one with shared.js, which the entry imports.
+    const app = {
+      "main.js": lines(
+        'import { shared } from "./shared.js";',
+        "console.log(shared);",
+        'document.body.onclick = () => import("./lazy.js").then((m) => console.log(m.lazyWord));',
+      ),
+      "shared.js": 'export const shared = "shared";',
+      "lazy.js": LAZY_JS,
+    };
+    const dist = await buildApp(app, { sharedChunk: /\/(shared|lazy)\.js$/ });
+    const sizes = measureBundle(dist);
+    const chunks = readChunkModules(dist) as ChunkModules;
+    const entry = chunkOf(chunks, "main.js") as string;
+    const shared = chunkOf(chunks, "lazy.js") as string;
+    expect(shared).toMatch(/^assets\/shared-[\w-]+\.js$/);
+    expect(chunks[shared]?.modules).toContain("shared.js");
+    expect(chunks[entry]?.imports).toContain(shared);
+    expect(sizes.find((size) => size.file === shared)?.initial).toBe(true);
+    expect(notLazy(sizes, chunks, FIXTURE_LAZY)).toEqual([
+      `lazy.js (the lazy module) is in the initial load (${shared}) but must load on demand: a static import from the entry's module graph pulls it in. Import it with import() or React.lazy instead.`,
+      expect.stringMatching(
+        /^@lazy\/pkg \(its dependency\) is in the initial load \(assets\/[\w-]+\.js\)/,
+      ),
+    ]);
+  });
+
+  it("fails a module that loads with one it must only come after", async () => {
+    const lazyDist = await buildApp(officeApp({ eager: false }));
+    expect(
+      notLazy(measureBundle(lazyDist), readChunkModules(lazyDist), OFFICE_LAZY),
+    ).toEqual([]);
+
+    const dist = await buildApp(officeApp({ eager: true }));
+    const sizes = measureBundle(dist);
+    const chunks = readChunkModules(dist) as ChunkModules;
+    // Not in the initial load, nor in the screen's own chunk, but in one
+    // that chunk imports statically.
+    const office = chunkOf(chunks, "office.js") as string;
+    const screen = chunkOf(chunks, "screen.js") as string;
+    expect(office).not.toBe(screen);
+    expect(chunks[screen]?.imports).toContain(office);
+    expect(sizes.find((size) => size.file === office)?.initial).toBe(false);
+    expect(overBudget(sizes)).toEqual([]);
+    expect(notLazy(sizes, chunks, OFFICE_LAZY)).toEqual([
+      `office.js (the office) loads with screen.js (${office}) but must load only after it, on demand: a static import from that module's graph pulls it in. Import it with import() or React.lazy instead.`,
+      expect.stringMatching(
+        `^@lazy/pkg \\(its dependency\\) loads with screen\\.js \\(${office}\\)`,
+      ),
+    ]);
+    expect(lazyRules(OFFICE_LAZY)).toEqual([
+      "Not in the initial load: screen.js, office.js, @lazy/pkg.",
+      "Not loaded with screen.js, only after it: office.js, @lazy/pkg.",
     ]);
   });
 
@@ -252,25 +379,33 @@ describe("modules that must load on demand", () => {
     expect(notLazy(sizes, null, FIXTURE_LAZY)).toEqual([
       expect.stringMatching(`^Found no ${MODULES_FILE} in the build`),
     ]);
+    const chunk = (...modules: string[]) => ({ modules, imports: [] });
     expect(
-      notLazy(sizes, { "assets/index-z9.js": ["main.js"] }, FIXTURE_LAZY),
+      notLazy(sizes, { "assets/index-z9.js": chunk("main.js") }, FIXTURE_LAZY),
     ).toEqual([
       `${MODULES_FILE} does not list assets/index-a1.js, assets/vendor-b2.js: it is from another build. Rebuild the web app.`,
     ]);
     const chunks = {
-      "assets/index-a1.js": ["main.js"],
-      "assets/vendor-b2.js": ["eagerpkg"],
-      "assets/Lazy-e5.js": ["lazy.js"],
+      "assets/index-a1.js": chunk("main.js"),
+      "assets/vendor-b2.js": chunk("eagerpkg"),
+      "assets/Lazy-e5.js": chunk("lazy.js"),
     };
-    expect(notLazy(sizes, chunks, FIXTURE_LAZY)).toEqual([
+    expect(
+      notLazy(sizes, chunks, {
+        "lazy.js": { what: "the lazy module", after: ["gone.js"] },
+        "@lazy/pkg": { what: "its dependency" },
+      }),
+    ).toEqual([
+      "gone.js (which lazy.js loads after) is in no chunk of the build: if it moved or was renamed, update LAZY_MODULES in apps/web/bundleSize.ts.",
       "@lazy/pkg (its dependency) is in no chunk of the build: if it moved or was renamed, update LAZY_MODULES in apps/web/bundleSize.ts.",
     ]);
   });
 
   it("lists the web app's lazy files where they are", () => {
-    const files = Object.keys(LAZY_MODULES).filter((id) =>
-      id.startsWith("src/"),
-    );
+    const files = [
+      ...Object.keys(LAZY_MODULES),
+      ...Object.values(LAZY_MODULES).flatMap((module) => module.after ?? []),
+    ].filter((id) => id.startsWith("src/"));
     expect(files.length).toBeGreaterThan(0);
     for (const file of files)
       expect(existsSync(fileURLToPath(new URL(file, import.meta.url)))).toBe(
