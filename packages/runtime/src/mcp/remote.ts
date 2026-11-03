@@ -302,11 +302,19 @@ export function createGuardedFetch(
     } catch (error) {
       const refusal = refusalIn(error);
       if (refusal) throw refusal;
-      // undici's "fetch failed" says nothing; its cause says what failed.
-      // Still a TypeError, which pi-mcp treats as a network failure.
+      // undici's "fetch failed" says nothing; its deepest cause says what
+      // failed (a name that does not resolve, a proxy that refused the
+      // tunnel). Still a TypeError, which pi-mcp treats as a network failure.
       const cause = (error as { cause?: unknown }).cause;
-      if (error instanceof TypeError && cause instanceof Error)
-        throw new TypeError(`${error.message}: ${cause.message}`, { cause });
+      let deepest: Error | undefined;
+      for (
+        let current: unknown = cause, depth = 0;
+        current instanceof Error && depth < 5;
+        current = (current as { cause?: unknown }).cause, depth++
+      )
+        deepest = current;
+      if (error instanceof TypeError && deepest)
+        throw new TypeError(`${error.message}: ${deepest.message}`, { cause });
       throw error;
     }
     if (

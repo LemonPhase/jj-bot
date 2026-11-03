@@ -445,6 +445,24 @@ describe("remote MCP guard behind an outbound proxy", () => {
     expect(proxy.targets).toEqual([]);
   });
 
+  it("says so when the proxy refuses the tunnel", async () => {
+    const refusing = createHttpServer((_req, res) => res.writeHead(405).end());
+    refusing.on("connect", (_req, socket: Socket) =>
+      socket.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n"),
+    );
+    const refusingPort = await listen(refusing);
+    servers.push(refusing);
+    const { connection } = remote(`https://public.test:${port}/mcp`, {
+      env: { HTTPS_PROXY: `http://127.0.0.1:${refusingPort}` },
+    });
+    const error = await failure(connection.start());
+    expect(error.kind).toBe("startup");
+    expect(error.message).toMatch(
+      /^MCP server docs could not start: fetch failed: .*\b403\b/,
+    );
+    expect(endpoint.seen).toEqual([]);
+  });
+
   it("connects directly, pinned, to a host NO_PROXY names", async () => {
     const { connection } = remote(`https://mcp.test:${port}/mcp`, {
       env: {
