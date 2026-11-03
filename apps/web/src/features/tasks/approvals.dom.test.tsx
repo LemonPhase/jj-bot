@@ -106,6 +106,14 @@ describe("approval state", () => {
         },
         "interrupted · outcome unknown",
       ],
+      [
+        {
+          status: "approved",
+          startedAt: at(7),
+          outcome: { ok: false, refused: "Tool bash not found" },
+        },
+        "approved · not run: refused",
+      ],
       [{ status: "denied", reason: "no" }, "denied · not run"],
       [{ status: "expired" }, "expired · not run"],
       [{ status: "cancelled" }, "cancelled · not run"],

@@ -711,11 +711,18 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         context,
         signal,
       });
+      // pi refused it without running it (an unknown tool, invalid arguments).
+      const refused = outcome.durationMs === undefined;
       await emit({
         type: "tool_execution_end",
         toolCallId: call.id,
         toolName: call.name,
-        result: outcome.result,
+        result: refused
+          ? {
+              ...outcome.result,
+              details: { ...(outcome.result.details ?? {}), refused: true },
+            }
+          : outcome.result,
         isError: outcome.isError,
         ...(outcome.durationMs !== undefined
           ? { durationMs: outcome.durationMs }

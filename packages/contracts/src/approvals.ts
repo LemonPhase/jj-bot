@@ -37,6 +37,12 @@ export const approvalOutcomeSchema = z.object({
   exitCode: z.number().int().nullable().optional(),
   /** `unknown`: it may have run; a restart lost its outcome. */
   interrupted: z.enum(["no", "yes", "unknown"]).optional(),
+  /**
+   * Set when the approved call was refused before it ran (its tool is no
+   * longer granted, its arguments are invalid, its response was cut off):
+   * why, as the bot was told.
+   */
+  refused: z.string().max(APPROVAL_REASON_LIMIT).optional(),
 });
 
 export const approvalSchema = z.object({

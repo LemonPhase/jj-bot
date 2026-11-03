@@ -115,6 +115,9 @@ export function ApprovalCard({
               {current.reason}
             </span>
           )}
+          {state.detail && (
+            <span className="approval-card__reason">{state.detail}</span>
+          )}
         </p>
         {pending && !denying && (
           <div className="approval-card__actions">

@@ -485,6 +485,41 @@ describe("approvals", () => {
     expect(await pushes(root, task.id)).toBe(1);
   });
 
+  it("records an approved call its tool no longer allows as refused, never run", async () => {
+    const root = await workspace();
+    let seen = "";
+    const { engine } = await start(root, [
+      callTool("bash", { command: PUSH }),
+      (context) => {
+        const result = conversation(context).find(
+          (message) => message.role === "toolResult",
+        );
+        seen = textOf(result);
+        return say("bash is gone, so I stop here.");
+      },
+    ]);
+    const { bot, task, approval } = await heldTask(engine);
+    // The profile no longer grants bash when the user approves.
+    await engine.profiles.update(bot.runtimeProfileId as string, {
+      tools: ["read"],
+    });
+    await engine.tasks.decideApproval(task.id, approval.id, {
+      decision: "approve",
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) =>
+        v.task.status === "waiting" && v.sessions[0]?.waitingFor === "user",
+    );
+    expect(seen).toContain("not found");
+    expect(await pushes(root, task.id)).toBe(0);
+    expect(view.approvals[0]).toMatchObject({
+      status: "approved",
+      outcome: { ok: false, refused: expect.stringContaining("not found") },
+    });
+  });
+
   it("expires a pending approval when the goal changes", async () => {
     const root = await workspace();
     let seen = "";

@@ -8,6 +8,8 @@ export interface ApprovalState {
   /** The state, then what happened to the call: "waiting for your approval · not run". */
   text: string;
   tone: StatusTone;
+  /** Why it did not run, when the record says (a refusal of the approved call). */
+  detail?: string;
 }
 
 /** The card's state line, from the record alone. */
@@ -23,6 +25,12 @@ export function approvalState(approval: Approval): ApprovalState {
       return { text: "cancelled · not run", tone: "idle" };
     case "approved": {
       const { outcome } = approval;
+      if (outcome?.refused)
+        return {
+          text: "approved · not run: refused",
+          tone: "failed",
+          detail: outcome.refused,
+        };
       if (!approval.startedAt)
         return { text: "approved · waiting to run", tone: "running" };
       if (!outcome) return { text: "approved · running", tone: "running" };

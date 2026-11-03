@@ -263,8 +263,15 @@ interface StoredResult {
   role?: unknown;
   toolCallId?: unknown;
   isError?: unknown;
-  details?: { exitCode?: unknown; interrupted?: unknown };
+  content?: { type?: unknown; text?: unknown }[];
+  details?: { exitCode?: unknown; interrupted?: unknown; refused?: unknown };
 }
+
+const resultText = (result: StoredResult) =>
+  (result.content ?? [])
+    .map((block) => (typeof block.text === "string" ? block.text : ""))
+    .join("")
+    .trim();
 
 /**
  * Marks the decision resolved when the entries a run persists hold its
@@ -298,17 +305,23 @@ export async function noteResolved(
   const details = result.details ?? {};
   const outcome: ApprovalOutcome | null =
     current.status === "approved"
-      ? {
-          ok: result.isError !== true,
-          ...(typeof details.exitCode === "number" || details.exitCode === null
-            ? { exitCode: details.exitCode as number | null }
-            : {}),
-          ...(details.interrupted === "no" ||
-          details.interrupted === "yes" ||
-          details.interrupted === "unknown"
-            ? { interrupted: details.interrupted }
-            : {}),
-        }
+      ? details.refused === true
+        ? {
+            ok: false,
+            refused: clip(resultText(result) || "refused", 500),
+          }
+        : {
+            ok: result.isError !== true,
+            ...(typeof details.exitCode === "number" ||
+            details.exitCode === null
+              ? { exitCode: details.exitCode as number | null }
+              : {}),
+            ...(details.interrupted === "no" ||
+            details.interrupted === "yes" ||
+            details.interrupted === "unknown"
+              ? { interrupted: details.interrupted }
+              : {}),
+          }
       : null;
   await updateApproval(
     tx,
