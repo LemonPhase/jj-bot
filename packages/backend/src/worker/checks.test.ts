@@ -203,6 +203,11 @@ describe("a json check on a file that is not JSON", () => {
         `{"key": "${KEY.slice(0, 12)}`,
         "`out.json` is not valid JSON: it ends early, at line 1, column 22.",
       ],
+      // A lone CR ends a line, as it does for JSON.parse.
+      [
+        "[1\r 2]",
+        "`out.json` is not valid JSON: unexpected character at line 2, column 2.",
+      ],
     ]) {
       const run = await runCheck(
         {

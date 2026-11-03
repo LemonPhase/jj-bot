@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonErrorOffset } from "./json-syntax";
+import { jsonErrorOffset, lineAndColumn } from "./json-syntax";
 
 /** Where `JSON.parse` says `text` fails, from its message, or "valid". */
 function parseError(text: string): number | string | "valid" {
@@ -8,8 +8,19 @@ function parseError(text: string): number | string | "valid" {
     return "valid";
   } catch (error) {
     const message = (error as Error).message;
-    const position = /at position (\d+)/.exec(message);
-    if (position) return Number(position[1]);
+    const position = /at position (\d+)(?: \(line (\d+) column (\d+)\))?/.exec(
+      message,
+    );
+    if (position) {
+      const offset = Number(position[1]);
+      // V8 names the line and column too: they must agree.
+      if (position[2])
+        expect(lineAndColumn(text, offset), JSON.stringify(text)).toEqual({
+          line: Number(position[2]),
+          column: Number(position[3]),
+        });
+      return offset;
+    }
     if (message.startsWith("Unexpected end of JSON input")) return text.length;
     // V8 names a few whole texts ("undefined", "NaN") instead.
     if (message === `"${text}" is not valid JSON`) return 0;
@@ -111,6 +122,9 @@ describe("jsonErrorOffset", () => {
       "+",
       " ",
       "\n",
+      "\r",
+      "\r\n",
+      "\u2028",
       "true",
       "nul",
       "x",
@@ -124,6 +138,20 @@ describe("jsonErrorOffset", () => {
         text += pieces[Math.floor(random() * pieces.length)];
       agrees(text);
     }
+  });
+
+  it("counts lines as V8 does: at LF, CR and CRLF", () => {
+    for (const text of [
+      "[1\r 2]",
+      "[1\r\n 2]",
+      "[1\n\r 2]",
+      "[1\r\r 2]",
+      "[1\r\n\r 2]",
+      '["a\u2028b\u2029c", 1 2]',
+    ])
+      agrees(text);
+    expect(lineAndColumn("[1\r 2]", 4)).toEqual({ line: 2, column: 2 });
+    expect(lineAndColumn('["\u2028", 1 2]', 8)).toEqual({ line: 1, column: 9 });
   });
 
   it("takes no stack for deep nesting", () => {

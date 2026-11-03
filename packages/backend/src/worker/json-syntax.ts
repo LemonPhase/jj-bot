@@ -147,3 +147,24 @@ export function jsonErrorOffset(text: string): number | undefined {
     }
   }
 }
+
+/**
+ * The line and column (both 1-based) of `offset` in `text`, counted as V8
+ * counts them in its JSON errors: a line ends at LF, CR or CRLF. LS and PS
+ * do not end one; JSON allows them only inside strings.
+ */
+export function lineAndColumn(
+  text: string,
+  offset: number,
+): { line: number; column: number } {
+  let line = 1;
+  let start = 0;
+  for (let at = 0; at < offset; at += 1) {
+    const char = text.charCodeAt(at);
+    if (char === LF || (char === CR && text.charCodeAt(at + 1) !== LF)) {
+      line += 1;
+      start = at + 1;
+    }
+  }
+  return { line, column: offset - start + 1 };
+}

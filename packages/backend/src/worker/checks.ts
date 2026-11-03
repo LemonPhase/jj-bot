@@ -16,7 +16,7 @@ import {
 import { errorMessage } from "../errors";
 import type { CutEdges } from "../redact";
 import { ISOLATED_TIME_LIMIT_MS, runIsolated } from "./isolated";
-import { jsonErrorOffset } from "./json-syntax";
+import { jsonErrorOffset, lineAndColumn } from "./json-syntax";
 
 export interface CheckRun {
   outcome: CheckOutcome;
@@ -218,10 +218,6 @@ type Assertion = Extract<VerificationCriterion, { method: "file" | "result" }>;
 const lineOf = (text: string, index: number) =>
   text.slice(0, index).split("\n").length;
 
-/** Column number (1-based) of a character offset on its line. */
-const columnOf = (text: string, index: number) =>
-  index - text.lastIndexOf("\n", index - 1);
-
 /**
  * Why `text` is not JSON, by position only: the message of `JSON.parse`
  * quotes the text around the error, a cut of the file that may go through
@@ -230,7 +226,8 @@ const columnOf = (text: string, index: number) =>
 function invalidJson(text: string, subject: string): string {
   const offset = jsonErrorOffset(text);
   if (offset === undefined) return `${subject} is not valid JSON.`;
-  const where = `line ${lineOf(text, offset)}, column ${columnOf(text, offset)}`;
+  const { line, column } = lineAndColumn(text, offset);
+  const where = `line ${line}, column ${column}`;
   return offset >= text.length
     ? `${subject} is not valid JSON: it ends early, at ${where}.`
     : `${subject} is not valid JSON: unexpected character at ${where}.`;
