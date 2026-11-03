@@ -484,7 +484,7 @@ describe("verification gate", () => {
             .where(eq(tasks.id, task.id));
           return row?.status === "waiting";
         },
-        { timeoutMs: 25_000, what: "the task to wait" },
+        { what: "the task to wait" },
       );
       const view = await engine.tasks.get(task.id);
       expect(
@@ -524,7 +524,7 @@ describe("verification gate", () => {
     } finally {
       clearInterval(ticker);
     }
-  }, 30_000);
+  });
 
   it("never passes an attempt whose checks were all inconclusive", async () => {
     const { engine, executor } = await setup({
@@ -852,7 +852,6 @@ describe("verification gate", () => {
         task.id,
         status("completed"),
         "the recovered task",
-        20_000,
       );
       expect(isVerified(view.task, summaryOf(view))).toBe(true);
       const page = await second.engine.tasks.events(task.id);
@@ -868,7 +867,7 @@ describe("verification gate", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 
   it("runs the gate again when a run that passed it was cut off, so a later turn's changes are checked", async () => {
     const root = await mkdtemp(join(tmpdir(), "jj-gate-stale-"));
@@ -967,7 +966,6 @@ describe("verification gate", () => {
         (view) =>
           view.task.status === "completed" || view.task.status === "waiting",
         "the recovered task",
-        20_000,
       );
       const gone = await stat(join(root, "task", task.id, "out.txt")).then(
         () => false,
@@ -982,5 +980,5 @@ describe("verification gate", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  }, 40_000);
+  });
 });

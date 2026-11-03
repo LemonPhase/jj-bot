@@ -108,10 +108,7 @@ async function crashing(
     first,
     signals,
     async restart() {
-      await until(() => crash !== undefined, {
-        what: "the crash",
-        timeoutMs: 20_000,
-      });
+      await until(() => crash !== undefined, { what: "the crash" });
       await crash;
       const second = await fauxTeamEngine(db.database, undefined, options);
       current = second;
@@ -579,7 +576,6 @@ describe("a turn the engine ended before a crash", () => {
       task.id,
       (v) => v.task.status === "completed" || v.task.status === "failed",
       "the recovered task",
-      30_000,
     );
     expect(done.task.status).toBe("completed");
     // Ada's recovery waited without a model call: her one call read the
@@ -592,7 +588,7 @@ describe("a turn the engine ended before a crash", () => {
       ["recovery", "waiting"],
       ["wake", "completed"],
     ]);
-  }, 60_000);
+  });
 
   it("is not resumed when a completion ended the run: the task completes", async () => {
     let adaName = "";
@@ -619,7 +615,6 @@ describe("a turn the engine ended before a crash", () => {
       task.id,
       (v) => v.task.status === "completed" || v.task.status === "failed",
       "the recovered task",
-      30_000,
     );
     expect(done.task).toMatchObject({ status: "completed", result: "Done." });
     expect(resumed[ada]).toBeUndefined();
@@ -627,7 +622,7 @@ describe("a turn the engine ended before a crash", () => {
       ["start", "failed"],
       ["recovery", "completed"],
     ]);
-  }, 60_000);
+  });
 });
 
 describe("a message a worker finished without reading", () => {
@@ -688,7 +683,6 @@ describe("a message a worker finished without reading", () => {
       task.id,
       (v) => v.task.status === "completed" || v.task.status === "failed",
       "the recovered task",
-      30_000,
     );
     expect(done.task.status).toBe("completed");
     // Bob's turn had ended: his recovery makes no model call.
@@ -706,7 +700,7 @@ describe("a message a worker finished without reading", () => {
     expect(result).toContain(
       `${bob} finished before reading a message sent to it, so it is handed to you (each is in the task log):\n\n> Message from ${ada}:\n> Also add line 2.`,
     );
-  }, 60_000);
+  });
 
   it("is counted with the ones its inbox left out, which the parent can list, and a clipped one points at its entry", async () => {
     const { engine, faux } = await setup();

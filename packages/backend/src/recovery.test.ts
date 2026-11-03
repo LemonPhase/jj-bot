@@ -105,7 +105,6 @@ describe("recovery", () => {
       task.id,
       status("completed"),
       "the resumed task",
-      20_000,
     );
     expect(view.task.result).toBe("count: one");
     // The completed command ran once, before the crash; nothing was re-run.
@@ -342,7 +341,6 @@ describe("recovery", () => {
       task.id,
       status("failed"),
       "the failure",
-      20_000,
     );
     expect(view.sessions[0]?.error).toContain(
       "ephemeral workspace is not on this worker: a worker restart discarded it",
