@@ -67,6 +67,7 @@ const view = (messages: TaskMessage[], cursor: number): TaskView => ({
   sessions: [],
   messages,
   artifacts: [],
+  approvals: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
   firstSequence: 1,

@@ -54,6 +54,7 @@ const snapshot: TaskView = {
   sessions: [],
   messages: [],
   artifacts: [],
+  approvals: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
   firstSequence: 1,

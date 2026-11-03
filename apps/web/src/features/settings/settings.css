@@ -415,3 +415,37 @@
   outline: 1px solid var(--ink-2);
   outline-offset: 4px;
 }
+
+/* Approval rules: tool, match and remove on one row. */
+.settings-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-approvals__rule {
+  display: grid;
+  grid-template-columns: minmax(100px, 140px) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--sp-6);
+}
+
+.settings-approvals__rule .ui-input {
+  font-family: var(--font-mono);
+}
+
+.settings-approvals__preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  max-width: 480px;
+}
+
+@media (max-width: 560px) {
+  .settings-approvals__rule {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

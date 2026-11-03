@@ -239,6 +239,25 @@ describe("ChatResponder with the scripted model", () => {
     );
     expect(answer.usage.modelCalls).toBe(1);
   });
+
+  it("tells a call waiting for approval, and points at the card", async () => {
+    const { tools } = chatTools();
+    const answer = await reply(
+      [
+        "[Task update] This comes from JJ Bot, not from the user: a task you coordinate has a call waiting for the user's approval: it has not run, and its session waits for the answer.",
+        'Task: task_7 "Release"',
+        "Status now: waiting for the user.",
+        "The call, as the task recorded it:",
+        "Nova wants to run bash: git push origin main",
+        "",
+        "Tell the user what waits for their approval.",
+      ].join("\n"),
+      tools.filter((tool) => tool.readOnly),
+    );
+    expect(answer.text).toBe(
+      '"Release" needs your approval: Nova wants to run bash: git push origin main Approve or deny it on the card below.',
+    );
+  });
 });
 
 describe("ChatResponder", () => {

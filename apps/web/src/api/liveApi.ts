@@ -5,6 +5,7 @@
  */
 import {
   apiErrorCodeSchema,
+  approvalSchema,
   type Bootstrap,
   bootstrapSchema,
   botMemorySchema,
@@ -14,6 +15,7 @@ import {
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
+  decideApprovalCommandSchema,
   type ModelsView,
   modelsViewSchema,
   postTaskMessageCommandSchema,
@@ -289,6 +291,7 @@ const RESPONSES = {
   tasks: z.object({ tasks: z.array(taskSummarySchema) }),
   task: z.object({ task: taskSchema }),
   taskMessage: z.object({ message: taskMessageSchema }),
+  approval: z.object({ approval: approvalSchema }),
 };
 
 export function createLiveApi(options: LiveApiOptions): JJApi {
@@ -471,6 +474,15 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           command(updateTaskCommandSchema, cmd),
         )
       ).task,
+    decideApproval: async (taskId, approvalId, cmd) =>
+      (
+        await request(
+          "POST",
+          `/tasks/${id(taskId)}/approvals/${id(approvalId)}`,
+          RESPONSES.approval,
+          command(decideApprovalCommandSchema, cmd),
+        )
+      ).approval,
     subscribeTask: (taskId, onView, streamOptions) =>
       followTask(taskId, getTask, openTaskEvents, onView, {
         retryMs,

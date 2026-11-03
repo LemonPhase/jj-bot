@@ -146,6 +146,7 @@ export const taskView = (over: Partial<TaskView> = {}): TaskView => ({
   sessions: [],
   messages: [],
   artifacts: [],
+  approvals: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
   firstSequence: 1,

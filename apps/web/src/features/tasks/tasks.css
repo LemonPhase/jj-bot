@@ -917,3 +917,82 @@
   font-size: var(--fs-small);
   color: var(--ink-muted);
 }
+
+/* ── Approvals ───────────────────────────────────────────────────────────
+   A call waiting for (or answered by) the user, in the chat timeline. A
+   pending one is framed in the verifying amber until it is answered. */
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.approval-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-left: 34px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-card);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.approval-card[data-status="pending"] .approval-card__body {
+  border-color: var(--status-verifying);
+}
+
+.approval-card__call {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: var(--r-md);
+  background: var(--bg-bubble);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-card__text,
+.approval-card__rule {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.approval-card__rule {
+  color: var(--ink-muted);
+}
+
+.approval-card__state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-2);
+}
+
+.approval-card__reason {
+  font-family: var(--font-sans);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.approval-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.approval-card__deny {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}

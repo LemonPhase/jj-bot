@@ -68,6 +68,7 @@ function viewWith(
     sessions: [],
     messages: [],
     artifacts: [],
+    approvals: [],
     usage: { total: usage, bySession: {} },
     events: patch.events ?? [],
     firstSequence: 1,

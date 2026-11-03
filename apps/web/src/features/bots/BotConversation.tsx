@@ -30,6 +30,10 @@ export function BotConversation({
   const { conversations, pendingBotTurns, sendBotMessage } = useWorkspace();
   const conversation = conversations[bot.id];
   const messages = conversation?.messages ?? [];
+  // Approvals show under a task's newest card only, not under every card of it.
+  const newestCard = new Map<string, string>();
+  for (const message of messages)
+    if (message.taskId) newestCard.set(message.taskId, message.id);
   const pending = pendingBotTurns[bot.id];
   const replying = Boolean(pending) || Boolean(conversation?.replying);
   // A previous reply's failure is stale while a new message is on its way.
@@ -75,7 +79,15 @@ export function BotConversation({
               <Fragment key={group.key}>
                 <DayDivider>{group.label}</DayDivider>
                 {group.messages.map((message) => (
-                  <ChatMessage key={message.id} bot={bot} message={message} />
+                  <ChatMessage
+                    key={message.id}
+                    bot={bot}
+                    message={message}
+                    newest={
+                      message.taskId !== null &&
+                      newestCard.get(message.taskId) === message.id
+                    }
+                  />
                 ))}
               </Fragment>
             ))}
@@ -126,9 +138,12 @@ function ActivityRow({ bot, label }: { bot: Bot; label: string }) {
 function ChatMessage({
   bot,
   message,
+  newest,
 }: {
   bot: Bot;
   message: ConversationMessage;
+  /** The newest card of its task in this conversation: it carries the approvals. */
+  newest: boolean;
 }) {
   if (message.role === "user")
     return <UserBubble text={message.text} createdAt={message.createdAt} />;
@@ -148,7 +163,9 @@ function ChatMessage({
         </time>
       </div>
       <p className="chat-msg__body">{message.text}</p>
-      {message.taskId && <InlineTaskCard taskId={message.taskId} />}
+      {message.taskId && (
+        <InlineTaskCard taskId={message.taskId} approvals={newest} />
+      )}
     </div>
   );
 }

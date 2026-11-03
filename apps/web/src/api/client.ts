@@ -10,6 +10,7 @@
  */
 import type {
   ApiErrorCode,
+  Approval,
   Bootstrap,
   Bot,
   BotMemory,
@@ -19,6 +20,7 @@ import type {
   CreateBotCommand,
   CreateRuntimeProfileCommand,
   CreateTaskCommand,
+  DecideApprovalCommand,
   ModelsView,
   PostTaskMessageCommand,
   RuntimeProfile,
@@ -174,6 +176,16 @@ export interface JJApi {
   stopTask(taskId: string, command?: StopTaskCommand): Promise<Task>;
   /** `PATCH /api/tasks/:id`: the task's spend cap (null for none). */
   updateTask(taskId: string, command: UpdateTaskCommand): Promise<Task>;
+  /**
+   * `POST /api/tasks/:id/approvals/:approvalId`: the user's answer to a call
+   * waiting for approval. Rejects with `APPROVAL_NOT_PENDING` once it was
+   * answered, expired or cancelled.
+   */
+  decideApproval(
+    taskId: string,
+    approvalId: string,
+    command: DecideApprovalCommand,
+  ): Promise<Approval>;
   /**
    * The task snapshot, then every task event folded onto it with
    * `applyTaskEvent`. Resumes from the last sequence on reconnect, never

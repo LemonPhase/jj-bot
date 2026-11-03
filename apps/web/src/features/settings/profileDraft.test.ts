@@ -62,6 +62,7 @@ const stored: RuntimeProfile = {
     maxUsdPerTask: 5,
     maxUsdPerBotPerDay: null,
   },
+  approvals: [],
   isDefault: false,
   status: { driverAvailable: true, isolated: true },
   createdAt: "2026-10-01T00:00:00.000Z",
@@ -126,6 +127,74 @@ describe("profile drafts", () => {
       isDefault: true,
     });
     expect(createRuntimeProfileCommandSchema.safeParse(command).success).toBe(
+      true,
+    );
+  });
+});
+
+describe("approval rules in a profile draft", () => {
+  it("has none by default and creates none", () => {
+    const draft = { ...newProfileDraft("local", localFields), name: "Local" };
+    const read = readProfileDraft(draft, localFields);
+    expect(read.value?.approvals).toEqual([]);
+    expect(
+      "approvals" in createProfileCommand(read.value as DesiredProfile),
+    ).toBe(false);
+  });
+
+  it("reads an empty match as every call, and refuses an overlong one", () => {
+    const draft = {
+      ...newProfileDraft("local", localFields),
+      name: "Local",
+      approvals: [
+        { tool: "bash" as const, match: " git push " },
+        { tool: "write" as const, match: "  " },
+      ],
+    };
+    const read = readProfileDraft(draft, localFields);
+    expect(read.value?.approvals).toEqual([
+      { tool: "bash", match: "git push" },
+      { tool: "write" },
+    ]);
+    const command = createProfileCommand(read.value as DesiredProfile);
+    expect(createRuntimeProfileCommandSchema.parse(command).approvals).toEqual(
+      read.value?.approvals,
+    );
+    expect(
+      readProfileDraft(
+        { ...draft, approvals: [{ tool: "bash", match: "x".repeat(201) }] },
+        localFields,
+      ).errors,
+    ).toEqual({ "approvals.0.match": "At most 200 characters." });
+  });
+
+  it("sends the rules whole, and only when they changed", () => {
+    const guarded = {
+      ...stored,
+      approvals: [{ tool: "bash" as const, match: "git push" }],
+    };
+    const draft = draftFromProfile(guarded, dockerFields);
+    expect(draft.approvals).toEqual([{ tool: "bash", match: "git push" }]);
+    const same = readProfileDraft(draft, dockerFields);
+    expect(
+      profilePatch(guarded, same.value as DesiredProfile, dockerFields).patch,
+    ).toBeNull();
+    const added = readProfileDraft(
+      {
+        ...draft,
+        approvals: [...draft.approvals, { tool: "edit", match: "" }],
+      },
+      dockerFields,
+    );
+    const { patch } = profilePatch(
+      guarded,
+      added.value as DesiredProfile,
+      dockerFields,
+    );
+    expect(patch).toEqual({
+      approvals: [{ tool: "bash", match: "git push" }, { tool: "edit" }],
+    });
+    expect(updateRuntimeProfileCommandSchema.safeParse(patch).success).toBe(
       true,
     );
   });

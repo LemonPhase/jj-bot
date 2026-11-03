@@ -35,6 +35,7 @@ const task = (
   activeSessionCount: 0,
   sessionCount: 0,
   usage: emptyUsage(),
+  pendingApprovals: [],
   ...patch,
 });
 

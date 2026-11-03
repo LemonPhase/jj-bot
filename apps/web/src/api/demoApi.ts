@@ -18,6 +18,7 @@ import {
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
+  decideApprovalCommandSchema,
   defaultAppearanceFor,
   emptyUsage,
   isFinishedStatus,
@@ -296,6 +297,16 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       sessionCount: view.sessions.length,
       usage: clone(view.usage.total),
       ...(question ? { question } : {}),
+      pendingApprovals: view.approvals
+        .filter((approval) => approval.status === "pending")
+        .map(({ id, sessionId, botId, tool, summary, createdAt }) => ({
+          id,
+          sessionId,
+          botId,
+          tool,
+          summary,
+          createdAt,
+        })),
     };
   };
 
@@ -320,6 +331,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         sessions: [],
         messages: [],
         artifacts: [],
+        approvals: [],
         usage: { total: emptyUsage(), bySession: {} },
         events: [],
         firstSequence: 1,
@@ -970,6 +982,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           "ls",
         ],
         budgets: parsed.budgets ?? profileBudgetsSchema.parse({}),
+        approvals: parsed.approvals ?? [],
         isDefault: false,
         status: profileStatus(parsed.sandbox),
         createdAt,
@@ -1017,6 +1030,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         description: patch.description ?? stored.description,
         tools: patch.tools ?? stored.tools,
         budgets: { ...stored.budgets, ...patch.budgets },
+        approvals: patch.approvals ?? stored.approvals,
         sandbox,
         status: profileStatus(sandbox),
         updatedAt: now(),
@@ -1179,6 +1193,19 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         notify({ type: "tasks.changed", taskId });
       }
       return clone(state.view.task);
+    },
+    // The demo's scripted bots never make a call that needs approval.
+    decideApproval: async (taskId, approvalId, command) => {
+      validate(decideApprovalCommandSchema, command);
+      const state = getState(taskId);
+      const approval = state.view.approvals.find((a) => a.id === approvalId);
+      if (!approval) throw notFound("approval", approvalId);
+      throw new ApiError(
+        "APPROVAL_NOT_PENDING",
+        `The approval is ${approval.status}, not pending: it can no longer be answered.`,
+        { status: approval.status },
+        409,
+      );
     },
     subscribeTask: (taskId, onView, streamOptions) =>
       followTask(taskId, getTask, openTaskEvents, onView, {

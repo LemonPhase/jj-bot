@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
   Avatar,
+  Badge,
   Button,
   Dialog,
   ErrorBanner,
@@ -11,6 +12,7 @@ import {
 import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ScreenHeader } from "../shell/ScreenHeader";
+import { pendingLabel, pendingOf } from "./approvals";
 import { SpendControl } from "./SpendControl";
 import {
   botName,
@@ -28,6 +30,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
   const { getBot, taskStreamState } = useWorkspace();
   const { task } = view;
   const { heading, goal } = headingFor(task);
+  const approvals = pendingLabel(pendingOf(view.approvals));
   // Say so while the live event stream is down, instead of looking current.
   const reconnecting =
     api.mode === "live" && taskStreamState === "reconnecting";
@@ -45,6 +48,14 @@ export function TaskHeader({ view }: { view: TaskView }) {
               status={task}
               detail={`v${task.goalVersion}`}
             />
+            {approvals && (
+              <Badge
+                tone="verifying"
+                title="Calls waiting for your approval: answer them in the chat"
+              >
+                {approvals}
+              </Badge>
+            )}
             {reconnecting && (
               <span className="task-head__stream" role="status">
                 reconnecting…

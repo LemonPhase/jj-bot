@@ -20,6 +20,16 @@ export const summaryFromView = (view: TaskView): TaskSummary => {
     sessionCount: view.sessions.length,
     usage: view.usage.total,
     ...(question ? { question } : {}),
+    pendingApprovals: view.approvals
+      .filter((approval) => approval.status === "pending")
+      .map(({ id, sessionId, botId, tool, summary, createdAt }) => ({
+        id,
+        sessionId,
+        botId,
+        tool,
+        summary,
+        createdAt,
+      })),
   };
 };
 

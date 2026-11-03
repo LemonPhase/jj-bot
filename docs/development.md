@@ -168,7 +168,7 @@ Changes to `packages/contracts` must bump `CONTRACT_VERSION` and add an entry to
 
 ### Browser tests
 
-`npm run test:browser` builds the web app and runs the Playwright suite in `apps/web/e2e` (`*.e2e.ts`, which vitest does not collect) in headless Chromium. It covers the main user paths: creating a bot in Studio and editing it; a direct chat that starts a task, the task update with its card, and a follow-up that continues the same task; a task's Progress, Graph and Office 2D views; editing a runtime profile in Settings.
+`npm run test:browser` builds the web app and runs the Playwright suite in `apps/web/e2e` (`*.e2e.ts`, which vitest does not collect) in headless Chromium. It covers the main user paths: creating a bot in Studio and editing it; a direct chat that starts a task, the task update with its card, and a follow-up that continues the same task; a task's Progress, Graph and Office 2D views; editing a runtime profile in Settings; a call held for approval, approved in the task chat and denied from direct chat.
 
 - **Isolation.** Every test gets an instance of its own from verify-jj-bot's `launch.sh --no-build` (the API, embedded worker and built app on a fresh PGlite dir, the scripted model, the local driver and a cleared environment) and stops it with `stop.sh`. `baseURL` points at that instance, so tests are independent and run in parallel. A test that needs a bot but is not about Studio creates it through the API, so a Studio regression fails only the Studio test.
 - **Determinism.** Tests find elements by role and accessible name, wait on visible state instead of sleeping, and are never retried: a flaky test fails the run. Page helpers are in `app.ts` and the instance fixture in `fixtures.ts`.

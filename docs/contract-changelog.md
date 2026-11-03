@@ -31,6 +31,32 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.4.0 — 2026-11-03 — Approvals for held tool calls
+
+**Changed by:** backend and frontend ([#87](https://github.com/LemonPhase/jj-bot/issues/87), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/87#issuecomment-6595622906)) · **Compatibility:** additive
+
+- `approvalRuleSchema` (`{ tool, match? }`, `match` at most `APPROVAL_MATCH_LIMIT` = 200
+  characters) and `runtimeProfileSchema.approvals` (at most `MAX_APPROVAL_RULES` = 50, default
+  empty), also in `createRuntimeProfileCommandSchema` and, replaced whole,
+  `updateRuntimeProfileCommandSchema`. The pure matchers `approvalSubject`, `approvalRuleMatches`,
+  `matchingApprovalRule` and `describeApprovalRule` decide which calls a rule holds, on the server
+  and in the profile editor alike.
+- `waitingForSchema` gains `approval`: a session waiting for the user's answer to the call it
+  holds.
+- `approvalSchema`, `approvalStatusSchema` (`pending`, `approved`, `denied`, `expired`,
+  `cancelled`), `approvalOutcomeSchema` and `pendingApprovalSchema`.
+- `taskSummarySchema.pendingApprovals` and `taskViewSchema.approvals`, both parsed as empty from
+  servers before approvals; `applyTaskEvent` folds approvals into the view.
+- Events `approval.requested` and `approval.updated`, each carrying the whole record.
+- `decideApprovalCommandSchema` (`{ decision: "approve" | "deny", reason? }`, a reason only with a
+  denial) for `POST /api/tasks/:taskId/approvals/:approvalId`, which answers `{ approval }`.
+- API error code `APPROVAL_NOT_PENDING` (409) for an approval answered, expired or cancelled.
+
+**Action required (frontend):** show held calls and answer them (task chat card, header badge,
+task list, chat task card); edit approval rules in the profile editor. Done in the same change.
+**Action required (backend):** none beyond this change; a client built against 1.3.0 that parses
+sessions strictly must accept `waitingFor: "approval"`.
+
 ## 1.3.0 — 2026-11-03 — Spend caps and usage reporting
 
 **Changed by:** backend and frontend ([#28](https://github.com/LemonPhase/jj-bot/issues/28), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/28#issuecomment-6593254682)) · **Compatibility:** additive
