@@ -793,7 +793,7 @@ function updateAnswer(text: string): string {
   if (happened === "is waiting for the user")
     return `"${title}" needs your input: ${body}`;
   if (happened.startsWith("has a call"))
-    return `"${title}" needs your approval: ${body} Approve or deny it on the card below.`;
+    return `"${title}" needs your approval: ${body}${/[.!?]$/.test(body) ? "" : "."} Approve or deny it on the card below.`;
   return `Update on "${title}": it ${happened}. ${body}`.trim();
 }
 

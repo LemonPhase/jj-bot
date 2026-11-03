@@ -255,7 +255,7 @@ describe("ChatResponder with the scripted model", () => {
       tools.filter((tool) => tool.readOnly),
     );
     expect(answer.text).toBe(
-      '"Release" needs your approval: Nova wants to run bash: git push origin main Approve or deny it on the card below.',
+      '"Release" needs your approval: Nova wants to run bash: git push origin main. Approve or deny it on the card below.',
     );
   });
 });

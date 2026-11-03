@@ -103,7 +103,8 @@ export function ApprovalCard({
           </p>
         )}
         <p className="approval-card__rule">
-          Needs your approval: {describeApprovalRule(current.rule)}
+          {pending ? "Needs your approval" : "Held by the rule"}:{" "}
+          {describeApprovalRule(current.rule)}
         </p>
         <p className="approval-card__state" role="status">
           <StatusSquare tone={state.tone} />
