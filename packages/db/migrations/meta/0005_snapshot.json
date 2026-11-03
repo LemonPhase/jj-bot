@@ -1,5 +1,5 @@
 {
-  "id": "50f03837-46da-4d94-b032-b9f1ed0a0eb9",
+  "id": "e84dc325-2346-49f7-b6b0-10dbcde14f8c",
   "prevId": "d1966145-af78-4998-961a-43774d803520",
   "version": "7",
   "dialect": "postgresql",
@@ -505,9 +505,38 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "handled_at": {
+          "name": "handled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "conversation_messages_waiting_idx": {
+          "name": "conversation_messages_waiting_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"conversation_messages\".\"role\" = 'user' and \"conversation_messages\".\"handled_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "conversation_messages_bot_id_bots_id_fk": {
           "name": "conversation_messages_bot_id_bots_id_fk",

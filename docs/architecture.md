@@ -98,7 +98,7 @@ The read tools change nothing, and their output is never a reply's text when its
 
 - The transaction that changes the task records the update (the task, what happened, and its result, error or the coordinator's question, as stored then and clipped) and enqueues a chat reply for the coordinator. Each event has one update, keyed by the task and its event sequence; a task that continues and then waits again is a new event.
 - The update is the input of one chat reply and is never stored as a chat message. That reply gets the read tools only; it may suggest an action, and the user decides. Its message carries the task's id, so the chat shows the task's card under it.
-- A bot's chat replies run one at a time, each answering one input: the user's unanswered messages first, then the oldest update. An update that arrives during a reply is answered after it, by a reply that sees both.
+- A bot's chat replies run one at a time, each answering one input: the user's unanswered messages first, then the oldest update. An update, or a user message, that arrives during a reply is answered after it, by a reply that sees both.
 - The reply that answers an update marks it answered in the transaction that stores its message, so a crash or hand-off tells it once. If the reply fails (a model error or the budget), or its job keeps dying, the engine posts the update as a plain message with the task's card instead, so it is never lost. A user message whose reply failed is not answered again until the user writes more.
 
 The task card reads the live task summary: it shows the task's current status, not its status when the message was written, and a completed or failed task's result or error.

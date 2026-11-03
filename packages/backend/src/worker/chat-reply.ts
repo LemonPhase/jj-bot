@@ -1,10 +1,10 @@
 // One `chat.reply` job: the bot answers its direct chat. A job answers one
-// input: the user's unanswered message (with every chat task tool), else the
+// input: the user's waiting messages (with every chat task tool), else the
 // oldest unanswered task update (with the read tools only). Jobs of one bot
 // run one at a time, so an update that arrives during a reply is answered
-// after it, by a reply that sees both. While more inputs wait, each job
-// enqueues the next. An update whose reply fails is still told: the engine
-// posts it as a plain message instead.
+// after it, by a reply that sees both, and so is a user message. While more
+// inputs wait, each job enqueues the next. An update whose reply fails is
+// still told: the engine posts it as a plain message instead.
 
 import { FINISHED_TASK_STATUSES } from "@jj/contracts";
 import {
@@ -16,6 +16,7 @@ import {
   type Executor,
   enqueue,
   fail,
+  type JobRow,
   jobs,
   nextConversationSequence,
   type Tx,
@@ -23,7 +24,7 @@ import {
   tasks,
   usage,
 } from "@jj/db";
-import { and, count, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
@@ -34,6 +35,7 @@ import {
   answerTaskUpdate,
   fallbackText,
   type PendingUpdate,
+  pendingTaskUpdate,
   pendingTaskUpdates,
   updateInput,
 } from "../services/task-updates";
@@ -48,52 +50,64 @@ import {
 
 /** What one job answers. */
 type ChatInput =
-  | { kind: "user"; message: ConversationMessageRow }
-  /** `gaveUp`: an earlier job died answering it too often; post the fallback. */
-  | { kind: "update"; update: PendingUpdate; gaveUp: boolean };
+  /** The user's messages no reply has taken up yet, oldest first; the last is the trigger. */
+  | { kind: "user"; waiting: ConversationMessageRow[] }
+  | { kind: "update"; update: PendingUpdate };
 
-/**
- * Whether a failed reply job of the bot was answering this input (its id is
- * in the job's payload). A failed user message is not answered again until
- * the user writes more; an update is then posted as the fallback.
- */
-async function gaveUpOn(exec: Executor, botId: string, inputId: string) {
-  const [row] = await exec
-    .select({ id: jobs.id })
-    .from(jobs)
+/** The bot's user messages that no reply has taken up yet, oldest first. */
+async function waitingMessages(exec: Executor, botId: string) {
+  return exec
+    .select()
+    .from(conversationMessages)
     .where(
       and(
-        eq(jobs.botId, botId),
-        eq(jobs.kind, "chat.reply"),
-        eq(jobs.status, "failed"),
-        sql`${jobs.payload}->>'answering' = ${inputId}`,
+        eq(conversationMessages.botId, botId),
+        eq(conversationMessages.role, "user"),
+        isNull(conversationMessages.handledAt),
       ),
     )
-    .limit(1);
-  return row !== undefined;
+    .orderBy(asc(conversationMessages.sequence));
 }
 
 async function nextInput(
   exec: Executor,
   botId: string,
-  history: ConversationMessageRow[],
 ): Promise<ChatInput | undefined> {
-  const last = history.at(-1);
-  if (last?.role === "user" && !(await gaveUpOn(exec, botId, last.id)))
-    return { kind: "user", message: last };
+  const waiting = await waitingMessages(exec, botId);
+  if (waiting.length > 0) return { kind: "user", waiting };
   const [update] = await pendingTaskUpdates(exec, botId);
-  if (update)
-    return {
-      kind: "update",
-      update,
-      gaveUp: await gaveUpOn(exec, botId, update.id),
-    };
-  return undefined;
+  return update ? { kind: "update", update } : undefined;
 }
 
-/** Enqueues the bot's next reply while task updates wait (coalesced with a queued one). */
-async function continueWithUpdates(tx: Tx, botId: string) {
-  if ((await pendingTaskUpdates(tx, botId)).length === 0) return;
+/**
+ * Marks the bot's waiting user messages up to `sequence` taken up: answered,
+ * or failed (a failed message is not answered again until the user writes more).
+ */
+async function markHandled(
+  tx: Tx,
+  ctx: EngineContext,
+  botId: string,
+  sequence: number,
+) {
+  await tx
+    .update(conversationMessages)
+    .set({ handledAt: ctx.clock() })
+    .where(
+      and(
+        eq(conversationMessages.botId, botId),
+        eq(conversationMessages.role, "user"),
+        isNull(conversationMessages.handledAt),
+        lte(conversationMessages.sequence, sequence),
+      ),
+    );
+}
+
+/** Enqueues the bot's next reply while inputs wait (coalesced with a queued one). */
+async function continueWithWaiting(tx: Tx, botId: string) {
+  const waiting =
+    (await pendingTaskUpdates(tx, botId)).length > 0 ||
+    (await waitingMessages(tx, botId)).length > 0;
+  if (!waiting) return;
   await enqueue(tx, { kind: "chat.reply", botId });
   await wakeWorkers(tx);
 }
@@ -195,7 +209,7 @@ export async function runChatJob(
     const history = bot
       ? await conversationHistory(ctx.db, botId, ctx.config.chatHistoryLimit)
       : [];
-    input = bot ? await nextInput(ctx.db, botId, history) : undefined;
+    input = bot ? await nextInput(ctx.db, botId) : undefined;
     if (!bot || !input) {
       // Archived, or a coalesced wake whose input was already answered.
       await write((tx) => complete(tx, job.lease));
@@ -203,19 +217,11 @@ export async function runChatJob(
     }
     const redactor = await ctx.redactor();
     redact = (text) => redactor(text);
-    if (input.kind === "update" && input.gaveUp) {
-      const update = input.update;
-      await write(async (tx) => {
-        await postFallback(tx, ctx, botId, update, redact);
-        await complete(tx, job.lease);
-        await continueWithUpdates(tx, botId);
-        await hint(tx, { type: "conversation.changed", botId });
-      });
-      return;
-    }
-    // Recorded before the model call, so a failed or abandoned job says what it answered.
+    // Recorded before the model call, so a job given up after crashes says what it answered.
     const answering =
-      input.kind === "user" ? input.message.id : input.update.id;
+      input.kind === "user"
+        ? (input.waiting.at(-1) as ConversationMessageRow).id
+        : input.update.id;
     await write((tx) =>
       tx
         .update(jobs)
@@ -230,10 +236,14 @@ export async function runChatJob(
       input.kind === "user"
         ? chatTools({ ctx, write, bot, redact, everyone, state })
         : chatReadTools({ ctx, bot, redact });
-    const past = history.map((message) => ({
-      role: message.role,
-      text: message.text,
-    }));
+    // The waiting messages go last, after any reply stored while they waited.
+    const waitingIds = new Set(
+      input.kind === "user" ? input.waiting.map((message) => message.id) : [],
+    );
+    const past = [
+      ...history.filter((message) => !waitingIds.has(message.id)),
+      ...(input.kind === "user" ? input.waiting : []),
+    ].map((message) => ({ role: message.role, text: message.text }));
     const reply = await responder.reply({
       systemPrompt: chatPrompt({
         bot,
@@ -276,8 +286,15 @@ export async function runChatJob(
         });
         await storeUsage(tx, ctx, botId, reply);
       }
+      if (answered.kind === "user")
+        await markHandled(
+          tx,
+          ctx,
+          botId,
+          (answered.waiting.at(-1) as ConversationMessageRow).sequence,
+        );
       await complete(tx, job.lease);
-      await continueWithUpdates(tx, botId);
+      await continueWithWaiting(tx, botId);
       await hint(tx, { type: "conversation.changed", botId });
     });
   } catch (error) {
@@ -301,11 +318,55 @@ export async function runChatJob(
       // The update is never lost: the engine tells it plainly instead.
       if (failed?.kind === "update")
         await postFallback(tx, ctx, botId, failed.update, redact);
+      if (failed?.kind === "user")
+        await markHandled(
+          tx,
+          ctx,
+          botId,
+          (failed.waiting.at(-1) as ConversationMessageRow).sequence,
+        );
       await fail(tx, job.lease, reason);
-      await continueWithUpdates(tx, botId);
+      await continueWithWaiting(tx, botId);
       await hint(tx, { type: "conversation.changed", botId });
     }).catch((failure: unknown) => {
       if (!(failure instanceof LeaseLostError)) throw failure;
     });
   }
+}
+
+/**
+ * A chat reply whose lease expired too often (claim failed it): what it was
+ * answering is given up, so it cannot keep killing workers. Its update is
+ * posted as the engine's fallback, without a model call; its user messages
+ * count as taken up, like a failed reply's. Anything else waiting gets a new
+ * reply job.
+ */
+export async function giveUpChatReply(
+  ctx: EngineContext,
+  job: JobRow,
+): Promise<void> {
+  const botId = job.botId;
+  if (!botId) return;
+  const answering =
+    typeof job.payload.answering === "string" ? job.payload.answering : null;
+  const redactor = await ctx.redactor();
+  await ctx.db.transaction(async (tx) => {
+    if (answering) {
+      const update = await pendingTaskUpdate(tx, answering);
+      if (update)
+        await postFallback(tx, ctx, botId, update, (text) => redactor(text));
+      const [message] = await tx
+        .select({ sequence: conversationMessages.sequence })
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(conversationMessages.botId, botId),
+            eq(conversationMessages.id, answering),
+          ),
+        );
+      if (message) await markHandled(tx, ctx, botId, message.sequence);
+    }
+    await continueWithWaiting(tx, botId);
+    await hint(tx, { type: "conversation.changed", botId });
+  });
 }

@@ -92,6 +92,21 @@ export async function pendingTaskUpdates(
   return rows.map((row) => ({ ...row.update, title: row.title }));
 }
 
+/** One update while it is unanswered; undefined once answered or when there is none. */
+export async function pendingTaskUpdate(
+  exec: Executor,
+  updateId: string,
+): Promise<PendingUpdate | undefined> {
+  const [row] = await exec
+    .select({ update: chatTaskUpdates, title: tasks.title })
+    .from(chatTaskUpdates)
+    .innerJoin(tasks, eq(tasks.id, chatTaskUpdates.taskId))
+    .where(
+      and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.messageId)),
+    );
+  return row ? { ...row.update, title: row.title } : undefined;
+}
+
 /**
  * Marks the update answered by `messageId`. False when it already was: the
  * caller then stores no message.

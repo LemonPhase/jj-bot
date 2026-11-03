@@ -459,11 +459,15 @@ describe("direct chat task tools", () => {
   });
 });
 
-/** A chat responder whose user replies wait for `release` while recording the order of replies. */
+/** A chat responder whose user replies (or update replies) wait for `let()` once held, recording the order of replies. */
 class GatedChat extends FakeChatResponder {
   readonly order: string[] = [];
   private open: Promise<void> = Promise.resolve();
   private release: () => void = () => {};
+
+  constructor(private readonly holds: "user" | "update" = "user") {
+    super();
+  }
 
   hold() {
     this.open = new Promise<void>((resolve) => {
@@ -478,7 +482,7 @@ class GatedChat extends FakeChatResponder {
   override async reply(input: ChatReplyInput): Promise<ChatReply> {
     const name = isUpdate(input) ? "update" : lastInput(input);
     this.order.push(`start ${name}`);
-    if (!isUpdate(input))
+    if (isUpdate(input) === (this.holds === "update"))
       await Promise.race([
         this.open,
         new Promise((resolve) =>
@@ -686,6 +690,78 @@ describe("task updates in the coordinator's chat", () => {
       { role: "user", text: "are you there?" },
       { role: "assistant", text: "You said: are you there?" },
     ]);
+  });
+
+  it("answer a user message that arrives during an update reply after it, with the update in view", async () => {
+    const chat = new GatedChat("update");
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    engine.executor.brain(ada, completes("Shipped."));
+    chat.hold();
+    const { task } = await engine.engine.tasks.create({
+      goal: "Ship it",
+      coordinatorBotId: adaId,
+    });
+    await until(() => chat.order.includes("start update"), {
+      what: "the update reply to start",
+    });
+    await engine.engine.bots.sendMessage(adaId, { text: "and next?" });
+    await sleep(300);
+    expect(chat.order).toEqual(["start update"]);
+    chat.let();
+    const view = await untilReplies(engine, adaId, 2);
+    expect(chat.order).toEqual([
+      "start update",
+      "end update",
+      "start and next?",
+      "end and next?",
+    ]);
+    // The update's reply was stored after the user's message; it is still answered.
+    expect(view.messages.map((m) => [m.role, m.text, m.taskId])).toEqual([
+      ["user", "and next?", null],
+      ["assistant", "In my words: Shipped.", task.id],
+      ["assistant", "You said: and next?", null],
+    ]);
+    const answer = chat.inputs.find(
+      (input) => lastInput(input) === "and next?",
+    ) as ChatReplyInput;
+    expect(answer.history).toEqual([
+      { role: "assistant", text: "In my words: Shipped." },
+      { role: "user", text: "and next?" },
+    ]);
+  });
+
+  it("do not answer a user message again after its reply failed", async () => {
+    const engine = await engineOn();
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    engine.chat.brain(ada, (input) => {
+      if (isUpdate(input)) return politeBrain(input);
+      throw new Error("provider overloaded");
+    });
+    await engine.engine.bots.sendMessage(adaId, { text: "hello?" });
+    await until(
+      async () => (await conversation(engine, adaId)).lastReplyError,
+      { what: "the failed reply" },
+    );
+    engine.executor.brain(ada, completes("Shipped."));
+    const { task } = await engine.engine.tasks.create({
+      goal: "Ship it",
+      coordinatorBotId: adaId,
+    });
+    const view = await untilReplies(engine, adaId, 1);
+    expect(view.messages.map((m) => [m.role, m.taskId])).toEqual([
+      ["user", null],
+      ["assistant", task.id],
+    ]);
+    expect(
+      engine.chat.inputs.filter((input) => lastInput(input) === "hello?"),
+    ).toHaveLength(1);
+    expect(view.lastReplyError).toBeNull();
   });
 
   it("post no duplicate when the worker crashes before the reply is written", async () => {

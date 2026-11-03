@@ -235,9 +235,18 @@ export const conversationMessages = pgTable(
     /** The task this message created or forwarded to; a reference kept as history, not a foreign key. */
     taskId: text("task_id"),
     createdAt: createdAt(),
+    /**
+     * A user message: when a reply took it up, answered or failed. Null while
+     * it waits, so one that arrives during a reply (whose answer is stored
+     * after it) is still answered next.
+     */
+    handledAt: optionalTime("handled_at"),
   },
   (t) => [
     unique("conversation_messages_bot_sequence").on(t.botId, t.sequence),
+    index("conversation_messages_waiting_idx")
+      .on(t.botId, t.sequence)
+      .where(sql`${t.role} = 'user' and ${t.handledAt} is null`),
     check(
       "conversation_messages_role_check",
       oneOf(t.role, CONVERSATION_ROLES),
