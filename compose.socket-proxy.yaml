@@ -10,10 +10,16 @@ services:
   docker-proxy:
     # HAProxy, pinned by digest, run with docker/socket-proxy.cfg instead of
     # the image's own configuration: it listens on a Unix socket that only
-    # the app's user may open, in a volume only the app shares, and on no
-    # network at all, so nothing on the host or on a network reaches it.
+    # the app's uid may open, in a volume only the app shares, and on no
+    # network at all, so nothing on a network reaches it. A host process of
+    # the app's uid can, through the app's /proc root: no host account may
+    # have that uid (docs/development.md, "Docker socket proxy").
     image: tecnativa/docker-socket-proxy:v0.4.1@sha256:3400c429c5f9e1b21d62130fb93b16e2e772d4fb7695bd52fc2b743800b9fe9e
     command: ["haproxy", "-f", "/usr/local/etc/haproxy/jj-bot.cfg"]
+    environment:
+      # The app user's uid, which the socket is given to: the app image's,
+      # 10001 unless it was built with another JJ_APP_UID (compose.yaml).
+      JJ_APP_UID: ${JJ_APP_UID:-10001}
     volumes:
       - ./docker/socket-proxy.cfg:/usr/local/etc/haproxy/jj-bot.cfg:ro
       # The one place the host's socket is mounted, root-equivalent on the

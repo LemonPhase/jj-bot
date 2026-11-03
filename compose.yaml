@@ -32,6 +32,10 @@ services:
   app:
     build:
       context: .
+      args:
+        # The app user's uid and gid, 10001 by default. No host account may
+        # have it (docs/development.md, "Docker socket proxy").
+        JJ_APP_UID: ${JJ_APP_UID:-10001}
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,7 +122,7 @@ services:
       - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # The entrypoint joins the socket's group and drops to uid 10001 (SETUID,
+    # The entrypoint joins the socket's group and drops to JJ_APP_UID (SETUID,
     # SETGID), and init forwards stop signals to the app (KILL). The app
     # itself runs with no capabilities.
     cap_drop: [ALL]

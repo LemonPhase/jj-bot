@@ -46,13 +46,17 @@ RUN --mount=type=cache,target=/root/.npm \
     --workspace @jj/api --workspace @jj/worker --include-workspace-root=false
 
 FROM ${NODE_IMAGE} AS runtime
+# The app user's uid and gid. No account on the host may have it: a host
+# process of that uid can reach whatever the app can (compose.socket-proxy.yaml
+# gives it the Docker API). The published image keeps the default.
+ARG JJ_APP_UID=10001
 # The app runs node directly, so the package managers go. The app user owns
 # nothing in /app: the code is read-only to it.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
     /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-* \
-  && groupadd --system --gid 10001 jj \
-  && useradd --system --uid 10001 --gid jj --home-dir /nonexistent \
+  && groupadd --system --gid "$JJ_APP_UID" jj \
+  && useradd --system --uid "$JJ_APP_UID" --gid jj --home-dir /nonexistent \
     --no-create-home --shell /usr/sbin/nologin jj
 WORKDIR /app
 COPY --from=deps /src/ ./
@@ -71,7 +75,7 @@ ENV NODE_ENV=production \
 EXPOSE 3001
 
 # The entrypoint starts as root only to join the Docker socket's group, then
-# drops to jj (uid 10001) for the app.
+# drops to jj (uid JJ_APP_UID, 10001 by default) for the app.
 ENTRYPOINT ["jj-entrypoint"]
 CMD ["node", "--import", "tsx", "apps/api/src/index.ts"]
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
