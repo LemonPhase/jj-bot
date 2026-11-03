@@ -147,7 +147,7 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `JJ_SECRET_KEY`                         | Master key of the secrets store: base64 of at least 32 random bytes (`openssl rand -base64 32`). Unset: nothing can be stored in settings. See [Secrets store](#secrets-store).                                    |
 | `JJ_SECRET_KEY_PREVIOUS`                | Earlier master keys, comma-separated, during a rotation: stored values they sealed are still read, and sealed again under `JJ_SECRET_KEY` at boot.                                                                 |
 | `JJ_DEFAULT_MODEL`                      | `provider/model` for bots without a model, when the catalog lists it and its provider is configured; otherwise a cheap model of the first configured provider. A set value left unused is a boot warning.          |
-| `JJ_CONCURRENCY`                        | Jobs (session runs and chat replies) one worker runs at once, default `4`.                                                                                                                                         |
+| `JJ_CONCURRENCY`                        | Jobs (session runs, chat replies and MCP discoveries) one worker runs at once, default `4`.                                                                                                                        |
 | `JJ_MAX_SESSIONS_PER_TASK`              | Sessions a task may create, default `16`.                                                                                                                                                                          |
 | `JJ_MAX_DELEGATION_DEPTH`               | Delegation depth below the coordinator, default `3`.                                                                                                                                                               |
 | `JJ_TASKS_PER_BOT_PER_HOUR`             | Tasks a bot may create from direct chat per hour, default `10`.                                                                                                                                                    |
@@ -162,6 +162,7 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `DOCKER_HOST`                           | Docker Engine API address, default `/var/run/docker.sock`. Plain-HTTP `tcp://` beyond loopback needs `JJ_DOCKER_ALLOW_INSECURE_TCP`.                                                                               |
 | `JJ_DOCKER_ALLOW_INSECURE_TCP`          | `true` lets the `docker` driver use plain-HTTP `tcp://` to a host that is not loopback, such as a socket proxy's service name. Default `false`.                                                                    |
 | `JJ_DOCKER_EGRESS_SUBNET_POOL`          | Private IPv4 range (`a.b.c.d/n`, n 8–28, in 10/8, 172.16/12, 192.168/16 or 100.64/10) whose /28s the `docker` driver's `allowlist` networks use; default `10.213.0.0/16`. Keep it clear of Docker's default pools. |
+| `JJ_MCP_REMOTE`                         | `on` (default) or `off`: whether the worker calls remote MCP servers. With `off`, a profile or a test asking for one is refused with `MCP_UNAVAILABLE`. Anything else stops the process at startup.                |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY` | Outbound proxy for model provider calls (either case; lowercase wins). A proxy's CA goes in `NODE_EXTRA_CA_CERTS`.                                                                                                 |
 | `JJ_LOG_LEVEL`                          | `debug`, `info` (default), `warn` or `error`: the lowest level logged. See [Observability](#observability).                                                                                                        |
 | `JJ_LOG_FORMAT`                         | `json` (default): one JSON object per line; `pretty`: one readable line, for a terminal.                                                                                                                           |
@@ -200,6 +201,9 @@ The route table and every shape are in [the contract changelog](contract-changel
 | `GET`  | `/api/bots/:id/messages`, `POST`               | the conversation; `{ message }` (201), the reply follows    |
 | `GET`  | `/api/runtime-profiles`, `POST`                | `{ profiles }`; `{ profile }` (201)                         |
 | `GET`  | `/api/runtime-profiles/:id`, `PATCH`, `DELETE` | `{ profile }`; `{ profile }`; 204                           |
+| `POST` | `/api/runtime-profiles/:id/mcp-discoveries`    | `{ discovery }` (202): a queued test of an MCP server       |
+| `GET`  | `/api/mcp-discoveries/:id`                     | `{ discovery }`, with its snapshot once it succeeded        |
+| `GET`  | `/api/mcp-snapshots/:id`                       | `{ snapshot }`: a reviewed MCP tool list                    |
 | `GET`  | `/api/sandbox-drivers`                         | `{ drivers }` with capabilities and spec JSON Schema        |
 | `GET`  | `/api/models`                                  | providers, their models and the default model               |
 | `PUT`  | `/api/models/providers/:providerId/key`        | stores the provider's key; the models view (`DELETE` too)   |

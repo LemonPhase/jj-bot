@@ -190,11 +190,10 @@ export class McpDiscoverer {
       redact: input.redact,
     });
     // `initialize` has its own timeout; the listing gets what is left of both.
+    const totalMs = startupTimeoutMs + listTimeoutMs;
+    const deadlineAt = Date.now() + totalMs;
     const deadline = new AbortController();
-    const timer = setTimeout(
-      () => deadline.abort(),
-      startupTimeoutMs + listTimeoutMs,
-    );
+    const timer = setTimeout(() => deadline.abort(), totalMs);
     const signal = input.signal
       ? AbortSignal.any([input.signal, deadline.signal])
       : deadline.signal;
@@ -202,7 +201,7 @@ export class McpDiscoverer {
       const info = await connection.start(signal);
       const listed = await connection.listTools({
         signal,
-        timeoutMs: listTimeoutMs,
+        timeoutMs: Math.max(1, deadlineAt - Date.now()),
       });
       const visible = redactListing(listed.tools, redact);
       const sanitized = sanitizeTools(server.name, visible.tools);
@@ -227,15 +226,17 @@ export class McpDiscoverer {
             : warnings,
       };
     } catch (error) {
-      // The deadline, not the caller, stopped it: say so in discovery's terms.
+      // The listing ran out of time, not the caller: say so in discovery's
+      // terms (a request's own wording is about a call's unknown effects).
       if (
-        deadline.signal.aborted &&
+        connection.serverInfo &&
         !input.signal?.aborted &&
-        connection.serverInfo
+        (deadline.signal.aborted ||
+          (error instanceof McpServerError && error.kind === "timeout"))
       )
         throw new McpServerError(
           "timeout",
-          `MCP server ${server.name} did not list its tools within ${seconds(startupTimeoutMs + listTimeoutMs)} of its start; it was stopped.`,
+          `MCP server ${server.name} did not list its tools within ${seconds(totalMs)} of its start; it was stopped.`,
         );
       throw error;
     } finally {

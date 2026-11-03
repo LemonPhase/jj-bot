@@ -193,6 +193,15 @@ describe("loadServerConfig", () => {
         .dockerEgressSubnetPool,
     ).toBe("172.29.0.0/20");
   });
+
+  it("reads JJ_MCP_REMOTE, on unless set off, refusing anything else", () => {
+    expect(loadServerConfig({}).mcpRemote).toBe(true);
+    expect(loadServerConfig({ JJ_MCP_REMOTE: "on" }).mcpRemote).toBe(true);
+    expect(loadServerConfig({ JJ_MCP_REMOTE: " OFF " }).mcpRemote).toBe(false);
+    expect(() => loadServerConfig({ JJ_MCP_REMOTE: "no" })).toThrow(
+      ConfigError,
+    );
+  });
 });
 
 describe("loadWorkerConfig", () => {
