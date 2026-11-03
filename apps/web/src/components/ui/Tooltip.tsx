@@ -20,6 +20,22 @@ const AUTO_FLIP_PX = 48;
 /** The least room the bubble keeps from the viewport's side edges, in px. */
 const EDGE_PX = 8;
 
+/**
+ * Where the bubble would be cut off above: the top of the nearest ancestor
+ * that clips it (a scrolling pane, such as a panel under the phone top bar),
+ * else the viewport's.
+ */
+function clipTop(element: Element | null): number {
+  for (
+    let parent = element?.parentElement;
+    parent && parent !== document.body;
+    parent = parent.parentElement
+  )
+    if (getComputedStyle(parent).overflowY !== "visible")
+      return parent.getBoundingClientRect().top;
+  return 0;
+}
+
 export interface TooltipProps {
   /** Short text; shown as an inverted pixel overlay. */
   content: ReactNode;
@@ -34,7 +50,10 @@ export interface TooltipProps {
    * non-interactive triggers such as a StatusTag, never inside another button.
    */
   focusable?: boolean;
-  /** `auto` places it below when the trigger is near the top of the viewport. */
+  /**
+   * `auto` places it below when the trigger is near the top of the viewport,
+   * or of the scrolling pane it sits in.
+   */
   placement?: "top" | "bottom" | "auto";
   /**
    * Links the tip to the trigger with `aria-describedby` (default true). Turn
@@ -75,11 +94,14 @@ export function Tooltip({
 
   const show = useCallback(() => {
     cancelHide();
-    if (placement === "auto")
+    if (placement === "auto") {
+      const element = wrapper.current;
       setBelow(
-        (wrapper.current?.getBoundingClientRect().top ?? AUTO_FLIP_PX) <
+        (element?.getBoundingClientRect().top ?? AUTO_FLIP_PX) -
+          clipTop(element) <
           AUTO_FLIP_PX,
       );
+    }
     setOpen(true);
   }, [cancelHide, placement]);
 

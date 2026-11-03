@@ -219,20 +219,23 @@ test.describe("at 360px", () => {
     const main = page.getByRole("main", { name: `Task: ${goal}` });
     await expect(main.getByText("Task done")).toBeVisible();
     await check("task chat");
+    // The chat fills the first screen; the panel's tabs show under it, and a
+    // tab, the chosen one too, brings its view into the screen.
     const views = page.getByRole("tablist", { name: "Task view" });
+    await expect(views).toBeInViewport();
+    const steps = page
+      .getByRole("tabpanel", { name: "Progress" })
+      .getByRole("list", { name: "Steps" });
+    await expect(steps).not.toBeInViewport();
     await views.getByRole("tab", { name: "Progress" }).click();
-    await expect(
-      page.getByRole("tabpanel", { name: "Progress" }).getByRole("list", {
-        name: "Steps",
-      }),
-    ).toBeVisible();
+    await expect(steps).toBeInViewport();
     await check("task progress");
     await views.getByRole("tab", { name: "Graph" }).click();
     await expect(
       page
         .getByRole("tabpanel", { name: "Graph" })
         .getByRole("button", { name: "Nova coordinator · goal v1" }),
-    ).toBeVisible();
+    ).toBeInViewport();
     await check("task graph");
     await views.getByRole("tab", { name: "Office" }).click();
     const office = page.getByRole("tabpanel", { name: "Office" });

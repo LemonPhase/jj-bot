@@ -898,6 +898,13 @@
     padding: 6px 16px 0;
   }
 
+  /* At least a screen tall, so a tab brings the panel's top into view. */
+  .task-panel,
+  .task-screen--graph .task-panel,
+  .task-screen--office .task-panel {
+    min-height: 100%;
+  }
+
   .task-main .screen-header__lead {
     flex-basis: 100%;
   }

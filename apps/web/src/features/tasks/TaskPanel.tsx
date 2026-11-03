@@ -52,15 +52,11 @@ export function TaskPanel({
   const picked = known ? selectedNodeId : null;
   const narrow = useMediaQuery(NARROW_QUERY);
   const panelRef = useRef<HTMLElement>(null);
-  const choose = (next: PanelTab) => {
-    onTab(next);
-    if (narrow) panelRef.current?.scrollIntoView?.({ block: "start" });
-  };
   const tabs = (
     <Tabs
       label="Task view"
       value={tab}
-      onChange={choose}
+      onChange={onTab}
       items={TABS}
       panelId={panelId}
     />
@@ -71,6 +67,11 @@ export function TaskPanel({
       ref={panelRef}
       className={cx("ui-panel", "task-panel", `task-panel--${tab}`)}
       aria-label={LANDMARKS[tab]}
+      onClick={(event) => {
+        // A tab tapped on a phone, the chosen one too, shows its view.
+        if (narrow && (event.target as Element).closest('[role="tab"]'))
+          panelRef.current?.scrollIntoView?.({ block: "start" });
+      }}
     >
       {tabs}
       <TabPanel id={panelId(tab)} className="task-panel__body">

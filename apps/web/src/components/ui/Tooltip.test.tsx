@@ -96,6 +96,35 @@ describe("Tooltip", () => {
       box.mockRestore();
     }
   });
+
+  it("with auto placement, opens below a trigger near the top of the pane that clips it", () => {
+    // A pane from 53px down (under the phone top bar), the trigger 16px into it.
+    const box = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const top = this.hasAttribute("data-pane")
+          ? 53
+          : this.classList.contains("ui-tooltip")
+            ? 69
+            : 0;
+        return DOMRect.fromRect({ x: 0, y: top, width: 40, height: 40 });
+      });
+    try {
+      render(
+        <div data-pane="" style={{ overflowY: "auto" }}>
+          <Tooltip content="Close profile" placement="auto">
+            <button type="button">×</button>
+          </Tooltip>
+        </div>,
+      );
+      fireEvent.focus(screen.getByRole("button", { name: "×" }));
+      expect(bubble()?.classList.contains("ui-tooltip__bubble--bottom")).toBe(
+        true,
+      );
+    } finally {
+      box.mockRestore();
+    }
+  });
 });
 
 describe("IconButton", () => {

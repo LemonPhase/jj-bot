@@ -521,6 +521,11 @@
     grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
   }
 
+  /* Table cells wrap within their columns rather than run into the next. */
+  .settings-table td {
+    white-space: normal;
+  }
+
   .settings-check {
     min-height: 44px;
   }
