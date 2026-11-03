@@ -7,7 +7,12 @@ import { type ServerType, serve } from "@hono/node-server";
 import { createLogger, type Logger } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
 import { createApp, type JJApp } from "./app";
-import { type Env, loadServerConfig, type ServerConfig } from "./config";
+import {
+  type Env,
+  loadServerConfig,
+  redactUrl,
+  type ServerConfig,
+} from "./config";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
 import { startTracing, type Tracing } from "./tracing";
 import { openServices, type Services } from "./wiring";
@@ -63,7 +68,8 @@ export async function startServer(
   const logger = options.logger ?? createLogger(config.log);
 
   const tracing = await startTracing(env, "jj-api", logger);
-  if (tracing) logger.info(`Exporting traces over OTLP to ${tracing.url}`);
+  if (tracing)
+    logger.info(`Exporting traces over OTLP to ${redactUrl(tracing.url)}`);
   const proxy = configureOutboundProxy(env);
   if (proxy)
     logger.info(

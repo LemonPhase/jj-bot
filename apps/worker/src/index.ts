@@ -3,7 +3,7 @@
 // PGlite is single-process, so it is refused. It logs like the API and
 // exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set; it serves no
 // metrics, so its runs are not in the API's `/metrics`.
-import { ConfigError, loadWorkerConfig } from "@jj/api/config";
+import { ConfigError, loadWorkerConfig, redactUrl } from "@jj/api/config";
 import { startTracing } from "@jj/api/tracing";
 import { openServices } from "@jj/api/wiring";
 import { createLogger, logSettings } from "@jj/backend";
@@ -17,7 +17,8 @@ async function main() {
   const env = process.env;
   const config = loadWorkerConfig(env);
   const tracing = await startTracing(env, "jj-worker", logger);
-  if (tracing) logger.info(`Exporting traces over OTLP to ${tracing.url}`);
+  if (tracing)
+    logger.info(`Exporting traces over OTLP to ${redactUrl(tracing.url)}`);
   const proxy = configureOutboundProxy(env);
   const { engine, database, models } = await openServices(config, env, logger, {
     ...(tracing ? { tracer: tracing.tracer } : {}),
