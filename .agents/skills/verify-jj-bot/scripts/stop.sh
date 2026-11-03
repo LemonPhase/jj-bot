@@ -5,6 +5,10 @@
 #
 # Kills only the process group launch.sh started, never by name.
 set -uo pipefail
+# An interrupt sent to this script's group (Ctrl-C in a terminal or in a test
+# runner) cuts short only the step it hits; the rest of the cleanup still
+# runs, so the server is never left behind.
+trap ':' HUP INT TERM
 
 run=${1:?usage: stop.sh <run-dir>}
 [ -f "$run/pid" ] || { echo "stop.sh: $run is not a launch.sh run dir" >&2; exit 1; }
