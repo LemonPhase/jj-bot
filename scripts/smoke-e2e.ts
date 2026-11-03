@@ -19,11 +19,21 @@
 // same view as a reload. Exits non-zero on any failure.
 //
 // JJ_SMOKE_MODEL=<provider/model> runs the same flow against a real model
-// instead (its provider key must be set where the server runs); that mode is
-// not run in CI. JJ_SMOKE_TOKEN is the bearer token of a server at
-// JJ_SMOKE_BASE_URL, when it has one.
+// instead (its provider key must be set where the server runs); pull-request
+// CI never runs that mode, the nightly live run (scripts/smoke-nightly.ts)
+// does. JJ_SMOKE_TOKEN is the bearer token of a server at JJ_SMOKE_BASE_URL,
+// when it has one.
+//
+// Spend: a spend cap that stops work no step expects to stop (the server's
+// JJ_MAX_USD_PER_DAY, which the booted server reads from this environment, or
+// a task's cap) fails the step at once as stopped at that cap.
+// JJ_SMOKE_TASK_CAP_USD caps every task of the server the smoke boots (its
+// default profile's `maxUsdPerTask`). The spend in the server's last 24 hours
+// (`GET /api/usage`) is printed at the end; JJ_SMOKE_REPORT=<path> also writes
+// it, with every step, as JSON.
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,11 +42,16 @@ import { type RunningServer, startServer } from "@jj/api/server";
 import {
   type Artifact,
   applyTaskEvent,
+  formatSpendAgainstCap,
+  formatUsd,
   isVerified,
+  MAX_SPEND_CAP_USD,
   type RuntimeProfile,
+  type SpendScope,
   type TaskEvent,
   type TaskSummary,
   type TaskView,
+  type UsageReport,
   verificationSummary,
 } from "@jj/contracts";
 import { ModelRegistry } from "@jj/runtime";
@@ -46,6 +61,10 @@ const realModel = setting("JJ_SMOKE_MODEL");
 const remoteUrl = setting("JJ_SMOKE_BASE_URL")?.replace(/\/+$/, "");
 const remoteToken = setting("JJ_SMOKE_TOKEN");
 const restartCommand = setting("JJ_SMOKE_RESTART_COMMAND");
+const reportPath = setting("JJ_SMOKE_REPORT");
+const taskCapSetting = setting("JJ_SMOKE_TASK_CAP_USD");
+const taskCapUsd =
+  taskCapSetting === undefined ? undefined : Number(taskCapSetting);
 const timeoutMs = realModel ? 10 * 60_000 : remoteUrl ? 120_000 : 60_000;
 /** The slow command the restart lands on; it would outlast the whole check. */
 const SLOW_COMMAND = "sleep 300";
@@ -71,6 +90,26 @@ if (restartCommand && !remoteUrl) {
   );
   process.exit(2);
 }
+if (taskCapUsd !== undefined) {
+  if (remoteUrl) {
+    console.error(
+      "smoke:e2e: JJ_SMOKE_TASK_CAP_USD caps the server the smoke boots; it cannot change one at JJ_SMOKE_BASE_URL.",
+    );
+    process.exit(2);
+  }
+  if (
+    !(
+      Number.isFinite(taskCapUsd) &&
+      taskCapUsd > 0 &&
+      taskCapUsd <= MAX_SPEND_CAP_USD
+    )
+  ) {
+    console.error(
+      `smoke:e2e: JJ_SMOKE_TASK_CAP_USD must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}.`,
+    );
+    process.exit(2);
+  }
+}
 if (realModel && !remoteUrl) {
   try {
     new ModelRegistry({ env: process.env }).resolve(realModel);
@@ -89,6 +128,12 @@ interface Step {
   detail?: string;
 }
 const steps: Step[] = [];
+/** The first spend cap that stopped work no step expected to stop. */
+let cappedBy: string | undefined;
+/** `GET /api/usage` of the server under test, read before it shuts down. */
+let usageReport: UsageReport | undefined;
+/** Reads `GET /api/usage` of the server under test, once it is up. */
+let readUsage: (() => Promise<UsageReport>) | undefined;
 
 async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
   const started = Date.now();
@@ -98,12 +143,46 @@ async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
     return value;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    if (error instanceof SpendCapped) cappedBy ??= error.cap;
     steps.push({ name, ok: false, ms: Date.now() - started, detail });
     throw new StepFailed(`${name}: ${detail}`);
   }
 }
 
 class StepFailed extends Error {}
+
+/** A spend cap stopped work that no step expects to stop: the run is over budget. */
+class SpendCapped extends Error {
+  constructor(readonly cap: string) {
+    super(`stopped at a spend cap: ${cap}`);
+  }
+}
+
+const capNames: Record<SpendScope, string> = {
+  task: "The task's spend cap",
+  bot: "A bot's daily spend cap",
+  instance: "The server's daily spend cap (JJ_MAX_USD_PER_DAY)",
+};
+
+/** `spend.capped` as a SpendCapped error. */
+function spendCapped(payload: {
+  scope: SpendScope;
+  spentUsd: number;
+  capUsd: number;
+}): SpendCapped {
+  const shown = formatSpendAgainstCap(payload.spentUsd, payload.capUsd);
+  return new SpendCapped(
+    `${capNames[payload.scope]}: ${shown.spent} of ${shown.cap} spent.`,
+  );
+}
+
+/** Throws SpendCapped when a cap stopped a model call of the task since it last reopened. */
+function assertNotCapped(view: TaskView): void {
+  for (const event of [...view.events].reverse()) {
+    if (event.type === "task.reopened") return;
+    if (event.type === "spend.capped") throw spendCapped(event.payload);
+  }
+}
 
 /** A parsed JSON answer. */
 type Json = ReturnType<typeof JSON.parse>;
@@ -180,6 +259,14 @@ async function main(): Promise<boolean> {
     const headers: Record<string, string> = token
       ? { Authorization: `Bearer ${token}` }
       : {};
+    readUsage = async () => {
+      const response = await fetch(`${base}/api/usage`, { headers });
+      check(
+        response.status === 200,
+        `GET /api/usage answered ${response.status}`,
+      );
+      return (await response.json()) as UsageReport;
+    };
     const call = async (method: string, path: string, body?: unknown) => {
       const response = await fetch(`${base}${path}`, {
         method,
@@ -194,6 +281,11 @@ async function main(): Promise<boolean> {
     };
     const expectStatus: ExpectStatus = async (method, path, status, body) => {
       const result = await call(method, path, body);
+      if (
+        result.status !== status &&
+        result.body?.error?.code === "SPEND_CAP_REACHED"
+      )
+        throw new SpendCapped(result.body.error.message);
       check(
         result.status === status,
         `${method} ${path} answered ${result.status}, expected ${status}: ${JSON.stringify(result.body)}`,
@@ -220,6 +312,30 @@ async function main(): Promise<boolean> {
           );
       },
     );
+
+    if (taskCapUsd !== undefined)
+      await step(
+        `cap every task at ${formatUsd(taskCapUsd)} (the default profile)`,
+        async () => {
+          const { profiles } = (await expectStatus(
+            "GET",
+            "/api/runtime-profiles",
+            200,
+          )) as { profiles: RuntimeProfile[] };
+          const profile = profiles.find((entry) => entry.isDefault);
+          check(profile, "no default runtime profile");
+          const { profile: updated } = await expectStatus(
+            "PATCH",
+            `/api/runtime-profiles/${profile.id}`,
+            200,
+            { budgets: { maxUsdPerTask: taskCapUsd } },
+          );
+          check(
+            updated.budgets.maxUsdPerTask === taskCapUsd,
+            `maxUsdPerTask ${updated.budgets.maxUsdPerTask}`,
+          );
+        },
+      );
 
     // Against a deployed server, bots run on the default profile, which must
     // be the isolated docker sandbox.
@@ -437,9 +553,15 @@ async function main(): Promise<boolean> {
         let current: TaskView;
         for (;;) {
           current = await expectStatus("GET", `/api/tasks/${capped.id}`, 200);
-          const stopped = current.events.some(
+          const stopped = current.events.find(
             (event) => event.type === "spend.capped",
           );
+          // Only the task's own cap is this step's to reach.
+          if (
+            stopped?.type === "spend.capped" &&
+            stopped.payload.scope !== "task"
+          )
+            throw spendCapped(stopped.payload);
           if (stopped && current.task.status === "waiting") break;
           check(
             current.task.status !== "completed" &&
@@ -469,14 +591,16 @@ async function main(): Promise<boolean> {
           refused.error.code === "SPEND_CAP_REACHED",
           `refused with ${refused.error.code}`,
         );
+        // Raised to the run's own task cap, when it has one.
         await expectStatus("PATCH", `/api/tasks/${capped.id}`, 200, {
-          spendCapUsd: null,
+          spendCapUsd: taskCapUsd ?? null,
         });
         await expectStatus("POST", `/api/tasks/${capped.id}/messages`, 201, {
           text: "Carry on.",
         });
         for (;;) {
           current = await expectStatus("GET", `/api/tasks/${capped.id}`, 200);
+          assertNotCapped(current);
           if (current.task.status === "completed") break;
           check(
             current.task.status !== "failed",
@@ -519,6 +643,10 @@ async function main(): Promise<boolean> {
           }),
       });
 
+    await step("read the spend from /api/usage", async () => {
+      usageReport = await readUsage?.();
+    });
+
     if (server) {
       await step("still ready, then shut down gracefully", async () => {
         const ready = await fetch(`${base}/health/ready`);
@@ -548,6 +676,9 @@ async function main(): Promise<boolean> {
     }
     return false;
   } finally {
+    // A failed run reports what it spent too.
+    if (!usageReport && readUsage)
+      usageReport = await readUsage().catch(() => undefined);
     await server?.close().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
@@ -573,6 +704,7 @@ async function verificationGate(options: {
         `/api/tasks/${taskId}`,
         200,
       );
+      assertNotCapped(view);
       if (view.task.status !== "queued" && view.task.status !== "running")
         return view;
       check(Date.now() < deadline, `the task is still ${view.task.status}`);
@@ -720,6 +852,12 @@ async function directChat(options: {
       const messages = view.messages as ChatMessage[];
       const answered = messages.filter((m) => m.role === "assistant").length;
       if (answered >= count && !view.replying) return messages;
+      // A reply a spend cap refused (worker/chat-reply.ts words it so).
+      if (
+        !view.replying &&
+        view.lastReplyError?.message.startsWith("Not answered:")
+      )
+        throw new SpendCapped(view.lastReplyError.message);
       check(
         !view.lastReplyError || view.replying,
         `reply failed: ${view.lastReplyError?.message}`,
@@ -736,6 +874,7 @@ async function directChat(options: {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const view = await taskView(taskId);
+      assertNotCapped(view);
       const root = view.sessions.find((s) => s.parentSessionId === null);
       if (view.task.status === "completed" && (root?.runCount ?? 0) >= runs)
         return view;
@@ -1139,6 +1278,8 @@ async function follow(
           );
           events.push(event);
           options.onEvent?.(event);
+          // A task a spend cap stopped would never finish.
+          if (event.type === "spend.capped") throw spendCapped(event.payload);
           if (options.until(event)) return events;
         }
       }
@@ -1194,11 +1335,38 @@ async function download(
 
 const started = Date.now();
 const ok = await main();
+const durationMs = Date.now() - started;
+const spent = usageReport?.instance.last24h;
+const dailyCap = usageReport?.instance.capUsdPerDay ?? null;
 console.log(
-  `\nsmoke:e2e (${realModel ?? "scripted/team"}${remoteUrl ? ` at ${remoteUrl}` : ""}): ${ok ? "passed" : "FAILED"} in ${((Date.now() - started) / 1000).toFixed(1)} s`,
+  `\nsmoke:e2e (${realModel ?? "scripted/team"}${remoteUrl ? ` at ${remoteUrl}` : ""}): ${ok ? "passed" : "FAILED"} in ${(durationMs / 1000).toFixed(1)} s`,
 );
 for (const entry of steps)
   console.log(
     `  ${entry.ok ? "ok  " : "FAIL"} ${entry.name} (${entry.ms} ms)${entry.detail ? `\n       ${entry.detail}` : ""}`,
+  );
+if (spent)
+  console.log(
+    `  spent ${formatUsd(spent.costUsd)} in ${spent.modelCalls} model call(s) in the server's last 24 hours${dailyCap === null ? "" : `, of its ${formatUsd(dailyCap)} daily cap`}${spent.unpricedCalls > 0 ? `; ${spent.unpricedCalls} call(s) had no listed price` : ""}`,
+  );
+if (cappedBy) console.log(`  stopped at a spend cap: ${cappedBy}`);
+if (reportPath)
+  writeFileSync(
+    reportPath,
+    `${JSON.stringify(
+      {
+        test: "e2e",
+        status: ok ? "passed" : "failed",
+        model: realModel ?? "scripted/team",
+        durationMs,
+        steps,
+        usage: spent ?? null,
+        capUsdPerDay: dailyCap,
+        taskCapUsd: taskCapUsd ?? null,
+        ...(cappedBy ? { capped: cappedBy } : {}),
+      },
+      null,
+      2,
+    )}\n`,
   );
 process.exit(ok ? 0 : 1);

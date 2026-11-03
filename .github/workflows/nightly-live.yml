@@ -1,0 +1,61 @@
+name: Nightly live
+
+# A live-model acceptance run: smoke:runtime and the live smoke:e2e under a
+# hard cost cap (scripts/smoke-nightly.ts; docs/development.md, "Nightly live
+# run"). Only on a schedule and by hand, never on pull requests or pushes, so
+# no pull request, from a fork or not, runs with the provider key.
+on:
+  schedule:
+    # 03:17 UTC every night, off the hour.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model to run, as provider/model
+        type: string
+        default: openai/gpt-6-luna
+      max_usd:
+        description: Cost cap for the whole run, in US dollars
+        type: string
+        default: "0.25"
+
+permissions:
+  contents: read
+
+# One run at a time; a dispatched run waits for a scheduled one, never cancels it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live model acceptance
+    runs-on: ubuntu-latest
+    # The smokes stop themselves sooner (smoke:e2e within 30 minutes), so the
+    # summary is written before this limit.
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Without the key the script skips with a notice and exits 0. The inputs
+      # are empty on a scheduled run, and the script then uses its defaults.
+      # The key reaches this step only, as an environment variable; nothing
+      # prints it.
+      - name: Live smokes under the cost cap
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          JJ_NIGHTLY_MODEL: ${{ inputs.model }}
+          JJ_NIGHTLY_MAX_USD: ${{ inputs.max_usd }}
+        run: npm run smoke:nightly
