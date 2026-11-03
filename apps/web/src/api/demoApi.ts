@@ -8,6 +8,7 @@
  * or in a sandbox, and every scripted text says so.
  */
 import {
+  type ApprovalRule,
   addUsage,
   applyTaskEvent,
   type Bot,
@@ -22,6 +23,7 @@ import {
   defaultAppearanceFor,
   emptyUsage,
   isFinishedStatus,
+  mcpRulesWithoutTool,
   pendingApprovalOf,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
@@ -768,6 +770,29 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       );
     return names;
   };
+  /** The demo runs no MCP server and holds no skills library, like a server without them. */
+  const assertNoMcp = (command: {
+    mcpServers?: readonly unknown[];
+    skills?: readonly unknown[];
+    approvals?: readonly ApprovalRule[];
+  }) => {
+    if (command.mcpServers?.length || command.skills?.length)
+      throw new ApiError(
+        "MCP_UNAVAILABLE",
+        "The demo runs no MCP servers and has no skills library: connect JJ Bot to a server that reports them.",
+        undefined,
+        422,
+      );
+    // With no server, no exact MCP rule names a tool of a pinned snapshot.
+    const [unknown] = mcpRulesWithoutTool(command.approvals ?? [], [], []);
+    if (unknown !== undefined)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `approvals.${unknown}.tool: names no tool of its MCP server's pinned snapshot; mcp__<server>__* covers every tool of a server.`,
+        undefined,
+        400,
+      );
+  };
   const noStore = () =>
     new ApiError(
       "SECRET_STORE_UNAVAILABLE",
@@ -979,6 +1004,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     getProfile: async (profileId) => clone(getProfileRecord(profileId)),
     createProfile: async (command) => {
       const parsed = validate(createRuntimeProfileCommandSchema, command);
+      assertNoMcp(parsed);
       assertSupported(parsed.sandbox);
       const createdAt = now();
       const profile: RuntimeProfile = {
@@ -998,6 +1024,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         budgets: parsed.budgets ?? profileBudgetsSchema.parse({}),
         approvals: parsed.approvals ?? [],
         secrets: assertGranted(parsed.secrets ?? []),
+        mcpServers: [],
+        skills: [],
         isDefault: false,
         status: profileStatus(parsed.sandbox),
         createdAt,
@@ -1011,6 +1039,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     updateProfile: async (profileId, command) => {
       const stored = getProfileRecord(profileId);
       const patch = validate(updateRuntimeProfileCommandSchema, command);
+      assertNoMcp(patch);
       if (patch.isDefault === false && stored.isDefault)
         throw new ApiError(
           "CONFLICT",

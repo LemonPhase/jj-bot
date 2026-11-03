@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiProvider } from "../../api/ApiContext";
 import type { JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
-import { DEMO_DRIVERS } from "../../api/demoFixtures";
+import { DEMO_DRIVERS, demoProfiles } from "../../api/demoFixtures";
 import { WorkspaceProvider } from "../../state/WorkspaceContext";
 import { ProfileEditor } from "./ProfileEditor";
 
@@ -17,7 +17,7 @@ const describedBy = (element: HTMLElement) =>
     .map((id) => document.getElementById(id)?.textContent ?? "");
 
 /** A new-profile form over the demo API, whose docker driver declares allowlist like the real one. */
-function renderEditor() {
+function renderEditor(profile: RuntimeProfile | null = null) {
   const base = createDemoApi({ autoplay: false });
   const createProfile = vi.fn(base.createProfile);
   const api: JJApi = { ...base, createProfile };
@@ -26,7 +26,7 @@ function renderEditor() {
     <ApiProvider api={api}>
       <WorkspaceProvider>
         <ProfileEditor
-          profile={null}
+          profile={profile}
           drivers={DEMO_DRIVERS}
           onClose={onClose}
         />
@@ -83,6 +83,38 @@ describe("runtime profile editor: network allowlist", () => {
       mode: "allowlist",
       hosts: ["registry.npmjs.org", "*.pythonhosted.org"],
     });
+  });
+});
+
+describe("runtime profile editor: approvals", () => {
+  it("shows a stored rule on an MCP tool as it is, not as a coding tool", () => {
+    const [profile] = demoProfiles(() => "2026-11-03T12:00:00.000Z");
+    renderEditor({
+      ...(profile as RuntimeProfile),
+      approvals: [
+        { tool: "mcp__docs__*" },
+        { tool: "bash", match: "git push" },
+      ],
+    });
+    const first = screen.getByLabelText("Rule 1 tool") as HTMLSelectElement;
+    expect(first.value).toBe("mcp__docs__*");
+    expect(first.selectedOptions[0]?.textContent).toBe("mcp__docs__*");
+    const second = screen.getByLabelText("Rule 2 tool") as HTMLSelectElement;
+    expect(second.value).toBe("bash");
+
+    // Switched to a coding tool and back, the MCP tool is still offered.
+    fireEvent.change(first, { target: { value: "write" } });
+    expect(
+      (screen.getByLabelText("Rule 1 tool") as HTMLSelectElement).value,
+    ).toBe("write");
+    const again = screen.getByLabelText("Rule 1 tool") as HTMLSelectElement;
+    expect([...again.options].map((option) => option.value)).toContain(
+      "mcp__docs__*",
+    );
+    fireEvent.change(again, { target: { value: "mcp__docs__*" } });
+    expect(
+      (screen.getByLabelText("Rule 1 tool") as HTMLSelectElement).value,
+    ).toBe("mcp__docs__*");
   });
 });
 
