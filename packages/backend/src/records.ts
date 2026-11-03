@@ -256,6 +256,10 @@ export function toProfile(
     budgets: settings.budgets,
     approvals: settings.approvals,
     secrets: settings.secrets,
+    // Never stored: the profile service refuses any MCP server or skill
+    // (MCP_UNAVAILABLE), so every profile holds none.
+    mcpServers: [],
+    skills: [],
     isDefault: row.isDefault,
     status,
     createdAt: iso(row.createdAt),

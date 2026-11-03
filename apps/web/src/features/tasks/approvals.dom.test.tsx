@@ -24,6 +24,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import {
   approvalCall,
   approvalState,
+  argumentsPreview,
   coordinatorHolds,
   pendingLabel,
   pendingOf,
@@ -141,6 +142,13 @@ describe("approval state", () => {
     expect(
       approvalCall({ tool: "write", args: { path: "a.txt", content: "x" } }),
     ).toBe('{\n  "path": "a.txt",\n  "content": "x"\n}');
+    // An MCP call as canonical one-line JSON.
+    expect(
+      approvalCall({
+        tool: "mcp__docs__search",
+        args: { q: "a\nb", limit: 5, filter: { z: 1, a: 2 } },
+      }),
+    ).toBe('{"filter":{"a":2,"z":1},"limit":5,"q":"a\\nb"}');
   });
 
   it("counts what waits, and knows when the coordinator holds one", () => {
@@ -325,6 +333,50 @@ describe("ApprovalCard", () => {
       reason: "use a branch",
     });
     expect(screen.getByText(/Your reason: use a branch/)).toBeTruthy();
+  });
+
+  it("says why an MCP call waits when its arguments could not be checked", () => {
+    let deep: Record<string, unknown> = { leaf: "x" };
+    for (let level = 0; level < 100; level += 1) deep = { deep };
+    renderCard(
+      approval({
+        tool: "mcp__docs__search",
+        summary: "docs/search",
+        args: { ...deep, note: "‮hidden" },
+        rule: { tool: "mcp__docs__search", match: "never" },
+      }),
+    );
+    // As much as can be shown, with invisible characters written out.
+    expect(
+      screen.getByLabelText("The mcp__docs__search call").textContent,
+    ).toBe(
+      `${'{"deep":'.repeat(16)}…${"}".repeat(15)},"note":"⟨U+202E⟩hidden"}`,
+    );
+    expect(
+      screen.getByText(
+        "Its arguments nest deeper than 64 levels, so no rule's match could be checked: every rule for mcp__docs__search holds it.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("previews arguments without a canonical form, cut and marked, without throwing", () => {
+    const cyclic: Record<string, unknown> = { b: 1, a: "x" };
+    cyclic.self = cyclic;
+    expect(argumentsPreview(cyclic)).toBe('{"a":"x","b":1,"self":⟨cycle⟩}');
+    expect(argumentsPreview({ n: 10n, f: () => 1, d: new Date(0) })).toBe(
+      '{"d":⟨not JSON⟩,"f":⟨not JSON⟩,"n":10n}',
+    );
+    const long = argumentsPreview({ text: "x".repeat(2_000_000) }, 100);
+    expect(long).toHaveLength(101);
+    expect(long.endsWith("…")).toBe(true);
+    const wide = argumentsPreview(
+      Array.from({ length: 1_000_000 }, (_, index) => index),
+      50,
+    );
+    expect(wide).toHaveLength(51);
+    expect(
+      approvalCall({ tool: "mcp__docs__search", args: { size: 2n } }),
+    ).toBe('{"size":2n}');
   });
 
   it("shows a hidden character in the call as its code point", () => {

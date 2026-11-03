@@ -33,6 +33,7 @@ const dockerCaps: DriverCapabilities = {
   exposePort: false,
   snapshot: false,
   metrics: false,
+  spawn: false,
 };
 const localCaps: DriverCapabilities = {
   ...dockerCaps,
@@ -64,6 +65,8 @@ const stored: RuntimeProfile = {
   },
   approvals: [],
   secrets: [],
+  mcpServers: [],
+  skills: [],
   isDefault: false,
   status: { driverAvailable: true, isolated: true },
   createdAt: "2026-10-01T00:00:00.000Z",
@@ -198,6 +201,38 @@ describe("approval rules in a profile draft", () => {
     expect(updateRuntimeProfileCommandSchema.safeParse(patch).success).toBe(
       true,
     );
+  });
+});
+
+describe("MCP servers and skills in a profile draft", () => {
+  it("carries them as stored, and sends them only when present or changed", () => {
+    const draft = draftFromProfile(stored, dockerFields);
+    expect(draft).toMatchObject({ mcpServers: [], skills: [] });
+    const read = readProfileDraft(draft, dockerFields);
+    expect(read.value).toMatchObject({ mcpServers: [], skills: [] });
+    expect(
+      profilePatch(stored, read.value as DesiredProfile, dockerFields).patch,
+    ).toBeNull();
+    const command = createProfileCommand(read.value as DesiredProfile);
+    expect("mcpServers" in command || "skills" in command).toBe(false);
+  });
+
+  it("keeps a stored rule on an MCP tool through an edit", () => {
+    const guarded = {
+      ...stored,
+      approvals: [{ tool: "mcp__docs__*" as const }],
+    };
+    const draft = draftFromProfile(guarded, dockerFields);
+    expect(draft.approvals).toEqual([{ tool: "mcp__docs__*", match: "" }]);
+    const renamed = readProfileDraft(
+      { ...draft, name: "Renamed" },
+      dockerFields,
+    );
+    expect(
+      profilePatch(guarded, renamed.value as DesiredProfile, dockerFields)
+        .patch,
+    ).toEqual({ name: "Renamed" });
+    expect(renamed.value?.approvals).toEqual([{ tool: "mcp__docs__*" }]);
   });
 });
 

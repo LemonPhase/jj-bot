@@ -7,6 +7,7 @@ import {
   spendCapUsdSchema,
   timestampSchema,
 } from "./common";
+import { mcpServerEventSchema } from "./mcp";
 import {
   ACTIVITY_TEXT_LIMIT,
   type Activity,
@@ -253,6 +254,13 @@ export const taskEventSchema = z.discriminatedUnion("type", [
       previousStatus: approvalStatusSchema,
     }),
   ),
+  /**
+   * An MCP server connection of the task changed state: `starting`, `ready`,
+   * `failed` (it did not start, or crashed; `error` and `stderrTail` say
+   * why) or `exited` (it ended, with its sandbox or after it sat idle).
+   * Attributed to the session whose call started it, when there is one.
+   */
+  event("mcp.server", mcpServerEventSchema),
   event("cancellation.requested", z.object({ reason: z.string().nullable() })),
   event(
     "cancellation.completed",
@@ -475,6 +483,22 @@ export function activityFromEvent(
         default:
           return { kind: "command", text: describe("Using ", tool), since };
       }
+    }
+    case "mcp.server": {
+      const { server, state } = event.payload;
+      if (state === "starting")
+        return {
+          kind: "command",
+          text: describe("Starting MCP server ", server),
+          since,
+        };
+      if (state === "ready")
+        return {
+          kind: "command",
+          text: describe("Using MCP server ", server),
+          since,
+        };
+      return undefined;
     }
     case "verification.started": {
       const { criteria } = event.payload;
