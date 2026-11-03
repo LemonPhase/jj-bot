@@ -113,6 +113,15 @@ export function apiRoutes({
       201,
     ),
   );
+  api.post("/tasks/:id/approvals/:approvalId", async (c) =>
+    c.json(
+      await engine.tasks.decideApproval(
+        idParam(c, "id"),
+        idParam(c, "approvalId"),
+        await command(c),
+      ),
+    ),
+  );
   api.post("/tasks/:id/stop", async (c) =>
     c.json(await engine.tasks.stop(idParam(c, "id"), (await command(c)) ?? {})),
   );

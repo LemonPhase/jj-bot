@@ -1,5 +1,6 @@
 import type { Interrupted } from "@jj/sandbox/contract";
 import { z } from "zod";
+import { approvalSchema, approvalStatusSchema } from "./approvals";
 import {
   idSchema,
   modelRefSchema,
@@ -67,7 +68,8 @@ const toolSummarySchema = z.string().max(300);
 /**
  * Events that change a record carry the whole record after the change
  * (`task.created`, `task.updated`, `session.created`, `session.updated`,
- * `message.posted`, `artifact.created`), so `applyTaskEvent` keeps a view in
+ * `message.posted`, `artifact.created`, `approval.requested`,
+ * `approval.updated`), so `applyTaskEvent` keeps a view in
  * step with the stream on its own. The other events are markers and activity.
  */
 export const taskEventSchema = z.discriminatedUnion("type", [
@@ -193,6 +195,22 @@ export const taskEventSchema = z.discriminatedUnion("type", [
       capUsd: spendCapUsdSchema,
     }),
   ),
+  /**
+   * A call waits for the user's approval: it has not run. Attributed to its
+   * session and the run that made it.
+   */
+  event("approval.requested", z.object({ approval: approvalSchema })),
+  /**
+   * Any change to an approval: the user's decision, its expiry or
+   * cancellation, the start of an approved call and its outcome.
+   */
+  event(
+    "approval.updated",
+    z.object({
+      approval: approvalSchema,
+      previousStatus: approvalStatusSchema,
+    }),
+  ),
   event("cancellation.requested", z.object({ reason: z.string().nullable() })),
   event(
     "cancellation.completed",
@@ -274,6 +292,8 @@ export const taskViewSchema = z.object({
   sessions: z.array(executionSessionSchema),
   messages: z.array(taskMessageSchema),
   artifacts: z.array(artifactSchema),
+  /** Every approval of the task, oldest first. Parsed as empty from servers before approvals. */
+  approvals: z.array(approvalSchema).default(() => []),
   usage: z.object({
     total: usageSchema,
     bySession: z.record(idSchema, usageSchema),
@@ -319,6 +339,8 @@ const waitingText = (session: ExecutionSession): string => {
       return "Waiting on delegated work";
     case "user":
       return "Waiting for you";
+    case "approval":
+      return "Waiting for your approval";
     default:
       return "Waiting";
   }
@@ -442,7 +464,7 @@ export function applyTaskEvent(
   if (event.sequence <= view.cursor) return view;
   if (!isKnownEvent(event)) return { ...view, cursor: event.sequence };
 
-  let { task, sessions, messages, artifacts, usage } = view;
+  let { task, sessions, messages, artifacts, approvals, usage } = view;
   switch (event.type) {
     case "task.created":
     case "task.updated":
@@ -466,6 +488,10 @@ export function applyTaskEvent(
       break;
     case "artifact.created":
       artifacts = upsert(artifacts, event.payload.artifact);
+      break;
+    case "approval.requested":
+    case "approval.updated":
+      approvals = upsert(approvals, event.payload.approval);
       break;
     case "model.finished": {
       const added = event.payload.usage;
@@ -501,6 +527,7 @@ export function applyTaskEvent(
     sessions,
     messages,
     artifacts,
+    approvals,
     usage,
     events,
     firstSequence: trimmed

@@ -14,6 +14,7 @@ export const ID_PREFIXES = {
   taskEvent: "evt",
   artifact: "art",
   usage: "use",
+  approval: "appr",
   job: "job",
 } as const;
 

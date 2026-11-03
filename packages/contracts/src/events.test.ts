@@ -359,6 +359,7 @@ const viewAt14 = snapshot(
     ],
     messages: [m1, m2],
     artifacts: [],
+    approvals: [],
     usage: { total: u1, bySession: { s1: u1 } },
   },
   14,
@@ -369,6 +370,7 @@ const viewAt32 = snapshot(
     sessions: [s1Done, s2Done],
     messages: [m1, m2, m3, m4],
     artifacts: [artifact],
+    approvals: [],
     usage: {
       total: addUsage(addUsage(u1, u2), u3),
       bySession: { s1: addUsage(u1, u3), s2: u2 },
@@ -398,6 +400,7 @@ describe("applyTaskEvent", () => {
         sessions: [],
         messages: [],
         artifacts: [],
+        approvals: [],
         usage: { total: emptyUsage(), bySession: {} },
       },
       1,

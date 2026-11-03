@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pendingApprovalSchema } from "./approvals";
 import {
   COMMAND_TEXT_LIMIT,
   hasSomeField,
@@ -14,7 +15,9 @@ import {
  * - `queued`: created, nothing has started.
  * - `running`: at least one session is queued or running.
  * - `waiting`: no active work; the coordinator ended its turn without calling
- *   `complete_task`, usually to ask the user something. The next user message continues it.
+ *   `complete_task`, usually to ask the user something, or every session
+ *   still open waits for its delegations or for the user's approval of a
+ *   call. The next user message continues it, as does an approval's answer.
  * - `completed`: the coordinator called `complete_task`.
  * - `failed`: unrecoverable, for example the coordinator session failed.
  * - `cancelled`: stopped by the user. Terminal: it cannot be continued.
@@ -48,10 +51,11 @@ export const finishedTaskStatusSchema = taskStatusSchema.extract(
 export const sessionStatusSchema = z.enum(TASK_STATUSES);
 
 /**
- * What a waiting session resumes on: results of its open delegations, or the
- * user (a coordinator that ended its turn without `complete_task`).
+ * What a waiting session resumes on: results of its open delegations, the
+ * user (a coordinator that ended its turn without `complete_task`), or the
+ * user's answer to the call it holds for approval (`approval`).
  */
-export const waitingForSchema = z.enum(["delegations", "user"]);
+export const waitingForSchema = z.enum(["delegations", "user", "approval"]);
 
 /** True for completed, failed and cancelled, for tasks and sessions alike. */
 export const isFinishedStatus = (
@@ -353,6 +357,11 @@ export const taskSummaryObjectSchema = taskObjectSchema.extend({
    * Derived from the task log; absent once the task continues or finishes.
    */
   question: z.string().min(1).max(TASK_QUESTION_LIMIT).optional(),
+  /**
+   * The task's calls waiting for the user's approval, oldest first: at most
+   * one per session. Parsed as empty from servers before approvals.
+   */
+  pendingApprovals: z.array(pendingApprovalSchema).default(() => []),
 });
 
 /** A task as lists show it. */

@@ -34,6 +34,7 @@ import {
   toTask,
   toTaskEvent,
 } from "../records";
+import { pendingApprovals, taskApprovals, toApproval } from "./approvals";
 
 const usageOf = (row: UsageRow): Usage => ({
   modelCalls: 1,
@@ -101,6 +102,7 @@ export async function taskView(
         .from(usage)
         .where(eq(usage.taskId, taskId))
         .orderBy(asc(usage.createdAt), asc(usage.id));
+      const approvalRows = await taskApprovals(tx, taskId);
       const latest = await tx
         .select()
         .from(taskEvents)
@@ -129,6 +131,7 @@ export async function taskView(
         sessions: sessionRows.map(toSession),
         messages: messageRows.map(toMessage),
         artifacts: artifactRows.map(toArtifact),
+        approvals: approvalRows.map(toApproval),
         usage: { total, bySession },
         events,
         firstSequence,
@@ -248,6 +251,7 @@ export async function taskSummaries(
     taskRows.filter((row) => row.status === "waiting").map((row) => row.id),
     options.redact ?? ((text) => text),
   );
+  const pending = await pendingApprovals(exec, ids);
   return taskRows.map((row) => {
     const own = sessionRows.filter((session) => session.taskId === row.id);
     const question = questions.get(row.id);
@@ -270,6 +274,13 @@ export async function taskSummaries(
         .map(usageOf)
         .reduce(addUsage, emptyUsage()),
       ...(question ? { question } : {}),
+      pendingApprovals: pending
+        .filter((approval) => approval.taskId === row.id)
+        .map((approval) => {
+          const { id, sessionId, botId, tool, summary, createdAt } =
+            toApproval(approval);
+          return { id, sessionId, botId, tool, summary, createdAt };
+        }),
     };
   });
 }

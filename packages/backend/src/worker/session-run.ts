@@ -31,6 +31,13 @@ import {
   updateTask,
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
+import {
+  claimCall,
+  hasDecision,
+  parkIfHeld,
+  reviewCall,
+  runDecision,
+} from "./approvals";
 import { snapshotArtifacts } from "./artifacts";
 import { sessionTools, type Teammate } from "./collab-tools";
 import { claimHolder, heldByAnotherWorker } from "./holders";
@@ -136,10 +143,18 @@ async function startRun(
       };
     }
 
-    // Only briefs, results and steering start a run. A plain message waiting
-    // in the inbox rides along with a run that happens anyway; it never makes
-    // a coalesced wake launch one (notification semantics).
-    const hasInput = await hasContinuingInput(tx, sessionId);
+    // A session holding a call for approval does not run until the user answers.
+    if (await parkIfHeld(tx, ctx, session, stale)) {
+      await complete(tx, job.lease);
+      return { kind: "skip", taskFinished: false };
+    }
+
+    // Only briefs, results, steering and an approval's answer start a run. A
+    // plain message waiting in the inbox rides along with a run that happens
+    // anyway; it never makes a coalesced wake launch one (notification semantics).
+    const hasInput =
+      (await hasContinuingInput(tx, sessionId)) ||
+      (await hasDecision(tx, sessionId));
     const recovering =
       stale !== undefined ||
       session.status === "running" ||
@@ -291,6 +306,7 @@ async function prepare(
     profileFor(ctx.db, rc.bot.runtimeProfileId),
   ]);
   const ownSettings = own ? profileSettings(own) : undefined;
+  rc.approvalRules = ownSettings?.approvals ?? [];
   const parent = rc.session.parentSessionId
     ? await getSession(ctx.db, rc.session.parentSessionId)
     : undefined;
@@ -306,6 +322,7 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   return async (inputs: string[]): Promise<RunOutcome> => {
+    const decided = await runDecision(rc);
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -325,7 +342,8 @@ async function prepare(
         resumed: rc.reason === "recovery",
       }),
       transcript: await loadTranscript(ctx, rc.session.id),
-      inputs,
+      inputs: [...decided.inputs, ...inputs],
+      ...(decided.decision ? { decision: decided.decision } : {}),
       model: rc.bot.model,
       sandbox: hold.sandbox,
       sandboxLimits: hold.spec.limits,
@@ -336,7 +354,11 @@ async function prepare(
         deadline,
       },
       signal: rc.control.controller.signal,
-      hooks: runHooks(rc),
+      hooks: {
+        ...runHooks(rc),
+        reviewToolCall: (call) => reviewCall(rc, call),
+        claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
+      },
       redact: (text: string) => rc.redact(text),
     });
     return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;

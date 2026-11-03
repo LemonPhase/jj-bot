@@ -135,6 +135,7 @@ export async function createProfile(
         sandbox,
         tools: command.tools ?? [...CODING_TOOLS],
         budgets: command.budgets ?? profileBudgetsSchema.parse({}),
+        approvals: command.approvals ?? [],
         isDefault: command.isDefault ?? false,
         createdAt: now,
         updatedAt: now,
@@ -200,6 +201,9 @@ export async function updateProfile(
           ? { description: command.description }
           : {}),
         ...(command.tools !== undefined ? { tools: command.tools } : {}),
+        ...(command.approvals !== undefined
+          ? { approvals: command.approvals }
+          : {}),
         ...(command.isDefault !== undefined
           ? { isDefault: command.isDefault }
           : {}),

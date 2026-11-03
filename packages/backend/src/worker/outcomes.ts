@@ -27,6 +27,7 @@ import {
 } from "../services/sessions";
 import { recordTaskUpdate } from "../services/task-updates";
 import { settleCancellation } from "../services/tasks";
+import { parkHeld, settleApprovalWait } from "./approvals";
 import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import {
@@ -450,6 +451,7 @@ export async function finishRun(
     )
       return "continue";
     if (stopped) await cancelRun(tx, rc, task, session);
+    else if (outcome.kind === "held") await parkHeld(tx, rc, session);
     else if (outcome.kind === "idle") {
       if (rc.reason === "recovery")
         // The last turn ended before the restart; finish it now (nothing was posted yet).
@@ -484,11 +486,9 @@ export async function finishRun(
           ? outcome.code
             ? `model error (${outcome.code}): ${outcome.error}`
             : outcome.error
-          : outcome.kind === "held"
-            ? "A tool call is waiting for approval, which this engine does not record yet."
-            : outcome.reason === "sandbox_released"
-              ? "The task's sandbox was released while the run was in progress."
-              : "The run was aborted.";
+          : outcome.reason === "sandbox_released"
+            ? "The task's sandbox was released while the run was in progress."
+            : "The run was aborted.";
       await closeRun(tx, ctx, rc.run, "failed", attributionOf(rc), error);
       const failed = await failSessionTx(
         tx,
@@ -500,6 +500,8 @@ export async function finishRun(
       );
       if (failed.taskFinished) rc.taskFinished = true;
     }
+    // Nothing left running but calls waiting for approval: the task waits for the user.
+    await settleApprovalWait(tx, ctx, task.id, attributionOf(rc));
     if (snapshotted)
       await tx
         .update(runs)

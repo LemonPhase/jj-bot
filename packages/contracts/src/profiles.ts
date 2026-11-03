@@ -64,6 +64,30 @@ const toolListSchema = z
     message: "Tools must be unique.",
   });
 
+/** Longest `match` of an approval rule, in UTF-16 code units. */
+export const APPROVAL_MATCH_LIMIT = 200;
+/** Most approval rules a profile holds. */
+export const MAX_APPROVAL_RULES = 50;
+
+/**
+ * A kind of call that waits for the user's approval before it runs: every
+ * call of `tool`, or only those whose subject contains `match` (see
+ * `approvalRuleMatches`). Rules guide a cooperative model; they are not a
+ * security boundary: a command can reach the same effect in ways no text
+ * rule foresees, such as a script it wrote. The sandbox and its network
+ * policy remain the boundary.
+ */
+export const approvalRuleSchema = z.object({
+  tool: toolNameSchema,
+  /**
+   * Case-sensitive text, found anywhere in the call's subject; `*` stands
+   * for any run of characters, and a run of whitespace for any other.
+   */
+  match: z.string().trim().min(1).max(APPROVAL_MATCH_LIMIT).optional(),
+});
+
+const approvalRulesSchema = z.array(approvalRuleSchema).max(MAX_APPROVAL_RULES);
+
 const maxTurnsPerRunSchema = z.number().int().min(1).max(500);
 const maxRunMinutesSchema = z.number().int().min(1).max(240);
 
@@ -108,6 +132,8 @@ export const runtimeProfileSchema = z.object({
   sandbox: sandboxSpecSchema,
   tools: toolListSchema.default(() => [...CODING_TOOLS]),
   budgets: profileBudgetsSchema,
+  /** Calls of this profile's bots that wait for the user's approval. None by default. */
+  approvals: approvalRulesSchema.default(() => []),
   isDefault: z.boolean(),
   status: runtimeProfileStatusSchema,
   createdAt: timestampSchema,
@@ -116,7 +142,8 @@ export const runtimeProfileSchema = z.object({
 
 /**
  * Creates a runtime profile. Omitted fields take server defaults: empty
- * description, every coding tool, default budgets, not the default profile.
+ * description, every coding tool, default budgets, no approval rules, not
+ * the default profile.
  */
 export const createRuntimeProfileCommandSchema = z.object({
   name: profileNameSchema,
@@ -124,6 +151,7 @@ export const createRuntimeProfileCommandSchema = z.object({
   sandbox: sandboxSpecSchema,
   tools: toolListSchema.optional(),
   budgets: profileBudgetsSchema.optional(),
+  approvals: approvalRulesSchema.optional(),
   isDefault: z.boolean().optional(),
 });
 
@@ -167,13 +195,14 @@ export const updateRuntimeProfileCommandObjectSchema = z
         maxUsdPerBotPerDay: spendCapUsdSchema.nullable(),
       })
       .partial(),
+    approvals: approvalRulesSchema,
     isDefault: z.boolean(),
   })
   .partial();
 
 /**
  * Partial update with no defaults. The server deep-merges it onto the stored
- * profile — nested objects field by field, while `tools`, `sandbox.network`,
+ * profile — nested objects field by field, while `tools`, `approvals`, `sandbox.network`,
  * `sandbox.env` and `sandbox.driverConfig` are replaced whole — then validates
  * the merged spec with the driver before saving.
  */
@@ -240,6 +269,7 @@ export const modelsViewSchema = z.object({
 export type ToolName = z.infer<typeof toolNameSchema>;
 export type CollaborationToolName = (typeof COLLABORATION_TOOLS)[number];
 export type ProfileBudgets = z.infer<typeof profileBudgetsSchema>;
+export type ApprovalRule = z.infer<typeof approvalRuleSchema>;
 export type RuntimeProfileStatus = z.infer<typeof runtimeProfileStatusSchema>;
 export type RuntimeProfile = z.infer<typeof runtimeProfileSchema>;
 export type CreateRuntimeProfileCommand = z.input<

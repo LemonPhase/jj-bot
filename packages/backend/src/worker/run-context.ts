@@ -1,5 +1,6 @@
 // The state of one claimed job while it runs, the lease-fenced write helper,
 // and the executor hooks that turn runtime activity into durable rows.
+import type { ApprovalRule } from "@jj/contracts";
 import {
   type BotRow,
   type ClaimedJob,
@@ -20,6 +21,7 @@ import type { EngineContext } from "../context";
 import { emit } from "../events";
 import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import type { Redactor } from "../redact";
+import { noteResolved } from "../services/approvals";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
 import {
@@ -103,6 +105,12 @@ export interface RunContext {
   redact: Redactor;
   /** The cap that refused this run's model call, once one did. */
   spendStop?: SpendStop;
+  /** The approval rules of the bot's own profile. */
+  approvalRules?: readonly ApprovalRule[];
+  /** The approval this run recorded for a call it held, once it did. */
+  heldApprovalId?: string;
+  /** The held call whose decision this run applies, while its result is not stored. */
+  decisionCallId?: string;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -373,6 +381,16 @@ export function runHooks(rc: RunContext): RunHooks {
         );
         rc.nextSeq += entries.length;
         await markDelivered(tx, rc);
+        // The decision's result is in the transcript now: it is applied once.
+        if (rc.decisionCallId)
+          await noteResolved(
+            tx,
+            rc.deps.ctx,
+            rc.session.id,
+            rc.decisionCallId,
+            entries,
+            rc.run.id,
+          );
       });
     },
     drainInbox: () => takeInbox(rc),

@@ -31,7 +31,7 @@ export const TASK_STATUSES = [
 export const SESSION_STATUSES = TASK_STATUSES;
 export const SESSION_ROLES = ["coordinator", "worker"] as const;
 /** What a `waiting` session resumes on; set exactly when the session is waiting. */
-export const WAITING_FOR = ["delegations", "user"] as const;
+export const WAITING_FOR = ["delegations", "user", "approval"] as const;
 export const RUN_REASONS = ["start", "wake", "recovery"] as const;
 export const RUN_STATUSES = [
   "running",
@@ -50,8 +50,23 @@ export const MESSAGE_INTENTS = [
 ] as const;
 export const AUTHOR_KINDS = ["user", "bot", "system"] as const;
 export const CONVERSATION_ROLES = ["user", "assistant"] as const;
-/** What a task update tells its coordinator's chat: the task completed, failed or waits for the user. */
-export const TASK_UPDATE_EVENTS = ["completed", "failed", "waiting"] as const;
+/**
+ * What a task update tells its coordinator's chat: the task completed,
+ * failed or waits for the user, or a call waits for the user's approval.
+ */
+export const TASK_UPDATE_EVENTS = [
+  "completed",
+  "failed",
+  "waiting",
+  "approval",
+] as const;
+export const APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "denied",
+  "expired",
+  "cancelled",
+] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 export const JOB_KINDS = ["session.run", "chat.reply"] as const;
 export const JOB_STATUSES = [
@@ -73,6 +88,7 @@ export type MessageIntent = (typeof MESSAGE_INTENTS)[number];
 export type AuthorKind = (typeof AUTHOR_KINDS)[number];
 export type ConversationRole = (typeof CONVERSATION_ROLES)[number];
 export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -118,6 +134,8 @@ export const runtimeProfiles = pgTable(
     sandbox: jsonb("sandbox").$type<JsonObject>().notNull(),
     tools: jsonb("tools").$type<string[]>().notNull(),
     budgets: jsonb("budgets").$type<JsonObject>().notNull(),
+    /** Approval rules (`approvalRuleSchema`), none by default. */
+    approvals: jsonb("approvals").$type<JsonObject[]>().notNull().default([]),
     isDefault: boolean("is_default").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -287,6 +305,8 @@ export const chatTaskUpdates = pgTable(
     messageId: text("message_id"),
     /** When it was told, or overtaken by a later event of its task; null while pending. */
     answeredAt: optionalTime("answered_at"),
+    /** The approval an `approval` update is about (attribution, not a foreign key). */
+    approvalId: text("approval_id"),
   },
   (t) => [
     // Also covers the task foreign key.
@@ -580,6 +600,55 @@ export const usage = pgTable(
   ],
 );
 
+/**
+ * A call that waits, or waited, for the user's approval: one per session
+ * and tool call, at most one pending per session. The call's result reaches
+ * the session's transcript once (`resolved_at`): an approved call starts at
+ * most once (`started_at`, claimed by `started_run_id`).
+ */
+export const approvals = pgTable(
+  "approvals",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    /** The run that made the call (attribution, not a foreign key). */
+    runId: text("run_id").notNull(),
+    botId: text("bot_id").notNull(),
+    toolCallId: text("tool_call_id").notNull(),
+    tool: text("tool").notNull(),
+    summary: text("summary").notNull(),
+    /** The call's arguments, redacted. */
+    args: jsonb("args").$type<JsonObject>().notNull(),
+    /** The profile rule that asked for approval. */
+    rule: jsonb("rule").$type<JsonObject>().notNull(),
+    text: text("text").notNull().default(""),
+    goalVersion: integer("goal_version").notNull(),
+    status: text("status").$type<ApprovalStatus>().notNull().default("pending"),
+    reason: text("reason"),
+    /** How an approved call ended, once its result was stored. */
+    outcome: jsonb("outcome").$type<JsonObject>(),
+    createdAt: createdAt(),
+    decidedAt: optionalTime("decided_at"),
+    startedRunId: text("started_run_id"),
+    startedAt: optionalTime("started_at"),
+    resolvedAt: optionalTime("resolved_at"),
+  },
+  (t) => [
+    unique("approvals_session_call").on(t.sessionId, t.toolCallId),
+    uniqueIndex("approvals_one_pending")
+      .on(t.sessionId)
+      .where(sql`${t.status} = 'pending'`),
+    index("approvals_task_idx").on(t.taskId, t.createdAt),
+    check("approvals_status_check", oneOf(t.status, APPROVAL_STATUSES)),
+  ],
+);
+
 export const jobs = pgTable(
   "jobs",
   {
@@ -690,6 +759,8 @@ export type ArtifactRow = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
 export type UsageRow = typeof usage.$inferSelect;
 export type NewUsage = typeof usage.$inferInsert;
+export type ApprovalRow = typeof approvals.$inferSelect;
+export type NewApproval = typeof approvals.$inferInsert;
 export type JobRow = typeof jobs.$inferSelect;
 export type NewJob = typeof jobs.$inferInsert;
 
@@ -723,6 +794,7 @@ export const tables = {
   taskEvents,
   artifacts,
   usage,
+  approvals,
   jobs,
   instanceSettings,
 };
