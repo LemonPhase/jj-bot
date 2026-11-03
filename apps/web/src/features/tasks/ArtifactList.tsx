@@ -31,6 +31,12 @@ export function ArtifactRows({
 }) {
   const { getBot } = useWorkspace();
   const ordinals = useOrdinals(view);
+  // Events over the payload cap, saved whole: not tool output.
+  const savedEvents = new Set(
+    view.events.flatMap((event) =>
+      event.payloadArtifactId ? [event.payloadArtifactId] : [],
+    ),
+  );
   return (
     <ul className="artifacts__list">
       {artifacts.map((artifact) => {
@@ -46,7 +52,11 @@ export function ArtifactRows({
               </span>
               <span className="artifact__meta clamp1">
                 {formatBytes(artifact.sizeBytes)} · {producer}
-                {artifact.kind === "output" ? " · tool output" : ""}
+                {artifact.kind !== "output"
+                  ? ""
+                  : savedEvents.has(artifact.id)
+                    ? " · saved event"
+                    : " · tool output"}
               </span>
             </span>
             <ArtifactDownload taskId={view.task.id} artifact={artifact} />
@@ -60,19 +70,24 @@ export function ArtifactRows({
 /**
  * A plain link when the API needs no token. With a token the link could not
  * send the Authorization header, so the content is fetched with it and saved
- * from a blob instead.
+ * from a blob instead. `text` replaces the "Download" it reads.
  */
-function ArtifactDownload({
+export function ArtifactDownload({
   taskId,
   artifact,
+  text = "Download",
 }: {
   taskId: string;
   artifact: Artifact;
+  text?: string;
 }) {
   const api = useApi();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const label = `Download ${artifact.name}`;
+  const label =
+    text === "Download"
+      ? `Download ${artifact.name}`
+      : `${text}: ${artifact.name}`;
 
   if (!api.fetchArtifact)
     return (
@@ -82,7 +97,7 @@ function ArtifactDownload({
         download={artifact.name}
         aria-label={label}
       >
-        Download
+        {text}
       </a>
     );
 
@@ -106,13 +121,37 @@ function ArtifactDownload({
         disabled={busy}
         onClick={() => void download()}
       >
-        {busy ? "Downloading…" : "Download"}
+        {busy ? "Downloading…" : text}
       </Button>
       {failure && (
         <span className="artifact__error" role="alert">
           <span className="artifact__error-word">Failed</span> {failure}
         </span>
       )}
+    </span>
+  );
+}
+
+/**
+ * The saved copy of an event that was over the payload cap: its whole
+ * payload, as JSON. The view's records are whole; this is the event as sent.
+ */
+export function SavedCopy({
+  view,
+  artifactId,
+}: {
+  view: TaskView;
+  artifactId: string;
+}) {
+  const artifact = view.artifacts.find((entry) => entry.id === artifactId);
+  if (!artifact) return null;
+  return (
+    <span className="saved-copy">
+      <ArtifactDownload
+        taskId={view.task.id}
+        artifact={artifact}
+        text="Large: open the saved copy"
+      />
     </span>
   );
 }

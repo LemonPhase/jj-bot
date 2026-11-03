@@ -28,6 +28,7 @@ import { acceptsMessages, moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import { ApprovalCard } from "./ApprovalCard";
+import { SavedCopy } from "./ArtifactList";
 import { coordinatorHolds } from "./approvals";
 import {
   type ActivityLine,
@@ -35,6 +36,7 @@ import {
   botName,
   createMentionMatcher,
   type MentionSegment,
+  savedCopies,
   statusAnnouncements,
   type TimelineEntry,
   taskTimeline,
@@ -68,6 +70,7 @@ export function TaskChat({ view }: { view: TaskView }) {
     [task.status, sessions],
   );
   const mention = useMemo(() => createMentionMatcher(bots), [bots]);
+  const copies = useMemo(() => savedCopies({ events }), [events]);
   const activityKey = lines
     .map((line) => `${line.session.id}:${line.text}`)
     .join("|");
@@ -127,6 +130,14 @@ export function TaskChat({ view }: { view: TaskView }) {
                 entry={entry}
                 mention={mention}
                 getBot={getBot}
+                view={view}
+                savedCopy={
+                  entry.kind === "approval"
+                    ? copies.get(`approval:${entry.approval.id}`)
+                    : entry.kind === "message"
+                      ? copies.get(`message:${entry.message.id}`)
+                      : undefined
+                }
               />
             ))}
             {pending && (
@@ -195,7 +206,28 @@ export function TaskChat({ view }: { view: TaskView }) {
   );
 }
 
+/** A timeline entry, followed by the saved copy of its event when that was over the payload cap. */
 function TimelineItem({
+  savedCopy,
+  view,
+  ...props
+}: {
+  entry: TimelineEntry;
+  mention: (text: string) => MentionSegment[];
+  getBot: (botId: string) => Bot | undefined;
+  view: TaskView;
+  savedCopy: string | undefined;
+}) {
+  if (!savedCopy) return <TimelineContent {...props} />;
+  return (
+    <div className="task-chat__large">
+      <TimelineContent {...props} />
+      <SavedCopy view={view} artifactId={savedCopy} />
+    </div>
+  );
+}
+
+function TimelineContent({
   entry,
   mention,
   getBot,

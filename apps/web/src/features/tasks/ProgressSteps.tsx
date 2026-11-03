@@ -7,12 +7,14 @@ import {
   useMemo,
 } from "react";
 import { Avatar, cx, StatusTag } from "../../components/ui";
+import { formatDay } from "../../lib/format";
 import { type Mood, moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import {
   botName,
   briefLine,
+  compactedAt,
   flattenTree,
   formatToolCall,
   type SessionNode,
@@ -97,6 +99,23 @@ export function ProgressSteps({
         />
       ))}
     </ol>
+  );
+}
+
+/**
+ * Above a compacted task's steps: its activity before the compaction (output
+ * previews, superseded snapshots) is gone, while its records stay whole.
+ */
+export function CompactedNote({ view }: { view: TaskView }) {
+  const at = compactedAt(view);
+  if (at === undefined) return null;
+  return (
+    <p className="progress__compacted" role="note">
+      {at
+        ? `Activity before ${formatDay(at)} was compacted.`
+        : "Earlier activity was compacted."}{" "}
+      Output previews are gone; saved full outputs are under Artifacts.
+    </p>
   );
 }
 
@@ -244,6 +263,7 @@ function StepCard({
         <span className="progress__tools clamp2">
           {tools.partial && "… → "}
           {tools.calls.map(formatToolCall).join(" → ")}
+          {tools.calls.some((call) => call.outputGone) && " · output not kept"}
         </span>
       )}
       {line && (

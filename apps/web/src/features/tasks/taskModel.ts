@@ -214,6 +214,10 @@ export interface ToolCall {
   summary: string;
   state: "running" | "ok" | "failed";
   exitCode: number | null;
+  /** Its output preview was dropped when the task's events were compacted. */
+  outputGone: boolean;
+  /** The artifact holding its event in full, when the event was over the payload cap. */
+  savedCopy: string | null;
 }
 
 export interface SessionTools {
@@ -230,7 +234,7 @@ export interface SessionTools {
  * oldest first per session.
  */
 export function toolCallsBySession(
-  view: Pick<TaskView, "events" | "hasEarlier">,
+  view: Pick<TaskView, "events" | "hasEarlier" | "compactedThrough">,
   /** The previous result: unchanged entries are reused, so memoised rows can skip. */
   previous?: ReadonlyMap<string, SessionTools>,
 ): Map<string, SessionTools> {
@@ -248,16 +252,27 @@ export function toolCallsBySession(
     const mine = calls.get(sessionId) ?? new Map<string, ToolCall>();
     calls.set(sessionId, mine);
     const { toolCallId, tool, summary } = event.payload;
+    const savedCopy = event.payloadArtifactId ?? null;
     mine.set(
       toolCallId,
       event.type === "tool.started"
-        ? { id: toolCallId, tool, summary, state: "running", exitCode: null }
+        ? {
+            id: toolCallId,
+            tool,
+            summary,
+            state: "running",
+            exitCode: null,
+            outputGone: false,
+            savedCopy,
+          }
         : {
             id: toolCallId,
             tool,
             summary,
             state: event.payload.ok ? "ok" : "failed",
             exitCode: event.payload.exitCode ?? null,
+            outputGone: event.sequence <= view.compactedThrough,
+            savedCopy,
           },
     );
   }
@@ -283,13 +298,15 @@ const sameTools = (a: SessionTools, b: SessionTools) =>
       call.id === other.id &&
       call.state === other.state &&
       call.exitCode === other.exitCode &&
-      call.summary === other.summary
+      call.summary === other.summary &&
+      call.outputGone === other.outputGone &&
+      call.savedCopy === other.savedCopy
     );
   });
 
 /** The tool calls a session made, from the view's events, oldest first. */
 export function sessionToolCalls(
-  view: Pick<TaskView, "events" | "hasEarlier">,
+  view: Pick<TaskView, "events" | "hasEarlier" | "compactedThrough">,
   sessionId: string,
 ): SessionTools {
   return (
@@ -298,6 +315,47 @@ export function sessionToolCalls(
       partial: view.hasEarlier,
     }
   );
+}
+
+/**
+ * When a compacted task's events were compacted: the time of the newest
+ * `task.compacted` the view holds, or null when that is older than the
+ * view's events. Undefined for a task never compacted.
+ */
+export function compactedAt(
+  view: Pick<TaskView, "events" | "compactedThrough">,
+): string | null | undefined {
+  if (view.compactedThrough === 0) return undefined;
+  for (let index = view.events.length - 1; index >= 0; index -= 1) {
+    const event = view.events[index];
+    if (event?.type === "task.compacted") return event.occurredAt;
+  }
+  return null;
+}
+
+/**
+ * The saved copies of the view's events that were over the payload cap
+ * (`payloadArtifactId`), by the record each carried: `message:<id>`,
+ * `approval:<id>` or `session:<id>`. The newest event of a record wins.
+ */
+export function savedCopies(
+  view: Pick<TaskView, "events">,
+): Map<string, string> {
+  const copies = new Map<string, string>();
+  for (const event of view.events) {
+    if (!event.payloadArtifactId) continue;
+    const key =
+      event.type === "message.posted"
+        ? `message:${event.payload.message.id}`
+        : event.type === "approval.requested" ||
+            event.type === "approval.updated"
+          ? `approval:${event.payload.approval.id}`
+          : event.type === "session.created" || event.type === "session.updated"
+            ? `session:${event.payload.session.id}`
+            : undefined;
+    if (key) copies.set(key, event.payloadArtifactId);
+  }
+  return copies;
 }
 
 /** "bash(npm test)", or the bare tool name when it has no summary. */

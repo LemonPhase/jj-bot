@@ -85,6 +85,7 @@ const view = (patch: Partial<TaskView> = {}): TaskView => ({
   firstSequence: 1,
   hasEarlier: false,
   cursor: 0,
+  compactedThrough: 0,
   ...patch,
 });
 

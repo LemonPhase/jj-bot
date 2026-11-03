@@ -154,5 +154,6 @@ export const taskView = (over: Partial<TaskView> = {}): TaskView => ({
   firstSequence: 1,
   hasEarlier: false,
   cursor: over.events?.at(-1)?.sequence ?? 0,
+  compactedThrough: 0,
   ...over,
 });

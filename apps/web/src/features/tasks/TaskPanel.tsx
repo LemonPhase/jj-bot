@@ -6,7 +6,7 @@ import { useWorkspace } from "../../state/WorkspaceContext";
 import { TaskOffice } from "../office/TaskOffice";
 import { ArtifactList } from "./ArtifactList";
 import { NodeInspector } from "./NodeInspector";
-import { ProgressSteps } from "./ProgressSteps";
+import { CompactedNote, ProgressSteps } from "./ProgressSteps";
 import { TaskGraph } from "./TaskGraph";
 import { defaultSelection, TASK_NODE } from "./taskModel";
 import { VerificationSection } from "./VerificationSection";
@@ -77,6 +77,7 @@ export function TaskPanel({
       <TabPanel id={panelId(tab)} className="task-panel__body">
         {tab === "progress" && (
           <>
+            <CompactedNote view={view} />
             <ProgressSteps view={view} picked={picked} onPick={selectNode} />
             <VerificationSection view={view} />
             <ArtifactList view={view} />

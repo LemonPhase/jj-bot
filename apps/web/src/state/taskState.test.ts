@@ -64,6 +64,7 @@ const view = (messages: TaskMessage[], current: Task = task): TaskView => ({
   firstSequence: 1,
   hasEarlier: false,
   cursor: messages.length,
+  compactedThrough: 0,
 });
 
 describe("task load problems", () => {

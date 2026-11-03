@@ -65,6 +65,7 @@ const snapshot: TaskView = {
   firstSequence: 1,
   hasEarlier: false,
   cursor: 2,
+  compactedThrough: 0,
 };
 
 const base = (sequence: number) => ({

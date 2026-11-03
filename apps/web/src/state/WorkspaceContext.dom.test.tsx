@@ -75,6 +75,7 @@ const view = (messages: TaskMessage[], cursor: number): TaskView => ({
   firstSequence: 1,
   hasEarlier: false,
   cursor,
+  compactedThrough: 0,
 });
 
 const posted = (sequence: number, m: TaskMessage) => ({
