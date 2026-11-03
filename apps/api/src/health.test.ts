@@ -118,6 +118,49 @@ describe("GET /health/ready", () => {
     });
   });
 
+  it("is not ready while the process drains to stop, whatever the checks say", async () => {
+    const draining = {
+      ...t.engine,
+      worker: { ...t.engine.worker, draining: true, activeJobs: 2 },
+    } as Engine;
+    const embedded = await ready(appOver(draining, true));
+    expect(embedded.status).toBe(503);
+    expect(embedded.body).toMatchObject({
+      status: "not_ready",
+      draining: true,
+      checks: {
+        database: { ok: true },
+        worker: {
+          ok: false,
+          reason: "the job loop is draining",
+          embedded: true,
+          activeJobs: 2,
+        },
+      },
+    });
+
+    // An API without a worker of its own drains its requests only.
+    await recordWorkerHeartbeat(idle.database.db, "worker-elsewhere");
+    const app = appOver(idle.engine);
+    expect(await ready(app)).toMatchObject({
+      status: 200,
+      body: { status: "ready", draining: false },
+    });
+    app.startDraining();
+    expect(app.draining).toBe(true);
+    expect(await ready(app)).toMatchObject({
+      status: 503,
+      body: {
+        status: "not_ready",
+        draining: true,
+        checks: { worker: { ok: true } },
+      },
+    });
+    // Everything else is still served meanwhile.
+    expect((await app.request("/health/live")).status).toBe(200);
+    await idle.database.db.execute(sql`delete from worker_heartbeats`);
+  });
+
   it("is not ready once the embedded worker's last poll is stale", async () => {
     const stalled = {
       ...t.engine,

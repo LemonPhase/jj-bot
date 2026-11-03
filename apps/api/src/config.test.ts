@@ -74,6 +74,23 @@ describe("loadServerConfig", () => {
     expect(config.engine.persistence).toBe(true);
     // No other process can open PGlite, so no worker heartbeat is written.
     expect(config.engine.workerHeartbeat).toBe(false);
+    expect(config.drainTimeoutMs).toBe(20_000);
+  });
+
+  it("reads JJ_DRAIN_TIMEOUT_SEC in whole seconds, 0 to an hour", () => {
+    expect(loadServerConfig({ JJ_DRAIN_TIMEOUT_SEC: "0" }).drainTimeoutMs).toBe(
+      0,
+    );
+    expect(
+      loadWorkerConfig({
+        DATABASE_URL: "postgresql://localhost/jj",
+        JJ_DRAIN_TIMEOUT_SEC: " 90 ",
+      }).drainTimeoutMs,
+    ).toBe(90_000);
+    for (const value of ["-1", "1.5", "3601", "soon"])
+      expect(() => loadServerConfig({ JJ_DRAIN_TIMEOUT_SEC: value })).toThrow(
+        `JJ_DRAIN_TIMEOUT_SEC must be a whole number of seconds from 0 to 3600; got "${value}".`,
+      );
   });
 
   it("uses PostgreSQL when DATABASE_URL is set", () => {

@@ -54,7 +54,17 @@ export interface ServicesConfig {
   engine: EngineConfigInput;
   /** `JJ_LOG_LEVEL` and `JJ_LOG_FORMAT`; absent: info, JSON. */
   log?: LogSettings;
+  /**
+   * `JJ_DRAIN_TIMEOUT_SEC`: how long a stop signal lets running sessions
+   * reach a turn boundary before the rest is interrupted as a lost lease is.
+   */
+  drainTimeoutMs: number;
 }
+
+/** `JJ_DRAIN_TIMEOUT_SEC` when unset. */
+export const DEFAULT_DRAIN_TIMEOUT_SEC = 20;
+/** The longest drain `JJ_DRAIN_TIMEOUT_SEC` may ask for. */
+const MAX_DRAIN_TIMEOUT_SEC = 3600;
 
 /** `JJ_SECRET_KEY` and `JJ_SECRET_KEY_PREVIOUS`, decoded, with their text for redaction. */
 export interface SecretKeys {
@@ -112,6 +122,17 @@ function port(env: Env, name: string, fallback: number): number {
   const number = Number(value);
   if (!Number.isInteger(number) || number < 0 || number > 65535)
     throw new ConfigError(`${name} must be a port number; got "${value}".`);
+  return number;
+}
+
+function seconds(env: Env, name: string, fallback: number, max: number) {
+  const value = text(env, name);
+  if (value === undefined) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0 || number > max)
+    throw new ConfigError(
+      `${name} must be a whole number of seconds from 0 to ${max}; got "${value}".`,
+    );
   return number;
 }
 
@@ -221,6 +242,13 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     ...(keys ? { secretKeys: keys } : {}),
     engine,
     log,
+    drainTimeoutMs:
+      seconds(
+        env,
+        "JJ_DRAIN_TIMEOUT_SEC",
+        DEFAULT_DRAIN_TIMEOUT_SEC,
+        MAX_DRAIN_TIMEOUT_SEC,
+      ) * 1000,
   };
 }
 

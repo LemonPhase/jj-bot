@@ -1,7 +1,9 @@
 // Process boot for the API: settings, the log, trace export, outbound proxy,
 // database, drivers, models, engine, the embedded worker, then listening.
-// `close()` is the graceful shutdown: stop accepting connections, end event
-// streams, stop the worker, close the database, flush the traces.
+// `close()` is the graceful shutdown: optionally drain (not ready, the
+// worker lets running sessions reach a turn boundary, requests are still
+// served), then stop accepting connections, end event streams, stop the
+// worker, close the database, flush the traces.
 import type { AddressInfo } from "node:net";
 import { type ServerType, serve } from "@hono/node-server";
 import { createLogger, type Logger } from "@jj/backend";
@@ -24,6 +26,17 @@ export interface StartOptions {
   logger?: Logger;
 }
 
+export interface CloseOptions {
+  /**
+   * Drain first, for up to this long (the stop signals pass
+   * `config.drainTimeoutMs`): `/health/ready` answers 503 while the embedded
+   * worker claims nothing and lets running sessions reach a turn boundary
+   * (`Worker.drain`); other requests are still served meanwhile. Absent: the
+   * worker hands running work back at once.
+   */
+  drainMs?: number;
+}
+
 export interface RunningServer {
   /** `http://host:port`, with the port actually bound (API_PORT=0 picks one). */
   url: string;
@@ -34,8 +47,8 @@ export interface RunningServer {
   app: JJApp;
   /** Trace export, when OTEL_EXPORTER_OTLP_ENDPOINT is set. */
   tracing?: Tracing;
-  /** Graceful shutdown. Idempotent. */
-  close(): Promise<void>;
+  /** Graceful shutdown. Idempotent: a later call waits for the first. */
+  close(options?: CloseOptions): Promise<void>;
 }
 
 /** How long open connections get to finish before they are cut on shutdown. */
@@ -134,8 +147,12 @@ export async function startServer(
 
     const http = server;
     let closing: Promise<void> | undefined;
-    const close = () => {
+    const close = (options: CloseOptions = {}) => {
       closing ??= (async () => {
+        if (options.drainMs !== undefined) {
+          app.startDraining();
+          if (config.embedWorker) await engine.worker.drain(options.drainMs);
+        }
         const drained = new Promise<void>((resolve) =>
           http.close(() => resolve()),
         );
