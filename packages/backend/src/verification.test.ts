@@ -10,6 +10,7 @@ import {
 import { sessions, verificationChecks } from "@jj/db";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { formatTaskState, readTaskState } from "./services/task-log";
 import { type Brain, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -176,6 +177,15 @@ describe("verification gate", () => {
       passed: 3,
       total: 3,
     });
+    // task_state (and chat's get_task) shows where the checks stand.
+    const state = await readTaskState(db.database.db, task.id);
+    const text = formatTaskState(state as NonNullable<typeof state>, (t) => t);
+    expect(text).toContain(
+      "Verification plan (the user's): passed 3 of 3 checks (goal version 1, attempt 1). The task completes only when every check passes.",
+    );
+    expect(text).toContain(
+      "- runs: out.txt says hello, in the task workspace (the command `cat out.txt && pwd` exits with code 0): passed. Exited with code 0",
+    );
     // The coordinator saw the plan in its prompt.
     expect(executor.inputs[0]?.systemPrompt).toContain("## Verification plan");
     expect(executor.inputs[0]?.systemPrompt).toContain(

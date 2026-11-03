@@ -1,30 +1,51 @@
 # Verification contract
 
-Verification is opt-in per task. A task without a verification plan completes when its coordinator delivers the consolidated result. A task with a plan cannot complete until every criterion passes with evidence, judged against the goal version that produced the work.
+Verification is opt-in per task. A task without a verification plan completes when its coordinator delivers the consolidated result. A task with a plan completes only when every criterion passes with evidence, judged against the goal version that produced the work.
 
 ## Capability
 
-Plans are accepted only while bootstrap reports `capabilities.verification: true`. Contract 1.0 reports `false`: `POST /api/tasks` and `POST /api/tasks/:id/messages` refuse a body that carries a plan with `422 VERIFICATION_UNAVAILABLE` instead of storing a plan nothing enforces. The rest of this document is what enforcing plans means; it holds for any server that reports the capability.
+Plans are accepted only while bootstrap reports `capabilities.verification: true`. A server that reports `false`, such as the web app's demo mode, refuses a body that carries a plan (`POST /api/tasks`, `POST /api/tasks/:id/messages`) with `422 VERIFICATION_UNAVAILABLE` instead of storing a plan nothing enforces.
 
 ## Always recorded
 
-Gating is optional; the audit trail is not. Whether or not a task has a plan, the event log records every tool call and its result, every command's exit code, and every artifact produced. The product must never present an unverified result as verified.
+Gating is optional; the audit trail is not. Whether or not a task has a plan, the event log records every tool call and its result, every command's exit code, and every artifact produced. The product never presents an unverified result as verified.
 
 ## Defining a plan
 
-A plan (`verificationPlanSchema`) lists one or more criteria, each with an `id`, a `description`, a verification `method` and the `expectedEvidence`. Plans are versioned with the goal: a change to the goal or its criteria starts a new goal version and supersedes earlier evidence. See [task continuation](task-continuation.md).
+A plan (`verificationPlanSchema`) is 1 to 20 criteria, each with an `id` (a slug, unique in the plan), a `description` and a `method`:
 
-If verification cannot be specified for work that needs it, ask for clarification or return an explicit unverified outcome rather than inventing criteria.
+| Method    | Passes when                                                                                                                                                                                                  |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `command` | `sh -c <command>`, run in the task's sandbox from the workspace root, exits with code 0 without interruption. `timeoutSeconds` can only shorten the sandbox's limit.                                         |
+| `file`    | A workspace file (`path`, workspace-relative) `exists`, `contains` a value, `matches` a regular expression (`flags` from i, m and s), or parses as `json`, valid against an optional JSON Schema (`schema`). |
+| `result`  | The result text the coordinator passed to `complete_task` `contains`, `matches` or is `json`, as for a file.                                                                                                 |
 
-## Execution loop
+Only the user writes a plan: when creating the task, or with a task message (`verificationPlan`; `null` removes it). No agent tool sets or changes criteria, so a coordinator never grades its own work; it may suggest checks in its reply, and the user adopts them. If verification cannot be specified for work that needs it, the coordinator asks for clarification or returns an explicit unverified outcome rather than inventing criteria.
 
-Execute → check → inspect failures → revise → check again, bounded by the session budget.
+Plans are versioned with the goal: a change to the plan, with or without a change to the goal, needs the goal version the user observed and starts a new goal version. A message that repeats the current plan changes nothing. See [task continuation](task-continuation.md).
 
-Each check records its criterion, method, outcome, evidence and the session, run and goal version it evaluated. Outcomes are `passed`, `failed` or `inconclusive`. A check cannot pass without evidence. When the budget runs out with a failed or inconclusive check, the task waits for the user or coordinator rather than completing.
+## The gate
+
+The coordinator sees the plan in its prompt. Calling `complete_task` on a task with a plan records the completion request. When the coordinator's turn ends, after the run's last tool, so nothing batched after `complete_task` can change the workspace behind a check, the worker runs every criterion in plan order:
+
+- **All passed:** the request records the passing attempt, and the task completes.
+- **Otherwise:** the request is cleared and the task does not complete. The coordinator receives each criterion's outcome, exit code, duration and the tail of its output (at most 2 KiB per failing check) as a result, and its run goes on: it revises the work and calls `complete_task` again, which runs every check again.
+- **Attempts:** at most `JJ_MAX_VERIFICATION_ATTEMPTS` (default 3) gate runs per coordinator run. After the last failed one `complete_task` refuses; the coordinator tells the user what fails and the task waits for the user. A single check is never retried automatically, so a flaky test shows as failed.
+- **One place completes a task.** The transaction that completes it checks again that every criterion of the current plan passed at the attempt the request records, and that this attempt is its goal version's latest. A request that did not pass the gate, whatever recorded it, leaves the task waiting with a system message, never completed. A worker that stops in the middle of a gate leaves the request unverified, so the session's recovery runs the gate again.
+
+Outcomes are `passed`, `failed` or `inconclusive`, and inconclusive blocks completion just as failed does. A check is inconclusive when its sandbox is unavailable or released, the run is stopped, a command's interruption cannot be confirmed, a file is over 1 MiB, or the run's time budget ran out before or while it ran. A command that exceeds its own timeout fails. A check cannot pass without evidence: every check records what it observed.
+
+Checks run in the same sandbox as the agents, with the coordinator's profile: its network policy, resource and command limits, and no secrets. On `local` they are as unisolated as the agents' commands. Command and deterministic checks make no model calls; the coordinator's revision turns are ordinary model calls, bounded by its run budgets and spend caps.
+
+A check tests the workspace as the agents left it, not their intent: agents that can edit the workspace can also edit what a command runs (a test script, a fixture). The recorded output lets the user judge, and checks that run fixed commands against fixed paths are harder to defeat.
 
 ## Evidence
 
-Prefer checks that observe the work. A command run in the task's sandbox passes only on exit code 0 and keeps its exit code and output as evidence. A deterministic test against the result text keeps the match or parse outcome. A model review is a qualitative assessment, not a test: it keeps quoted observations, is labelled qualitative, and a malformed or evidence-free review is inconclusive. Tests and observed effects are stronger evidence than another model agreeing.
+Each check is an append-only record (`verificationCheckSchema`): the criterion, method, goal version, attempt, outcome, exit code and interruption, duration, what was observed (`detail`), the output preview, the artifact holding its full output, the session and run, and timestamps. Command output is redacted before it is capped: the record keeps its head and tail (at most 8 KiB, and never more than `JJ_OUTPUT_CAP_BYTES`) and the whole output is stored as an `output` artifact when it does not fit. The events `verification.started`, `verification.checked` (the record) and `verification.finished` show the gate in the task's event log.
+
+A task view carries the checks of the latest attempt of each goal version; earlier attempts stay in the event log. Evidence of an older goal version is superseded: it is shown as such and never counts for the current version.
+
+Prefer checks that observe the work. Tests and observed effects are stronger evidence than another model agreeing.
 
 | Work                         | Appropriate evidence                                                                         |
 | ---------------------------- | -------------------------------------------------------------------------------------------- |
@@ -34,6 +55,12 @@ Prefer checks that observe the work. A command run in the task's sandbox passes 
 | Browser operation            | Observed resulting state and the operation record, not the fact that a click was dispatched. |
 | Qualitative writing/planning | An explicit rubric and attributed review, with uncertainty preserved.                        |
 
+Model-review checks (a qualitative review against a rubric, labelled as such, inconclusive when malformed or without quoted evidence), checks attached to a brief, an on-demand way to run the checks before completing, and plans dictated in direct chat are not part of the contract yet.
+
+## Showing verification
+
+`verificationSummary` derives where a task stands for its current goal version (`pending`, `passed`, `failed` or `inconclusive`, with counts and the attempt) from its plan and checks; task summaries carry it as `verification`. `isVerified` is the one rule for showing a task as verified: it completed, and every criterion of its current plan passed at the latest attempt of its current goal version. A status, a finished model turn or a passing session never counts on its own. A task without a plan is never shown as verified.
+
 ## Integrated completion
 
-For a task with a plan, the coordinator checks the combined output against the task's criteria; passing every session-level check is not sufficient if the integrated output fails. The final result reports what passed, what did not, the evidence and artifacts, and known limitations.
+For a task with a plan, the gate checks the combined output in the shared workspace; passing every session-level check is not sufficient if the integrated output fails. The final result reports what passed, what did not, the evidence and artifacts, and known limitations.

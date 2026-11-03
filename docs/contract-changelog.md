@@ -31,6 +31,44 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.3.0 — 2026-11-03 — Verification plans and checks
+
+**Changed by:** backend & frontend ([#31](https://github.com/LemonPhase/jj-bot/issues/31), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/31#issuecomment-6594684999)) · **Compatibility:** additive (one reshaped command schema; see below)
+
+- `verificationCriterionSchema` (new module `verification`) becomes a union on `method`, replacing
+  the free-text `method` and `expectedEvidence`: `command` (`command`, optional `timeoutSeconds`),
+  `file` (`path`, `expect`: `exists` | `contains` | `matches` | `json`, with `value`, `flags` or a
+  JSON `schema`) and `result` (the same assertions on the `complete_task` result). Every criterion
+  has an `id` (a slug, unique in its plan) and a `description`; `verificationPlanSchema` holds 1 to
+  `VERIFICATION_PLAN_LIMIT` (20). This is a minor change although the shape changed: every server
+  so far refused any plan with `422 VERIFICATION_UNAVAILABLE`, so no stored data or working client
+  depends on the old shape.
+- `taskSchema`: adds `verificationPlan`, the current goal version's plan or null (parsed as null
+  from events stored before it). `createTaskCommandSchema.verificationPlan` may be null.
+  `postTaskMessageCommandSchema.verificationPlan` replaces the plan (null removes it) and, like
+  `goal`, requires `observedGoalVersion`; a changed plan starts a new goal version.
+- `task.goal_changed` carries `verificationPlan` (default null), so the event log is the history of
+  goals and plans.
+- New `verificationCheckSchema`: one check's evidence (criterion, method, goal version, attempt,
+  outcome `passed` | `failed` | `inconclusive`, exit code, interruption, duration, detail, output
+  preview of at most `CHECK_OUTPUT_PREVIEW_LIMIT` bytes, artifact, session, run, timestamps). A
+  command check passes only on exit code 0 with no interruption.
+- New events: `verification.started` (goal version, attempt, criteria), `verification.checked`
+  (the check record) and `verification.finished` (outcome and counts).
+- `taskViewSchema` adds `verificationChecks` (default `[]`): the latest attempt of each goal
+  version, which `applyTaskEvent` keeps current. `taskSummarySchema` adds `verification`
+  (`verificationSummarySchema`), present exactly when the task has a plan.
+- Pure helpers: `verificationSummary` (where a task stands for its current goal version),
+  `latestAttemptChecks` and `isVerified`, the one rule for showing a task as verified.
+- `ACTIVITY_KINDS` adds `verifying`; `verification.started` sets it ("Running the verification
+  checks (n)").
+- `capabilities.verification` is true on the backend: plans are accepted and enforced.
+
+**Action required (frontend):** none beyond this release: the new-task dialog and the task header
+edit checks, the header, the Progress view and the chat task card show where they stand, and the
+demo keeps `verification: false`.
+**Action required (backend):** none beyond this release.
+
 ## 1.2.0 — 2026-11-03 — A waiting task's question in its summary
 
 **Changed by:** backend ([#81](https://github.com/LemonPhase/jj-bot/issues/81), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/81#issuecomment-6592902366)) · **Compatibility:** additive

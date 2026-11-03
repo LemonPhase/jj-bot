@@ -34,4 +34,5 @@ Each feature file starts with an H1 and one paragraph describing the user-visibl
 - [Bot chat](bot-chat.md): direct chat with one bot, and a chat request that starts a task.
 - [Tasks](tasks.md): start a task from the New task dialog, follow it to done, read its artifacts and progress, continue it.
 - [Stop a task](stop-task.md): stop a running task and prove its work stopped.
+- [Verification checks](verification.md): give a task checks, watch a failing one fixed and passed, one that cannot pass, and edit them as a new goal version.
 - [Settings](settings.md): models, runtime profiles and sandbox drivers.
