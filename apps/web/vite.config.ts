@@ -46,6 +46,9 @@ export default defineConfig(({ mode }) => {
       // which loads only when someone opens that view. What every visit
       // loads has its own, tighter budget: `npm run size` (bundleSize.ts).
       chunkSizeWarningLimit: 700,
+      // Every asset is a file of its own, never a `data:` URL, which the
+      // server's Content-Security-Policy (default-src 'self') refuses.
+      assetsInlineLimit: 0,
     },
     server: {
       port: 5173,
