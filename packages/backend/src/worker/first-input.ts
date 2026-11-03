@@ -92,9 +92,11 @@ function userSection(
     // Redacted before it is measured and clipped.
     const text = redact(entry.text);
     const header = `${entryHeader(entry, redact)}:`;
-    const size = header.length + 1 + quotedSize(text);
+    const whole = quotedSize(text);
+    const size = header.length + 1 + whole;
     if (size <= room) {
-      blocks.unshift(`${header}\n${quoteClipped(text, size)}`);
+      // It fits, so it is quoted whole.
+      blocks.unshift(`${header}\n${quoteClipped(text, whole)}`);
       room -= size + 1;
       continue;
     }
