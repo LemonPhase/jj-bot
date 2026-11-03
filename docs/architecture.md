@@ -81,7 +81,7 @@ Records are relational tables with indexed foreign keys. Every record carries an
 
 ## Direct bot chat
 
-A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, a bounded history and the chat's task tools. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited. The chat prompt gives the count of the bot's unfinished tasks and points to `list_tasks`; it does not list them.
+A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, a bounded history and the chat's task tools. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited. The chat prompt gives the count of the bot's unfinished tasks and points to `list_tasks`; it does not list them. In the history a reply sends, a past reply with a task card names that task (its id and title), as the card shows it to the user.
 
 The task tools cover only the tasks the bot takes part in (its participations); any other task id, known or not, is refused with a tool error:
 

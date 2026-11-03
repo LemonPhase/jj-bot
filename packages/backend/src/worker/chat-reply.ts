@@ -24,7 +24,17 @@ import {
   tasks,
   usage,
 } from "@jj/db";
-import { and, asc, count, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  eq,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  sql,
+} from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
@@ -110,6 +120,31 @@ async function continueWithWaiting(tx: Tx, botId: string) {
   if (!waiting) return;
   await enqueue(tx, { kind: "chat.reply", botId });
   await wakeWorkers(tx);
+}
+
+/** Titles of the tasks the history's messages link to, by id. */
+async function taskCards(exec: Executor, history: ConversationMessageRow[]) {
+  const ids = [...new Set(history.flatMap((message) => message.taskId ?? []))];
+  if (ids.length === 0) return new Map<string, string>();
+  const rows = await exec
+    .select({ id: tasks.id, title: tasks.title })
+    .from(tasks)
+    .where(inArray(tasks.id, ids));
+  return new Map(rows.map((row) => [row.id, row.title]));
+}
+
+/**
+ * A past message as the model sees it: a reply with a task card says which
+ * task, as the user sees the card under it, so a follow-up can name it.
+ */
+function withCard(
+  message: ConversationMessageRow,
+  cards: Map<string, string>,
+  redact: (text: string) => string,
+) {
+  if (message.role !== "assistant" || !message.taskId) return message.text;
+  const title = cards.get(message.taskId);
+  return `${message.text}\n\n[Task card: ${message.taskId}${title === undefined ? "" : ` ${JSON.stringify(redact(title))}`}]`;
 }
 
 /** The bot's unfinished tasks, and how many of them it coordinates. */
@@ -240,10 +275,14 @@ export async function runChatJob(
     const waitingIds = new Set(
       input.kind === "user" ? input.waiting.map((message) => message.id) : [],
     );
+    const cards = await taskCards(ctx.db, history);
     const past = [
       ...history.filter((message) => !waitingIds.has(message.id)),
       ...(input.kind === "user" ? input.waiting : []),
-    ].map((message) => ({ role: message.role, text: message.text }));
+    ].map((message) => ({
+      role: message.role,
+      text: withCard(message, cards, redact),
+    }));
     const reply = await responder.reply({
       systemPrompt: chatPrompt({
         bot,

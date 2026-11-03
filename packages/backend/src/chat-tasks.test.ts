@@ -728,8 +728,12 @@ describe("task updates in the coordinator's chat", () => {
     const answer = chat.inputs.find(
       (input) => lastInput(input) === "and next?",
     ) as ChatReplyInput;
+    // The model sees the card under a reply, as the user does.
     expect(answer.history).toEqual([
-      { role: "assistant", text: "In my words: Shipped." },
+      {
+        role: "assistant",
+        text: `In my words: Shipped.\n\n[Task card: ${task.id} "Ship it"]`,
+      },
       { role: "user", text: "and next?" },
     ]);
   });
