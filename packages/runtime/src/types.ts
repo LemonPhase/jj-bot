@@ -164,7 +164,8 @@ export interface RunHooks {
    * texts are injected as user messages before the next model call.
    * `turnEnded` is true at the boundary after a model turn that called no
    * tools, where the model ended its turn: anything returned there makes it
-   * take another, so the engine returns only input that continues a run.
+   * take another, so the engine returns nothing unless input that continues
+   * a run is waiting.
    */
   drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores output over the cap in full. Returns the artifact id. */

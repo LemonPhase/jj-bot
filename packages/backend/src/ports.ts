@@ -132,7 +132,8 @@ export interface RunHooks {
   /**
    * Undelivered inbox items, injected as user messages at the next turn
    * boundary. `turnEnded`: the model just ended its turn (a turn that called
-   * no tools), so what this returns makes it take another.
+   * no tools), so what this returns makes it take another; the engine then
+   * returns nothing unless a brief, result or steering is waiting.
    */
   drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores tool output over the cap as an `output` artifact; returns its id. */
