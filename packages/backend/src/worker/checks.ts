@@ -16,6 +16,7 @@ import {
 import { errorMessage } from "../errors";
 import type { CutEdges } from "../redact";
 import { ISOLATED_TIME_LIMIT_MS, runIsolated } from "./isolated";
+import { jsonErrorOffset } from "./json-syntax";
 
 export interface CheckRun {
   outcome: CheckOutcome;
@@ -217,6 +218,24 @@ type Assertion = Extract<VerificationCriterion, { method: "file" | "result" }>;
 const lineOf = (text: string, index: number) =>
   text.slice(0, index).split("\n").length;
 
+/** Column number (1-based) of a character offset on its line. */
+const columnOf = (text: string, index: number) =>
+  index - text.lastIndexOf("\n", index - 1);
+
+/**
+ * Why `text` is not JSON, by position only: the message of `JSON.parse`
+ * quotes the text around the error, a cut of the file that may go through
+ * a secret, which redaction cannot mask once it is cut.
+ */
+function invalidJson(text: string, subject: string): string {
+  const offset = jsonErrorOffset(text);
+  if (offset === undefined) return `${subject} is not valid JSON.`;
+  const where = `line ${lineOf(text, offset)}, column ${columnOf(text, offset)}`;
+  return offset >= text.length
+    ? `${subject} is not valid JSON: it ends early, at ${where}.`
+    : `${subject} is not valid JSON: unexpected character at ${where}.`;
+}
+
 /**
  * Checks `text` against a `contains`, `matches` or `json` assertion. A
  * regular expression and a JSON Schema run isolated (isolated.ts): one that
@@ -280,11 +299,8 @@ export async function assertText(
       let value: unknown;
       try {
         value = JSON.parse(text);
-      } catch (error) {
-        return {
-          outcome: "failed",
-          detail: `${subject} is not valid JSON: ${errorMessage(error)}`,
-        };
+      } catch {
+        return { outcome: "failed", detail: invalidJson(text, subject) };
       }
       if (!criterion.schema)
         return { outcome: "passed", detail: `${subject} is valid JSON.` };

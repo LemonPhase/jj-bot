@@ -47,10 +47,12 @@ export interface CutEdges {
 }
 
 /**
- * Returns a copy of `value` with every secret in its strings replaced. With
- * `cut`, `value` is a string that a cut ended or started: at those edges, a
- * leading piece of a secret (at `end`) or a trailing one (at `start`) of at
- * least `MIN_CUT_FRAGMENT_LENGTH` characters is replaced too.
+ * Returns a copy of `value` with every secret in its strings replaced,
+ * occurrences that overlap as one. With `cut`, `value` is a string that a
+ * cut ended or started: at those edges, a leading piece of a secret (at
+ * `end`) or a trailing one (at `start`) of at least
+ * `MIN_CUT_FRAGMENT_LENGTH` characters is replaced too, and a string cut at
+ * both that lies inside one secret is replaced whole.
  */
 export type Redactor = <Value>(value: Value, cut?: CutEdges) => Value;
 
@@ -281,6 +283,34 @@ function widenRight(
   }
 }
 
+/** The smallest period of `value`: how far apart two of its occurrences can overlap at the least. */
+function periodOf(value: string): number {
+  return value.length - (failure(value)[value.length - 1] ?? 0);
+}
+
+/**
+ * Replaces each run of overlapping `[start, end)` spans of `text` with one
+ * `REDACTED`. Spans that only touch are replaced one by one.
+ */
+function replaceSpans(text: string, spans: [number, number][]): string {
+  spans.sort((a, b) => a[0] - b[0]);
+  let out = "";
+  let kept = 0;
+  let index = 0;
+  while (index < spans.length) {
+    const [start, first] = spans[index] as [number, number];
+    let end = first;
+    for (index += 1; index < spans.length; index += 1) {
+      const [nextStart, nextEnd] = spans[index] as [number, number];
+      if (nextStart >= end) break;
+      end = Math.max(end, nextEnd);
+    }
+    out += `${text.slice(kept, start)}${REDACTED}`;
+    kept = end;
+  }
+  return out + text.slice(kept);
+}
+
 export function createRedactor(secrets: readonly Secret[]): Redactor {
   const bare = [
     ...new Set(
@@ -291,16 +321,16 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
         )
         .map((secret) => secret.value),
     ),
-  ]
-    // Longest first, so a secret containing another is replaced whole.
-    .sort((a, b) => b.length - a.length);
+  ];
   const inUrl = [
     ...new Set(
       secrets
         .filter((secret) => secret.inUrl && secret.value.length > 0)
         .map((secret) => secret.value),
     ),
-  ].sort((a, b) => b.length - a.length);
+  ]
+    // Longest first, so the pattern matches the longest password at a colon.
+    .sort((a, b) => b.length - a.length);
   const urlPattern =
     inUrl.length > 0
       ? new RegExp(`:(?:${inUrl.map(escape).join("|")})@`, "g")
@@ -320,13 +350,44 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
     });
     return patterns;
   };
+  // Built for a secret once it is found, which most never are.
+  const periods = new Int32Array(bare.length);
+  // Every occurrence is found on the raw text before any is replaced, and
+  // overlapping ones are replaced as one: replacing one secret first would
+  // leave the rest of another that overlaps it.
   const whole = (input: string) => {
-    let out = input;
-    for (const secret of bare)
-      if (out.includes(secret)) out = out.split(secret).join(REDACTED);
-    if (urlPattern && out.includes("@"))
-      out = out.replace(urlPattern, `:${REDACTED}@`);
-    return out;
+    const spans: [number, number][] = [];
+    for (let index = 0; index < bare.length; index += 1) {
+      const value = bare[index] as string;
+      let at = input.indexOf(value);
+      if (at < 0) continue;
+      periods[index] ||= periodOf(value);
+      const period = periods[index] as number;
+      // An occurrence one period on overlaps this one and adds only the
+      // value's last `period` characters: a run of them is one span, found
+      // in time linear in the run, however often the value repeats.
+      const tail = period < value.length ? value.slice(-period) : undefined;
+      while (at >= 0) {
+        let end = at + value.length;
+        if (tail) while (input.startsWith(tail, end)) end += period;
+        spans.push([at, end]);
+        // One that overlaps the last of the run less than a period.
+        at = input.indexOf(value, end - value.length + 1);
+      }
+    }
+    if (urlPattern && input.includes("@")) {
+      urlPattern.lastIndex = 0;
+      for (
+        let match = urlPattern.exec(input);
+        match;
+        match = urlPattern.exec(input)
+      ) {
+        // The password alone: the `:` and `@` around it stay.
+        spans.push([match.index + 1, match.index + match[0].length - 1]);
+        urlPattern.lastIndex = match.index + 1;
+      }
+    }
+    return spans.length > 0 ? replaceSpans(input, spans) : input;
   };
   // The spans a cut masks are found on the raw text, before anything is
   // replaced: a secret replaced first could hide the piece of another one
@@ -334,16 +395,32 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
   const text = (input: string, cut?: CutEdges) => {
     if ((!cut?.start && !cut?.end) || input.length === 0) return whole(input);
     const pieces = piecesOf();
-    // Cut at both ends inside one secret: all of it is a piece of that one.
-    if (
-      cut.start &&
-      cut.end &&
-      input.length >= MIN_CUT_FRAGMENT_LENGTH &&
-      bare.some(
-        (secret) => secret.length > input.length && secret.includes(input),
+    // Cut at both ends inside one secret, a database password included: all
+    // of it is a piece of that one. A cut through a multi-byte character at
+    // either end decodes to replacement characters, which belong to it too.
+    if (cut.start && cut.end) {
+      let from = 0;
+      let to = input.length;
+      while (
+        from < MAX_REPLACEMENTS &&
+        from < to &&
+        input.charCodeAt(from) === REPLACEMENT
       )
-    )
-      return REDACTED;
+        from += 1;
+      while (
+        input.length - to < MAX_REPLACEMENTS &&
+        to > from &&
+        input.charCodeAt(to - 1) === REPLACEMENT
+      )
+        to -= 1;
+      const inside = input.slice(from, to);
+      if (
+        inside.length >= MIN_CUT_FRAGMENT_LENGTH &&
+        (bare.some((secret) => secret.includes(inside)) ||
+          inUrl.some((password) => password.includes(inside)))
+      )
+        return REDACTED;
+    }
     const to = cut.end ? endSpan(input, pieces, inUrl) : input.length;
     const from = cut.start ? startSpan(input, pieces, inUrl) : 0;
     if (from >= to) return REDACTED;
