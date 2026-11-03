@@ -40,6 +40,9 @@ import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-option
  * section (the engine puts it there), else from its first message; the rest
  * of the system prompt is ignored. A coordinator whose goal quotes a question
  * after "ask" (ask `Which colour?`) asks it first and waits for the user.
+ * Told that its verification checks did not pass, a coordinator runs the
+ * fix its goal names after "if a check fails, fix it with" and completes again, or
+ * reports and waits for the user.
  * In chat it finds tasks by calling `list_tasks` and reading its lines
  * (`- <id> "<title>": <status> · …`), a task's outcome in `get_task`'s
  * `Result:` or `Error:` line, and answers a task update (an input that
@@ -492,6 +495,9 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
   );
   if (question && !asked) return { text: question };
 
+  const verification = verificationTurn(conversation, goal);
+  if (verification) return verification;
+
   const completion = trailing.find(
     (result) => result.toolName === "complete_task",
   );
@@ -585,6 +591,74 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
   return {
     text: "All results are in.",
     calls: [{ name: "complete_task", args: { result: summary } }],
+  };
+}
+
+/** The first line of the engine's report of a verification attempt that did not pass. */
+const VERIFICATION_REPORT = /^Verification of goal version \d+, attempt \d+:/;
+
+/**
+ * The fix a goal names for a failed check, as in if a check fails, fix it
+ * with `touch done.txt` (not "run", which a worker runs at once). A scripted coordinator told that its checks did not pass
+ * runs it and completes again; without one it reports and waits for the user.
+ */
+export function scriptedFix(goal: string): string | undefined {
+  return (
+    /\bif a check fails, fix it with `([^`\n]+)`/i.exec(goal)?.[1]?.trim() ||
+    undefined
+  );
+}
+
+const callsIn = (messages: Message[], name: string) =>
+  messages.flatMap((message) =>
+    message.role === "assistant"
+      ? message.content.filter(
+          (block): block is ToolCall =>
+            block.type === "toolCall" && block.name === name,
+        )
+      : [],
+  );
+
+/** A coordinator's answer to the engine's latest verification report, if it has not answered it yet. */
+function verificationTurn(
+  conversation: Conversation,
+  goal: string,
+): ScriptedTurn | undefined {
+  const { messages, tools } = conversation;
+  let index = messages.length - 1;
+  for (; index >= 0; index--) {
+    const message = messages[index];
+    if (
+      message?.role === "user" &&
+      VERIFICATION_REPORT.test(textOf(message.content))
+    )
+      break;
+  }
+  if (index < 0) return undefined;
+  const since = messages.slice(index + 1);
+  if (callsIn(since, "complete_task").length > 0) return undefined;
+  const report = textOf((messages[index] as Message).content);
+  const fix = scriptedFix(goal);
+  const lastAttempt = report.includes("No verification attempts are left");
+  if (fix && !lastAttempt && tools.has("bash")) {
+    if (!callsIn(since, "bash").some((call) => call.arguments.command === fix))
+      return {
+        text: "A check did not pass; fixing it.",
+        calls: [{ name: "bash", args: { command: fix } }],
+      };
+    const result = callsIn(messages, "complete_task").at(-1)?.arguments.result;
+    return {
+      text: "Fixed; checking again.",
+      calls: [
+        {
+          name: "complete_task",
+          args: { result: typeof result === "string" ? result : "Done." },
+        },
+      ],
+    };
+  }
+  return {
+    text: `The checks did not pass, so the task is not complete. ${clip(report.split("\n")[0] ?? "", 300)} What should I change?`,
   };
 }
 
