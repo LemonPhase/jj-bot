@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
@@ -16,14 +16,17 @@ import {
 } from "node:fs/promises";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 import {
   type AcquireRequest,
+  assertSpawnRequest,
   assertSpecSupported,
   assertWorkspaceKey,
   type DriverCapabilities,
   type DriverHealth,
   type ExecOptions,
   type ExecResult,
+  type OutputListener,
   resolveExecTimeoutMs,
   type Sandbox,
   SandboxCapabilityError,
@@ -31,12 +34,16 @@ import {
   type SandboxDriver,
   type SandboxFs,
   SandboxPathError,
+  type SandboxProcess,
   SandboxReleasedError,
   SandboxRequestError,
   type SandboxSpec,
   type SandboxStat,
+  type SpawnExit,
+  type SpawnOptions,
   sandboxSpecSchema,
 } from "../contract";
+import { OutputRelay, spawnShellArgs, stdinClosed } from "./spawn-support";
 
 /**
  * Host-process driver. Fast and dependency-free, for development and
@@ -74,6 +81,11 @@ import {
  * exits while it is read counts as gone. Without `/proc`
  * (macOS) only the process groups are stopped, and an interrupted command
  * reports `"unknown"`. Windows is not supported.
+ *
+ * Spawned processes (`spawn`) run like commands: their own session and
+ * process group, the marker, the same environment, and the same stop on
+ * `kill()`, abort and release. Their pipes are read only as the contract's
+ * output policy allows, so a process nobody reads blocks on its pipe.
  */
 
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
@@ -119,6 +131,9 @@ const inside = (root: string, path: string) =>
 
 /** Lexical containment: rejects `..` escapes and absolute paths outside the root. */
 function lexicalPath(root: string, candidate: string): string {
+  // No path can hold a NUL: refused like any other path outside the workspace.
+  if (typeof candidate !== "string" || candidate.includes("\0"))
+    throw new SandboxPathError(String(candidate));
   const resolved = isAbsolute(candidate)
     ? resolve(candidate)
     : resolve(root, candidate);
@@ -450,6 +465,170 @@ interface RunningCommand {
   done: Promise<unknown>;
 }
 
+/**
+ * `stopProcesses`, then, once it settles, a short drain before the child's
+ * output pipes are dropped: a descendant that escaped detection may still
+ * hold them open. Resolves whether the stop was verified; never rejects.
+ */
+function stopThenDrain(
+  target: StopTarget,
+  graceMs: number,
+  child: { stdout: Readable | null; stderr: Readable | null },
+  closed: () => boolean,
+): Promise<boolean> {
+  return stopProcesses(target, graceMs)
+    .catch(() => false)
+    .then((verified) => {
+      setTimeout(() => {
+        if (closed()) return;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, DRAIN_MS).unref();
+      return verified;
+    });
+}
+
+/** An exit code, with a signalled exit reported the way POSIX shells do (128 + n). */
+const exitStatus = (
+  code: number | null,
+  signalName: NodeJS.Signals | null,
+): number | null =>
+  code ?? (signalName ? 128 + (constants.signals[signalName] ?? 0) : null);
+
+/**
+ * A spawned process: its own session and process group, stopped like an
+ * interrupted command (SIGTERM to the group and every marked process, then
+ * SIGKILL after the grace period, verified by a `/proc` scan).
+ */
+class LocalProcess implements SandboxProcess {
+  readonly exited: Promise<SpawnExit>;
+  /** Resolves once the process runs; rejects when it could not be started. */
+  readonly started: Promise<void>;
+  private readonly relay: OutputRelay;
+  private readonly startedAt = Date.now();
+  private inputEnded = false;
+  private inputBroken = false;
+  private closed = false;
+  /** The process itself exited before any stop: later stops do not interrupt it. */
+  private exitedBySelf = false;
+  private interruptReason?: SpawnExit["interruptReason"];
+  private stopped?: Promise<boolean>;
+
+  constructor(
+    private readonly child: ChildProcessWithoutNullStreams,
+    private readonly target: StopTarget | undefined,
+    private readonly killGraceMs: number,
+    signal: AbortSignal | undefined,
+    /** Called once the process and its pipes have closed. */
+    onClosed: () => void,
+  ) {
+    const { stdin, stdout, stderr } = child;
+    this.relay = new OutputRelay({
+      pause: () => {
+        stdout.pause();
+        stderr.pause();
+      },
+      resume: () => {
+        stdout.resume();
+        stderr.resume();
+      },
+    });
+    stdout.on("data", (chunk: Buffer) => this.relay.push(chunk, "stdout"));
+    stderr.on("data", (chunk: Buffer) => this.relay.push(chunk, "stderr"));
+    // EPIPE once the process is gone; the pending write rejects with it.
+    stdin.on("error", () => {
+      this.inputBroken = true;
+    });
+
+    this.started = new Promise((started, failed) => {
+      child.once("spawn", started);
+      child.once("error", failed);
+    });
+    // Later errors (none are expected) must not crash the worker.
+    this.started.then(
+      () => child.on("error", () => {}),
+      () => {},
+    );
+
+    const onAbort = () => this.stop("abort");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    this.exited = new Promise((settle) => {
+      const finish = async (exitCode: number | null) => {
+        signal?.removeEventListener("abort", onAbort);
+        stdin.destroy();
+        const verified = this.stopped ? await this.stopped : undefined;
+        onClosed();
+        settle({
+          exitCode,
+          interrupted:
+            this.interruptReason === undefined
+              ? "no"
+              : verified
+                ? "yes"
+                : "unknown",
+          ...(this.interruptReason
+            ? { interruptReason: this.interruptReason }
+            : {}),
+          durationMs: Date.now() - this.startedAt,
+        });
+      };
+      this.started.catch(() => {
+        if (this.closed) return;
+        this.closed = true;
+        void finish(null);
+      });
+      // The process itself has ended; its output may still be draining.
+      child.once("exit", () => {
+        this.exitedBySelf = this.interruptReason === undefined;
+      });
+      child.once("close", (code, signalName) => {
+        if (this.closed) return;
+        this.closed = true;
+        void finish(exitStatus(code, signalName));
+      });
+    });
+  }
+
+  write(data: Buffer | string): Promise<void> {
+    if (this.inputEnded || this.inputBroken || this.closed)
+      return Promise.reject(stdinClosed());
+    return new Promise((written, failed) => {
+      this.child.stdin.write(data, (error) =>
+        error ? failed(error) : written(),
+      );
+    });
+  }
+
+  endInput(): void {
+    if (this.inputEnded) return;
+    this.inputEnded = true;
+    this.child.stdin.end();
+  }
+
+  onOutput(listener: OutputListener): () => void {
+    return this.relay.subscribe(listener);
+  }
+
+  kill(): Promise<SpawnExit> {
+    this.stop("kill");
+    return this.exited;
+  }
+
+  stop(reason: NonNullable<SpawnExit["interruptReason"]>): void {
+    if (this.closed || this.stopped || !this.target) return;
+    // After it exited by itself, a stop only ends what still holds its
+    // output (descendants, unread output), and its exit stays natural.
+    if (!this.exitedBySelf) this.interruptReason = reason;
+    this.relay.discardUnheard();
+    this.stopped = stopThenDrain(
+      this.target,
+      this.killGraceMs,
+      this.child,
+      () => this.closed,
+    );
+  }
+}
+
 class LocalSandbox implements Sandbox {
   readonly id = randomUUID();
   readonly driverId = "local";
@@ -529,14 +708,28 @@ class LocalSandbox implements Sandbox {
     return env;
   }
 
+  /** A contained working directory, with the workspace's `.tmp` (`TMPDIR`) in place. */
+  private async workingDirectory(cwd: string | undefined): Promise<string> {
+    const directory = cwd
+      ? await containedPath(this.workspaceDir, cwd, true)
+      : this.workspaceDir;
+    if (cwd) {
+      // Otherwise starting the shell fails as "spawn /bin/sh ENOENT".
+      const info = await stat(directory).catch(() => undefined);
+      if (!info?.isDirectory()) {
+        const error: NodeJS.ErrnoException = new Error(
+          `cwd ${cwd}: ${info ? "not a directory" : "no such directory"} in the workspace`,
+        );
+        error.code = info ? "ENOTDIR" : "ENOENT";
+        throw error;
+      }
+    }
+    await mkdir(join(this.workspaceDir, ".tmp"), { recursive: true });
+    return directory;
+  }
+
   async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
-    const cwd = await this.guard(async () => {
-      const cwd = options.cwd
-        ? await containedPath(this.workspaceDir, options.cwd, true)
-        : this.workspaceDir;
-      await mkdir(join(this.workspaceDir, ".tmp"), { recursive: true });
-      return cwd;
-    });
+    const cwd = await this.guard(() => this.workingDirectory(options.cwd));
     const timeoutMs = resolveExecTimeoutMs(this.spec.limits, options.timeoutMs);
     const budget = this.spec.limits.maxOutputBytes;
     const startedAt = Date.now();
@@ -597,9 +790,7 @@ class LocalSandbox implements Sandbox {
       child.once("error", fail);
       child.once("close", (code, signalName) => {
         closed = true;
-        if (code !== null) return settle(code);
-        // Report a signalled exit the way POSIX shells do.
-        settle(signalName ? 128 + (constants.signals[signalName] ?? 0) : null);
+        settle(exitStatus(code, signalName));
       });
     });
 
@@ -608,20 +799,12 @@ class LocalSandbox implements Sandbox {
     const stop = (reason: string) => {
       if (closed || stopped || pgid === undefined) return;
       interruptReason = reason;
-      stopped = stopProcesses(
+      stopped = stopThenDrain(
         { groups: new Set([pgid]), since, marked: (value) => value === marker },
         this.killGraceMs,
-      )
-        .catch(() => false)
-        .then((verified) => {
-          // A descendant that escaped detection may still hold the pipes open.
-          setTimeout(() => {
-            if (closed) return;
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-          }, DRAIN_MS).unref();
-          return verified;
-        });
+        child,
+        () => closed,
+      );
     };
 
     const deadline = setTimeout(() => stop("timeout"), timeoutMs);
@@ -652,6 +835,58 @@ class LocalSandbox implements Sandbox {
       options.signal?.removeEventListener("abort", onAbort);
       this.running.delete(running);
     }
+  }
+
+  async spawn(
+    argv: readonly string[],
+    options: SpawnOptions = {},
+  ): Promise<SandboxProcess> {
+    this.assertLive();
+    assertSpawnRequest(argv, options.env);
+    const cwd = await this.guard(() => this.workingDirectory(options.cwd));
+    // No await between these checks and registering the process, so neither
+    // an abort nor a release can slip in unseen.
+    this.assertLive();
+    options.signal?.throwIfAborted();
+    const marker = `${this.id}:${++this.commands}`;
+    const child = spawn(this.shell, spawnShellArgs(argv), {
+      cwd,
+      env: this.environment(marker, options.env),
+      detached: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    const pgid = child.pid;
+    // Read before any await, while the child is alive or at least unreaped.
+    const since = startTime(pgid);
+    if (pgid !== undefined) this.firstStart ??= since;
+    let running: RunningCommand | undefined;
+    const spawned = new LocalProcess(
+      child,
+      pgid === undefined
+        ? undefined
+        : {
+            groups: new Set([pgid]),
+            since,
+            marked: (value) => value === marker,
+          },
+      this.killGraceMs,
+      options.signal,
+      () => {
+        if (running) this.running.delete(running);
+        // Background processes it left keep running until release().
+        if (pgid !== undefined && !this.released && groupAlive(pgid))
+          this.track(pgid);
+      },
+    );
+    running = {
+      stop: (reason) =>
+        spawned.stop(reason as NonNullable<SpawnExit["interruptReason"]>),
+      done: spawned.exited,
+    };
+    this.running.add(running);
+    await spawned.started;
+    if (this.released) throw new SandboxReleasedError(this.id);
+    return spawned;
   }
 
   private track(pgid: number): void {
@@ -711,7 +946,7 @@ export class LocalSandboxDriver implements SandboxDriver {
     exposePort: false,
     snapshot: false,
     metrics: false,
-    spawn: false,
+    spawn: true,
   };
   private rootPromise?: Promise<string>;
 

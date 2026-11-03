@@ -224,6 +224,17 @@ export interface AttachedExec {
   destroy(): void;
 }
 
+/** An exec attached with its stdin open (`openExec`). */
+export interface OpenExec extends AttachedExec {
+  /** Writes to the command's stdin; `done` runs once the data is handed to the connection, or with the error. */
+  write(data: Buffer, done: (error?: Error | null) => void): void;
+  /** Half-closes the connection: the daemon closes the command's stdin. */
+  endInput(): void;
+  /** Stops reading output, so the daemon, then the command, are held back. */
+  pause(): void;
+  resume(): void;
+}
+
 export interface ExecOutput {
   exitCode: number | null;
   stdout: Buffer;
@@ -403,6 +414,63 @@ export class DockerEngine {
     onOutput: (stream: "stdout" | "stderr", chunk: Buffer) => void,
     stdin?: Buffer,
   ): Promise<AttachedExec> {
+    const attached = await this.attachExec(
+      execId,
+      onOutput,
+      stdin !== undefined,
+    );
+    if (stdin !== undefined && attached.socket) {
+      // Half-close: the daemon closes the command's stdin on end-of-file.
+      if (stdin.length > 0) attached.socket.write(stdin);
+      attached.socket.end();
+    }
+    return { ended: attached.ended, destroy: () => attached.stream.destroy() };
+  }
+
+  /**
+   * Starts an exec created with `AttachStdin` and keeps its stdin open on
+   * the hijacked connection, for a long-lived process. Output is
+   * demultiplexed into `onOutput` as it is read.
+   */
+  async openExec(
+    execId: string,
+    onOutput: (stream: "stdout" | "stderr", chunk: Buffer) => void,
+  ): Promise<OpenExec> {
+    const { socket, ended } = await this.attachExec(execId, onOutput, true);
+    if (!socket)
+      throw new Error("Docker daemon did not upgrade the exec connection");
+    return {
+      ended,
+      destroy: () => socket.destroy(),
+      write: (data, done) => {
+        socket.write(data, done);
+      },
+      endInput: () => {
+        socket.end();
+      },
+      pause: () => {
+        socket.pause();
+      },
+      resume: () => {
+        socket.resume();
+      },
+    };
+  }
+
+  /**
+   * Starts an exec and attaches to its output. With `needsUpgrade` only a
+   * hijacked connection (`socket`), which can carry stdin, is accepted;
+   * otherwise a plain streamed response is too.
+   */
+  private async attachExec(
+    execId: string,
+    onOutput: (stream: "stdout" | "stderr", chunk: Buffer) => void,
+    needsUpgrade: boolean,
+  ): Promise<{
+    stream: Socket | IncomingMessage;
+    socket?: Socket;
+    ended: Promise<void>;
+  }> {
     const fullPath = await this.path(
       `/exec/${encodeURIComponent(execId)}/start`,
       {},
@@ -428,7 +496,11 @@ export class DockerEngine {
       req.setTimeout(REQUEST_TIMEOUT_MS, () =>
         req.destroy(new Error("Docker API exec start timed out")),
       );
-      const attach = (stream: Socket | IncomingMessage, head?: Buffer) => {
+      const attach = (
+        stream: Socket | IncomingMessage,
+        upgraded?: Socket,
+        head?: Buffer,
+      ) => {
         // A command may stay silent for longer than any request timeout.
         req.setTimeout(0);
         const socket = "socket" in stream ? stream.socket : stream;
@@ -438,20 +510,18 @@ export class DockerEngine {
           stream.on("data", (chunk: Buffer) => demuxer.push(chunk));
           stream.once("end", done);
           stream.once("close", done);
-          stream.once("error", () => done());
+          // `on`, not `once`: a write after the daemon closed fails again.
+          stream.on("error", () => done());
         });
-        resolve({ ended, destroy: () => stream.destroy() });
+        resolve({ stream, socket: upgraded, ended });
       };
-      req.once("upgrade", (_response, socket, head) => {
-        attach(socket, head);
-        if (stdin === undefined) return;
-        // Half-close: the daemon closes the command's stdin on end-of-file.
-        if (stdin.length > 0) socket.write(stdin);
-        socket.end();
-      });
+      req.once("upgrade", (_response, socket, head) =>
+        attach(socket, socket, head),
+      );
       req.once("response", (response) => {
         const status = response.statusCode ?? 0;
-        if (status >= 200 && status < 300 && !stdin) return attach(response);
+        if (status >= 200 && status < 300 && !needsUpgrade)
+          return attach(response);
         readBody(response).then(
           (body) =>
             reject(
