@@ -2,9 +2,10 @@
 // their browser. Applied to every `/api/*` request (the JSON check after auth):
 //
 // - `Sec-Fetch-Site: cross-site` is refused (403).
-// - Without API_TOKEN, only loopback `Host` values (`localhost`, `127.0.0.1`,
-//   `[::1]`, any port) and API_ALLOWED_HOSTS pass (403 otherwise). A page that
-//   rebinds its own name to 127.0.0.1 still sends that name as `Host`.
+// - Without a token, only loopback `Host` values (`localhost`, `127.0.0.1`,
+//   `[::1]`, any port) and `allowedHosts` pass (403 otherwise). A page that
+//   rebinds its own name to 127.0.0.1 still sends that name as `Host`. The
+//   server refuses to start with API_ALLOWED_HOSTS and no token (config.ts).
 // - POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise).
 //   A cross-origin JSON request needs a CORS preflight, and the API sends no
 //   CORS headers, so the browser never sends it.
@@ -78,7 +79,7 @@ export function originGuard(options: GuardOptions): MiddlewareHandler {
           c,
           403,
           "UNAUTHORIZED",
-          `Host "${host}" is not allowed. Without API_TOKEN the API answers only loopback hosts (localhost, 127.0.0.1, [::1]); add the name clients use to API_ALLOWED_HOSTS, or set API_TOKEN.`,
+          `Host "${host}" is not allowed. Without a token the API answers only loopback hosts (localhost, 127.0.0.1, [::1]); to reach it under another name, such as through a reverse proxy, set API_TOKEN.`,
         );
     }
     await next();

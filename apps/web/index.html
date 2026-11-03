@@ -13,6 +13,13 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
+      // Runs before the app's modules. Zod (the contract schemas) would probe
+      // whether it may compile parsers with `new Function`: the server's
+      // Content-Security-Policy forbids eval, and the probe is reported as a
+      // violation even though Zod catches it. jitless skips the probe, and
+      // parsing is the same. The CSP allows this script by its hash
+      // (apps/api/src/headers.ts), so a change here changes that too.
+      window.__zod_globalConfig = { jitless: true };
       // Applies the saved theme before the first paint, so it never flashes.
       // Keep the key and colours in sync with src/lib/theme.ts (tested there),
       // which owns the attribute once the app loads. No saved choice: CSS
