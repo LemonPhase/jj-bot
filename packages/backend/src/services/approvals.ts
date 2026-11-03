@@ -26,7 +26,7 @@ import {
   type Tx,
   tasks,
 } from "@jj/db";
-import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
@@ -419,7 +419,10 @@ export async function expireApprovals(
 
 /**
  * A session finished (stopped, failed or completed): its pending approval,
- * or an approved call that has not started, is cancelled and never runs.
+ * or an approved call that has not started, is cancelled and never runs. An
+ * approved call a run started and never reported (that run stopped before
+ * its result was stored) gets an unknown outcome: it may have run, and no
+ * run is left to say.
  */
 export async function cancelApprovals(
   tx: Tx,
@@ -449,6 +452,28 @@ export async function cancelApprovals(
         status: "cancelled",
         reason,
         decidedAt: current.decidedAt ?? ctx.clock(),
+        resolvedAt: ctx.clock(),
+      },
+      { ...attributionOf(current), ...attribution },
+    );
+  const started = await tx
+    .select()
+    .from(approvals)
+    .where(
+      and(
+        eq(approvals.sessionId, session.id),
+        eq(approvals.status, "approved"),
+        isNotNull(approvals.startedAt),
+        isNull(approvals.resolvedAt),
+      ),
+    );
+  const unknown: ApprovalOutcome = { ok: false, interrupted: "unknown" };
+  for (const current of started)
+    await updateApproval(
+      tx,
+      current,
+      {
+        outcome: unknown as unknown as JsonObject,
         resolvedAt: ctx.clock(),
       },
       { ...attributionOf(current), ...attribution },

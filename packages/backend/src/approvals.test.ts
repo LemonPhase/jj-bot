@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Approval, TaskView } from "@jj/contracts";
-import { approvals, chatTaskUpdates } from "@jj/db";
+import { approvals, chatTaskUpdates, jobs } from "@jj/db";
 import {
   INTERRUPTED_BY_RESTART,
   ModelRegistry,
@@ -21,7 +21,7 @@ import {
   say,
   textOf,
 } from "@jj/runtime/testing";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DomainError } from "./errors";
 import { isOvertaken } from "./services/task-updates";
@@ -292,6 +292,60 @@ describe("approvals", () => {
       ok: false,
       interrupted: "unknown",
     });
+  });
+
+  /** A call approved and claimed by a run that died before its result was stored. */
+  async function startedThenLost(root: string) {
+    const first = await start(root, [callTool("bash", { command: PUSH })]);
+    const { task, approval } = await heldTask(first.engine);
+    await first.dispose();
+    engines.splice(engines.indexOf(first), 1);
+    const second = await start(root, [], { start: false });
+    await second.engine.tasks.decideApproval(task.id, approval.id, {
+      decision: "approve",
+    });
+    await db.database.db
+      .update(approvals)
+      .set({ startedAt: new Date(), startedRunId: "run_lost" })
+      .where(eq(approvals.id, approval.id));
+    return { engine: second, task, approval };
+  }
+
+  it("gives a started call an unknown outcome when the task is stopped before it reported", async () => {
+    const root = await workspace();
+    const { engine, task, approval } = await startedThenLost(root);
+    await engine.engine.tasks.stop(task.id);
+    const view = await engine.engine.tasks.get(task.id);
+    expect(view.approvals.find((a) => a.id === approval.id)).toMatchObject({
+      status: "approved",
+      outcome: { ok: false, interrupted: "unknown" },
+    });
+  });
+
+  it("gives a started call an unknown outcome when its session is given up", async () => {
+    const root = await workspace();
+    const { engine, task, approval } = await startedThenLost(root);
+    // Its last allowed attempt expired: the next claim gives the session up.
+    await db.database.db
+      .update(jobs)
+      .set({
+        status: "running",
+        leaseOwner: "worker_gone",
+        attempts: sql`${jobs.maxAttempts}`,
+        leaseUntil: sql`now() - interval '1 second'`,
+      })
+      .where(and(eq(jobs.taskId, task.id), inArray(jobs.status, ["queued"])));
+    await engine.engine.worker.start();
+    const view = await untilTask(
+      engine.engine,
+      task.id,
+      (v) => v.task.status === "failed",
+    );
+    expect(view.approvals.find((a) => a.id === approval.id)).toMatchObject({
+      status: "approved",
+      outcome: { ok: false, interrupted: "unknown" },
+    });
+    expect(await pushes(root, task.id)).toBe(0);
   });
 
   it("returns a denial to the model as a tool error carrying the reason", async () => {
