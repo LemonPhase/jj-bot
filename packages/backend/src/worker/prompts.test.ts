@@ -86,6 +86,30 @@ describe("prompts", () => {
     );
   });
 
+  it("tell the coordinator to settle shared decisions in the briefs, and a worker to keep to them", () => {
+    expect(coordinator).toContain(
+      "- Shared decisions: when pieces share something (an interface such as a function's exact name and signature, a naming or style convention, a data format), decide it yourself before delegating and state it in every affected brief, alongside the files that worker owns. Do not leave workers to agree it between themselves or to report what they chose; inside its own piece, each worker decides.",
+    );
+    expect(worker).toContain(
+      "- Keep to the shared decisions in your brief (interfaces, conventions, data formats); inside your piece, you decide. If a shared decision needs to change, say so in your report, or `message` Ada.",
+    );
+    // Nothing important may exist only as a message.
+    expect(worker).toContain(
+      "- Anything a teammate or Ada must know goes into your report or a file you own, not only into a `message`.",
+    );
+    const solo = sessionPrompt({
+      bot: { name: "Ada", role: "", instructions: "" },
+      memory: "",
+      role: "coordinator",
+      goal: "Write a report",
+      goalVersion: 1,
+      roster: [{ name: "Ada", role: "", self: true }],
+      workspaceDir: "/workspace",
+      canDelegate: false,
+    });
+    expect(solo).not.toContain("Shared decisions");
+  });
+
   it("tell the coordinator not to delegate assigned work again", () => {
     expect(coordinator).toContain(
       "Never delegate work that is already assigned (each `delegate` result and each result you receive lists your open delegations)",
