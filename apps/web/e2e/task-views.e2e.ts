@@ -36,9 +36,10 @@ test("starts a task and shows it in Progress, Graph and Office 2D", async ({
       name: step,
     }),
   ).toBeVisible();
-  await expect(
-    progress.getByRole("link", { name: "Download facts.txt" }),
-  ).toBeVisible();
+  const download = progress.getByRole("link", { name: "Download facts.txt" });
+  await expect(download).toBeVisible();
+  const file = await request.get((await download.getAttribute("href")) ?? "");
+  expect(await file.text()).toBe("penguins\n");
 
   // Graph: the coordinator and its session.
   await views.getByRole("tab", { name: "Graph" }).click();
@@ -68,4 +69,6 @@ test("starts a task and shows it in Progress, Graph and Office 2D", async ({
   await expect(
     office.getByRole("list", { name: "Desks" }).getByRole("listitem"),
   ).toHaveText(["Nova: done"]);
+  // That list is for screen readers; on screen, Nova stands in the office.
+  await expect(office.getByText("Nova", { exact: true })).toBeVisible();
 });

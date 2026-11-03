@@ -22,6 +22,9 @@ test("direct chat starts a task, posts its update, and a follow-up continues the
   // The reply and the update each carry the task's card, showing it done.
   await expect(cards).toHaveCount(2);
   await expect(cards.first()).toHaveAccessibleName(`Task: ${title} done · v1`);
+  // The name is set apart from what the card shows; check what a user sees too.
+  await expect(cards.first()).toContainText(title);
+  await expect(cards.first()).toContainText("done · v1");
   const href = await cards.first().getAttribute("href");
   expect(href).toMatch(/^#\/tasks\/task_\w+$/);
 

@@ -21,6 +21,9 @@ export default defineConfig({
   retries: 0,
   // A test includes starting and stopping its instance.
   timeout: 90_000,
+  // On CI a hung run fails here, before the job's 10-minute limit, so the
+  // job still uploads the evidence.
+  globalTimeout: ci ? 8 * 60_000 : 0,
   expect: { timeout: 15_000 },
   reporter: ci
     ? [

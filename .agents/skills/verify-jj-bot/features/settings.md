@@ -30,5 +30,5 @@ Preconditions:
 
 - Provider counts reflect the cleared environment of a verification instance, not your `.env`.
 - Deleting a profile asks for confirmation in a dialog titled `Delete <profile name>?`, confirmed with `Delete profile`.
-- A profile's `Edit` replaces the list with the region `Edit <profile name>`: the textboxes `Name` and `Description`, the sandbox fields, the spinbuttons `Max turns per run` and `Max minutes per run`, and `Save changes`, disabled (with the status `No changes to save.`) until a field changes. Saving returns to the list.
+- A profile's `Edit` replaces the list with the region `Edit <profile name>`: the textboxes `Name` and `Description`, the sandbox fields, the spinbuttons `Max turns per run`, `Max minutes per run`, `Spend cap per task (USD)` and `Spend cap per bot per day (USD)` (empty for no cap), and `Save changes`, disabled (with the status `No changes to save.`) until a field changes. Saving returns to the list.
 - `New profile` and the delete flow haven't been driven yet: take a snapshot before writing assertions against them.
