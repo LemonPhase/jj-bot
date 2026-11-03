@@ -38,10 +38,12 @@ export const test = base.extend<{ instance: Instance }>({
     try {
       await use({ url, run });
     } finally {
+      // stop.sh copies the server log into evidence/ and removes the data.
       await exec(join(scripts, "stop.sh"), [run]);
-      if (testInfo.status !== testInfo.expectedStatus)
+      const log = join(run, "evidence", "server.log");
+      if (testInfo.status !== testInfo.expectedStatus && existsSync(log))
         await testInfo.attach("server.log", {
-          path: join(run, "evidence", "server.log"),
+          path: log,
           contentType: "text/plain",
         });
     }
