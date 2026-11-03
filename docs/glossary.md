@@ -32,7 +32,7 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inbox**        | A session's queue of incoming items. Each item is added to the session's transcript at its next turn boundary, or when it next runs.                                         |
 | **Inbox item**   | One of four kinds: a **brief**, a **result**, **steering** or a **message**.                                                                                                 |
-| **Brief**        | The assignment a child session starts from, written by the session that delegated it. It is the child's first input.                                                         |
+| **Brief**        | The assignment a child session starts from, written by the session that delegated it. The child starts on it, with an index of the task log and the user's messages.         |
 | **Report**       | A worker's final reply when it finishes its piece. It is delivered to its parent session as a **result**.                                                                    |
 | **Steering**     | A user message in a task. It goes to the coordinator only.                                                                                                                   |
 | **Message**      | Text one bot sends to a teammate, or to every active session in the task, with the `message` tool.                                                                           |
