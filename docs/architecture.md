@@ -6,7 +6,7 @@ The design contract for JJ Bot: components, boundaries, records and invariants. 
 
 | Component | Responsibility                                                                                                                                                  |
 | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web app   | Bot chat, task group chat, execution graph, steering and stop, settings. Renders server state and never runs agent loops.                                       |
+| Web app   | Bot chat, task group chat, execution graph, steering and stop, settings. Renders server state and never runs agent loops. Its service worker keeps no API data. |
 | API       | Validates commands, owns product records and message routing, persists events, streams task events.                                                             |
 | Worker    | Claims durable jobs, runs execution sessions and chat replies on the pi agent runtime, maps runtime activity to task events, enforces budgets and cancellation. |
 | Database  | PostgreSQL, or embedded PGlite for a single process: domain records, the job queue and the append-only task event log.                                          |
