@@ -211,6 +211,36 @@ describe("ModelRegistry", () => {
     });
   });
 
+  it("says why JJ_DEFAULT_MODEL is not used, and what is used instead", () => {
+    const warning = (env: Record<string, string>) =>
+      new ModelRegistry({ env }).defaultModelWarning();
+    // A model pi's catalog no longer lists.
+    expect(
+      warning({
+        OPENAI_API_KEY: "sk",
+        MISTRAL_API_KEY: "sk",
+        JJ_DEFAULT_MODEL: "mistral/mistral-nemo",
+      }),
+    ).toBe(
+      'JJ_DEFAULT_MODEL "mistral/mistral-nemo" is not used: Unknown model "mistral/mistral-nemo". Bots without a model use openai/gpt-6-luna instead.',
+    );
+    expect(
+      warning({
+        OPENAI_API_KEY: "sk",
+        JJ_DEFAULT_MODEL: "anthropic/claude-sonnet-5-5",
+      }),
+    ).toMatch(
+      /^JJ_DEFAULT_MODEL "anthropic\/claude-sonnet-5-5" is not used: Provider .+ is not configured: .+ Bots without a model use openai\/gpt-6-luna instead\.$/,
+    );
+    expect(warning({ JJ_DEFAULT_MODEL: "no-slash" })).toBe(
+      'JJ_DEFAULT_MODEL "no-slash" is not used: "no-slash" is not a provider/model reference. Bots without a model cannot run until a provider is configured.',
+    );
+    expect(
+      warning({ OPENAI_API_KEY: "sk", JJ_DEFAULT_MODEL: "openai/gpt-6-luna" }),
+    ).toBeUndefined();
+    expect(warning({ OPENAI_API_KEY: "sk" })).toBeUndefined();
+  });
+
   it("hides the scripted test model unless it is enabled", () => {
     const plain = new ModelRegistry({ env: {} });
     expect(
