@@ -6,8 +6,8 @@
 // sandbox. Either way it creates three bots, creates a task with all three,
 // follows its SSE stream until it completes, checks that two workers ran in
 // parallel and that the artifacts download intact, and stops a second task.
-// Then it chats with a fourth bot: a work request creates a task, the bot
-// tells its result in the chat, answers how it went, and a follow-up
+// Then it chats with another bot: a request for a file creates a task, the
+// bot tells its result in the chat, answers how it went, and a follow-up
 // continues the same task.
 //
 // JJ_SMOKE_RESTART_COMMAND (with JJ_SMOKE_BASE_URL) adds restart survival: a
@@ -555,10 +555,10 @@ interface ChatMessage {
 }
 
 /**
- * Direct chat with a bot of its own: a work request creates one task, the bot
- * tells the user when it completes (an update with the task's card), answers
- * "how did it go?", and a follow-up continues the same task (reopened, same
- * coordinator session). On a real model only the structure is checked.
+ * Direct chat with a bot of its own: a request for a file creates one task,
+ * the bot tells the user when it completes (an update with the task's card),
+ * answers "how did it go?", and a follow-up continues the same task (reopened,
+ * same coordinator session). On a real model only the structure is checked.
  */
 async function directChat(options: {
   expectStatus: ExpectStatus;
@@ -617,9 +617,11 @@ async function directChat(options: {
   };
 
   const taskId = await step(
-    "direct chat: a work request creates one task",
+    "direct chat: a request for a file creates one task",
     async () => {
-      await say("Please write a short note about penguins.");
+      // A task is for work that needs commands or files (the chat prompt);
+      // a real model writes a plain note in the chat itself, without one.
+      await say("Please write a short note about penguins in penguins.md.");
       const messages = await replies(1);
       const taskId = messages.find((m) => m.role === "assistant")?.taskId;
       check(taskId, "the reply links no task");
