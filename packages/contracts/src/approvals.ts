@@ -171,21 +171,25 @@ export function approvalRuleMatches(
   tool: string,
   args: Record<string, unknown>,
 ): boolean {
-  if (rule.tool !== tool) return false;
-  if (rule.match === undefined) return true;
-  return inOrder(
-    collapse(approvalSubject(tool, args)),
-    collapse(rule.match).split("*"),
-  );
+  return matchingApprovalRule([rule], tool, args) !== undefined;
 }
 
-/** The first rule that asks for approval of this call, if any. */
+/**
+ * The first rule that asks for approval of this call, if any. The call's
+ * subject is collapsed once, however many rules are checked.
+ */
 export function matchingApprovalRule(
   rules: readonly ApprovalRule[],
   tool: string,
   args: Record<string, unknown>,
 ): ApprovalRule | undefined {
-  return rules.find((rule) => approvalRuleMatches(rule, tool, args));
+  let subject: string | undefined;
+  return rules.find((rule) => {
+    if (rule.tool !== tool) return false;
+    if (rule.match === undefined) return true;
+    subject ??= collapse(approvalSubject(tool, args));
+    return inOrder(subject, collapse(rule.match).split("*"));
+  });
 }
 
 /** A rule on one line: "bash calls matching `git push*`", "every write call". */

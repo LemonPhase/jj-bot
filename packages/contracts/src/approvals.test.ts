@@ -126,6 +126,17 @@ describe("approval rules", () => {
     expect(performance.now() - started).toBeLessThan(250);
   });
 
+  it("collapses a long command once, however many rules it checks", () => {
+    const command = "x ".repeat(512 * 1024);
+    const rules = Array.from({ length: 50 }, (_, index) => ({
+      tool: "bash" as const,
+      match: `rule${index}*push`,
+    }));
+    const started = performance.now();
+    expect(matchingApprovalRule(rules, "bash", bash(command))).toBe(undefined);
+    expect(performance.now() - started).toBeLessThan(1_500);
+  });
+
   it("matches every call of its tool without a match, and no other tool", () => {
     expect(approvalRuleMatches({ tool: "write" }, "write", { path: "a" })).toBe(
       true,
