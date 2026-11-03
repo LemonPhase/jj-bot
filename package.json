@@ -33,5 +33,10 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "5.0.5"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent@1.4.0": {
+      "undici": "8.12.2"
+    }
   }
 }
