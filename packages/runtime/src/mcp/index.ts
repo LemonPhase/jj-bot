@@ -49,7 +49,6 @@ export {
 } from "./remote";
 export { mcpToolHash, sanitizeTools } from "./sanitize";
 export {
-  type SandboxProcessLike,
   SandboxStdioTransport,
   type SandboxStdioTransportOptions,
 } from "./stdio";

@@ -9,9 +9,7 @@ import type {
   McpTransport,
   Tool,
 } from "@earendil-works/pi-mcp";
-import type { Interrupted } from "@jj/sandbox";
-import type { McpProcessExit } from "./errors";
-import type { SandboxProcessLike } from "./stdio";
+import type { Interrupted, SandboxProcess, SpawnExit } from "@jj/sandbox";
 
 export interface ScriptedCallContext {
   /** Aborted when the client sends `notifications/cancelled` for this call. */
@@ -203,7 +201,7 @@ export class ScriptedMcpServer {
  * A sandbox process in memory: stdin lines go to a scripted server (or a
  * handler), and the test writes stdout and stderr and decides when it exits.
  */
-export class FakeSandboxProcess implements SandboxProcessLike {
+export class FakeSandboxProcess implements SandboxProcess {
   readonly stdin: string[] = [];
   inputEnded = false;
   killed = false;
@@ -213,9 +211,10 @@ export class FakeSandboxProcess implements SandboxProcessLike {
     (chunk: Buffer, stream: "stdout" | "stderr") => void
   >();
   private buffered = "";
-  private settle!: (exit: McpProcessExit) => void;
+  private settle!: (exit: SpawnExit) => void;
+  private readonly startedAt = Date.now();
   private done = false;
-  readonly exited: Promise<McpProcessExit>;
+  readonly exited: Promise<SpawnExit>;
 
   constructor(
     private readonly server?: ScriptedMcpServer,
@@ -255,7 +254,7 @@ export class FakeSandboxProcess implements SandboxProcessLike {
     return () => this.listeners.delete(listener);
   }
 
-  async kill(): Promise<McpProcessExit> {
+  async kill(): Promise<SpawnExit> {
     this.killed = true;
     this.exit(null, "yes", "kill");
     return this.exited;
@@ -276,7 +275,7 @@ export class FakeSandboxProcess implements SandboxProcessLike {
   exit(
     exitCode: number | null,
     interrupted: Interrupted = "no",
-    interruptReason?: string,
+    interruptReason?: SpawnExit["interruptReason"],
   ): void {
     if (this.done) return;
     this.done = true;
@@ -284,6 +283,7 @@ export class FakeSandboxProcess implements SandboxProcessLike {
       exitCode,
       interrupted,
       ...(interruptReason ? { interruptReason } : {}),
+      durationMs: Date.now() - this.startedAt,
     });
   }
 }

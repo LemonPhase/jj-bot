@@ -9,6 +9,7 @@ import {
   type McpTransportSendOptions,
   parseJsonRpcMessage,
 } from "@earendil-works/pi-mcp";
+import type { SandboxProcess } from "@jj/sandbox";
 import {
   MCP_MAX_MESSAGE_BYTES,
   MCP_STDERR_RING_BYTES,
@@ -17,31 +18,13 @@ import {
   type McpTransportDiagnostics,
 } from "./errors";
 
-/**
- * A process a sandbox runs with streamed stdin, stdout and stderr: what this
- * transport uses of the sandbox contract's `SandboxProcess`
- * (`Sandbox.spawn`), which a stdio MCP server runs as, so a `SandboxProcess`
- * is one.
- */
-export interface SandboxProcessLike {
-  /** Writes to stdin; rejects once the process exited. */
-  write(data: Buffer | string): Promise<void>;
-  /** Closes stdin. */
-  endInput(): void;
-  onOutput(
-    listener: (chunk: Buffer, stream: "stdout" | "stderr") => void,
-  ): () => void;
-  readonly exited: Promise<McpProcessExit>;
-  /** Stops the process and what it started; resolves with how it ended. */
-  kill(): Promise<McpProcessExit>;
-}
-
 export interface SandboxStdioTransportOptions {
   /**
-   * Starts the server's process in the sandbox (`sandbox.spawn(argv, …)`).
-   * `signal` is aborted when the transport closes before it started.
+   * Starts the server's process in the sandbox:
+   * `sandbox.spawn(argv, { cwd, env, signal })`. `signal` is aborted when
+   * the transport closes before it started.
    */
-  launch(signal: AbortSignal): Promise<SandboxProcessLike>;
+  launch(signal: AbortSignal): Promise<SandboxProcess>;
   /** Largest message either way, in bytes of its line; default 4 MiB. */
   maxMessageBytes?: number;
   /** stderr bytes kept, the latest ones; default 16 KiB. */
@@ -81,7 +64,7 @@ export class SandboxStdioTransport
   private readonly errorListeners = new Set<McpTransportErrorListener>();
   private readonly closeListeners = new Set<McpTransportCloseListener>();
   private readonly launching = new AbortController();
-  private process: SandboxProcessLike | undefined;
+  private process: SandboxProcess | undefined;
   private unsubscribe: (() => void) | undefined;
   private started = false;
   private closed = false;
@@ -186,7 +169,9 @@ export class SandboxStdioTransport
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.launching.abort(new Error("MCP transport closed"));
+    // Only a launch still under way: aborting a spawn's signal later kills
+    // the process, and a running server is first given its stdin's end.
+    if (!this.process) this.launching.abort(new Error("MCP transport closed"));
     const process = this.process;
     if (process && !this.exitValue) {
       // As the spec asks: close stdin, give it a moment to exit, then kill it.
