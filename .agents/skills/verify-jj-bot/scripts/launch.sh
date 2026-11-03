@@ -55,6 +55,20 @@ git -C "$repo" status --porcelain -- . ':!.agents' ':!.claude' >"$run/dirty"
 echo "$driver" >"$run/driver"
 
 cd "$repo"
+# A launch that fails after the server started tears it down, so a failed
+# attempt never strands a detached process; the run dir keeps the logs.
+give_up() {
+  echo "launch.sh: $1, see $run/server.log" >&2
+  tail -20 "$run/server.log" >&2
+  "$(dirname "$0")/stop.sh" "$run" >&2 || true
+  exit 1
+}
+
+# The server gets a process group of its own (below), so an interrupt or a
+# hangup sent to this script's group, such as Ctrl-C in a terminal or in a
+# test runner, never reaches it: tear it down before exiting instead.
+trap 'trap - HUP INT TERM; give_up "interrupted"' HUP INT TERM
+
 # Job control gives the server a process group of its own (pgid = pid), so
 # stop.sh can signal exactly that group; nohup keeps it alive when this shell
 # exits. nohup and env exec, so $! is the node process. The trailing
@@ -70,15 +84,6 @@ nohup env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=product
   node --import tsx apps/api/src/index.ts "--jj-verify-run=$run/" >"$run/server.log" 2>&1 &
 echo $! >"$run/pid"
 set +m
-
-# A launch that fails after the server started tears it down, so a failed
-# attempt never strands a detached process; the run dir keeps the logs.
-give_up() {
-  echo "launch.sh: $1, see $run/server.log" >&2
-  tail -20 "$run/server.log" >&2
-  "$(dirname "$0")/stop.sh" "$run" >&2 || true
-  exit 1
-}
 
 # Ready means the readiness checks pass (database, migrations, worker, drivers),
 # not just that a port answers.
