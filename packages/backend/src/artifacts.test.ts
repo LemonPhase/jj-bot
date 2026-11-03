@@ -641,7 +641,6 @@ describe("artifacts of runs that ended without a snapshot", () => {
       task.id,
       completed,
       "the recovered task",
-      20_000,
     );
     const [crashed, recovered] = await runRows(task.id);
     expect([crashed, recovered].map(runSummary)).toEqual([
