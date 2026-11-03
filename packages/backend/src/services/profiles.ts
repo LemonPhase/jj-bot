@@ -5,7 +5,6 @@ import {
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   createRuntimeProfileCommandSchema,
-  type ModelsView,
   profileBudgetsSchema,
   type RuntimeProfile,
   type RuntimeProfileStatus,
@@ -19,9 +18,10 @@ import {
   type Executor,
   type RuntimeProfileRow,
   runtimeProfiles,
+  secrets,
   type Tx,
 } from "@jj/db";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
@@ -107,6 +107,48 @@ export async function getProfile(
   return { profile: profile as RuntimeProfile };
 }
 
+/**
+ * Granted secrets must be stored sandbox secrets, and a variable comes from
+ * one place: a grant may not share its name with a `sandbox.env` entry. The
+ * newly granted secrets' rows are locked for the transaction.
+ */
+async function checkGrants(
+  ctx: EngineContext,
+  tx: Tx,
+  grants: readonly string[],
+  sandbox: SandboxSpec,
+  added: readonly string[] = grants,
+): Promise<void> {
+  const clashes = grants.filter((name) => Object.hasOwn(sandbox.env, name));
+  if (clashes.length > 0)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      `secrets: ${clashes.join(", ")} ${clashes.length === 1 ? "is" : "are"} also set in sandbox.env; a variable comes from one place only.`,
+    );
+  if (added.length === 0) return;
+  const stored = await tx
+    .select({ name: secrets.name })
+    .from(secrets)
+    .where(
+      and(
+        eq(secrets.ownerId, ctx.secretStore.owner),
+        eq(secrets.kind, "sandbox"),
+        inArray(secrets.name, [...added]),
+      ),
+    )
+    // Held until this transaction ends, so a concurrent removal waits and
+    // then finds (and drops) the new grant instead of missing it.
+    .for("share");
+  const missing = added.filter(
+    (name) => !stored.some((row) => row.name === name),
+  );
+  if (missing.length > 0)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      `secrets: no sandbox secret named ${missing.join(", ")} is stored. Add it in Settings → Secrets first.`,
+    );
+}
+
 async function clearDefault(tx: Tx, except: string) {
   await tx
     .update(runtimeProfiles)
@@ -125,6 +167,7 @@ export async function createProfile(
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
   const row = await ctx.db.transaction(async (tx) => {
+    await checkGrants(ctx, tx, command.secrets ?? [], sandbox);
     if (command.isDefault) await clearDefault(tx, id);
     const [inserted] = await tx
       .insert(runtimeProfiles)
@@ -135,6 +178,7 @@ export async function createProfile(
         sandbox,
         tools: command.tools ?? [...CODING_TOOLS],
         budgets: command.budgets ?? profileBudgetsSchema.parse({}),
+        secrets: command.secrets ?? [],
         isDefault: command.isDefault ?? false,
         createdAt: now,
         updatedAt: now,
@@ -190,7 +234,16 @@ export async function updateProfile(
   const sandbox = command.sandbox
     ? validateSpec(ctx, mergeSpec(settings.sandbox, command.sandbox))
     : settings.sandbox;
+  const grants = command.secrets ?? settings.secrets;
   const row = await ctx.db.transaction(async (tx) => {
+    if (command.secrets !== undefined || command.sandbox)
+      await checkGrants(
+        ctx,
+        tx,
+        grants,
+        sandbox,
+        grants.filter((name) => !settings.secrets.includes(name)),
+      );
     if (command.isDefault) await clearDefault(tx, id);
     const [updated] = await tx
       .update(runtimeProfiles)
@@ -200,6 +253,7 @@ export async function updateProfile(
           ? { description: command.description }
           : {}),
         ...(command.tools !== undefined ? { tools: command.tools } : {}),
+        ...(command.secrets !== undefined ? { secrets: command.secrets } : {}),
         ...(command.isDefault !== undefined
           ? { isDefault: command.isDefault }
           : {}),
@@ -323,8 +377,4 @@ export async function seedDefaultProfiles(ctx: EngineContext): Promise<void> {
     }
     await hint(tx, { type: "profiles.changed" });
   });
-}
-
-export function modelsView(ctx: EngineContext): ModelsView {
-  return ctx.models.view();
 }

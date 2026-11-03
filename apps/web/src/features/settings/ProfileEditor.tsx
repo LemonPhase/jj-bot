@@ -39,6 +39,7 @@ import {
 } from "./profileDraft";
 import { SpecFields } from "./SpecFields";
 import { carryDraft, type SpecField, specFormFields } from "./specForm";
+import { useSecrets } from "./useSecrets";
 
 export interface ProfileEditorProps {
   /** The profile to edit; null creates one. */
@@ -114,6 +115,13 @@ export function ProfileEditor({
       spec: carryDraft(current.spec, fieldsFor(next)),
     }));
   };
+
+  const toggleSecret = (name: string) =>
+    set({
+      secrets: draft.secrets.includes(name)
+        ? draft.secrets.filter((item) => item !== name)
+        : [...draft.secrets, name],
+    });
 
   const toggleTool = (tool: ToolName) =>
     set({
@@ -268,6 +276,12 @@ export function ProfileEditor({
           </p>
         </fieldset>
 
+        <SecretGrants
+          granted={draft.secrets}
+          isolated={driver?.capabilities.filesystemIsolation ?? false}
+          onToggle={toggleSecret}
+        />
+
         <fieldset className="settings-group">
           <legend className="ui-field__label">Budgets</legend>
           <div className="settings-group__fields">
@@ -350,5 +364,67 @@ export function ProfileEditor({
         </div>
       </form>
     </section>
+  );
+}
+
+/**
+ * The sandbox secrets the profile grants. Only stored secrets can be granted;
+ * a grant whose secret was removed since is gone with it.
+ */
+function SecretGrants({
+  granted,
+  isolated,
+  onToggle,
+}: {
+  granted: readonly string[];
+  isolated: boolean;
+  onToggle: (name: string) => void;
+}) {
+  const { view, error } = useSecrets();
+  const names = [
+    ...new Set([
+      ...(view?.secrets.map((secret) => secret.name) ?? []),
+      ...granted,
+    ]),
+  ].sort();
+  return (
+    <fieldset className="settings-group">
+      <legend className="ui-field__label">Secrets</legend>
+      {error ? (
+        <p className="settings-warning">Secrets did not load: {error}</p>
+      ) : names.length === 0 ? (
+        <p className="ui-field__hint">
+          No secrets are stored. Add one in Settings → Secrets to grant it here.
+        </p>
+      ) : (
+        <div
+          className="settings-tools"
+          role="group"
+          aria-label="Granted secrets"
+        >
+          {names.map((name) => (
+            <Chip
+              key={name}
+              selected={granted.includes(name)}
+              onClick={() => onToggle(name)}
+            >
+              {name}
+            </Chip>
+          ))}
+        </div>
+      )}
+      <p className="ui-field__hint">
+        Granted secrets are environment variables in every command of the
+        sandbox of a task this profile coordinates, whichever bot runs the
+        command. Their values are redacted from task history.
+      </p>
+      {!isolated && granted.length > 0 && (
+        <p className="settings-warning">
+          This profile is unisolated: its commands can also read the server's
+          environment and database, and so every stored secret, not only the
+          granted ones.
+        </p>
+      )}
+    </fieldset>
   );
 }

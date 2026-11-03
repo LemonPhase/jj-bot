@@ -163,6 +163,7 @@ export function demoProfiles(ago: Ago): RuntimeProfile[] {
         maxUsdPerTask: 5,
         maxUsdPerBotPerDay: 20,
       },
+      secrets: [],
       isDefault: true,
       status: { driverAvailable: true, isolated: true, detail: DEMO_DETAIL },
       createdAt: ago(60 * 24 * 3),
@@ -185,6 +186,7 @@ export function demoProfiles(ago: Ago): RuntimeProfile[] {
         maxUsdPerTask: 2,
         maxUsdPerBotPerDay: 10,
       },
+      secrets: [],
       isDefault: false,
       status: { driverAvailable: true, isolated: false, detail: DEMO_DETAIL },
       createdAt: ago(60 * 24 * 2),
@@ -205,6 +207,8 @@ export const DEMO_MODELS: ModelsView = {
       name: "Demo data (no model provider)",
       configured: false,
       envVars: [],
+      keySource: null,
+      storedKey: null,
       models: [
         {
           ref: DEMO_MODEL_REF,
@@ -225,6 +229,7 @@ export const DEMO_CAPABILITIES: Capabilities = {
   persistence: false,
   streaming: false,
   verification: false,
+  secretStore: false,
   drivers: DEMO_DRIVERS.map((driver) => ({
     id: driver.id,
     available: driver.available,

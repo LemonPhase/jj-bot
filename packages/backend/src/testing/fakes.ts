@@ -76,6 +76,8 @@ export class FakeModels implements ModelCatalog {
         name: "Fake test model",
         configured: this.configured,
         envVars: [],
+        keySource: null,
+        storedKey: null,
         models: [
           {
             ref: FAKE_MODEL,

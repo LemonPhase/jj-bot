@@ -13,6 +13,7 @@ import {
   spendCapUsdSchema,
   timestampSchema,
 } from "./common";
+import { secretGrantsSchema, storedSecretSchema } from "./secrets";
 
 // The sandbox spec is owned by the driver contract; it is re-exported, never redefined.
 export {
@@ -108,6 +109,12 @@ export const runtimeProfileSchema = z.object({
   sandbox: sandboxSpecSchema,
   tools: toolListSchema.default(() => [...CODING_TOOLS]),
   budgets: profileBudgetsSchema,
+  /**
+   * Sandbox secrets, by name, injected into every command of a sandbox
+   * acquired with this profile: a task's sandbox uses its coordinator's
+   * profile, so every bot in the task can use them.
+   */
+  secrets: z.array(z.string().min(1)).default([]),
   isDefault: z.boolean(),
   status: runtimeProfileStatusSchema,
   createdAt: timestampSchema,
@@ -116,7 +123,8 @@ export const runtimeProfileSchema = z.object({
 
 /**
  * Creates a runtime profile. Omitted fields take server defaults: empty
- * description, every coding tool, default budgets, not the default profile.
+ * description, every coding tool, default budgets, no secrets, not the
+ * default profile. Granted secrets must be stored.
  */
 export const createRuntimeProfileCommandSchema = z.object({
   name: profileNameSchema,
@@ -124,6 +132,7 @@ export const createRuntimeProfileCommandSchema = z.object({
   sandbox: sandboxSpecSchema,
   tools: toolListSchema.optional(),
   budgets: profileBudgetsSchema.optional(),
+  secrets: secretGrantsSchema.optional(),
   isDefault: z.boolean().optional(),
 });
 
@@ -167,14 +176,16 @@ export const updateRuntimeProfileCommandObjectSchema = z
         maxUsdPerBotPerDay: spendCapUsdSchema.nullable(),
       })
       .partial(),
+    secrets: secretGrantsSchema,
     isDefault: z.boolean(),
   })
   .partial();
 
 /**
  * Partial update with no defaults. The server deep-merges it onto the stored
- * profile — nested objects field by field, while `tools`, `sandbox.network`,
- * `sandbox.env` and `sandbox.driverConfig` are replaced whole — then validates
+ * profile — nested objects field by field, while `tools`, `secrets`,
+ * `sandbox.network`, `sandbox.env` and `sandbox.driverConfig` are replaced
+ * whole — then validates
  * the merged spec with the driver before saving.
  */
 export const updateRuntimeProfileCommandSchema =
@@ -222,12 +233,19 @@ export const modelInfoSchema = z.object({
     .optional(),
 });
 
-/** A model provider. Keys are never entered through the product: `envVars` names what enables it. */
+/**
+ * A model provider. `envVars` names the server variables that enable it; a
+ * key can also be stored through settings. The variable wins: `keySource` is
+ * where the key in use comes from (null: none, or a keyless provider), and
+ * `storedKey` describes a stored one, even while a variable shadows it.
+ */
 export const providerInfoSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   configured: z.boolean(),
   envVars: z.array(z.string().min(1)),
+  keySource: z.enum(["env", "stored"]).nullable().default(null),
+  storedKey: storedSecretSchema.nullable().default(null),
   models: z.array(modelInfoSchema),
 });
 

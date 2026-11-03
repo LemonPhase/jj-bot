@@ -27,6 +27,20 @@ import { createScriptedProvider } from "./scripted";
 /** Environment the registry reads provider keys from. The server passes `process.env`. */
 export type ProviderEnv = Readonly<Record<string, string | undefined>>;
 
+/** A provider key stored through settings (the server's secrets store). */
+export interface StoredProviderKey {
+  /** Undefined when the server cannot decrypt it. */
+  value: string | undefined;
+  /** Its last four characters. */
+  hint: string;
+  updatedAt: string;
+}
+
+/** Where stored provider keys are read, by provider id; read on every call. */
+export interface StoredProviderKeys {
+  providerKey(providerId: string): StoredProviderKey | undefined;
+}
+
 interface ProviderEntry {
   provider: Provider;
   /** Variables that configure the provider; any one set makes it configured. Empty: keyless. */
@@ -98,6 +112,11 @@ function builtinEntries(): ProviderEntry[] {
 export interface ModelRegistryOptions {
   /** Where provider keys are read. Defaults to `process.env`; tests inject their own. */
   env?: ProviderEnv;
+  /**
+   * Keys stored through settings. A provider's variable, when set, wins over
+   * its stored key.
+   */
+  storedKeys?: StoredProviderKeys;
   /** Registers the keyless `scripted/team` test model (`JJ_ENABLE_SCRIPTED_MODEL=true`). */
   enableScripted?: boolean;
   /**
@@ -111,7 +130,10 @@ export interface ModelRegistryOptions {
 export interface ResolvedModel {
   ref: ModelRef;
   model: Model<Api>;
-  /** The provider key from the registry's env, or undefined for keyless providers. */
+  /**
+   * The provider key: its variable in the registry's env, else its stored
+   * key; undefined for keyless providers.
+   */
   getApiKey(): string | undefined;
 }
 
@@ -143,8 +165,8 @@ const isSet = (value: string | undefined): value is string =>
 
 /**
  * The server's view of pi-ai's model catalog. Keys come only from the env it
- * was built with: pi's own auth resolution is pointed at that env too, and
- * never at host credential files.
+ * was built with and from the stored keys: pi's own auth resolution is
+ * pointed at that env too, and never at host credential files.
  */
 export class ModelRegistry {
   /** The pi model collection every call goes through. */
@@ -152,10 +174,12 @@ export class ModelRegistry {
   /** Stream function for pi's agent loop. */
   readonly streamFn: StreamFn;
   private readonly env: ProviderEnv;
+  private readonly storedKeys: StoredProviderKeys | undefined;
   private readonly entries: ProviderEntry[];
 
   constructor(options: ModelRegistryOptions = {}) {
     this.env = options.env ?? process.env;
+    this.storedKeys = options.storedKeys;
     const env = this.env;
     const authContext: AuthContext = {
       env: async (name) => env[name],
@@ -180,22 +204,49 @@ export class ModelRegistry {
     return this.entries.find((entry) => entry.provider.id === providerId);
   }
 
-  private configured(entry: ProviderEntry): boolean {
-    return (
-      entry.envVars.length === 0 ||
-      entry.envVars.some((name) => isSet(this.env[name]))
-    );
+  private envKey(entry: ProviderEntry): string | undefined {
+    return entry.envVars.map((name) => this.env[name]).find(isSet);
   }
 
-  /** Every offered provider, its models and whether its key is set. */
+  private storedKey(entry: ProviderEntry): StoredProviderKey | undefined {
+    return entry.envVars.length === 0
+      ? undefined
+      : this.storedKeys?.providerKey(entry.provider.id);
+  }
+
+  /** The key in use: the variable wins over a stored key. */
+  private key(entry: ProviderEntry): string | undefined {
+    return this.envKey(entry) ?? this.storedKey(entry)?.value;
+  }
+
+  private configured(entry: ProviderEntry): boolean {
+    return entry.envVars.length === 0 || this.key(entry) !== undefined;
+  }
+
+  /** Every offered provider, its models and whether, and how, its key is set. */
   providers(): ProviderInfo[] {
-    return this.entries.map((entry) => ({
-      id: entry.provider.id,
-      name: entry.provider.name,
-      configured: this.configured(entry),
-      envVars: [...entry.envVars],
-      models: this.models.getModels(entry.provider.id).map(toModelInfo),
-    }));
+    return this.entries.map((entry) => {
+      const stored = this.storedKey(entry);
+      return {
+        id: entry.provider.id,
+        name: entry.provider.name,
+        configured: this.configured(entry),
+        envVars: [...entry.envVars],
+        keySource: this.envKey(entry)
+          ? "env"
+          : stored?.value !== undefined
+            ? "stored"
+            : null,
+        storedKey: stored
+          ? {
+              hint: stored.hint,
+              readable: stored.value !== undefined,
+              updatedAt: stored.updatedAt,
+            }
+          : null,
+        models: this.models.getModels(entry.provider.id).map(toModelInfo),
+      };
+    });
   }
 
   /** The provider keys set in the registry's env, by variable, for redaction. */
@@ -250,7 +301,9 @@ export class ModelRegistry {
       throw new ModelResolutionError(
         `No model provider is configured. Set one of ${this.entries
           .flatMap((entry) => entry.envVars)
-          .join(", ")}.`,
+          .join(
+            ", ",
+          )} on the server, or store a provider key in Settings → Models.`,
         "no_model",
       );
     const parsed = parseModelRef(target);
@@ -268,14 +321,13 @@ export class ModelRegistry {
       );
     if (!this.configured(entry))
       throw new ModelResolutionError(
-        `Provider ${entry.provider.name} is not configured: set ${entry.envVars.join(" or ")} on the server.`,
+        `Provider ${entry.provider.name} is not configured: set ${entry.envVars.join(" or ")} on the server, or store its key in Settings → Models.`,
         "unconfigured",
       );
-    const env = this.env;
     return {
       ref: `${parsed.provider}/${model.id}`,
       model,
-      getApiKey: () => entry.envVars.map((name) => env[name]).find(isSet),
+      getApiKey: () => this.key(entry),
     };
   }
 }

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { EngineConfigInput, Logger } from "@jj/backend";
 import type { TaskView } from "@jj/contracts";
 import { type AppConfig, createApp, type JJApp } from "./app";
+import type { Env, SecretKeys } from "./config";
 import { openServices, type Services } from "./wiring";
 
 export const OPEN_TIMEOUT = 60_000;
@@ -44,6 +45,10 @@ export interface TestAppOptions {
   engine?: EngineConfigInput;
   /** Start the embedded worker (default true). */
   startWorker?: boolean;
+  /** Where the model registry reads provider keys; default none. */
+  env?: Env;
+  /** The secrets store's master keys; default none (the store is off). */
+  secretKeys?: SecretKeys;
 }
 
 export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -56,6 +61,7 @@ export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
       dockerNamespace: "jj-sandbox",
       dockerAllowInsecureTcp: false,
       enableScripted: true,
+      ...(options.secretKeys ? { secretKeys: options.secretKeys } : {}),
       engine: {
         pollIntervalMs: 25,
         leaseMs: 5_000,
@@ -64,7 +70,7 @@ export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
         ...options.engine,
       },
     },
-    {},
+    options.env ?? {},
     quietLogger,
   );
   const startWorker = options.startWorker !== false;

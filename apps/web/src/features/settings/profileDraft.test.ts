@@ -62,6 +62,7 @@ const stored: RuntimeProfile = {
     maxUsdPerTask: 5,
     maxUsdPerBotPerDay: null,
   },
+  secrets: [],
   isDefault: false,
   status: { driverAvailable: true, isolated: true },
   createdAt: "2026-10-01T00:00:00.000Z",
