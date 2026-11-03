@@ -88,6 +88,12 @@ export type ExecutorEvent =
       artifactId?: string;
     };
 
+/** One tool call of a model response, as `RunHooks.reviewTurn` sees it. */
+export interface TurnCall {
+  toolCallId: string;
+  tool: string;
+}
+
 export interface RunHooks {
   /** Awaited: the event is durable before the run goes on. */
   onEvent(event: ExecutorEvent): void | Promise<void>;
@@ -109,6 +115,15 @@ export interface RunHooks {
    * sent; the run ends with `budget` and `limit: "spend"`.
    */
   admitModelCall?(): Promise<string | undefined>;
+  /**
+   * Asked once for each model response that calls tools, with all of its
+   * calls, before any of them runs: text ends the run at this turn (none of
+   * the calls runs; each gets the text as its error result, and the run
+   * ends `ended` with empty `finalText` without draining the inbox again),
+   * undefined lets them run. Not asked for a response cut at the output
+   * limit. A rejection ends the run.
+   */
+  reviewTurn?(calls: readonly TurnCall[]): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -163,6 +178,7 @@ export type RunErrorCode =
   | "unknown";
 
 export type RunOutcome =
+  /** `finalText` is empty when `reviewTurn` ended the run. */
   | { kind: "ended"; finalText: string }
   /**
    * No inputs and an empty inbox: nothing ran. On a recovery run this means

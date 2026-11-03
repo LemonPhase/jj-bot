@@ -28,6 +28,7 @@ import {
   type SpendStop,
   spendStop,
 } from "../services/spend";
+import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import type { TaskSandboxes } from "./sandboxes";
 
@@ -105,6 +106,11 @@ export interface RunContext {
   verificationAttempts: number;
   /** The cap that refused this run's model call, once one did. */
   spendStop?: SpendStop;
+  /**
+   * The run's consecutive model turns that only looked things up since its
+   * inbox last delivered input (parking.ts).
+   */
+  lookupTurns: number;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -174,6 +180,8 @@ export async function takeInbox(
     const fresh = items.filter((item) => !rc.claimed.has(item.id));
     if (fresh.length === 0) return [];
     for (const item of fresh) rc.claimed.add(item.id);
+    // New input is something to react to: looking things up starts over.
+    rc.lookupTurns = 0;
     // New input voids a completion recorded before it: the coordinator must
     // see the input first (a hand-off or crash can land between the two), and
     // is told so, or it would take its completion as done.
@@ -387,5 +395,6 @@ export function runHooks(rc: RunContext): RunHooks {
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
     admitModelCall: () => admitModelCall(rc),
+    reviewTurn: (calls) => reviewTurn(rc, calls),
   };
 }
