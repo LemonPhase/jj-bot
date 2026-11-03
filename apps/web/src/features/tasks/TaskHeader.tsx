@@ -20,10 +20,12 @@ import {
   participantMood,
   participantsLabel,
 } from "./taskModel";
+import { ChecksButton, VerificationBadge } from "./VerificationSection";
 
 /**
- * The task header (SPEC §5.2): title, status · goal version and the current
- * goal on the left; participants, usage and Stop on the right.
+ * The task header (SPEC §5.2): title, status · goal version, the
+ * verification badge (with a plan) and the current goal on the left;
+ * participants, usage, the checks editor and Stop on the right.
  */
 export function TaskHeader({ view }: { view: TaskView }) {
   const api = useApi();
@@ -47,6 +49,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
               status={task}
               detail={`v${task.goalVersion}`}
             />
+            <VerificationBadge view={view} />
             {reconnecting && (
               <span className="task-head__stream" role="status">
                 reconnecting…
@@ -100,6 +103,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
               {usageLine(usage.total)}
             </Badge>
           </Tooltip>
+          <ChecksButton view={view} />
           <StopControl view={view} />
         </>
       }

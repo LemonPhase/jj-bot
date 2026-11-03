@@ -3,15 +3,17 @@ import {
   type ExecutionSession,
   type TaskSummary,
   type TaskView,
+  verificationSummary,
   waitingQuestion,
 } from "@jj/contracts";
 
 const byCreation = (a: ExecutionSession, b: ExecutionSession) =>
   a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
 
-/** The list entry for a task, kept in step with its open view (its question too). */
+/** The list entry for a task, kept in step with its open view (its question and verification too). */
 export const summaryFromView = (view: TaskView): TaskSummary => {
   const question = waitingQuestion(view);
+  const verification = verificationSummary(view.task, view.verificationChecks);
   return {
     ...view.task,
     activeSessionCount: view.sessions.filter(
@@ -20,6 +22,7 @@ export const summaryFromView = (view: TaskView): TaskSummary => {
     sessionCount: view.sessions.length,
     usage: view.usage.total,
     ...(question ? { question } : {}),
+    ...(verification ? { verification } : {}),
   };
 };
 

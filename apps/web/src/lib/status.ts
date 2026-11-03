@@ -77,7 +77,8 @@ const MOOD_BY_STATUS: Record<StatusValue, Mood> = {
 /**
  * The sprite mood for a status (brief decision 1). A stopping task keeps the
  * mood of its underlying status: its sessions really are still running until
- * the cancellation lands. No status maps to `verifying` in Contracts 1.0.
+ * the cancellation lands. No status maps to `verifying`: the task screens
+ * show it for a session whose activity is running its verification checks.
  */
 export function moodForStatus(input: StatusInput): Mood {
   return MOOD_BY_STATUS[subjectOf(input).status];

@@ -10,6 +10,8 @@ import {
   type TaskSummary,
   type TaskView,
   type UpdateBotCommand,
+  type VerificationPlan,
+  verificationSummary,
 } from "@jj/contracts";
 import {
   createContext,
@@ -60,6 +62,8 @@ export interface NewTaskInput {
   goal: string;
   /** The first entry is the coordinator. */
   participantBotIds: string[];
+  /** The user's checks; the task completes only when every one passes. */
+  verificationPlan?: VerificationPlan | null;
 }
 
 interface WorkspaceValue {
@@ -131,14 +135,16 @@ interface WorkspaceValue {
    */
   sendBotMessage: (botId: string, text: string) => Promise<boolean>;
   /**
-   * Posts to the task chat; `changesGoal` also replaces the goal against the
-   * version on screen. Failures (STALE_GOAL_VERSION, TASK_TERMINAL…) come back
-   * in the result for the chat to show in place.
+   * Posts to the task chat; `changesGoal` also replaces the goal, and a
+   * `plan` (null: none) the verification plan, against the version on
+   * screen. Failures (STALE_GOAL_VERSION, TASK_TERMINAL…) come back in the
+   * result for the chat to show in place.
    */
   postTaskMessage: (
     taskId: string,
     text: string,
     changesGoal: boolean,
+    plan?: VerificationPlan | null,
   ) => Promise<ActionResult>;
   stopTask: (taskId: string) => Promise<ActionResult>;
   /** Text of a bot-chat message being sent, keyed by bot id. */
@@ -536,7 +542,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
         return true;
       },
-      createTask: async ({ goal, participantBotIds }) => {
+      createTask: async ({ goal, participantBotIds, verificationPlan }) => {
         const [coordinatorBotId] = participantBotIds;
         if (!coordinatorBotId)
           throw new Error("A task needs at least one bot.");
@@ -544,19 +550,22 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           goal,
           coordinatorBotId,
           participantBotIds,
+          ...(verificationPlan ? { verificationPlan } : {}),
         });
+        const verification = verificationSummary(task, []);
         setTasks((current) =>
           upsert(current, {
             ...task,
             activeSessionCount: 0,
             sessionCount: 0,
             usage: emptyUsage(),
+            ...(verification ? { verification } : {}),
           }),
         );
         selectTask(task.id);
         return task;
       },
-      postTaskMessage: async (taskId, text, changesGoal) => {
+      postTaskMessage: async (taskId, text, changesGoal, plan) => {
         setPendingTaskSends((current) => ({
           ...current,
           [taskId]: { text, changesGoal },
@@ -565,10 +574,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           const observedGoalVersion =
             viewsRef.current[taskId]?.task.goalVersion ??
             tasksRef.current.find((t) => t.id === taskId)?.goalVersion;
-          const message = await api.postTaskMessage(
-            taskId,
-            changesGoal ? { text, goal: text, observedGoalVersion } : { text },
-          );
+          const message = await api.postTaskMessage(taskId, {
+            text,
+            ...(changesGoal ? { goal: text } : {}),
+            ...(plan !== undefined ? { verificationPlan: plan } : {}),
+            ...(changesGoal || plan !== undefined
+              ? { observedGoalVersion }
+              : {}),
+          });
           // Show it now; the streamed `message.posted` replaces it by id.
           setOverlays((current) => ({
             ...current,
