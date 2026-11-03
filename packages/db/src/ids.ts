@@ -17,6 +17,7 @@ export const ID_PREFIXES = {
   approval: "appr",
   check: "chk",
   job: "job",
+  retiredSecret: "rsec",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

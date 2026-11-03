@@ -290,6 +290,7 @@ async function startRun(
       taskFinished: false,
       redact,
       verificationAttempts: 0,
+      lookupTurns: 0,
     };
     return {
       kind: "run",
@@ -388,7 +389,7 @@ async function prepare(
         reviewToolCall: (pending) => reviewCall(rc, pending),
         claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
       },
-      redact: (text: string) => rc.redact(text),
+      redact: (text, cut) => rc.redact(text, cut),
     });
     return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;
   };

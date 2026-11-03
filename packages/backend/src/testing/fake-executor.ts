@@ -230,11 +230,43 @@ export class FakeExecutor implements RunExecutor {
       messages.push(assistant);
       if (calls.length === 0) {
         await hooks.onTurnComplete([assistant]);
-        const steering = await this.drain(input, messages);
+        const steering = await this.drain(input, messages, true);
         if (steering) continue;
         return { kind: "ended", finalText: text };
       }
       await hooks.onTurnComplete([assistant]);
+      // Like the runtime: a turn the engine ends runs none of its calls, and
+      // each gets the engine's text as its error result.
+      const ended = await hooks.reviewTurn?.(
+        calls.map((call) => ({ toolCallId: call.id, tool: call.name })),
+      );
+      if (ended !== undefined) {
+        const refused: FakeMessage[] = [];
+        for (const call of calls) {
+          const event = {
+            toolCallId: call.id,
+            tool: call.name,
+            summary: call.name,
+          };
+          await hooks.onEvent({ type: "tool.started", ...event });
+          await hooks.onEvent({
+            type: "tool.finished",
+            ...event,
+            ok: false,
+            output: ended,
+            truncated: false,
+          });
+          refused.push({
+            role: "tool",
+            callId: call.id,
+            name: call.name,
+            text: ended,
+            isError: true,
+          });
+        }
+        await hooks.onTurnComplete(refused);
+        return { kind: "ended", finalText: "" };
+      }
       const results: FakeMessage[] = [];
       let endRun = false;
       for (const call of calls) {
@@ -257,8 +289,12 @@ export class FakeExecutor implements RunExecutor {
     return { kind: "budget", limit: "turns", finalText: lastText };
   }
 
-  private async drain(input: RunInput, messages: FakeMessage[]) {
-    const steering = (await input.hooks.drainInbox()).map(
+  private async drain(
+    input: RunInput,
+    messages: FakeMessage[],
+    turnEnded = false,
+  ) {
+    const steering = (await input.hooks.drainInbox(turnEnded)).map(
       (text): FakeMessage => ({ role: "user", text }),
     );
     if (steering.length === 0) return false;

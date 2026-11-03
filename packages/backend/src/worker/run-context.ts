@@ -30,7 +30,9 @@ import {
   type SpendStop,
   spendStop,
 } from "../services/spend";
+import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
+import { isContinuing } from "./runs";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */
@@ -107,6 +109,11 @@ export interface RunContext {
   verificationAttempts: number;
   /** The cap that refused this run's model call, once one did. */
   spendStop?: SpendStop;
+  /**
+   * The run's polling turns since it last did work or its inbox last
+   * delivered a brief, result or steering (parking.ts).
+   */
+  lookupTurns: number;
   /** The approval rules of the bot's own profile. */
   approvalRules?: readonly ApprovalRule[];
   /** The approval this run recorded for a call it held, once it did. */
@@ -164,13 +171,16 @@ async function markDelivered(tx: Tx, rc: RunContext) {
 /**
  * Takes undelivered inbox items (oldest first) for the executor. They stay
  * undelivered until the executor persists them, so a crash before that
- * re-delivers them on recovery. `kinds` limits which items are taken.
- * A coordinator that receives items catches up with the task's goal version,
- * and any completion it recorded earlier is dropped.
+ * re-delivers them on recovery. `kinds` limits which items are taken;
+ * `continuingOnly` takes nothing unless one of them continues a run (a brief,
+ * result or steering), and then takes messages with it. A coordinator that
+ * receives items catches up with the task's goal version, and any completion
+ * it recorded earlier is dropped.
  */
 export async function takeInbox(
   rc: RunContext,
   kinds?: readonly ("brief" | "result" | "steering" | "message")[],
+  continuingOnly = false,
 ): Promise<string[]> {
   return writeRun(rc, async (tx) => {
     const task = await lockTask(tx, rc.task.id);
@@ -187,8 +197,12 @@ export async function takeInbox(
       )
       .orderBy(asc(sessionInbox.createdAt), asc(sessionInbox.id));
     const fresh = items.filter((item) => !rc.claimed.has(item.id));
-    if (fresh.length === 0) return [];
+    const continues = fresh.some((item) => isContinuing(item.kind));
+    if (fresh.length === 0 || (continuingOnly && !continues)) return [];
     for (const item of fresh) rc.claimed.add(item.id);
+    // Input that wakes a session is something to react to: looking things up
+    // starts over. A message wakes no one, so it does not.
+    if (continues) rc.lookupTurns = 0;
     // New input voids a completion recorded before it: the coordinator must
     // see the input first (a hand-off or crash can land between the two), and
     // is told so, or it would take its completion as done.
@@ -411,9 +425,14 @@ export function runHooks(rc: RunContext): RunHooks {
           );
       });
     },
-    drainInbox: () => takeInbox(rc),
+    // Once the model ended its turn, a message alone never gives it another:
+    // it is taken only with input that continues the run anyway, and
+    // otherwise waits for the session's next run (or, if the session
+    // finishes first, goes to its parent with its result: outcomes.ts).
+    drainInbox: (turnEnded) => takeInbox(rc, undefined, turnEnded),
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
     admitModelCall: () => admitModelCall(rc),
+    reviewTurn: (calls) => reviewTurn(rc, calls),
   };
 }
