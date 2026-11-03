@@ -157,4 +157,40 @@ describe.each(targets)("migrations on $name", (target) => {
     },
     OPEN_TIMEOUT,
   );
+
+  it(
+    "0005 caps existing tasks at the default and marks existing usage priced",
+    async () => {
+      const database = await databaseBefore(target, "0005_spend_caps");
+      try {
+        await database.execute(sql`
+          insert into bots (id, name) values ('bot_1', 'Ada');
+        `);
+        await database.execute(sql`
+          insert into tasks (id, title, goal, coordinator_bot_id, status)
+          values ('task_1', 'Open', 'Goal', 'bot_1', 'waiting'),
+            ('task_2', 'Done', 'Goal', 'bot_1', 'completed');
+        `);
+        await database.execute(sql`
+          insert into usage (id, task_id, bot_id, model, cost_usd)
+          values ('use_1', 'task_1', 'bot_1', 'openai/gpt', 0.25);
+        `);
+
+        await database.upgrade();
+
+        const tasks = await database.execute(
+          sql`select id, spend_cap_usd from tasks order by id`,
+        );
+        expect(tasks.rows).toEqual([
+          { id: "task_1", spend_cap_usd: 5 },
+          { id: "task_2", spend_cap_usd: 5 },
+        ]);
+        const usage = await database.execute(sql`select priced from usage`);
+        expect(usage.rows).toEqual([{ priced: true }]);
+      } finally {
+        await database.close();
+      }
+    },
+    OPEN_TIMEOUT,
+  );
 });

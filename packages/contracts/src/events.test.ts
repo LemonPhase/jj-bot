@@ -26,6 +26,7 @@ const usage = (inputTokens: number, costUsd: number): Usage => ({
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   costUsd,
+  unpricedCalls: 0,
 });
 const u1 = usage(1000, 0.5);
 const u2 = usage(2000, 0.25);
@@ -44,6 +45,7 @@ const taskQueued: Task = {
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  spendCapUsd: null,
   createdAt: time(1),
   updatedAt: time(1),
   finishedAt: null,

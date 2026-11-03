@@ -36,6 +36,7 @@ const usage = {
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   costUsd: 0.001,
+  unpricedCalls: 0,
 };
 const task = {
   id: "t1",
@@ -49,6 +50,7 @@ const task = {
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  spendCapUsd: 5,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,
@@ -142,6 +144,8 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     goalVersion: 1,
     delivered: "injected",
   },
+  "spend.capped": { scope: "task", spentUsd: 5.02, capUsd: 5 },
+  "spend.threshold": { spentUsd: 4.1, capUsd: 5 },
   "cancellation.requested": { reason: null },
   "cancellation.completed": {
     stopped: [
@@ -178,8 +182,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.1.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.1.0");
+  it("is version 1.2.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.2.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
