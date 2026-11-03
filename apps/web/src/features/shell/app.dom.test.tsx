@@ -335,6 +335,104 @@ describe("direct chat", () => {
     });
     expect(card.textContent).not.toContain("Open the task");
   });
+
+  it("shows a waiting task's question on its card, then its result once it continues", async () => {
+    window.history.replaceState(null, "", "/#/bots/bot-kite");
+    const api = renderApp(
+      createDemoApi({
+        autoplay: false,
+        replyMs: 40,
+        tasks: [
+          {
+            id: "task-ask",
+            goal: "Plan the rollout",
+            coordinatorBotId: "bot-kite",
+            participantBotIds: ["bot-kite"],
+            startedMinutesAgo: 1,
+            playedSteps: 0,
+            script: "ask",
+            autoplay: false,
+          },
+        ],
+      }),
+    );
+    await heading("Kite");
+    const log = await screen.findByRole("log", { name: "Messages with Kite" });
+    // The coordinator asks the user and the task waits: Kite tells the chat.
+    for (let step = 0; step < 2; step += 1)
+      await act(async () => {
+        await api.advanceDemoTask?.("task-ask");
+      });
+    const card = await within(log).findByRole("link", {
+      name: /Plan the rollout/,
+    });
+    await waitFor(() => expect(card.textContent).toContain("waiting · v1"));
+    // Named by its title and status, described by the excerpt.
+    expect(
+      within(log).getByRole("link", {
+        name: "Task: Plan the rollout waiting · v1",
+        description: /^Question · Before I plan this: should we keep/,
+      }),
+    ).toBe(card);
+    expect(card.querySelector(".chat-task-card__excerpt")?.textContent).toMatch(
+      /^Question · Before I plan this: should we keep a fallback/,
+    );
+    // The user answers in the task; the card follows the task and loses the question.
+    await act(async () => {
+      await api.postTaskMessage("task-ask", { text: "Keep a fallback." });
+    });
+    for (let step = 0; step < 3; step += 1)
+      await act(async () => {
+        await api.advanceDemoTask?.("task-ask");
+      });
+    await waitFor(() => expect(card.textContent).toContain("done · v1"));
+    expect(card.querySelector(".chat-task-card__excerpt")?.textContent).toMatch(
+      /^Result · Demo result: noted your reply/,
+    );
+  });
+
+  it("keeps a task card live, shows a finished task's result and the bot's update", async () => {
+    window.history.replaceState(null, "", "/#/bots/bot-kite");
+    const api = renderApp();
+    await heading("Kite");
+    const log = await screen.findByRole("log", { name: "Messages with Kite" });
+    const excerpt = (card: HTMLElement) =>
+      card.querySelector(".chat-task-card__excerpt")?.textContent ?? null;
+    // The seeded task finished before load: its card shows the result.
+    const seeded = await within(log).findByRole("link", {
+      name: /Summarise what changed/,
+    });
+    expect(seeded.textContent).toContain("done · v1");
+    expect(excerpt(seeded)).toMatch(/^Result · Demo result for “Summarise/);
+
+    send("Message Kite", "Write the release notes");
+    const card = await within(log).findByRole("link", {
+      name: /Write the release notes/,
+    });
+    expect(card.textContent).toContain("queued · v1");
+    expect(excerpt(card)).toBeNull();
+    const taskId = card.getAttribute("href")?.split("/").pop() as string;
+    for (let step = 0; step < 60; step += 1) {
+      if ((await api.getTask(taskId)).task.status === "completed") break;
+      await act(async () => {
+        await api.advanceDemoTask?.(taskId);
+      });
+    }
+    // The same card now shows the task as it is: done, with its result.
+    await waitFor(() => expect(card.textContent).toContain("done · v1"));
+    expect(excerpt(card)).toMatch(
+      /^Result · Demo result for “Write the release notes”/,
+    );
+    // Kite tells the user, with the task's card under its message.
+    expect(
+      await within(log).findByText(/^“Write the release notes” is done\./),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        within(log).getAllByRole("link", { name: /Write the release notes/ }),
+      ).toHaveLength(2),
+    );
+  });
 });
 
 describe("bot inspector", () => {

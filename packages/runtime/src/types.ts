@@ -51,7 +51,7 @@ export interface CollabToolResult {
   endRun?: boolean;
 }
 
-/** A tool supplied by the engine: delegate, message, complete_task, create_task, send_to_task. */
+/** A tool supplied by the engine: a session's collaboration tools, or direct chat's task tools. */
 export interface CollabTool {
   name: string;
   description: string;
@@ -59,6 +59,11 @@ export interface CollabTool {
   parameters: TSchema;
   /** Activity summary for `tool.started`, such as the delegate's bot name. Default: the tool name. */
   summarize?(args: Record<string, unknown>): string;
+  /**
+   * The tool only reads. A chat reply cut short by its budget never answers
+   * with such a tool's output.
+   */
+  readOnly?: boolean;
   execute(
     args: Record<string, unknown>,
     context: CollabToolContext,

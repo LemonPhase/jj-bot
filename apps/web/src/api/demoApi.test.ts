@@ -624,3 +624,163 @@ describe("demo API", () => {
     expect(long.endsWith("…")).toBe(true);
   });
 });
+
+describe("demo direct chat with tasks", () => {
+  /** The bot's last chat message once its replies are written. */
+  const lastReply = async (api: JJApi, botId: string) => {
+    await vi.waitFor(async () =>
+      expect((await api.getConversation(botId)).replying).toBe(false),
+    );
+    const view = conversationViewSchema.parse(await api.getConversation(botId));
+    return view.messages.at(-1);
+  };
+
+  it("tells the coordinator's chat when its task completes, with the task card", async () => {
+    const api = demo();
+    await api.sendBotMessage("bot-moss", {
+      text: "Add a retry to the hint stream",
+    });
+    const created = await lastReply(api, "bot-moss");
+    const taskId = created?.taskId as string;
+    expect(taskId).toBeTruthy();
+    const { final } = await runToEnd(api, taskId);
+    expect(final.task.status).toBe("completed");
+    const update = await lastReply(api, "bot-moss");
+    expect(update).toMatchObject({ role: "assistant", taskId });
+    expect(update?.text).toMatch(
+      /^“Add a retry to the hint stream” is done\. Demo result for/,
+    );
+    // Seeded history is not news: task-102 finished before load.
+    const kite = await api.getConversation("bot-kite");
+    expect(kite.messages.filter((m) => m.taskId === "task-102")).toHaveLength(
+      1,
+    );
+  });
+
+  it("gives a waiting task's summary its question, as the server does", async () => {
+    const api = demo();
+    const summaries = (await api.listTasks()).map((summary) =>
+      taskSummarySchema.parse(summary),
+    );
+    const waiting = summaries.find((summary) => summary.id === "task-103");
+    expect(waiting?.status).toBe("waiting");
+    expect(waiting?.question).toMatch(/^Before I plan this: should we keep/);
+    expect(
+      summaries.filter((summary) => summary.question !== undefined),
+    ).toHaveLength(1);
+    // It goes once the task continues.
+    await api.postTaskMessage("task-103", { text: "Keep a fallback." });
+    const continued = (await api.listTasks()).find((t) => t.id === "task-103");
+    expect(continued?.status).toBe("running");
+    expect(continued?.question).toBeUndefined();
+  });
+
+  it("tells the question of a task that waits for the user", async () => {
+    const api = demo({
+      tasks: [
+        {
+          id: "task-ask",
+          goal: "Plan the rollout",
+          coordinatorBotId: "bot-juno",
+          participantBotIds: ["bot-juno"],
+          startedMinutesAgo: 1,
+          playedSteps: 0,
+          script: "ask",
+          autoplay: false,
+        },
+      ],
+    });
+    await api.advanceDemoTask?.("task-ask");
+    await api.advanceDemoTask?.("task-ask");
+    const update = await lastReply(api, "bot-juno");
+    expect(update).toMatchObject({ taskId: "task-ask" });
+    expect(update?.text).toMatch(
+      /^“Plan the rollout” needs your answer: Before I plan this:/,
+    );
+  });
+
+  it("answers how a task went from its result, then continues that task", async () => {
+    const api = demo();
+    await api.sendBotMessage("bot-kite", { text: "How did it go?" });
+    const answer = await lastReply(api, "bot-kite");
+    expect(answer).toMatchObject({ taskId: "task-102" });
+    expect(answer?.text).toMatch(/^“Summarise what changed .*” is done\. /);
+
+    await api.sendBotMessage("bot-kite", {
+      text: "Please also add the event stream changes to the task.",
+    });
+    const passed = await lastReply(api, "bot-kite");
+    expect(passed).toMatchObject({ taskId: "task-102" });
+    expect(passed?.text).toMatch(/^I've passed that on to “/);
+    const view = await api.getTask("task-102");
+    // The same task continues, as send_to_task continues it on the server.
+    expect(view.task.status).toBe("running");
+    expect(view.events.some((e) => e.type === "task.reopened")).toBe(true);
+    expect(view.messages.at(-1)).toMatchObject({
+      authorKind: "bot",
+      authorBotId: "bot-kite",
+      intent: "discussion",
+      text: "Please also add the event stream changes to the task.",
+      recipientBotIds: ["bot-kite"],
+    });
+    expect((await api.listTasks()).length).toBe(3);
+    const { final } = await runToEnd(api, "task-102");
+    expect(final.task.status).toBe("completed");
+    expect((await lastReply(api, "bot-kite"))?.text).toMatch(/is done\./);
+  });
+
+  it("refuses what the server's chat tools refuse", async () => {
+    const api = demo();
+    // Moss only takes part in Juno's task: it cannot stop it.
+    await api.sendBotMessage("bot-moss", { text: "Please stop that task." });
+    expect(await lastReply(api, "bot-moss")).toMatchObject({
+      taskId: null,
+      text: expect.stringMatching(/only its coordinator can/),
+    });
+    expect((await api.getTask("task-101")).task.cancelRequestedAt).toBeNull();
+    // A finished task has nothing to stop.
+    await api.sendBotMessage("bot-kite", { text: "Please stop that task." });
+    expect((await lastReply(api, "bot-kite"))?.text).toMatch(
+      /already completed; there is nothing to stop\.$/,
+    );
+    // The coordinator stops it; a stopped task does not continue.
+    await api.sendBotMessage("bot-juno", { text: "Please stop that task." });
+    expect(await lastReply(api, "bot-juno")).toMatchObject({
+      taskId: "task-101",
+      text: expect.stringMatching(/^Stopped “/),
+    });
+    await api.sendBotMessage("bot-juno", {
+      text: "Please also add a test to the task.",
+    });
+    expect(await lastReply(api, "bot-juno")).toMatchObject({
+      taskId: null,
+      text: expect.stringMatching(
+        /^I couldn't pass that on: The task (is stopping|was cancelled)/,
+      ),
+    });
+  });
+
+  it("tells an update that comes during a reply after that reply", async () => {
+    const api = demo({ replyMs: 20 });
+    await api.sendBotMessage("bot-kite", { text: "Hello Kite" });
+    // While the reply is on its way, Kite's task continues and completes.
+    await api.postTaskMessage("task-102", { text: "One more pass, please." });
+    for (let step = 0; step < 3; step += 1)
+      await api.advanceDemoTask?.("task-102");
+    expect((await api.getTask("task-102")).task.status).toBe("completed");
+    await vi.waitFor(async () => {
+      const view = await api.getConversation("bot-kite");
+      expect(view.messages.length).toBe(5);
+    });
+    const view = await api.getConversation("bot-kite");
+    expect(view.messages.slice(2).map((m) => [m.role, m.taskId])).toEqual([
+      ["user", null],
+      ["assistant", null],
+      ["assistant", "task-102"],
+    ]);
+    expect(view.messages[3]?.text).toMatch(/scripted demo reply/);
+    await vi.waitFor(async () =>
+      expect((await api.getConversation("bot-kite")).replying).toBe(false),
+    );
+  });
+});

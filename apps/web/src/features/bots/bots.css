@@ -167,9 +167,32 @@
   color: var(--ink);
 }
 
+.chat-task-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.chat-task-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
 .chat-task-card__title {
   flex: 1;
   font-size: var(--fs-list-title);
+}
+
+/* A finished task's result or error, under its title (past the status square). */
+.chat-task-card__excerpt {
+  padding-left: calc(var(--status-square) + var(--sp-5));
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
 }
 
 .chat-task-card__meta {

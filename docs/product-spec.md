@@ -21,7 +21,7 @@ Bots and tasks are many-to-many. A bot can work on many tasks and a task can inv
 ## Task chat and execution
 
 1. A user asks a bot to do something.
-2. The bot answers directly, starts a task, or forwards the request to an active task it already participates in. Greetings, thanks and status questions are answered directly, and a follow-up extends the existing task rather than duplicating it.
+2. The bot answers directly, starts a task, or passes the request on to a task it already takes part in, running or finished. Greetings and thanks are answered directly, and a question about its tasks ("how did it go?") from what the bot looks up in them. A follow-up continues the existing task, in its own workspace, rather than starting a new one.
 3. The bot that creates a task coordinates it and chooses its participating bots. A user can also create a task directly, naming the coordinator and the participants.
 4. The coordinator delegates bounded work; each piece runs as its own execution session with a brief and selected context.
 5. Sessions do real work — running commands, reading and writing files — inside the task's sandbox, which the coordinator's runtime profile selects. Every session of a task shares its workspace.
@@ -31,9 +31,11 @@ Bots and tasks are many-to-many. A bot can work on many tasks and a task can inv
 
 Bot memories and private conversation histories are never implicitly merged, and no bot reads another session's transcript.
 
+When a task completes, fails or needs the user's answer, its coordinator tells the user in its direct chat, in its own words, with the task's card under the message. The card shows the task's current status and the start of its result or error once it has finished, or of the coordinator's question while it waits for the user. A bot in chat can only look its tasks up while it tells such an update; acting on it (continuing or stopping the task) waits for the user. The update is never lost: if the bot cannot write it, the plain result is posted instead.
+
 ## User control
 
-The user can open any task's group chat and steer it. Steering reaches the coordinator and changes subsequent execution. Stop cancels active sessions and prevents new launches; it does not undo external effects that already happened.
+The user can open any task's group chat and steer it. Steering reaches the coordinator and changes subsequent execution. Stop cancels active sessions and prevents new launches; it does not undo external effects that already happened. The user can also ask a task's coordinator in direct chat to stop it.
 
 A finished task can be continued. Continuing under unchanged criteria keeps the goal version; changing the goal or its criteria starts a new version and supersedes earlier evidence. See [task continuation](task-continuation.md).
 

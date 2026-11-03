@@ -157,4 +157,58 @@ describe.each(targets)("migrations on $name", (target) => {
     },
     OPEN_TIMEOUT,
   );
+
+  it(
+    "0005 leaves waiting only the user messages a pending reply will answer",
+    async () => {
+      const database = await databaseBefore(target, "0005_chat_task_updates");
+      try {
+        await database.execute(sql`
+          insert into bots (id, name) values ('bot_1', 'Ada'), ('bot_2', 'Bob'), ('bot_3', 'Cy');
+        `);
+        // Ada: answered, then a failed reply (nothing pending). Bob: a reply is queued.
+        // Cy: answered, then a message whose reply is running.
+        const messages: [string, string, number, string][] = [
+          ["cmsg_1", "bot_1", 1, "user"],
+          ["cmsg_2", "bot_1", 2, "assistant"],
+          ["cmsg_3", "bot_1", 3, "user"],
+          ["cmsg_4", "bot_2", 1, "user"],
+          ["cmsg_5", "bot_3", 1, "user"],
+          ["cmsg_6", "bot_3", 2, "assistant"],
+          ["cmsg_7", "bot_3", 3, "user"],
+        ];
+        for (const [id, bot, sequence, role] of messages)
+          await database.execute(sql`
+            insert into conversation_messages (id, bot_id, sequence, role, text)
+            values (${id}, ${bot}, ${sequence}, ${role}, 'text')
+          `);
+        await database.execute(sql`
+          insert into jobs (id, kind, bot_id, status, lease_owner, lease_until)
+          values ('job_1', 'chat.reply', 'bot_1', 'failed', null, null),
+                 ('job_2', 'chat.reply', 'bot_2', 'queued', null, null),
+                 ('job_3', 'chat.reply', 'bot_3', 'running', 'w', now())
+        `);
+
+        await database.upgrade();
+
+        const result = await database.execute(
+          sql`select id from conversation_messages where role = 'user' and handled_at is null order by id`,
+        );
+        expect((result.rows as { id: string }[]).map((row) => row.id)).toEqual([
+          "cmsg_4",
+          "cmsg_7",
+        ]);
+        // The conversation view finds a reply by what it was answering.
+        const indexes = await database.execute(
+          sql`select indexdef from pg_indexes where indexname = 'jobs_chat_reply_answering_idx'`,
+        );
+        expect((indexes.rows as { indexdef: string }[])[0]?.indexdef).toContain(
+          "'answering'",
+        );
+      } finally {
+        await database.close();
+      }
+    },
+    OPEN_TIMEOUT,
+  );
 });

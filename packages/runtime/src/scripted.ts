@@ -30,17 +30,20 @@ import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-option
  * ignored but for a worker's brief (below); everything else it needs comes
  * from the tools it is offered:
  *
- * - its role: `create_task`/`send_to_task` → chat, `complete_task` →
- *   coordinator, otherwise worker;
+ * - its role: `create_task`, `send_to_task` or `list_tasks` → chat,
+ *   `complete_task` → coordinator, otherwise worker;
  * - who it can delegate to: the enum of `delegate.parameters.properties.bot`
  *   (the engine leaves `delegate` out when there is nobody);
- * - the active tasks in chat: the enum of `send_to_task`'s `taskId`, with
- *   titles in its description (for example "task_7: Penguin report");
  * - the bots a chat can include: the item enum of `create_task`'s `participants`.
  *
  * A worker reads its brief from the system prompt's last `## Your brief`
  * section (the engine puts it there), else from its first message; the rest
- * of the system prompt is ignored.
+ * of the system prompt is ignored. A coordinator whose goal quotes a question
+ * after "ask" (ask `Which colour?`) asks it first and waits for the user.
+ * In chat it finds tasks by calling `list_tasks` and reading its lines
+ * (`- <id> "<title>": <status> · …`), a task's outcome in `get_task`'s
+ * `Result:` or `Error:` line, and answers a task update (an input that
+ * starts with `[Task update]`) from its text.
  *
  * Like a provider, it refuses a prompt longer than its context window
  * (estimated at four characters a token) with a context overflow error. Asked
@@ -300,6 +303,15 @@ export function scriptedCommands(brief: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The question a goal quotes after "ask", as in ask `Which colour?`. A
+ * scripted coordinator asks it before any work and ends its turn, so the
+ * task waits for the user; the next input carries on.
+ */
+export function scriptedQuestion(goal: string): string | undefined {
+  return /\bask `([^`\n]+)`/i.exec(goal)?.[1]?.trim() || undefined;
+}
+
 /** A worker writes the notes file its brief names, else one named after the brief. */
 const notesFileFor = (brief: string) =>
   /\bnotes-[a-z0-9-]+\.md\b/.exec(brief)?.[0] ??
@@ -331,16 +343,29 @@ function choices(schema: JsonSchema | undefined): string[] {
 const parameter = (tool: Tool | undefined, name: string) =>
   (tool?.parameters as JsonSchema | undefined)?.properties?.[name];
 
-/** The title that follows a task id in a description: "task_7: Penguin report". */
-function titleOf(description: string, id: string, ids: string[]): string {
-  const start = description.indexOf(id);
-  if (start < 0) return "";
-  let rest = description.slice(start + id.length);
-  const ends = ["\n", ";", ...ids.filter((other) => other !== id)]
-    .map((marker) => rest.indexOf(marker))
-    .filter((index) => index >= 0);
-  if (ends.length > 0) rest = rest.slice(0, Math.min(...ends));
-  return rest.replace(/^[\s:=\-–—("']+/, "").replace(/[\s)"'.,]+$/, "");
+interface ListedTask {
+  id: string;
+  title: string;
+  status: string;
+}
+
+/** The tasks of a `list_tasks` result: lines `- <id> "<title>": <status> · …`, newest first. */
+export function parseTaskList(text: string): ListedTask[] {
+  const tasks: ListedTask[] = [];
+  for (const line of text.split("\n")) {
+    const match = /^- (\S+) ("(?:[^"\\]|\\.)*"): ([a-z]+)/.exec(line);
+    if (!match?.[1] || !match[2] || !match[3]) continue;
+    try {
+      tasks.push({
+        id: match[1],
+        title: JSON.parse(match[2]) as string,
+        status: match[3],
+      });
+    } catch {
+      // Not a task line.
+    }
+  }
+  return tasks;
 }
 
 interface Conversation {
@@ -350,8 +375,6 @@ interface Conversation {
   delegates: string[];
   /** Bots `create_task` can include. */
   bots: string[];
-  /** Active tasks `send_to_task` offers. */
-  activeTasks: { id: string; title: string }[];
   calls: { call: ToolCall; result: ToolResultMessage | undefined }[];
   /** A worker's brief from the system prompt's last "## Your brief" section. */
   brief?: string;
@@ -375,8 +398,6 @@ function readConversation(all: Message[]): Conversation {
     all.filter((message) => message.role !== "system"),
   );
   const tools = new Map(getCurrentTools(all).map((tool) => [tool.name, tool]));
-  const taskId = parameter(tools.get("send_to_task"), "taskId");
-  const taskIds = choices(taskId);
   const results = new Map<string, ToolResultMessage>();
   for (const message of messages)
     if (message.role === "toolResult") results.set(message.toolCallId, message);
@@ -391,10 +412,6 @@ function readConversation(all: Message[]): Conversation {
     tools,
     delegates: choices(parameter(tools.get("delegate"), "bot")),
     bots: choices(parameter(tools.get("create_task"), "participants")?.items),
-    activeTasks: taskIds.map((id) => ({
-      id,
-      title: titleOf(taskId?.description ?? "", id, taskIds),
-    })),
     calls,
     brief: briefOf(all),
   };
@@ -407,7 +424,8 @@ export function scriptedTurn(all: Message[]): ScriptedTurn {
   const conversation = readConversation(all);
   if (
     conversation.tools.has("create_task") ||
-    conversation.tools.has("send_to_task")
+    conversation.tools.has("send_to_task") ||
+    conversation.tools.has("list_tasks")
   )
     return chatTurn(conversation);
   if (conversation.tools.has("complete_task"))
@@ -462,6 +480,17 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
   const { messages, tools, calls } = conversation;
   const goal = userTexts(messages)[0] ?? "the task";
   const trailing = trailingResults(conversation);
+
+  // A goal that says ask `…` waits for the user before any work.
+  const question = scriptedQuestion(goal);
+  const asked = messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.content.some(
+        (block) => block.type === "text" && block.text === question,
+      ),
+  );
+  if (question && !asked) return { text: question };
 
   const completion = trailing.find(
     (result) => result.toolName === "complete_task",
@@ -631,44 +660,58 @@ const GREETING =
 const THANKS = /\b(thanks|thank you|cheers|much appreciated)\b/i;
 const WORK =
   /\b(please|can you|could you|would you|build|write|create|make|draft|research|investigate|analy[sz]e|fix|implement|plan|design|summari[sz]e|review|compare|prepare|set up|test|add|update|refactor|document)\b/i;
-const STATUS = /\b(status|progress|how('s| is) it going|any news)\b/i;
+const STATUS =
+  /\b(status|progress|how('s| is) it going|any news|how did (it|that|the task|things) go|did (it|that|the task) (work|finish))\b/i;
+const STOP = /\b(stop|cancel|abort|halt)\b/i;
+/** A question or stop that refers to a task without naming it: "the task", "it", "that". */
+const REFERS = /\b(task|it|that)\b/i;
+/** Work that follows up on a task: "also add …", "… to the task". */
+const FOLLOW_UP = /\b(also|again|(the|that|this) task)\b/i;
+const UPDATE = "[Task update]";
 
-function chatTurn(conversation: Conversation): ScriptedTurn {
-  const { messages, tools, activeTasks: active } = conversation;
-  const trailing = trailingResults(conversation);
-  const first = trailing[0];
-  if (first) {
-    const detail = clip(textOf(first.content), 300);
-    if (first.isError) return { text: `I couldn't do that: ${detail}` };
-    return first.toolName === "send_to_task"
-      ? { text: `I've passed that on to the task. ${detail}` }
-      : { text: `I've started a task for that. ${detail}` };
+/** The text of the latest user message (the input being answered). */
+function lastUserText(messages: Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message?.role === "user") return textOf(message.content);
   }
+  return "";
+}
 
-  const last = messages.at(-1);
-  const text = last?.role === "user" ? textOf(last.content) : "";
-  const isWork = WORK.test(text);
-  if (!isWork && GREETING.test(text))
-    return {
-      text: "Hello! Tell me what you'd like done and I'll start a task for it.",
-    };
-  if (!isWork && THANKS.test(text)) return { text: "You're welcome!" };
-
+/**
+ * The task a message is about: one it names by id or title, else the newest
+ * when work follows up on a task or a question refers to one.
+ */
+function targetOf(
+  text: string,
+  tasks: ListedTask[],
+  isWork: boolean,
+): ListedTask | undefined {
   const lower = text.toLowerCase();
-  const target =
-    active.find(
+  return (
+    tasks.find(
       (task) =>
         text.includes(task.id) ||
         (task.title.length > 0 && lower.includes(task.title.toLowerCase())),
-    ) ??
-    (active.length === 1 && /\b(task|it)\b/i.test(text) && isWork
-      ? active[0]
-      : undefined);
-  if (target && tools.has("send_to_task"))
-    return {
-      calls: [{ name: "send_to_task", args: { taskId: target.id, text } }],
-    };
+    ) ?? ((isWork ? FOLLOW_UP : REFERS).test(text) ? tasks[0] : undefined)
+  );
+}
 
+/** After `list_tasks`: act on the task the message is about, or start one. */
+function afterList(
+  conversation: Conversation,
+  text: string,
+  tasks: ListedTask[],
+): ScriptedTurn {
+  const { tools } = conversation;
+  const isWork = WORK.test(text);
+  const target = targetOf(text, tasks, isWork && !STOP.test(text));
+  if (target && STOP.test(text) && tools.has("stop_task"))
+    return { calls: [{ name: "stop_task", args: { id: target.id } }] };
+  if (target && isWork && tools.has("send_to_task"))
+    return { calls: [{ name: "send_to_task", args: { id: target.id, text } }] };
+  if (target && tools.has("get_task"))
+    return { calls: [{ name: "get_task", args: { id: target.id } }] };
   if (isWork && tools.has("create_task")) {
     const participants = conversation.bots.filter((name) =>
       mentions(text, name),
@@ -677,14 +720,105 @@ function chatTurn(conversation: Conversation): ScriptedTurn {
       calls: [{ name: "create_task", args: { goal: text, participants } }],
     };
   }
+  const unfinished = tasks.filter(
+    (task) => !["completed", "failed", "cancelled"].includes(task.status),
+  );
+  return {
+    text:
+      unfinished.length > 0
+        ? `I'm working on: ${unfinished.map((task) => task.title || task.id).join("; ")}.`
+        : "I have no active tasks right now.",
+  };
+}
 
-  if (STATUS.test(text))
+/** A `get_task` result as an answer: the task's status, then its result or error. */
+function taskAnswer(text: string): string {
+  const lines = text.split("\n");
+  const head = /^Task (\S+) ("(?:[^"\\]|\\.)*"): (.+)$/.exec(lines[0] ?? "");
+  let title = head?.[1] ?? "The task";
+  try {
+    if (head?.[2]) title = JSON.parse(head[2]) as string;
+  } catch {
+    // Keep the id.
+  }
+  const outcome = lines.find(
+    (line) => line.startsWith("Result: ") || line.startsWith("Error: "),
+  );
+  return `"${title}" is ${head?.[3] ?? "unknown"}.${outcome ? ` ${clip(outcome, 400)}` : ""}`;
+}
+
+/** A task update as the bot's own message: what happened, then the first line of its text. */
+function updateAnswer(text: string): string {
+  const lines = text.split("\n");
+  const happened =
+    /a task you coordinate (completed|failed|is waiting for the user)/.exec(
+      lines[0] ?? "",
+    )?.[1] ?? "changed";
+  const task = /^Task: (\S+) ("(?:[^"\\]|\\.)*")$/.exec(lines[1] ?? "");
+  let title = task?.[1] ?? "a task";
+  try {
+    if (task?.[2]) title = JSON.parse(task[2]) as string;
+  } catch {
+    // Keep the id.
+  }
+  const header = lines.findIndex((line) =>
+    line.endsWith("as the task recorded it:"),
+  );
+  const body = clip((lines[header + 1] ?? "").trim(), 300);
+  if (happened === "is waiting for the user")
+    return `"${title}" needs your input: ${body}`;
+  return `Update on "${title}": it ${happened}. ${body}`.trim();
+}
+
+function chatTurn(conversation: Conversation): ScriptedTurn {
+  const { messages, tools } = conversation;
+  const trailing = trailingResults(conversation);
+  const first = trailing[0];
+  const text = lastUserText(messages);
+  if (first) {
+    const result = textOf(first.content);
+    const detail = clip(result, 300);
+    if (first.isError) return { text: `I couldn't do that: ${detail}` };
+    switch (first.toolName) {
+      case "list_tasks":
+        return afterList(conversation, text, parseTaskList(result));
+      case "get_task":
+        return { text: taskAnswer(result) };
+      case "read_task_log":
+        return { text: `From the task log: ${detail}` };
+      case "send_to_task":
+        return { text: `I've passed that on to the task. ${detail}` };
+      case "stop_task":
+        return { text: detail };
+      default:
+        return { text: `I've started a task for that. ${detail}` };
+    }
+  }
+
+  // An update may follow an unanswered user message in the same turn.
+  const update = text.indexOf(UPDATE);
+  if (update >= 0) return { text: updateAnswer(text.slice(update)) };
+  const isWork = WORK.test(text);
+  if (!isWork && GREETING.test(text))
     return {
-      text:
-        active.length > 0
-          ? `I'm working on: ${active.map((task) => task.title || task.id).join("; ")}.`
-          : "I have no active tasks right now.",
+      text: "Hello! Tell me what you'd like done and I'll start a task for it.",
     };
+  if (!isWork && THANKS.test(text)) return { text: "You're welcome!" };
+
+  // Check the bot's tasks first: the message may be about one of them.
+  if (
+    (isWork || STATUS.test(text) || STOP.test(text)) &&
+    tools.has("list_tasks")
+  )
+    return { calls: [{ name: "list_tasks", args: {} }] };
+  if (isWork && tools.has("create_task")) {
+    const participants = conversation.bots.filter((name) =>
+      mentions(text, name),
+    );
+    return {
+      calls: [{ name: "create_task", args: { goal: text, participants } }],
+    };
+  }
   return {
     text: "I'm not sure what you'd like me to do yet. Ask me to work on something and I'll start a task.",
   };
