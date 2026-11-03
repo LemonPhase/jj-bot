@@ -54,6 +54,9 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
   [TASKS_SCREEN]: { what: "the Tasks screen" },
   "src/features/studio/StudioScreen.tsx": { what: "Bot Studio" },
   "src/features/settings/SettingsScreen.tsx": { what: "the Settings screen" },
+  "src/features/templates/TemplateDialog.tsx": {
+    what: "the task template dialogs",
+  },
   "src/features/office/Office3D.tsx": {
     what: "the 3D office",
     after: [TASKS_SCREEN],

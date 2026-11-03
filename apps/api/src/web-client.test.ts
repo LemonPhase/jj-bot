@@ -280,6 +280,66 @@ describe("liveApi against the real server", () => {
     const unknown = await rejection(api.getTask("task_missing"));
     expect(unknown).toMatchObject({ code: "NOT_FOUND", status: 404 });
   });
+
+  it("saves, edits and starts a template, and reports one that cannot start", async () => {
+    const [lead, helper] = [
+      await api.createBot({ name: "TemplateLead" }),
+      await api.createBot({ name: "TemplateHelper" }),
+    ];
+    const hints: WorkspaceHint[] = [];
+    const states: string[] = [];
+    const offHints = api.subscribeHints((hint) => hints.push(hint), {
+      onState: (state) => states.push(state),
+    });
+    await until(() => states.includes("open"), { what: "the hint stream" });
+    const template = await api.createTemplate({
+      title: "Notes",
+      goal: "Write notes.md.",
+      coordinatorBotId: lead.id,
+      participantBotIds: [helper.id],
+    });
+    expect(template.problems).toEqual([]);
+    const edited = await api.updateTemplate(template.id, { spendCapUsd: null });
+    expect(edited.spendCapUsd).toBeNull();
+    expect(await api.getTemplate(template.id)).toEqual(edited);
+    expect((await api.listTemplates()).map((entry) => entry.id)).toContain(
+      template.id,
+    );
+    await until(() => hints.some((hint) => hint.type === "templates.changed"), {
+      what: "templates.changed",
+    });
+    offHints();
+
+    const task = await api.startTemplate(template.id, {
+      instructions: "Keep it short.",
+    });
+    expect(task).toMatchObject({
+      templateId: template.id,
+      spendCapUsd: null,
+      goal: "Write notes.md.\n\nInstructions for this run:\nKeep it short.",
+    });
+    await until(
+      async () => (await api.getTask(task.id)).task.status === "completed",
+      { what: "the started task to complete" },
+    );
+
+    await api.archiveBot(helper.id);
+    const unusable = await rejection(api.startTemplate(template.id, {}));
+    expect(unusable).toMatchObject({
+      code: "TEMPLATE_UNUSABLE",
+      status: 409,
+      details: {
+        problems: [
+          { kind: "bot_archived", botId: helper.id, name: "TemplateHelper" },
+        ],
+      },
+    });
+    await api.deleteTemplate(template.id);
+    expect(await rejection(api.getTemplate(template.id))).toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+    });
+  });
 });
 
 describe("startServer", () => {
