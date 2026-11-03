@@ -5,6 +5,7 @@ export * from "./compaction";
 export * from "./errors";
 export * from "./executor";
 export { NOT_STARTED_TEXT } from "./loop";
+export * from "./mcp";
 export * from "./models";
 export * from "./proxy";
 export { createSandboxTools } from "./sandbox-tools";

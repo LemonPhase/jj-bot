@@ -20,6 +20,7 @@ import {
   runLoop,
   userMessage,
 } from "./loop";
+import { createMcpTools } from "./mcp/adapter";
 import {
   type ModelRegistry,
   ModelResolutionError,
@@ -216,6 +217,7 @@ export class PiSessionExecutor implements RunExecutor {
           endRequested = true;
         }),
       ),
+      ...createMcpTools(input.mcpTools ?? [], policy),
     ];
     const drain = async (turnEnded = false) =>
       (await hooks.drainInbox(turnEnded))
@@ -278,6 +280,7 @@ export class PiSessionExecutor implements RunExecutor {
       systemPrompt: input.systemPrompt,
       tools,
       collabTools: input.collaborationTools,
+      ...(input.mcpTools ? { mcpTools: input.mcpTools } : {}),
       transcript,
       compactor,
       pendingEntries: repairs,
