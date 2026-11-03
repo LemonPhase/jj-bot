@@ -1112,15 +1112,21 @@ export function describeSandboxConformance(
 
         const controller = new AbortController();
         const spawned = await spawn(
-          ["sh", "-c", "echo ready; while :; do sleep 0.1; done"],
+          [
+            "sh",
+            "-c",
+            "echo ready; while :; do echo x >> hb-spawn-abort; sleep 0.1; done",
+          ],
           { signal: controller.signal },
         );
         const output = capture(spawned);
         await output.until(() => output.stdout.includes("ready"), "ready");
+        await waitForHeartbeat(sandbox, "hb-spawn-abort");
         controller.abort();
         const exit = await spawned.exited;
         expect(exit.interruptReason).toBe("abort");
         expect(["yes", "unknown"]).toContain(exit.interrupted);
+        await expectHeartbeatsStopped(sandbox, ["hb-spawn-abort"]);
       },
       testTimeout,
     );
