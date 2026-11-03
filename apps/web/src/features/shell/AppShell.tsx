@@ -1,6 +1,5 @@
 import {
   Component,
-  lazy,
   type ReactNode,
   Suspense,
   useEffect,
@@ -22,25 +21,14 @@ import {
 } from "./router";
 import { type ShellActions, ShellContext } from "./ShellContext";
 import { Sidebar } from "./Sidebar";
+import {
+  SCREEN_NAMES,
+  SettingsScreen,
+  StudioScreen,
+  TasksScreen,
+} from "./screens";
 import { navigate, useRoute } from "./useRoute";
 import "./shell.css";
-
-// Every screen but Bots, the one the app opens on, loads on demand, so the
-// entry chunk carries none of their code: Tasks pulls in the graph and
-// (lazily) Three.js, and Studio and Settings are visited now and then. Routes
-// are parsed in the entry, so deep links and reloads land on the right screen,
-// which shows a spinner until its chunk arrives.
-const TasksScreen = lazy(() =>
-  import("../tasks/TasksScreen").then((m) => ({ default: m.TasksScreen })),
-);
-const StudioScreen = lazy(() =>
-  import("../studio/StudioScreen").then((m) => ({ default: m.StudioScreen })),
-);
-const SettingsScreen = lazy(() =>
-  import("../settings/SettingsScreen").then((m) => ({
-    default: m.SettingsScreen,
-  })),
-);
 
 type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
 
@@ -238,7 +226,11 @@ function Screen({ route }: { route: Route }) {
   if (route.name === "bots") return <BotsScreen botId={route.botId} />;
   return (
     <ScreenBoundary key={route.name}>
-      <Suspense fallback={<ShellLoading label="Loading…" />}>
+      <Suspense
+        fallback={
+          <ShellLoading label={`Loading ${SCREEN_NAMES[route.name]}…`} />
+        }
+      >
         <LazyScreen route={route} />
       </Suspense>
     </ScreenBoundary>
