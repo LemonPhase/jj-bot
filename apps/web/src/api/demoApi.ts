@@ -419,6 +419,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     participantBotIds: string[];
     title?: string;
     spendCapUsd?: number | null;
+    templateId?: string | null;
   }): TaskState => {
     const createdAt = now();
     const task: Task = {
@@ -438,6 +439,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         input.spendCapUsd !== undefined
           ? input.spendCapUsd
           : budgetsOf(input.coordinatorBotId).maxUsdPerTask,
+      templateId: input.templateId ?? null,
       createdAt,
       updatedAt: createdAt,
       finishedAt: null,

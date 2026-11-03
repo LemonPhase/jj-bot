@@ -44,7 +44,9 @@ export function onError(logger: Logger) {
     if (isDomainError(error))
       return errorResponse(
         c,
-        HTTP_STATUS[error.code],
+        typeof error.status === "number"
+          ? error.status
+          : HTTP_STATUS[error.code],
         error.code,
         error.message,
         error.details,

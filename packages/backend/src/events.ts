@@ -116,6 +116,7 @@ export async function subscribeHints(
       case "conversation.changed":
       case "profiles.changed":
       case "secrets.changed":
+      case "templates.changed":
         handler(value);
     }
   });
