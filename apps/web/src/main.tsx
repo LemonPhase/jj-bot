@@ -4,8 +4,14 @@ import { App } from "./App";
 import { ApiProvider } from "./api/ApiContext";
 import { resolveApi } from "./api/resolveApi";
 import { StartFailed } from "./features/shell/AppShell";
+import { parseRoute } from "./features/shell/router";
+import { preloadScreen } from "./features/shell/screens";
 import { WorkspaceProvider } from "./state/WorkspaceContext";
 import "./styles/index.css";
+
+// A deep link's or reload's screen starts downloading now, while the API is
+// probed and the workspace loads, instead of once they are done.
+preloadScreen(parseRoute(window.location.hash));
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Missing application root");

@@ -1,6 +1,7 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig, type ProxyOptions } from "vite";
 // The extensions keep the config loadable by Vite's native config loader.
+import { chunkModules } from "./bundleSize.ts";
 import { apiTarget } from "./devEnv.ts";
 import { closeClientWithUpstream } from "./devProxy.ts";
 
@@ -38,7 +39,8 @@ const apiProxy = (target: string): ProxyOptions => ({
 export default defineConfig(({ mode }) => {
   const target = apiTarget(mode);
   return {
-    plugins: [react()],
+    // chunkModules lists each chunk's modules for `npm run size`.
+    plugins: [react(), chunkModules()],
     build: {
       // The largest chunk is the 3D office, Three.js itself (about 620 kB),
       // which loads only when someone opens that view. What every visit
