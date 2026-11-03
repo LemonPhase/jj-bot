@@ -95,8 +95,10 @@ function SessionInspector({
         )}
       </Line>
       {large.map((call) => (
-        <Line key={call.id} label={formatToolCall(call)}>
-          <SavedCopy view={view} artifactId={call.savedCopy as string} />
+        <Line key={call.id} label={call.tool}>
+          <span title={formatToolCall(call)}>
+            <SavedCopy view={view} artifactId={call.savedCopy as string} />
+          </span>
         </Line>
       ))}
       {saved && (

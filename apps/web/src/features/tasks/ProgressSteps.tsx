@@ -263,8 +263,11 @@ function StepCard({
         <span className="progress__tools clamp2">
           {tools.partial && "… → "}
           {tools.calls.map(formatToolCall).join(" → ")}
-          {tools.calls.some((call) => call.outputGone) && " · output not kept"}
         </span>
+      )}
+      {/* Its own line, so the clamped tool line never hides it. */}
+      {tools.calls.some((call) => call.outputGone) && (
+        <span className="progress__tools-note">Tools · output not kept</span>
       )}
       {line && (
         <span className="progress__evidence clamp2">

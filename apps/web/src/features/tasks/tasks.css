@@ -509,6 +509,12 @@
   overflow-wrap: anywhere;
 }
 
+.progress__tools-note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-muted);
+}
+
 .progress__evidence {
   font-size: var(--fs-meta);
   color: var(--ink-muted);
