@@ -1,7 +1,6 @@
-import { fileURLToPath } from "node:url";
+import { readdir } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import { type ExtractTablesWithRelations, sql } from "drizzle-orm";
-import { readMigrationFiles } from "drizzle-orm/migrator";
+import type { ExtractTablesWithRelations } from "drizzle-orm";
 import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
 import { migrate as migrateNodePg } from "drizzle-orm/node-postgres/migrator";
 import type {
@@ -19,9 +18,11 @@ import {
   pgliteListener,
   postgresListener,
 } from "./bus";
+import { assertSchemaKnown, migrationsFolder } from "./migrations";
 import {
   guardDatabase,
   guardNestedCalls,
+  LOCK_FILE,
   lockDataDirectory,
   nodeDataDirectory,
 } from "./pglite";
@@ -72,11 +73,6 @@ export interface Database {
   close(): Promise<void>;
 }
 
-/** Generated SQL migrations, applied in order on open. */
-export const migrationsFolder = fileURLToPath(
-  new URL("../migrations", import.meta.url),
-);
-
 /** Session advisory lock key that serializes concurrent migrators on one PostgreSQL database. */
 const MIGRATION_LOCK = "jj-bot:migrations";
 
@@ -89,6 +85,8 @@ const defaultOnError = (error: unknown) => {
  * embedded database (one owner per data directory); use PostgreSQL for
  * separate API and worker processes. Migrations are applied before this
  * resolves; on PostgreSQL concurrent openers serialize on an advisory lock.
+ * A database that records migrations newer than this build ships is refused
+ * with `SchemaTooNewError`, before anything is applied.
  */
 export async function openDatabase(config: DatabaseConfig): Promise<Database> {
   const onError = config.onError ?? defaultOnError;
@@ -128,34 +126,52 @@ export async function openDatabase(config: DatabaseConfig): Promise<Database> {
   }
 }
 
-export interface MigrationStatus {
-  /** Migrations in `migrationsFolder`. */
-  expected: number;
-  /** Migrations recorded as applied in this database. */
-  applied: number;
-  /** Migrations newer than the last applied one: what `openDatabase` would apply. */
-  pending: number;
-}
+/** Where `inspectDatabase` reads. */
+export type InspectedDatabase =
+  | { mode: "pglite"; path: string }
+  | { mode: "postgres"; connectionString: string };
 
 /**
- * Compares the database's migration record with the migrations shipped in
- * `migrationsFolder`, the way the migrator decides what to apply. For
- * readiness checks; `openDatabase` has already applied everything it opened.
+ * Runs `read` on the store without migrating it, in read-only sessions, and
+ * closes it again: for inspecting a database of any schema version, such as
+ * a restored backup. Query it with raw SQL, or only the tables its migration
+ * level has. A PGlite directory must already hold a database (opening an
+ * empty one would create it) and is locked as `openDatabase` locks it.
  */
-export async function migrationStatus(
-  exec: Executor,
-): Promise<MigrationStatus> {
-  const files = readMigrationFiles({ migrationsFolder });
-  const result = (await exec.execute(
-    sql`select created_at from drizzle.__drizzle_migrations`,
-  )) as unknown as { rows: { created_at: string | number }[] };
-  const applied = result.rows.map((row) => Number(row.created_at));
-  const last = applied.length > 0 ? Math.max(...applied) : -1;
-  return {
-    expected: files.length,
-    applied: applied.length,
-    pending: files.filter((file) => file.folderMillis > last).length,
-  };
+export async function inspectDatabase<T>(
+  where: InspectedDatabase,
+  read: (db: Db) => Promise<T>,
+): Promise<T> {
+  if (where.mode === "postgres") {
+    const pool = new Pool({
+      connectionString: where.connectionString,
+      max: 1,
+      options: "-c default_transaction_read_only=on",
+    });
+    pool.on("error", defaultOnError);
+    try {
+      return await read(drizzleNodePg(pool, { schema: tables }));
+    } finally {
+      await pool.end();
+    }
+  }
+  const directory = nodeDataDirectory(where.path);
+  if (!directory) throw new Error(`${where.path} is not a data directory.`);
+  const entries = await readdir(directory).catch(() => []);
+  if (!entries.some((entry) => entry !== LOCK_FILE))
+    throw new Error(`No PGlite database at ${directory}.`);
+  const unlock = await lockDataDirectory(directory);
+  try {
+    const client = await PGlite.create(directory);
+    try {
+      await client.exec("set default_transaction_read_only = on");
+      return await read(drizzlePglite(client, { schema: tables }));
+    } finally {
+      await client.close();
+    }
+  } finally {
+    await unlock();
+  }
 }
 
 export const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
@@ -182,6 +198,7 @@ async function openPglite(
     raw = await PGlite.create(dataDir);
     const client = guardNestedCalls(raw);
     const db = guardDatabase(drizzlePglite(client, { schema: tables }));
+    await assertSchemaKnown(db);
     await migratePglite(db, { migrationsFolder });
     const opened = raw;
     return finish(
@@ -278,7 +295,9 @@ async function migratePostgres(pool: Pool) {
       MIGRATION_LOCK,
     ]);
     try {
-      await migrateNodePg(drizzleNodePg(client), { migrationsFolder });
+      const db = drizzleNodePg(client);
+      await assertSchemaKnown(db);
+      await migrateNodePg(db, { migrationsFolder });
     } finally {
       try {
         await client.query("select pg_advisory_unlock(hashtext($1))", [
