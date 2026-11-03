@@ -661,34 +661,55 @@ describe("backend probe", () => {
     const unreachable = vi.fn(async () => {
       throw new TypeError("fetch failed");
     }) as unknown as typeof globalThis.fetch;
+    // Offline or down: never replaced by demo data.
     expect(await probeBackend({ fetch: unreachable })).toMatchObject({
       ok: false,
+      demo: false,
       reason: expect.stringMatching(/isn't reachable/),
     });
+    const down = vi.fn(
+      async () => new Response("Bad gateway", { status: 502 }),
+    );
+    expect(
+      await probeBackend({ fetch: down as unknown as typeof globalThis.fetch }),
+    ).toMatchObject({
+      demo: false,
+      reason: expect.stringMatching(/isn't reachable/),
+    });
+    // No JJ Bot API served here (a static build): the demo data may stand in.
     const html = vi.fn(
       async () => new Response("<!doctype html>", { status: 200 }),
     );
     expect(
       await probeBackend({ fetch: html as unknown as typeof globalThis.fetch }),
-    ).toMatchObject({
-      reason: expect.stringMatching(/isn't reachable/),
-    });
+    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
+    const missing = vi.fn(
+      async () => new Response("<!doctype html>", { status: 404 }),
+    );
+    expect(
+      await probeBackend({
+        fetch: missing as unknown as typeof globalThis.fetch,
+      }),
+    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
     const legacy = mockFetch({
       "GET /api/bootstrap": { mode: "backend", contractVersion: "0.4.0" },
     });
     expect(await probeBackend({ fetch: legacy.fetch })).toMatchObject({
+      demo: false,
       reason: expect.stringMatching(/doesn't match contract/),
     });
     const locked = mockFetch({
       "GET /api/bootstrap": () => json(401, { error: "UNAUTHORIZED" }),
     });
     expect(await probeBackend({ fetch: locked.fetch })).toMatchObject({
+      demo: false,
       reason: expect.stringMatching(/\?token=/),
     });
     const scaffold = mockFetch({
       "GET /api/bootstrap": { ...bootstrap, mode: "scaffold" },
     });
     expect(await probeBackend({ fetch: scaffold.fetch })).toMatchObject({
+      demo: true,
       reason: expect.stringMatching(/scaffold/),
     });
     const ok = mockFetch({ "GET /api/bootstrap": bootstrap });

@@ -132,6 +132,9 @@ test("serves the shell from its cache and never /api, even offline", async ({
     page.getByRole("heading", { level: 1, name: "Nova" }),
   ).toBeVisible();
   await controlled(page);
+  // The first, uncontrolled load's fonts arrive first, so only the
+  // reload's answers are counted below.
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
 
   const responses: Response[] = [];
   page.on("response", (response) => responses.push(response));
@@ -234,4 +237,145 @@ test("a new deploy shows on the next load: the page comes from the network first
   await page.reload();
   await expect(page).toHaveTitle("JJ Bot, deployed again");
   await page.context().unrouteAll();
+});
+
+// A bad answer, once, must never stick: the worker keeps only what is
+// really the app's file.
+
+test("an asset answered once with a web page is not kept: the next load works", async ({
+  page,
+  request,
+}) => {
+  await createBot(request, "Nova");
+  const html = await (await request.get("/")).text();
+  const entry = html.match(/<script type="module"[^>]*src="([^"]+)"/)?.[1];
+  expect(entry).toMatch(/^\/assets\/index-[\w-]+\.js$/);
+  // As the worker installs, a proxy answers its fetch of the entry script
+  // with a maintenance page (200, HTML); the page itself is served fine.
+  let answered = false;
+  await page.context().route(
+    (url) => url.pathname === entry,
+    async (route) => {
+      if (route.request().serviceWorker() && !answered) {
+        answered = true;
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html",
+          body: "<title>Down for maintenance</title>",
+        });
+      } else await route.continue();
+    },
+  );
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  expect(answered).toBe(true);
+  await page.context().unrouteAll();
+
+  // The server is healthy again: the app loads, from the network.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  // What the worker keeps under the entry's name now is the script.
+  const kept = await page.evaluate(
+    async (path) =>
+      (await caches.match(path))?.headers.get("content-type") ?? null,
+    entry ?? "",
+  );
+  expect(kept ?? "text/javascript").toContain("javascript");
+});
+
+test("a chunk redirected once to a login page is not kept: the screen loads after a reload", async ({
+  page,
+  request,
+}) => {
+  await createBot(request, "Nova");
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  // A proxy sends the Settings chunk to its login page, once.
+  let redirected = false;
+  await page
+    .context()
+    .route(/\/assets\/SettingsScreen-[\w-]+\.js$/, async (route) => {
+      if (redirected) return route.continue();
+      redirected = true;
+      await route.fulfill({ status: 302, headers: { location: "/login" } });
+    });
+  await page.goto("/#/settings");
+  // This time the screen cannot load, and says so.
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  expect(redirected).toBe(true);
+  await page.context().unrouteAll();
+
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Settings" }),
+  ).toBeVisible();
+});
+
+test("a page that is not the app is never kept as the offline shell", async ({
+  page,
+  request,
+}) => {
+  await createBot(request, "Nova");
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  // A proxy's maintenance page, answered 200: shown, as the network said.
+  await page.context().route(
+    (url) => url.pathname === "/",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><title>Down for maintenance</title>",
+      }),
+    { times: 1 },
+  );
+  await page.reload();
+  await expect(page).toHaveTitle("Down for maintenance");
+  await page.context().unrouteAll();
+
+  // Offline, the app's own shell opens, not the maintenance page.
+  await page.context().setOffline(true);
+  await page.reload();
+  await expect(page).toHaveTitle("JJ Bot");
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  await page.context().setOffline(false);
+});
+
+test("offline, the app says the API is unreachable and never shows the demo data instead", async ({
+  page,
+  request,
+}) => {
+  await createBot(request, "Nova");
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  // Once opened with ?demo under the worker, the demo chunk has loaded...
+  const demoChunk = page.waitForRequest(/\/assets\/demoApi-[\w-]+\.js$/);
+  await page.goto("/?demo");
+  await demoChunk;
+  await expect(page.getByText("Demo data").first()).toBeVisible();
+  // ...but the worker does not keep it.
+  expect(
+    (await cached(page)).some((item) => item.request.includes("demoApi")),
+  ).toBe(false);
+
+  await page.context().setOffline(true);
+  await page.goto("/");
+  await expect(page.getByText("The JJ Bot API isn't reachable.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(page.getByText("Demo data")).toHaveCount(0);
+  await page.context().setOffline(false);
 });

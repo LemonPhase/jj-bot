@@ -8,7 +8,7 @@ Below 760px wide the app is laid out for a phone: a top bar with a `Menu` button
 - `mobile-screens` lays out Bots and direct chat, Tasks (Progress, Graph, Office 2D), Studio and Settings at 360 to 430px in both themes.
 - `mobile-office` offers 2D only on a phone or without WebGL, and says why under the 2D/3D switch.
 - `pwa-install` serves the manifest and icons and registers the service worker.
-- `pwa-cache` serves the shell from the service worker's cache (offline too), takes `index.html` from the network first, and never handles `/api`.
+- `pwa-cache` serves the shell from the service worker's cache (offline too), takes `index.html` from the network first, never handles `/api`, never keeps a maintenance page, a redirect or the demo data's chunk, and offline says the API is unreachable instead of showing demo data.
 
 ## How to get to it (user POV)
 
@@ -26,7 +26,7 @@ Preconditions:
 - **Themes.** Run `$P "$RUN" localstorage-set jj.theme dark` and `$P "$RUN" reload` (`run-code "async (page) => page.evaluate(() => document.documentElement.dataset.theme)"` prints `dark`), then screenshot each screen (`screenshot --filename=<nn>-<screen>-dark.png`); `light` for the other theme. A screen's own pane scrolls, not the page: scroll that pane to capture the rest of it.
 - **Office.** On a task, choose the tab `Office`: the radio `3D` is disabled and the line under the switch reads `3D needs a wider screen. The 2D office shows the same task.` The 2D office is the image `Pixel office acting out the task conversation`.
 - **Install.** On the built app, `curl -s "$U/manifest.webmanifest"` shows `name` `JJ Bot`, `display` `standalone` and icons of 192 and 512 px (one `maskable`). Run `$P "$RUN" run-code "async (page) => page.evaluate(() => navigator.serviceWorker.getRegistration().then((r) => r && r.active && r.active.scriptURL))"` after a load: it prints `$U/sw.js`.
-- **Cache.** Run `$P "$RUN" run-code "async (page) => page.evaluate(() => caches.keys().then((names) => caches.open(names[0])).then((c) => c.keys()).then((keys) => keys.map((k) => new URL(k.url).pathname)))"`: only `/index.html` and `/assets/…`, never `/api`. `$P "$RUN" network-state-set offline`, `$P "$RUN" reload` and a snapshot: the app still opens and reads `Couldn't load The JJ Bot API isn't reachable…` with `Reload`; `network-state-set online` restores it.
+- **Cache.** Run `$P "$RUN" run-code "async (page) => page.evaluate(() => caches.keys().then((names) => caches.open(names[0])).then((c) => c.keys()).then((keys) => keys.map((k) => new URL(k.url).pathname)))"`: only `/index.html` and hashed `/assets/…` files, never `/api` and never `/assets/demoApi-…`, even after a `?demo` visit. `$P "$RUN" network-state-set offline`, `$P "$RUN" reload` and a snapshot: the app still opens and reads `Couldn't load The JJ Bot API isn't reachable.` with `Reload`, and no `Demo data` badge; `network-state-set online` restores it.
 
 ## Gotchas
 

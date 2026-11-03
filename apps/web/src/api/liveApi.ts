@@ -632,13 +632,24 @@ function createHintHub(connect: SseConnect, url: string, retryMs: number) {
 
 export type BackendProbe =
   | { ok: true; bootstrap: Bootstrap; models: ModelsView | null }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /**
+       * Whether the demo data may stand in: only when no JJ Bot backend is
+       * there at all (a static build of the app, or a scaffold API). An API
+       * that is unreachable, refuses or cannot be used is never replaced by
+       * demo data, which would pass for the user's workspace.
+       */
+      demo: boolean;
+    };
 
 const majorOf = (version: string) => version.split(".")[0];
 
 /**
  * Asks `/api/bootstrap` whether a compatible backend is there. Never throws:
- * the reason it is not usable is shown in the demo badge's tooltip.
+ * the reason it is not usable is shown in the demo badge's tooltip, or, when
+ * the demo data may not stand in, in place of the app.
  */
 export async function probeBackend(
   options: HttpOptions,
@@ -649,12 +660,14 @@ export async function probeBackend(
     if (bootstrap.mode !== "backend")
       return {
         ok: false,
+        demo: true,
         reason:
           "The API is running in scaffold mode, with no backend behind it.",
       };
     if (majorOf(bootstrap.contractVersion) !== majorOf(CONTRACT_VERSION))
       return {
         ok: false,
+        demo: false,
         reason: `The API speaks contract ${bootstrap.contractVersion}; this app needs ${CONTRACT_VERSION}.`,
       };
     const models = await request("GET", "/models", modelsViewSchema).catch(
@@ -669,17 +682,34 @@ export async function probeBackend(
     if (error.code === "UNAUTHORIZED")
       return {
         ok: false,
+        demo: false,
         reason:
           "The API requires a token. Open the app once with ?token=<API_TOKEN> to keep it in this browser.",
       };
+    // Offline, or the server down behind a proxy.
     if (
       error.code === "NETWORK_ERROR" ||
-      (error.status !== undefined && error.status >= 500) ||
-      error.details === NOT_JSON
+      (error.status !== undefined && error.status >= 500)
     )
-      return { ok: false, reason: "The JJ Bot API isn't reachable." };
+      return {
+        ok: false,
+        demo: false,
+        reason: "The JJ Bot API isn't reachable.",
+      };
+    // A web page, or no such route: no JJ Bot API is served here.
+    if (
+      error.details === NOT_JSON ||
+      error.status === 404 ||
+      error.status === 405
+    )
+      return {
+        ok: false,
+        demo: true,
+        reason: "No JJ Bot API answers here.",
+      };
     return {
       ok: false,
+      demo: false,
       reason: `The API's bootstrap doesn't match contract ${CONTRACT_VERSION}.`,
     };
   }
