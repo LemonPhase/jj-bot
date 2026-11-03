@@ -22,7 +22,7 @@ import {
 import type { Engine } from "../engine";
 import type { RunExecutor } from "../ports";
 import { promptBot } from "./fake-executor";
-import { type TestEngine, testEngine } from "./harness";
+import { type TestEngine, type TestEngineOptions, testEngine } from "./harness";
 
 export type Faux = ReturnType<typeof fauxProvider>;
 
@@ -59,9 +59,11 @@ export function route(faux: Faux, scripts: Record<string, Script>) {
 export async function fauxTeamEngine(
   database: Database,
   wrap: (executor: RunExecutor) => RunExecutor = (executor) => executor,
+  options: Omit<TestEngineOptions, "runExecutor"> = {},
 ): Promise<TestEngine & { faux: Faux }> {
   const faux = fauxProvider();
   const engine = await testEngine(database, {
+    ...options,
     runExecutor: wrap(
       new PiSessionExecutor({
         models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
