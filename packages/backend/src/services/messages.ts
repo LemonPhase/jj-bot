@@ -92,6 +92,20 @@ const omittedLine = (count: number) =>
   `[${count} earlier message${count === 1 ? "" : "s"} omitted]`;
 
 /**
+ * The messages an inbox item stands for when it is the cap's "N earlier
+ * messages omitted" line (it has no source message); undefined for any
+ * other item.
+ */
+export function omittedCount(item: {
+  text: string;
+  sourceMessageId: string | null;
+}): number | undefined {
+  if (item.sourceMessageId !== null) return undefined;
+  const match = OMITTED.exec(item.text);
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
  * Keeps a session's undelivered `message` items to the newest
  * MAX_PENDING_MESSAGES, so broadcasts cannot pile up without bound in a
  * waiting session. The older ones become a single "N earlier messages
@@ -114,13 +128,13 @@ async function capPendingMessages(tx: Tx, sessionId: string) {
     )
     .orderBy(desc(sessionInbox.createdAt), desc(sessionInbox.id));
   const isSummary = (item: (typeof pending)[number]) =>
-    item.sourceMessageId === null && OMITTED.test(item.text);
+    omittedCount(item) !== undefined;
   const summary = pending.find(isSummary);
   const messages = pending.filter((item) => !isSummary(item));
   const dropped = messages.slice(MAX_PENDING_MESSAGES);
   const [newest, ...older] = dropped;
   if (!newest) return;
-  const earlier = Number(summary ? OMITTED.exec(summary.text)?.[1] : 0);
+  const earlier = summary ? (omittedCount(summary) ?? 0) : 0;
   // The newest dropped item becomes the summary, so it keeps its place.
   await tx
     .update(sessionInbox)
