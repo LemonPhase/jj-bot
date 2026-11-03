@@ -90,7 +90,8 @@ export const pendingApprovalSchema = approvalSchema.pick({
  * `POST /api/tasks/:taskId/approvals/:approvalId`. Only the user decides: no
  * agent tool, in a task or in direct chat, can. A blank reason counts as
  * none; only a denial takes one. An approval that is no longer pending
- * answers 409 APPROVAL_NOT_PENDING.
+ * answers 409 APPROVAL_NOT_PENDING; a stopping or stopped task, 409
+ * TASK_TERMINAL.
  */
 export const decideApprovalCommandSchema = z
   .object({

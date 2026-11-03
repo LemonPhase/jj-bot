@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Approval, TaskView } from "@jj/contracts";
-import { approvals, chatTaskUpdates, jobs } from "@jj/db";
+import { approvals, chatTaskUpdates, jobs, tasks as tasksTable } from "@jj/db";
 import {
   INTERRUPTED_BY_RESTART,
   ModelRegistry,
@@ -654,6 +654,25 @@ describe("approvals", () => {
     expect(seen).toBe(
       "Not run: the task's goal or plan changed (now goal version 2) before it ran.",
     );
+    expect(await pushes(root, task.id)).toBe(0);
+  });
+
+  it("takes no answer while the task is stopping", async () => {
+    const root = await workspace();
+    const { engine } = await start(root, [callTool("bash", { command: PUSH })]);
+    const { task, approval } = await heldTask(engine);
+    // A stop in progress: requested, and not settled yet.
+    await db.database.db
+      .update(tasksTable)
+      .set({ cancelRequestedAt: new Date() })
+      .where(eq(tasksTable.id, task.id));
+    await expect(
+      engine.tasks.decideApproval(task.id, approval.id, {
+        decision: "approve",
+      }),
+    ).rejects.toMatchObject({ code: "TASK_TERMINAL" });
+    const view = await engine.tasks.get(task.id);
+    expect(view.approvals[0]?.status).toBe("pending");
     expect(await pushes(root, task.id)).toBe(0);
   });
 

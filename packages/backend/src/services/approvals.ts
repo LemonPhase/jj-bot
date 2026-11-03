@@ -347,7 +347,8 @@ async function wake(tx: Tx, row: ApprovalRow) {
 /**
  * `POST /api/tasks/:taskId/approvals/:approvalId`: the user's answer.
  * Approving or denying wakes the session; an approval that is no longer
- * pending answers 409 APPROVAL_NOT_PENDING.
+ * pending answers 409 APPROVAL_NOT_PENDING, and a stopping or stopped task
+ * 409 TASK_TERMINAL.
  */
 export async function decideApproval(
   ctx: EngineContext,
@@ -359,11 +360,23 @@ export async function decideApproval(
   return ctx.db.transaction(async (tx) => {
     // The task lock first, as every task write takes it (sessions.ts imports this module).
     const [task] = await tx
-      .select({ id: tasks.id })
+      .select({
+        id: tasks.id,
+        status: tasks.status,
+        cancelRequestedAt: tasks.cancelRequestedAt,
+      })
       .from(tasks)
       .where(eq(tasks.id, taskId))
       .for("update");
     if (!task) throw notFound("Task", taskId);
+    // As a message would be: a stopping or stopped task takes no answer.
+    if (task.status === "cancelled" || task.cancelRequestedAt)
+      throw new DomainError(
+        "TASK_TERMINAL",
+        task.status === "cancelled"
+          ? "The task was cancelled; its calls will not run."
+          : "The task is stopping; its calls will not run.",
+      );
     const [current] = await tx
       .select()
       .from(approvals)
