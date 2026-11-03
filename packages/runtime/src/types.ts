@@ -7,6 +7,7 @@ import type { ModelRef, ToolName, Usage } from "@jj/contracts";
 import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
 import type { TSchema } from "typebox";
 import type { RunErrorCode } from "./errors";
+import type { McpToolBinding } from "./mcp/adapter";
 import type { CutEdges } from "./tools";
 
 /**
@@ -240,6 +241,12 @@ export interface RunInput {
   /** Coding tools the profile grants. */
   codingTools: readonly ToolName[];
   collaborationTools: readonly CollabTool[];
+  /**
+   * MCP tools of the session's pinned toolset, declared after the coding and
+   * collaboration tools, sorted by exposed name (`createMcpTools`). Their
+   * calls are reviewed like any other.
+   */
+  mcpTools?: readonly McpToolBinding[];
   budgets: RunBudgets;
   /** Aborting stops the model call and the in-flight sandbox command. Outcome `aborted`. */
   signal: AbortSignal;

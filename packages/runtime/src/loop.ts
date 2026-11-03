@@ -45,6 +45,7 @@ import {
   streamOf,
 } from "./errors";
 import type { ModelCallGate } from "./gate";
+import { type McpToolBinding, summarizeMcpCall } from "./mcp/adapter";
 import type { ResolvedModel } from "./models";
 import {
   finalizeResult,
@@ -164,7 +165,9 @@ export function summarizeCall(
   args: Record<string, unknown>,
   collab: CollabTool | undefined,
   redact: (text: string) => string = (text) => text,
+  mcp?: McpToolBinding,
 ): string {
+  if (mcp) return summarizeMcpCall(mcp, args, redact) || tool;
   let summary: string;
   if (collab) {
     try {
@@ -217,6 +220,8 @@ export interface LoopSpec {
   systemPrompt: string;
   tools: AgentTool[];
   collabTools: readonly CollabTool[];
+  /** The MCP tools among `tools`, for their call summaries. */
+  mcpTools?: readonly McpToolBinding[];
   /** The conversation after the summary, if any, repaired. */
   transcript: PiMessage[];
   /**
@@ -427,6 +432,9 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   const collabByName = new Map(
     spec.collabTools.map((tool) => [tool.name, tool]),
   );
+  const mcpByName = new Map(
+    (spec.mcpTools ?? []).map((binding) => [binding.tool.exposedName, binding]),
+  );
 
   // After the run returns, late events (a tool killed after a hook failed) write nothing.
   let closed = false;
@@ -504,6 +512,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           args,
           collabByName.get(event.toolName),
           scrub,
+          mcpByName.get(event.toolName),
         );
         calls.set(event.toolCallId, { tool: event.toolName, summary });
         // pi refuses every call of a response cut at the output limit (its

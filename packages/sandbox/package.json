@@ -15,6 +15,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./contract": "./src/contract.ts",
-    "./conformance": "./src/conformance.ts"
+    "./conformance": "./src/conformance.ts",
+    "./addresses": {
+      "types": "./src/drivers/addresses.d.mts",
+      "default": "./src/drivers/egress-proxy.mjs"
+    }
   }
 }
