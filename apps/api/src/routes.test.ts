@@ -16,6 +16,7 @@ import {
   taskSchema,
   taskSummarySchema,
   taskViewSchema,
+  usageReportSchema,
   z,
 } from "@jj/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -133,7 +134,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.1.0",
+      contractVersion: "1.2.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -624,6 +625,106 @@ describe("tasks", () => {
       await idle.call("POST", `/api/tasks/${taskId}/messages`, { text: "Hi" }),
       409,
       "TASK_TERMINAL",
+    );
+  });
+});
+
+describe("spend caps and usage", () => {
+  it("stops a task at its cap on the fictional-price model, refuses messages, and continues once raised", async () => {
+    const created = await t.call("POST", "/api/bots", {
+      name: "Penny",
+      model: "scripted/team-priced",
+    });
+    expect(created.status).toBe(201);
+    const penny = created.body.bot.id as string;
+    const { body } = await t.call("POST", "/api/tasks", {
+      goal: "Write notes-penny.md: run `echo one`, run `echo two`, run `echo three`.",
+      coordinatorBotId: penny,
+      spendCapUsd: 0.005,
+    });
+    expect(taskSchema.parse(body.task).spendCapUsd).toBe(0.005);
+    const taskId = body.task.id;
+    const stopped = await untilTask(
+      t,
+      taskId,
+      (view) =>
+        view.task.status === "waiting" &&
+        view.events.some((event) => event.type === "spend.capped"),
+      "the task to stop at its cap",
+    );
+    expect(stopped.usage.total.costUsd).toBeGreaterThanOrEqual(0.005);
+    expect(stopped.usage.total.unpricedCalls).toBe(0);
+    expect(stopped.messages.at(-1)?.text).toMatch(
+      /^Stopped: The task reached its spend cap/,
+    );
+
+    const refused = expectError(
+      await t.call("POST", `/api/tasks/${taskId}/messages`, {
+        text: "Carry on.",
+      }),
+      409,
+      "SPEND_CAP_REACHED",
+    );
+    expect(refused.error.details).toMatchObject({
+      scope: "task",
+      capUsd: 0.005,
+    });
+    expectError(
+      await t.call("PATCH", `/api/tasks/${taskId}`, { spendCapUsd: 0 }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    const raised = await t.call("PATCH", `/api/tasks/${taskId}`, {
+      spendCapUsd: null,
+    });
+    expect(raised.status).toBe(200);
+    expect(taskSchema.parse(raised.body.task).spendCapUsd).toBeNull();
+    expect(
+      (
+        await t.call("POST", `/api/tasks/${taskId}/messages`, {
+          text: "Carry on.",
+        })
+      ).status,
+    ).toBe(201);
+    await untilTask(
+      t,
+      taskId,
+      (view) => view.task.status === "completed",
+      "the uncapped task to complete",
+    );
+
+    // A chat reply on the unpriced scripted model, recorded apart.
+    await t.call("POST", `/api/bots/${bots.Linus}/messages`, { text: "Hi" });
+    await until(async () => {
+      const { body: conversation } = await t.call(
+        "GET",
+        `/api/bots/${bots.Linus}/messages`,
+      );
+      return conversation.messages.some(
+        (message: { role: string }) => message.role === "assistant",
+      );
+    });
+
+    const report = await t.call("GET", "/api/usage");
+    expect(report.status).toBe(200);
+    const usage = usageReportSchema.parse(report.body);
+    const entry = usage.bots.find((bot) => bot.botId === penny);
+    expect(entry?.last24h.costUsd).toBeGreaterThan(0.005);
+    expect(entry?.capUsdPerDay).toBe(20);
+    expect(usage.models.map((model) => model.model)).toContain(
+      "scripted/team-priced",
+    );
+    expect(
+      usage.models.find((model) => model.model === "scripted/team")?.last30d
+        .unpricedCalls,
+    ).toBeGreaterThan(0);
+    const linus = usage.bots.find((bot) => bot.botId === bots.Linus);
+    expect(linus?.chatLast30d.unpricedCalls).toBeGreaterThan(0);
+    expect(linus?.chatLast30d.costUsd).toBe(0);
+    expectError(
+      await t.call("PATCH", "/api/tasks/task_missing", { spendCapUsd: 1 }),
+      404,
+      "NOT_FOUND",
     );
   });
 });

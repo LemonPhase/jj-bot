@@ -42,6 +42,12 @@ export interface CompletionRequest {
 
 const BUDGET_NOTE = "\n\n(Stopped at the turn budget.)";
 
+/** A turn a spend cap ended: what was reached, and what lets the work go on. */
+interface CapStop {
+  reason: string;
+  advice: string;
+}
+
 async function botName(tx: Tx, botId: string) {
   const [row] = await tx
     .select({ name: bots.name })
@@ -141,13 +147,19 @@ export async function failSessionTx(
   return { taskFinished: true };
 }
 
-/** The session ended its turn: wait for delegations, report to the parent, or finish/wait the task. */
+/**
+ * The session ended its turn: wait for delegations, report to the parent, or
+ * finish/wait the task. `cap` is set when a spend cap ended it: a worker's
+ * result says so, and a coordinator left waiting for the user posts a system
+ * message with the cap and what lets the task go on.
+ */
 async function endTurn(
   tx: Tx,
   rc: RunContext,
   task: TaskRow,
   session: SessionRow,
   text: string,
+  cap?: CapStop,
 ) {
   const { ctx } = rc.deps;
   const attribution = attributionOf(rc);
@@ -224,19 +236,33 @@ async function endTurn(
       rc.taskFinished = true;
       return;
     }
-    await postMessage(
-      tx,
-      ctx,
-      {
-        taskId: task.id,
-        authorKind: "bot",
-        authorBotId: session.botId,
-        sessionId: session.id,
-        intent: "discussion",
-        text,
-      },
-      attribution,
-    );
+    if (!cap || text.trim())
+      await postMessage(
+        tx,
+        ctx,
+        {
+          taskId: task.id,
+          authorKind: "bot",
+          authorBotId: session.botId,
+          sessionId: session.id,
+          intent: "discussion",
+          text,
+        },
+        attribution,
+      );
+    if (cap)
+      await postMessage(
+        tx,
+        ctx,
+        {
+          taskId: task.id,
+          authorKind: "system",
+          sessionId: session.id,
+          intent: "discussion",
+          text: `Stopped: ${cap.reason} ${cap.advice}`,
+        },
+        attribution,
+      );
     await updateSession(
       tx,
       ctx,
@@ -259,7 +285,9 @@ async function endTurn(
       authorBotId: session.botId,
       sessionId: session.id,
       intent: "result",
-      text,
+      text: cap
+        ? `${text}\n\n(Stopped before finishing: ${cap.reason})`.trim()
+        : text,
       recipientBotIds: parent ? [parent.botId] : [],
     },
     attribution,
@@ -419,6 +447,13 @@ export async function finishRun(
           (await lastAssistantText(tx, session.id)) ?? "",
         );
       else await restorePrevious(tx, rc, session);
+    } else if (outcome.kind === "budget" && outcome.limit === "spend") {
+      const reason =
+        rc.spendStop?.message ?? outcome.reason ?? "A spend cap was reached.";
+      await endTurn(tx, rc, task, session, outcome.finalText, {
+        reason,
+        advice: rc.spendStop?.advice ?? "Raise the spend cap to continue.",
+      });
     } else if (outcome.kind === "ended" || outcome.kind === "budget")
       await endTurn(
         tx,

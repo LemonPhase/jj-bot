@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   activityFromEvent,
   activitySchema,
+  addUsage,
+  applyTaskEvent,
   bootstrapSchema,
   botAppearanceSchema,
   CONTRACT_VERSION,
@@ -10,9 +12,11 @@ import {
   createTaskCommandSchema,
   defaultAppearanceFor,
   type ExecutionSession,
+  emptyUsage,
   modelRefSchema,
   parseTaskEvent,
   postTaskMessageCommandSchema,
+  profileBudgetsSchema,
   sandboxSpecPatchSchema,
   sandboxSpecSchema,
   stopTaskCommandSchema,
@@ -20,12 +24,16 @@ import {
   type TaskEvent,
   type TaskEventOf,
   type TaskEventType,
+  type TaskView,
   taskEventSchema,
   taskMessageSchema,
   taskObjectSchema,
   taskSchema,
   updateBotCommandSchema,
   updateRuntimeProfileCommandSchema,
+  updateTaskCommandSchema,
+  usageReportSchema,
+  usageSchema,
 } from "./index";
 
 const at = "2026-10-31T12:00:00.000Z";
@@ -600,5 +608,129 @@ describe("contracts 1.0", () => {
       conversationViewSchema.safeParse({ ...view, lastReplyError: undefined })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("spend caps and usage (1.2.0)", () => {
+  it("defaults profile caps on, takes null for no cap, and bounds them", () => {
+    expect(
+      profileBudgetsSchema.parse({ maxTurnsPerRun: 10, maxRunMinutes: 5 }),
+    ).toEqual({
+      maxTurnsPerRun: 10,
+      maxRunMinutes: 5,
+      maxUsdPerTask: 5,
+      maxUsdPerBotPerDay: 20,
+    });
+    expect(
+      profileBudgetsSchema.parse({
+        maxUsdPerTask: null,
+        maxUsdPerBotPerDay: 0.5,
+      }),
+    ).toMatchObject({ maxUsdPerTask: null, maxUsdPerBotPerDay: 0.5 });
+    for (const bad of [0, -1, 10_001, Number.NaN])
+      expect(
+        profileBudgetsSchema.safeParse({ maxUsdPerTask: bad }).success,
+      ).toBe(false);
+    // A patch never fills a default cap.
+    expect(
+      updateRuntimeProfileCommandSchema.parse({ budgets: { maxRunMinutes: 9 } })
+        .budgets,
+    ).toEqual({ maxRunMinutes: 9 });
+    expect(
+      updateRuntimeProfileCommandSchema.parse({
+        budgets: { maxUsdPerTask: null },
+      }).budgets,
+    ).toEqual({ maxUsdPerTask: null });
+  });
+
+  it("reads tasks and usage stored before caps as uncapped and priced", () => {
+    const { spendCapUsd: _cap, ...older } = task;
+    expect(taskSchema.parse(older).spendCapUsd).toBeNull();
+    const { unpricedCalls: _unpriced, ...olderUsage } = usage;
+    expect(usageSchema.parse(olderUsage).unpricedCalls).toBe(0);
+    expect(
+      addUsage(usage, { ...emptyUsage(), modelCalls: 1, unpricedCalls: 1 }),
+    ).toMatchObject({ modelCalls: 2, unpricedCalls: 1, costUsd: 0.001 });
+  });
+
+  it("folds unpriced calls into a view's usage", () => {
+    const view: TaskView = {
+      task,
+      sessions: [session],
+      messages: [],
+      artifacts: [],
+      usage: { total: emptyUsage(), bySession: {} },
+      events: [],
+      firstSequence: 1,
+      hasEarlier: false,
+      cursor: 0,
+    };
+    const folded = applyTaskEvent(
+      view,
+      parseTaskEvent({
+        id: "e1",
+        taskId: "t1",
+        sequence: 1,
+        occurredAt: at,
+        botId: "worker",
+        sessionId: "s1",
+        runId: "r1",
+        causedBy: null,
+        type: "model.finished",
+        payload: {
+          model: "free/model",
+          stopReason: "stop",
+          usage: { ...usage, costUsd: 0, unpricedCalls: 1 },
+        },
+      }),
+    );
+    expect(folded.usage.total).toMatchObject({
+      modelCalls: 1,
+      unpricedCalls: 1,
+    });
+    expect(folded.usage.bySession.s1?.unpricedCalls).toBe(1);
+  });
+
+  it("changes a task's cap with PATCH, null for none", () => {
+    expect(updateTaskCommandSchema.safeParse({}).success).toBe(false);
+    expect(updateTaskCommandSchema.parse({ spendCapUsd: null })).toEqual({
+      spendCapUsd: null,
+    });
+    expect(updateTaskCommandSchema.safeParse({ spendCapUsd: 0 }).success).toBe(
+      false,
+    );
+    expect(
+      createTaskCommandSchema.parse({
+        goal: "Go",
+        coordinatorBotId: "coord",
+        spendCapUsd: 2.5,
+      }).spendCapUsd,
+    ).toBe(2.5);
+  });
+
+  it("parses a usage report", () => {
+    const zero = emptyUsage();
+    const report = usageReportSchema.parse({
+      asOf: at,
+      instance: {
+        last24h: zero,
+        last7d: zero,
+        last30d: zero,
+        capUsdPerDay: null,
+      },
+      bots: [
+        {
+          botId: "coord",
+          name: "Ada",
+          archived: false,
+          last24h: zero,
+          last30d: zero,
+          chatLast30d: zero,
+          capUsdPerDay: 20,
+        },
+      ],
+      models: [{ model: "openai/gpt", last30d: zero }],
+    });
+    expect(report.bots[0]?.capUsdPerDay).toBe(20);
   });
 });

@@ -98,6 +98,12 @@ export interface RunHooks {
   drainInbox(): Promise<string[]>;
   /** Stores tool output over the cap as an `output` artifact; returns its id. */
   spillOutput(text: string, label: string): Promise<string>;
+  /**
+   * Asked before every model call, compaction summaries included: why the
+   * call may not start (a spend cap), or undefined. A refused call is never
+   * sent; the run ends with `budget` and `limit: "spend"`.
+   */
+  admitModelCall?(): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -160,7 +166,13 @@ export type RunOutcome =
   | { kind: "idle" }
   /** `sandbox_released`: the sandbox went away under the run; never a completion. */
   | { kind: "aborted"; reason?: "signal" | "sandbox_released" }
-  | { kind: "budget"; finalText: string }
+  /** `limit: "spend"`: a model call was refused at a spend cap; `reason` says which. */
+  | {
+      kind: "budget";
+      finalText: string;
+      limit?: "turns" | "deadline" | "spend";
+      reason?: string;
+    }
   | { kind: "error"; error: string; code?: RunErrorCode };
 
 /** Runs one execution session (the brief's `SessionExecutor`). */
@@ -184,6 +196,10 @@ export interface ChatReplyInput {
   tools: readonly CollabTool[];
   budgets?: { maxTurns?: number; deadline?: Date };
   signal: AbortSignal;
+  /** Asked before each model call; a refusal (a spend cap) fails the reply with code `spend_cap`. */
+  admitModelCall?(): Promise<string | undefined>;
+  /** Each model call's usage as it finishes, failed replies included. */
+  onUsage?(usage: Usage, model: ModelRef): Promise<void>;
 }
 
 export interface ChatReply {

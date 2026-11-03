@@ -25,6 +25,7 @@ import { activeBotRows, memoryText, presenceOf } from "../services/bots";
 import { conversationHistory } from "../services/chat";
 import { continueTask, deliver, postMessage } from "../services/messages";
 import { lockTask } from "../services/sessions";
+import { spendStop } from "../services/spend";
 import { createTaskTx } from "../services/tasks";
 import { chatPrompt } from "./prompts";
 import {
@@ -111,6 +112,28 @@ export async function runChatJob(
         deadline: new Date(Date.now() + ctx.config.chatTimeoutMs),
       },
       signal: control.controller.signal,
+      // The bot's and the instance's daily caps; a chat reply has no task.
+      admitModelCall: async () => {
+        const stop = await spendStop(ctx.db, ctx, { botId });
+        return stop ? `${stop.message} ${stop.advice}` : undefined;
+      },
+      // Each call is recorded as it finishes, so a failed reply counts too.
+      onUsage: (used, model) =>
+        write(async (tx) => {
+          await tx.insert(usage).values({
+            id: ctx.ids("usage"),
+            taskId: null,
+            botId,
+            model,
+            inputTokens: used.inputTokens,
+            outputTokens: used.outputTokens,
+            cacheReadTokens: used.cacheReadTokens,
+            cacheWriteTokens: used.cacheWriteTokens,
+            costUsd: used.costUsd,
+            priced: used.unpricedCalls === 0,
+            createdAt: ctx.clock(),
+          });
+        }),
     });
     if (control.reason) throw control.controller.signal.reason;
     await write(async (tx) => {
@@ -122,18 +145,6 @@ export async function runChatJob(
         role: "assistant",
         text: reply.text.trim() ? reply.text : "(no text)",
         taskId: state.linkedTaskId,
-        createdAt: ctx.clock(),
-      });
-      await tx.insert(usage).values({
-        id: ctx.ids("usage"),
-        taskId: null,
-        botId,
-        model: reply.model,
-        inputTokens: reply.usage.inputTokens,
-        outputTokens: reply.usage.outputTokens,
-        cacheReadTokens: reply.usage.cacheReadTokens,
-        cacheWriteTokens: reply.usage.cacheWriteTokens,
-        costUsd: reply.usage.costUsd,
         createdAt: ctx.clock(),
       });
       await complete(tx, job.lease);
@@ -152,9 +163,11 @@ export async function runChatJob(
     }
     const code = (error as { code?: unknown } | undefined)?.code;
     const reason =
-      typeof code === "string"
-        ? `Reply failed (${code}): ${errorMessage(error)}`
-        : errorMessage(error);
+      code === "spend_cap"
+        ? `Not answered: ${errorMessage(error)}`
+        : typeof code === "string"
+          ? `Reply failed (${code}): ${errorMessage(error)}`
+          : errorMessage(error);
     await write(async (tx) => {
       await fail(tx, job.lease, reason);
       await hint(tx, { type: "conversation.changed", botId });

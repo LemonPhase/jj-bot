@@ -19,6 +19,7 @@ import { parseCommand } from "../errors";
 import { hint, wakeWorkers } from "../events";
 import { toConversationMessage } from "../records";
 import { activeBot } from "./bots";
+import { assertWithinCaps } from "./spend";
 import { assertModel } from "./tasks";
 
 /** Messages a conversation view returns (the latest ones). */
@@ -32,6 +33,7 @@ export async function sendBotMessage(
   const command = parseCommand(sendBotMessageCommandSchema, input);
   const bot = await activeBot(ctx.db, botId);
   assertModel(ctx, bot);
+  await assertWithinCaps(ctx.db, ctx, { botId });
   const row = await ctx.db.transaction(async (tx) => {
     const sequence = await nextConversationSequence(tx, botId);
     const [inserted] = await tx

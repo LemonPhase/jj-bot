@@ -38,6 +38,11 @@ export class FakeChatResponder implements ChatResponder {
     this.inputs.push(input);
     const brain = this.brains.get(chatBot(input.systemPrompt));
     if (!brain) throw new Error("No chat brain for this bot.");
+    // Like the runtime: one model call, asked first and recorded as it finishes.
+    const refusal = await input.admitModelCall?.();
+    if (refusal !== undefined)
+      throw Object.assign(new Error(refusal), { code: "spend_cap" });
+    await input.onUsage?.(FAKE_USAGE, FAKE_MODEL);
     const turn = brain(input);
     const results: string[] = [];
     for (const call of turn.calls ?? []) {
