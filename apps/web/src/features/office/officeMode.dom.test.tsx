@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "../../test/dom";
 import { configure, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import { ApiProvider } from "../../api/ApiContext";
 import { createDemoApi } from "../../api/demoApi";
@@ -14,14 +14,18 @@ configure({ asyncUtilTimeout: 5000 });
 
 describe("no3dReason", () => {
   it("offers 3D only with WebGL on a screen wider than a phone", () => {
-    expect(no3dReason(false, true)).toBeNull();
-    expect(no3dReason(true, true)).toBe(
-      "3D needs a wider screen. The 2D office shows the same task.",
-    );
-    expect(no3dReason(false, false)).toBe(
+    expect(no3dReason(false, () => true)).toBeNull();
+    expect(no3dReason(false, () => false)).toBe(
       "3D needs WebGL, which this browser does not offer. The 2D office shows the same task.",
     );
-    expect(no3dReason(true, false)).toMatch(/^3D needs WebGL/);
+  });
+
+  it("asks a phone-width screen nothing about WebGL, so it makes no WebGL context", () => {
+    const webgl = vi.fn(() => true);
+    expect(no3dReason(true, webgl)).toBe(
+      "3D needs a wider screen. The 2D office shows the same task.",
+    );
+    expect(webgl).not.toHaveBeenCalled();
   });
 });
 

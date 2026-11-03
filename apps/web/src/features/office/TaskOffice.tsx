@@ -51,7 +51,14 @@ import {
 import "./office.css";
 
 // Three.js is large: the 3D view downloads only when someone switches to it.
-const Office3D = lazy(() => import("./Office3D"));
+// React keeps a failed lazy load, so a failed chunk makes a new one: the
+// next switch to 3D asks the network again instead of failing until reload.
+const load3d = () =>
+  import("./Office3D").catch((error: unknown) => {
+    Office3D = lazy(load3d);
+    throw error;
+  });
+let Office3D = lazy(load3d);
 
 /** Desks the 3D room has (OfficeScene `MAX_DESKS`); kept here so 2D never loads Three.js. */
 const DESKS_3D = 6;
@@ -59,14 +66,18 @@ const DESKS_3D = 6;
 /**
  * Why 3D is not offered here, shown under the switch; null when it is. A
  * phone-width screen gets 2D (the 3D room needs the width, and Three.js is a
- * large download), and so does a browser without WebGL. A remembered 3D
- * choice is kept for a screen that can show it.
+ * large download), and so does a browser without WebGL, which is asked only
+ * on a wider screen. A remembered 3D choice is kept for a screen that can
+ * show it.
  */
-export function no3dReason(narrow: boolean, webgl: boolean): string | null {
-  if (!webgl)
-    return "3D needs WebGL, which this browser does not offer. The 2D office shows the same task.";
+export function no3dReason(
+  narrow: boolean,
+  webgl: () => boolean,
+): string | null {
   if (narrow)
     return "3D needs a wider screen. The 2D office shows the same task.";
+  if (!webgl())
+    return "3D needs WebGL, which this browser does not offer. The 2D office shows the same task.";
   return null;
 }
 
@@ -134,7 +145,7 @@ export function TaskOffice({
     readOfficeMode(defaultMode),
   );
   const narrow = useMediaQuery(NARROW_QUERY);
-  const no3d = no3dReason(narrow, supportsWebGL());
+  const no3d = no3dReason(narrow, supportsWebGL);
   const mode: OfficeMode = no3d ? "2d" : chosen;
   const noteId = useId();
   const [status, setStatus] = useState<OfficeStatus>(IDLE_STATUS);
