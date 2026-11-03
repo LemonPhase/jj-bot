@@ -252,10 +252,10 @@ export class FakeSandboxProcess implements SandboxProcessLike {
     return () => this.listeners.delete(listener);
   }
 
-  async kill(): Promise<Interrupted> {
+  async kill(): Promise<McpProcessExit> {
     this.killed = true;
     this.exit(null, "yes", "kill");
-    return "yes";
+    return this.exited;
   }
 
   stdout(data: string | Buffer): void {

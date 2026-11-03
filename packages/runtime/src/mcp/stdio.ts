@@ -7,7 +7,6 @@ import {
   type McpTransportMessageListener,
   parseJsonRpcMessage,
 } from "@earendil-works/pi-mcp";
-import type { Interrupted } from "@jj/sandbox";
 import {
   MCP_MAX_MESSAGE_BYTES,
   MCP_STDERR_RING_BYTES,
@@ -17,9 +16,10 @@ import {
 } from "./errors";
 
 /**
- * A process a sandbox runs with streamed stdin, stdout and stderr: the shape
- * of the sandbox contract's `SandboxProcess` (`Sandbox.spawn`), which a stdio
- * MCP server runs as.
+ * A process a sandbox runs with streamed stdin, stdout and stderr: what this
+ * transport uses of the sandbox contract's `SandboxProcess`
+ * (`Sandbox.spawn`), which a stdio MCP server runs as, so a `SandboxProcess`
+ * is one.
  */
 export interface SandboxProcessLike {
   /** Writes to stdin; rejects once the process exited. */
@@ -30,8 +30,8 @@ export interface SandboxProcessLike {
     listener: (chunk: Buffer, stream: "stdout" | "stderr") => void,
   ): () => void;
   readonly exited: Promise<McpProcessExit>;
-  /** Stops the process and what it started; `yes` only when the driver verified they are gone. */
-  kill(): Promise<Interrupted>;
+  /** Stops the process and what it started; resolves with how it ended. */
+  kill(): Promise<McpProcessExit>;
 }
 
 export interface SandboxStdioTransportOptions {
@@ -104,7 +104,7 @@ export class SandboxStdioTransport
     if (this.closed) {
       // Closed while it started: it never serves anything.
       process.endInput();
-      await process.kill().catch(() => "unknown");
+      await process.kill().catch(() => undefined);
       throw new McpConnectionClosedError();
     }
     this.process = process;
@@ -149,7 +149,7 @@ export class SandboxStdioTransport
         }),
       ]);
       if (timer) clearTimeout(timer);
-      if (!exitedInTime) await process.kill().catch(() => "unknown");
+      if (!exitedInTime) await process.kill().catch(() => undefined);
     }
     this.unsubscribe?.();
     this.emitClose();
