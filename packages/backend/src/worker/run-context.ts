@@ -19,6 +19,7 @@ import {
 import { and, asc, eq, inArray, isNull, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { emit } from "../events";
+import type { ActivityTrace } from "../observability/tracing";
 import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import type { Redactor } from "../redact";
 import { noteResolved } from "../services/approvals";
@@ -53,6 +54,28 @@ export class JobControl {
   /** True when the job must not write anything more. */
   get fenced(): boolean {
     return this.reason === "crash" || this.reason === "lease-lost";
+  }
+}
+
+/**
+ * What a job's run or reply ended as, for its span, metric and log line: how
+ * the worker stopped it, else its own outcome. A bounded set of names.
+ */
+export function outcomeLabel(
+  reason: AbortReason | undefined,
+  outcome: string,
+): string {
+  switch (reason) {
+    case "cancel":
+      return "cancelled";
+    case "shutdown":
+      return "handed_back";
+    case "lease-lost":
+      return "lease_lost";
+    case "crash":
+      return "crashed";
+    default:
+      return outcome;
   }
 }
 
@@ -127,6 +150,8 @@ export interface RunContext {
    * the task's is never held.
    */
   goalVersionSeen?: number;
+  /** The run's span, with its model turns and tool calls (session-run.ts). */
+  activity?: ActivityTrace;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -391,12 +416,41 @@ async function admitModelCall(rc: RunContext): Promise<string | undefined> {
   });
 }
 
+/**
+ * The run's spans, metrics and debug lines for an executor event: ids, names,
+ * counts and cost, never its text. Recorded whether or not the event is then
+ * stored, since the model call or command happened either way.
+ */
+export function observeEvent(rc: RunContext, event: ExecutorEvent) {
+  const { ctx } = rc.deps;
+  rc.activity?.observe(event);
+  if (event.type === "model.finished") {
+    ctx.metrics.modelCall(event.model, event.usage);
+    ctx.logger.debug?.("Model call finished", {
+      model: event.model,
+      stopReason: event.stopReason,
+      inputTokens: event.usage.inputTokens,
+      outputTokens: event.usage.outputTokens,
+      costUsd: event.usage.costUsd,
+    });
+  } else if (event.type === "tool.finished")
+    ctx.logger.debug?.("Tool call finished", {
+      tool: rc.activity?.toolLabel(event.tool) ?? "other",
+      ok: event.ok,
+      ...(typeof event.exitCode === "number"
+        ? { exitCode: event.exitCode }
+        : {}),
+    });
+}
+
 /** The executor's hooks. What they persist is redacted first (see redact.ts). */
 export function runHooks(rc: RunContext): RunHooks {
   const { redact } = rc;
   return {
-    onEvent: (event) =>
-      writeRun(rc, (tx) => recordEvent(tx, rc, redact(event))),
+    onEvent: (event) => {
+      observeEvent(rc, event);
+      return writeRun(rc, (tx) => recordEvent(tx, rc, redact(event)));
+    },
     onTurnComplete: async (raw) => {
       if (raw.length === 0) return;
       const entries = redact(raw);

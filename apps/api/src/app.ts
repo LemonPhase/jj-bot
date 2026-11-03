@@ -1,13 +1,14 @@
 // The HTTP app over an engine: the 1.0 routes under `/api`, health under
-// `/health`, and the built web app when there is one. Process boot (database,
-// drivers, models, listening, signals) is in server.ts, so tests drive this
-// with `app.request`.
-import { consoleLogger, type Engine, type Logger } from "@jj/backend";
-import { Hono } from "hono";
+// `/health`, Prometheus metrics at `/metrics`, and the built web app when
+// there is one. Process boot (database, drivers, models, listening, signals)
+// is in server.ts, so tests drive this with `app.request`.
+import type { Engine, Logger } from "@jj/backend";
+import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { originGuard, requireJson } from "./guard";
 import { healthRoutes } from "./health";
 import { bearerAuth, errorResponse, onError } from "./http";
+import { requestLog } from "./request-log";
 import { apiRoutes } from "./routes";
 import { StreamRegistry } from "./sse";
 import { mountWeb, spaFallback } from "./web";
@@ -26,6 +27,8 @@ export interface AppConfig {
   heartbeatMs?: number;
   /** A worker poll older than this makes the API not ready. Default 30 s. */
   workerStaleMs?: number;
+  /** A readiness check that has not answered by then fails. Default 3 s. */
+  readinessTimeoutMs?: number;
   /** The built web app to serve, or null. */
   webDist?: string | null;
   /** Largest request body. Default 1 MiB. */
@@ -45,25 +48,10 @@ export type JJApp = Hono & {
   readonly openStreams: number;
 };
 
-export const apiLogger: Logger = {
-  info: (message, details) => log("info", message, details),
-  warn: (message, details) => log("warn", message, details),
-  error: (message, details) => log("error", message, details),
-};
-
-function log(
-  level: "info" | "warn" | "error",
-  message: string,
-  details?: unknown,
-) {
-  if (details === undefined) console[level](`[api] ${message}`);
-  else console[level](`[api] ${message}`, details);
-}
-
 export function createApp({
   engine,
   config,
-  logger = consoleLogger,
+  logger = engine.context.logger,
 }: AppOptions): JJApp {
   const app = new Hono();
   const streams = new StreamRegistry();
@@ -71,6 +59,8 @@ export function createApp({
   const maxBytes = config.bodyLimitBytes ?? 1024 * 1024;
 
   app.onError(handleError);
+  // First, so every line a request logs carries its id.
+  app.use("*", requestLog(logger));
   app.route(
     "/health",
     healthRoutes(
@@ -78,21 +68,36 @@ export function createApp({
       {
         workerEmbedded: config.workerEmbedded,
         workerStaleMs: config.workerStaleMs ?? 30_000,
+        ...(config.readinessTimeoutMs
+          ? { checkTimeoutMs: config.readinessTimeoutMs }
+          : {}),
       },
       logger,
     ),
   );
 
-  const api = new Hono();
-  api.onError(handleError);
-  api.use(
-    "*",
+  // `/api` and `/metrics` answer the same callers: the browser protection,
+  // and the bearer token when there is one.
+  const guards: MiddlewareHandler[] = [
     originGuard({
       tokenRequired: Boolean(config.apiToken),
       allowedHosts: config.allowedHosts ?? [],
     }),
-  );
-  if (config.apiToken) api.use("*", bearerAuth(config.apiToken));
+    ...(config.apiToken ? [bearerAuth(config.apiToken)] : []),
+  ];
+  const metrics = new Hono();
+  metrics.onError(handleError);
+  for (const guard of guards) metrics.use("*", guard);
+  metrics.get("/", async (c) => {
+    c.header("Content-Type", engine.metrics.contentType);
+    c.header("Cache-Control", "no-store");
+    return c.body(await engine.metrics.text());
+  });
+  app.route("/metrics", metrics);
+
+  const api = new Hono();
+  api.onError(handleError);
+  for (const guard of guards) api.use("*", guard);
   api.use("*", requireJson());
   api.use(
     "*",

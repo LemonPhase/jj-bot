@@ -848,6 +848,22 @@ export const instanceSettings = pgTable("instance_settings", {
 export type InstanceSettingRow = typeof instanceSettings.$inferSelect;
 
 /**
+ * The job loops alive on this database: each worker, embedded in an API or
+ * standalone, records itself here when its claim loop passes and removes its
+ * row when it stops. Readiness of an API without an embedded worker reads it.
+ * Infrastructure, like `jobs`: no owner.
+ */
+export const workerHeartbeats = pgTable("worker_heartbeats", {
+  workerId: text("worker_id").primaryKey(),
+  startedAt: timestamp("started_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type WorkerHeartbeatRow = typeof workerHeartbeats.$inferSelect;
+
+/**
  * Values entered through settings: provider keys (`name` is the provider id)
  * and sandbox secrets (`name` is the variable), stored as ciphertext:
  * AES-256-GCM under a key derived from the server's `JJ_SECRET_KEY`, which
@@ -931,6 +947,7 @@ export const tables = {
   approvals,
   jobs,
   instanceSettings,
+  workerHeartbeats,
   secrets,
   retiredSecrets,
 };

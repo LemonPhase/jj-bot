@@ -339,6 +339,18 @@ export async function cancelWhere(
   return rows.map((row) => row.id);
 }
 
+/** Queued jobs that are due (`run_after` passed), by kind: the queue's depth. */
+export async function queueDepth(
+  exec: Executor,
+): Promise<Partial<Record<JobKind, number>>> {
+  const rows = await exec
+    .select({ kind: jobs.kind, count: sql<number>`count(*)` })
+    .from(jobs)
+    .where(and(eq(jobs.status, "queued"), lte(jobs.runAfter, sql`now()`)))
+    .groupBy(jobs.kind);
+  return Object.fromEntries(rows.map((row) => [row.kind, Number(row.count)]));
+}
+
 function held(lease: Lease) {
   return and(
     eq(jobs.id, lease.jobId),
