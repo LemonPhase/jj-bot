@@ -229,17 +229,17 @@ jobs:
           test "$opening" -ge 2
           test "$carrying" = "$opening"
 
-      # A tampered backup (an archive its manifest does not list, aimed at the
+      # A backup holding an archive its manifest does not list (named for the
       # PostgreSQL volume) is refused before anything changes; --force then
       # replaces the stack's data with the backup's, which the app serves.
-      - name: Refuse a tampered backup, then restore with --force
+      - name: Refuse a backup with an unlisted archive, then restore with --force
         run: |
-          cp -a "$RUNNER_TEMP/backup" "$RUNNER_TEMP/tampered"
-          (cd "$RUNNER_TEMP/tampered" &&
+          cp -a "$RUNNER_TEMP/backup" "$RUNNER_TEMP/unlisted"
+          (cd "$RUNNER_TEMP/unlisted" &&
             cp volumes/jj-bot-task-*.tar volumes/jj-bot_jj_postgres.tar &&
             sha256sum volumes/jj-bot_jj_postgres.tar >>SHA256SUMS)
-          if scripts/restore.sh --force "$RUNNER_TEMP/tampered" 2>restore.err; then
-            echo "restored a tampered backup"
+          if scripts/restore.sh --force "$RUNNER_TEMP/unlisted" 2>restore.err; then
+            echo "restored a backup with an unlisted archive"
             exit 1
           fi
           cat restore.err
