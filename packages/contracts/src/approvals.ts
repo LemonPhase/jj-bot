@@ -199,14 +199,44 @@ export function describeApprovalRule(rule: ApprovalRule): string {
     : `${rule.tool} calls matching \`${rule.match}\``;
 }
 
-/** True when the approval's summary is its whole call, exactly as it will run. */
+/**
+ * Characters a reader cannot see in a call: controls other than tab and
+ * newline, bidirectional controls, zero-width and other invisible format
+ * characters, variation selectors and tag characters.
+ */
+const INVISIBLE =
+  "[\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u00AD\\u034F\\u061C\\u115F\\u1160\\u17B4\\u17B5\\u180B-\\u180F\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u206F\\u3164\\uFE00-\\uFE0F\\uFEFF\\uFFA0\\uFFF0-\\uFFFB]|\\uDB40[\\uDC00-\\uDDEF]";
+const invisibleOne = new RegExp(INVISIBLE);
+const invisibleAll = new RegExp(INVISIBLE, "g");
+
+/** True when the text holds a character a reader cannot see (see `visibleText`). */
+export const hasInvisible = (text: string): boolean => invisibleOne.test(text);
+
+/**
+ * The text with every character a reader cannot see written out as its code
+ * point, `⟨U+202E⟩`, so what a card shows is what runs. Tabs and newlines
+ * stay as they are.
+ */
+export function visibleText(text: string): string {
+  return text.replace(
+    invisibleAll,
+    (character) =>
+      `⟨U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}⟩`,
+  );
+}
+
+/**
+ * True when the approval's summary is its whole call, exactly as it will
+ * run and with nothing in it a reader cannot see.
+ */
 export function shownInFull(
   approval: Pick<Approval, "tool" | "args" | "summary">,
 ): boolean {
   return (
     approval.tool === "bash" &&
     typeof approval.args.command === "string" &&
-    approval.args.command === approval.summary
+    approval.args.command === approval.summary &&
+    !hasInvisible(approval.summary)
   );
 }
 

@@ -327,6 +327,18 @@ describe("ApprovalCard", () => {
     expect(screen.getByText(/Your reason: use a branch/)).toBeTruthy();
   });
 
+  it("shows a hidden character in the call as its code point", () => {
+    renderCard(
+      approval({
+        args: { command: "echo ok \u202E# hsup tig" },
+        summary: "echo ok \u202E# hsup tig",
+      }),
+    );
+    expect(screen.getByLabelText("The bash call").textContent).toBe(
+      "echo ok ⟨U+202E⟩# hsup tig",
+    );
+  });
+
   it("offers no answer once the call was answered", () => {
     renderCard(
       approval({
@@ -406,6 +418,21 @@ describe("approvals on the chat's task card", () => {
       within(list).getAllByRole("button", { name: /^Deny:/ }),
     ).toHaveLength(2);
     expect(list.textContent).toContain("the task shows the whole call");
+  });
+
+  it("sends a call with a hidden character to the task for approval", async () => {
+    const command = "echo ok \u202E# hsup tig";
+    renderCard([approval({ args: { command }, summary: command })]);
+    const list = await screen.findByRole("list", {
+      name: "Calls in Ship waiting for your approval",
+    });
+    expect(
+      within(list).queryByRole("button", { name: /^Approve:/ }),
+    ).toBeNull();
+    expect(list.textContent).toContain("echo ok ⟨U+202E⟩# hsup tig");
+    expect(
+      within(list).getByRole("link", { name: /^Review in the task: / }),
+    ).toBeTruthy();
   });
 
   it("does not show a multi-line command as whole", () => {

@@ -3,6 +3,7 @@ import {
   type Approval,
   type Bot,
   describeApprovalRule,
+  visibleText,
 } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
@@ -95,11 +96,11 @@ export function ApprovalCard({
           tabIndex={0}
           aria-label={`The ${current.tool} call`}
         >
-          {approvalCall(current)}
+          {visibleText(approvalCall(current))}
         </pre>
         {current.text && (
           <p className="approval-card__text">
-            {name} wrote: {current.text}
+            {name} wrote: {visibleText(current.text)}
           </p>
         )}
         <p className="approval-card__rule">

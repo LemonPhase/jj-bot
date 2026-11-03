@@ -9,13 +9,16 @@ import {
   decideApprovalCommandSchema,
   describeApprovalRule,
   emptyUsage,
+  hasInvisible,
   matchingApprovalRule,
   parseTaskEvent,
   runtimeProfileSchema,
+  shownInFull,
   type TaskView,
   taskSummarySchema,
   taskViewSchema,
   updateRuntimeProfileCommandSchema,
+  visibleText,
 } from "./index";
 
 const at = "2026-11-03T10:00:00.000Z";
@@ -215,6 +218,37 @@ describe("approval rules", () => {
         approvals: [{ tool: "bash", match: " git push " }],
       }).approvals,
     ).toEqual([{ tool: "bash", match: "git push" }]);
+  });
+});
+
+describe("calls a reader cannot fully see", () => {
+  const pending = (command: string) => ({
+    tool: "bash",
+    args: { command },
+    summary: command,
+  });
+
+  it("are never shown in full, and show each hidden character", () => {
+    for (const hidden of [
+      "\u202E", // right-to-left override
+      "\u2066", // left-to-right isolate
+      "\u200B", // zero-width space
+      "\u00AD", // soft hyphen
+      "\u0007", // bell
+      "\u001B", // escape
+      "\uFEFF", // byte order mark
+      "\u{E0041}", // tag letter A
+    ]) {
+      const command = `echo safe ${hidden}# git push`;
+      expect(hasInvisible(command)).toBe(true);
+      expect(shownInFull(pending(command))).toBe(false);
+      expect(visibleText(command)).not.toContain(hidden);
+    }
+    expect(visibleText("ls \u202Etxt.exe")).toBe("ls ⟨U+202E⟩txt.exe");
+    expect(visibleText("a\u{E0041}b")).toBe("a⟨U+E0041⟩b");
+    // Tabs and newlines are visible, and plain text is left as it is.
+    expect(visibleText("a\tb\nc")).toBe("a\tb\nc");
+    expect(shownInFull(pending("git push origin main"))).toBe(true);
   });
 });
 

@@ -2,6 +2,7 @@ import {
   type PendingApproval,
   questionExcerpt,
   type TaskSummary,
+  visibleText,
 } from "@jj/contracts";
 import { useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
@@ -178,7 +179,9 @@ function ChatApproval({
         <StatusSquare tone={answer ? "idle" : "verifying"} />
         <span>
           {name} asks to run {approval.tool}:{" "}
-          <code className="chat-approval__call">{approval.summary}</code>
+          <code className="chat-approval__call">
+            {visibleText(approval.summary)}
+          </code>
           {!approval.shownInFull &&
             " (shortened: the task shows the whole call)"}
         </span>
@@ -204,7 +207,7 @@ function ChatApproval({
             <a
               className={buttonClass({ variant: "primary", size: "sm" })}
               href={taskHref(taskId)}
-              aria-label={`Review in the task: ${approval.summary}`}
+              aria-label={`Review in the task: ${visibleText(approval.summary)}`}
             >
               Review in the task
             </a>
@@ -213,7 +216,7 @@ function ChatApproval({
             size="sm"
             disabled={busy}
             onClick={() => void decide("deny")}
-            aria-label={`Deny: ${approval.summary}`}
+            aria-label={`Deny: ${visibleText(approval.summary)}`}
           >
             Deny
           </Button>
