@@ -2,6 +2,7 @@
 // the real server on an ephemeral port. With a token the client streams over
 // its fetch transport, so this covers requests, error envelopes, both streams
 // and downloads exactly as the browser uses them: the client/server contract.
+import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,7 @@ beforeAll(async () => {
       JJ_SANDBOX_DRIVERS: "local",
       JJ_SANDBOX_ROOT: root,
       JJ_ENABLE_SCRIPTED_MODEL: "true",
+      JJ_SECRET_KEY: randomBytes(32).toString("base64"),
     },
   });
   const probe = await probeBackend({ baseUrl: server.url, token: TOKEN });
@@ -47,6 +49,13 @@ beforeAll(async () => {
 afterAll(async () => {
   await server?.close();
   if (root) await rm(root, { recursive: true, force: true });
+});
+
+/** The client's own capabilities, as the badge reads them. */
+const probeAgain = (client: JJApi) => ({
+  capabilities: client.capabilities,
+  contractVersion: client.contractVersion,
+  defaultModel: null,
 });
 
 const rejection = (promise: Promise<unknown>) =>
@@ -113,6 +122,52 @@ describe("liveApi against the real server", () => {
     expect(missing).toMatchObject({ code: "NOT_FOUND", status: 404 });
     const conflict = await rejection(api.createBot({ name: "Ada" }));
     expect(conflict).toMatchObject({ code: "CONFLICT", status: 409 });
+  });
+
+  it("stores secrets and provider keys write-only, and hints that they changed", async () => {
+    const value = "ghp_webClientToken0123456789abcdef";
+    const key = "sk-webClient-0123456789abcdefghijk";
+    const hints: WorkspaceHint[] = [];
+    const states: string[] = [];
+    const offHints = api.subscribeHints((hint) => hints.push(hint), {
+      onState: (state) => states.push(state),
+    });
+    await until(() => states.includes("open"), { what: "the hint stream" });
+    expect(api.capabilities.secretStore).toBe(true);
+    const secret = await api.putSecret("GITHUB_TOKEN", { value });
+    expect(secret).toMatchObject({ name: "GITHUB_TOKEN", hint: "cdef" });
+    const listed = await api.listSecrets();
+    expect(listed.available).toBe(true);
+    const [profile] = await api.listProfiles();
+    const granted = await api.updateProfile(profile?.id ?? "", {
+      secrets: ["GITHUB_TOKEN"],
+    });
+    expect(granted.secrets).toEqual(["GITHUB_TOKEN"]);
+    const short = await rejection(
+      api.putSecret("GITHUB_TOKEN", { value: "short" }),
+    );
+    // The client refuses it before sending, with the contract's message.
+    expect(short.code).toBe("VALIDATION_FAILED");
+    expect(JSON.stringify([short.message, short.details])).not.toContain(
+      'short"',
+    );
+    const view = await api.putProviderKey("openai", { value: key });
+    expect(
+      view.providers.find((provider) => provider.id === "openai"),
+    ).toMatchObject({ keySource: "stored", configured: true });
+    expect(liveBadge(probeAgain(api), view).label).toBe("Live");
+    await until(
+      () => hints.filter((hint) => hint.type === "secrets.changed").length >= 2,
+      { what: "the secrets hints" },
+    );
+    expect(
+      JSON.stringify([secret, listed, granted, view, await api.getModels()]),
+    ).not.toContain(value);
+    expect(JSON.stringify(view)).not.toContain(key);
+    await api.deleteSecret("GITHUB_TOKEN");
+    expect((await api.getProfile(profile?.id ?? "")).secrets).toEqual([]);
+    await api.deleteProviderKey("openai");
+    offHints();
   });
 
   it("follows a conversation and the workspace hints", async () => {

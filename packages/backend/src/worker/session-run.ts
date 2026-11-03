@@ -24,6 +24,7 @@ import type { RunExecutor, RunOutcome } from "../ports";
 import { profileSettings } from "../records";
 import { memoryText } from "../services/bots";
 import { profileFor } from "../services/profiles";
+import { grantedSecrets } from "../services/secrets";
 import {
   getSession,
   lockTask,
@@ -67,21 +68,33 @@ type Start =
       reason: RunReason;
       /** The task sandbox's spec (the coordinator's profile). */
       spec?: SandboxSpec;
+      /** The sandbox secrets that profile grants, injected when the sandbox starts. */
+      grants?: { name: string; secrets: string[] };
       /** Why the session cannot run here; the run fails visibly with it. */
       unavailable?: string;
     };
 
-/** The coordinator's runtime profile (else the default) decides the task sandbox. */
+/**
+ * The coordinator's runtime profile (else the default) decides the task
+ * sandbox: its spec and the secrets it grants.
+ */
 async function taskSandboxSpec(
   tx: Tx,
   task: TaskRow,
-): Promise<SandboxSpec | undefined> {
+): Promise<
+  { spec: SandboxSpec; grants: { name: string; secrets: string[] } } | undefined
+> {
   const [coordinator] = await tx
     .select({ profileId: bots.runtimeProfileId })
     .from(bots)
     .where(eq(bots.id, task.coordinatorBotId));
   const profile = await profileFor(tx, coordinator?.profileId ?? null);
-  return profile ? profileSettings(profile).sandbox : undefined;
+  if (!profile) return undefined;
+  const settings = profileSettings(profile);
+  return {
+    spec: settings.sandbox,
+    grants: { name: profile.name, secrets: settings.secrets },
+  };
 }
 
 /** The start transaction: launch guard, stale-run cleanup, run row and `run.started`. */
@@ -172,7 +185,8 @@ async function startRun(
     // An ephemeral workspace exists only in the sandbox that created it. If an
     // earlier run of the task had one and this worker does not hold it, hand
     // the session back while the holder's lease is live, or fail truthfully.
-    const spec = await taskSandboxSpec(tx, task);
+    const sandbox = await taskSandboxSpec(tx, task);
+    const spec = sandbox?.spec;
     let unavailable: string | undefined;
     if (!spec)
       unavailable =
@@ -259,7 +273,14 @@ async function startRun(
       taskFinished: false,
       redact,
     };
-    return { kind: "run", rc, reason, spec, unavailable };
+    return {
+      kind: "run",
+      rc,
+      reason,
+      spec,
+      grants: sandbox?.grants,
+      unavailable,
+    };
   });
 }
 
@@ -365,11 +386,16 @@ export async function runSessionJob(
         throw new SandboxUnavailableError(
           start.unavailable ?? "The task has no sandbox spec.",
         );
+      const grants = start.grants;
       hold = await sandboxes.acquire(
         rc.task.id,
         rc.session.id,
         start.spec,
         rc.control.controller.signal,
+        // Read only when this starts the task's sandbox.
+        grants && grants.secrets.length > 0
+          ? () => grantedSecrets(ctx, grants)
+          : undefined,
       );
       if (start.spec.workspace === "ephemeral")
         await claimHolder(ctx, rc.task.id);

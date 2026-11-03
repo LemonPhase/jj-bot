@@ -1,8 +1,12 @@
 import { execFile } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { DOCKER_BASE_IMAGE, DockerSandboxDriver } from "@jj/sandbox";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
+import { REDACTED } from "./redact";
+import { createKeyring } from "./secrets/keyring";
+import { SecretStore } from "./secrets/store";
 import { type Brain, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -152,5 +156,102 @@ describe.skipIf(!health.ok)("docker driver", () => {
       `${bob}.txt`,
       `${cy}.txt`,
     ]);
+  }, 120_000);
+
+  it("gives a granted secret to every command in the task container, never to its configuration, and redacts it", async () => {
+    await current?.dispose();
+    const token = `ghp_docker${randomBytes(12).toString("hex")}`;
+    const docker = new DockerSandboxDriver({
+      namespace: `jj-engine-${runId}`,
+      labels,
+      killGraceMs: 300,
+    });
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([{ driver: docker, label: "Docker" }]),
+      secretStore: new SecretStore({
+        db: db.database.db,
+        keyring: createKeyring(randomBytes(32)),
+      }),
+    });
+    const { engine, executor } = current;
+    await engine.secrets.put("GITHUB_TOKEN", { value: token });
+    const { profile } = await engine.profiles.create({
+      name: "Docker with a token",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      secrets: ["GITHUB_TOKEN"],
+    });
+    const team = await createTeam(engine, ["Dee"]);
+    const [dee] = team.names as [string];
+    await engine.bots.update(team.byName[dee] as string, {
+      runtimeProfileId: profile.id,
+    });
+    let containerEnv = "";
+    executor.brain(dee, async (view) => {
+      switch (said.turns(view)) {
+        case 0:
+          return {
+            calls: [
+              {
+                name: "bash",
+                args: {
+                  command:
+                    'echo "$GITHUB_TOKEN"; printf %s "$GITHUB_TOKEN" | sha256sum',
+                },
+              },
+            ],
+          };
+        case 1: {
+          // The container's own configuration does not hold it.
+          const { stdout } = await run("docker", [
+            "ps",
+            "-q",
+            "--filter",
+            `label=jj.test-run=${runId}`,
+          ]);
+          for (const id of stdout.split("\n").filter(Boolean))
+            containerEnv += (
+              await run("docker", [
+                "inspect",
+                "--format",
+                "{{json .Config.Env}}",
+                id,
+              ])
+            ).stdout;
+          return {
+            calls: [
+              {
+                name: "complete_task",
+                args: { result: lastResult(view)?.text ?? "" },
+              },
+            ],
+          };
+        }
+        default:
+          return { text: "Done." };
+      }
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Use the token in docker",
+      coordinatorBotId: team.byName[dee] as string,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+      "the docker task",
+      60_000,
+    );
+    expect(view.task.status).toBe("completed");
+    const digest = createHash("sha256").update(token).digest("hex");
+    expect(view.task.result).toContain(REDACTED);
+    expect(view.task.result).toContain(digest);
+    expect(view.task.result).not.toContain(token);
+    expect(containerEnv).not.toBe("");
+    expect(containerEnv).not.toContain(token);
   }, 120_000);
 });

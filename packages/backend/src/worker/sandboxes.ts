@@ -127,12 +127,15 @@ export class TaskSandboxes {
   /**
    * The task's sandbox, starting it on first use. `signal` (the run's) stops
    * waiting; when no run waits any more the driver's acquire is aborted too.
+   * `secrets` is read only when this starts the sandbox: its values go to the
+   * driver, which injects them into every command.
    */
   async acquire(
     taskId: string,
     sessionId: string,
     spec: SandboxSpec,
     signal?: AbortSignal,
+    secrets?: () => Promise<Record<string, string>>,
   ): Promise<SandboxHold> {
     signal?.throwIfAborted();
     let entry = this.entries.get(taskId);
@@ -149,14 +152,17 @@ export class TaskSandboxes {
         refs: 0,
         idleSince: Date.now(),
         finishing: false,
-        acquiring: driver
-          .acquire({
-            taskId,
-            sessionId,
-            spec,
-            workspaceKey: taskId,
-            signal: controller.signal,
-          })
+        acquiring: (secrets ? secrets() : Promise.resolve({}))
+          .then((values) =>
+            driver.acquire({
+              taskId,
+              sessionId,
+              spec,
+              workspaceKey: taskId,
+              signal: controller.signal,
+              ...(Object.keys(values).length > 0 ? { secrets: values } : {}),
+            }),
+          )
           .then((sandbox) => {
             created.sandbox = sandbox;
             return sandbox;

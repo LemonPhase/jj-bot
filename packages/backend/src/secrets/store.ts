@@ -1,0 +1,272 @@
+// The secrets store: values entered through settings, kept encrypted in the
+// `secrets` table. Provider keys are named by provider id, sandbox secrets by
+// the variable they become. This module holds what every process reads: a
+// snapshot of the decrypted rows, reloaded with `refresh()` (each run and
+// chat reply builds its redactor through it, so a standalone worker sees
+// writes the API made), and what writes go through: sealing a value for its
+// row. No value ever leaves it except to the model registry (provider keys)
+// and to sandbox acquisition (granted secrets).
+import type { SecretInfo } from "@jj/contracts";
+import {
+  type Executor,
+  LOCAL_OWNER,
+  type SecretKind,
+  type SecretRow,
+  secrets,
+} from "@jj/db";
+import { and, eq } from "drizzle-orm";
+import type { Logger } from "../context";
+import type { Secret } from "../redact";
+import type { Keyring, Sealed } from "./keyring";
+
+/** A stored provider key as the model registry reads it. */
+export interface StoredProviderKey {
+  /** Undefined when the current `JJ_SECRET_KEY` cannot decrypt it. */
+  value: string | undefined;
+  hint: string;
+  updatedAt: string;
+}
+
+interface Entry {
+  kind: SecretKind;
+  name: string;
+  value: string | undefined;
+  hint: string;
+  keyId: string;
+  createdAt: Date;
+  updatedAt: Date;
+  /** Changes whenever the row is sealed again; decrypting is skipped while it holds. */
+  stamp: string;
+}
+
+/** The value's last four characters, shown in settings in place of the value. */
+export const secretHint = (value: string) => value.slice(-4);
+
+const entryKey = (kind: SecretKind, name: string) => `${kind}:${name}`;
+
+const stampOf = (row: SecretRow) =>
+  `${row.keyId}:${row.updatedAt.getTime()}:${Buffer.from(row.nonce).toString("hex")}`;
+
+export interface SecretStoreOptions {
+  db: Executor;
+  /** Undefined without `JJ_SECRET_KEY`: nothing can be stored or read. */
+  keyring?: Keyring;
+  owner?: string;
+}
+
+export class SecretStore {
+  private entries = new Map<string, Entry>();
+  private readonly db: Executor;
+  /** Whose rows these are (`secrets.owner_id`). */
+  readonly owner: string;
+  readonly keyring: Keyring | undefined;
+
+  constructor(options: SecretStoreOptions) {
+    this.db = options.db;
+    this.keyring = options.keyring;
+    this.owner = options.owner ?? LOCAL_OWNER;
+  }
+
+  /** Values can be stored: the server has a master key. */
+  get available(): boolean {
+    return this.keyring !== undefined;
+  }
+
+  /** Associated data that binds a ciphertext to its row. */
+  private aad(kind: SecretKind, name: string): string {
+    return `jj-bot/secret/v1\u0000${this.owner}\u0000${kind}\u0000${name}`;
+  }
+
+  private open(row: SecretRow): string | undefined {
+    return this.keyring?.open(
+      { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
+      this.aad(row.kind, row.name),
+    );
+  }
+
+  /** The columns a value is stored as. Throws without a master key. */
+  seal(
+    kind: SecretKind,
+    name: string,
+    value: string,
+  ): Sealed & { hint: string } {
+    if (!this.keyring) throw new Error("No JJ_SECRET_KEY is configured.");
+    return {
+      ...this.keyring.seal(value, this.aad(kind, name)),
+      hint: secretHint(value),
+    };
+  }
+
+  /** Reads every stored row again, decrypting only those that changed. */
+  async refresh(exec: Executor = this.db): Promise<void> {
+    const rows = await exec
+      .select()
+      .from(secrets)
+      .where(eq(secrets.ownerId, this.owner));
+    const next = new Map<string, Entry>();
+    for (const row of rows) {
+      const key = entryKey(row.kind, row.name);
+      const stamp = stampOf(row);
+      const previous = this.entries.get(key);
+      next.set(
+        key,
+        previous && previous.stamp === stamp
+          ? previous
+          : {
+              kind: row.kind,
+              name: row.name,
+              value: this.open(row),
+              hint: row.hint,
+              keyId: row.keyId,
+              createdAt: row.createdAt,
+              updatedAt: row.updatedAt,
+              stamp,
+            },
+      );
+    }
+    this.entries = next;
+  }
+
+  /** From the last refresh. */
+  providerKey(providerId: string): StoredProviderKey | undefined {
+    const entry = this.entries.get(entryKey("provider", providerId));
+    return entry
+      ? {
+          value: entry.value,
+          hint: entry.hint,
+          updatedAt: entry.updatedAt.toISOString(),
+        }
+      : undefined;
+  }
+
+  /** The sandbox secrets as settings shows them, by name, from the last refresh. */
+  sandboxSecrets(): SecretInfo[] {
+    return [...this.entries.values()]
+      .filter((entry) => entry.kind === "sandbox")
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((entry) => ({
+        name: entry.name,
+        hint: entry.hint,
+        readable: entry.value !== undefined,
+        createdAt: entry.createdAt.toISOString(),
+        updatedAt: entry.updatedAt.toISOString(),
+      }));
+  }
+
+  /** Every readable value (of one kind), for redaction and the "already a server secret" checks. */
+  values(kind?: SecretKind): Secret[] {
+    return [...this.entries.values()].flatMap((entry) =>
+      entry.value === undefined || (kind && entry.kind !== kind)
+        ? []
+        : [
+            {
+              name:
+                entry.kind === "provider"
+                  ? `the stored ${entry.name} key`
+                  : `the sandbox secret ${entry.name}`,
+              value: entry.value,
+            },
+          ],
+    );
+  }
+
+  /** Names of the stored rows no current key opens, from the last refresh. */
+  unreadable(): { kind: SecretKind; name: string }[] {
+    return [...this.entries.values()]
+      .filter((entry) => entry.value === undefined)
+      .map((entry) => ({ kind: entry.kind, name: entry.name }));
+  }
+
+  /**
+   * The granted sandbox secrets' values, read from the database (not the
+   * snapshot), by name. A name that is not stored, or that no key opens, is
+   * reported in `missing` or `unreadable`.
+   */
+  async sandboxValues(
+    names: readonly string[],
+    exec: Executor = this.db,
+  ): Promise<{
+    values: Record<string, string>;
+    missing: string[];
+    unreadable: string[];
+  }> {
+    const result = {
+      values: {} as Record<string, string>,
+      missing: [] as string[],
+      unreadable: [] as string[],
+    };
+    if (names.length === 0) return result;
+    const rows = await exec
+      .select()
+      .from(secrets)
+      .where(and(eq(secrets.ownerId, this.owner), eq(secrets.kind, "sandbox")));
+    for (const name of names) {
+      const row = rows.find((candidate) => candidate.name === name);
+      const value = row && this.open(row);
+      if (!row) result.missing.push(name);
+      else if (value === undefined) result.unreadable.push(name);
+      else result.values[name] = value;
+    }
+    return result;
+  }
+
+  /**
+   * Seals again, under the current key, every row a previous key sealed.
+   * Idempotent across processes: a row is rewritten only while it still
+   * carries the old key id.
+   */
+  async rotate(logger: Logger, exec: Executor = this.db): Promise<number> {
+    const keyring = this.keyring;
+    if (!keyring) return 0;
+    const rows = await exec
+      .select()
+      .from(secrets)
+      .where(eq(secrets.ownerId, this.owner));
+    let count = 0;
+    for (const row of rows) {
+      if (row.keyId === keyring.currentKeyId || !keyring.knows(row.keyId))
+        continue;
+      const value = this.open(row);
+      if (value === undefined) continue;
+      const sealed = keyring.seal(value, this.aad(row.kind, row.name));
+      const updated = await exec
+        .update(secrets)
+        .set({
+          keyId: sealed.keyId,
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+        })
+        .where(
+          and(
+            eq(secrets.ownerId, row.ownerId),
+            eq(secrets.kind, row.kind),
+            eq(secrets.name, row.name),
+            eq(secrets.keyId, row.keyId),
+          ),
+        )
+        .returning({ name: secrets.name });
+      count += updated.length;
+    }
+    if (count > 0)
+      logger.info(
+        `Re-encrypted ${count} stored ${count === 1 ? "secret" : "secrets"} with the current JJ_SECRET_KEY. Remove JJ_SECRET_KEY_PREVIOUS once every process runs with this key.`,
+      );
+    return count;
+  }
+}
+
+/** Warns, by name only, about stored values the server cannot use. */
+export function warnUnreadable(store: SecretStore, logger: Logger): void {
+  const unreadable = store.unreadable();
+  if (unreadable.length === 0) return;
+  const names = unreadable
+    .map((entry) =>
+      entry.kind === "provider" ? `the ${entry.name} key` : entry.name,
+    )
+    .join(", ");
+  logger.warn(
+    store.available
+      ? `${unreadable.length} stored ${unreadable.length === 1 ? "secret" : "secrets"} cannot be decrypted with JJ_SECRET_KEY (${names}): they were stored under another key. Set the old key in JJ_SECRET_KEY_PREVIOUS to keep them, or store them again in Settings.`
+      : `JJ_SECRET_KEY is not set, so ${unreadable.length} stored ${unreadable.length === 1 ? "secret is" : "secrets are"} unavailable (${names}). Set the key they were stored with, or remove them in Settings.`,
+  );
+}

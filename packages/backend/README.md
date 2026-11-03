@@ -8,7 +8,16 @@ The engine depends on its ports in `src/ports.ts`, never on `@jj/runtime` or a c
 
 ```ts
 const database = await openDatabase(/* pglite or postgres */);
-const models = new ModelRegistry({ env, enableScripted });
+// Keyring only with JJ_SECRET_KEY; without one the store reads nothing.
+const secretStore = new SecretStore({
+  db: database.db,
+  keyring: createKeyring(masterKey, previousKeys),
+});
+const models = new ModelRegistry({
+  env,
+  storedKeys: secretStore,
+  enableScripted,
+});
 const engine = await createEngine({
   db: database,
   drivers: createDriverRegistry([
@@ -21,6 +30,8 @@ const engine = await createEngine({
   executor: new PiSessionExecutor({ models, outputCapBytes }),
   chat: new ChatResponder({ models, outputCapBytes }),
   models,
+  secretStore,
+  secrets: serverSecrets, // env keys, API token, master key: for redaction
   config: configFromEnv(env),
 });
 await engine.worker.start(); // unless the worker runs in its own process
@@ -30,6 +41,7 @@ await engine.worker.start(); // unless the worker runs in its own process
 - `createEngine` seeds the default profiles on first boot and returns one method per contract route, each returning that route's response body. Commands are parsed with their contract schemas; refusals throw `DomainError` (`code`, `message`, `details`, `status`).
 - The task stream is `engine.tasks.subscribe(taskId, { after, onEvent })`: send each event as an SSE frame (`id` = sequence, `event` = type, `data` = the event) and `close()` on disconnect. The workspace stream is `engine.subscribeHints(handler)`.
 - `worker.stop()` hands running work to the next worker; `worker.abandon()` stops like a crash (tests).
+- **Stored secrets** (`src/secrets/`): `keyring.ts` seals and opens values (AES-256-GCM, a key derived from the master key, the row as associated data); `SecretStore` keeps a snapshot of the decrypted rows that `refresh()` reloads (every redactor build calls it, so a standalone worker sees writes the API made) and serves the model registry's `providerKey(id)`. `createEngine` re-seals rows a previous key sealed (`rotate`) and warns, by name, about rows no key opens. `services/secrets.ts` holds the write-only routes and `grantedSecrets`, which the worker calls when it starts a task's sandbox: it reads the coordinator profile's grants from the database and fails, naming the secret, when one is missing, unreadable or holds a server secret's value.
 
 ## Invariants
 

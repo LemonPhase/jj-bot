@@ -113,6 +113,7 @@ export async function subscribeHints(
       case "tasks.changed":
       case "conversation.changed":
       case "profiles.changed":
+      case "secrets.changed":
         handler(value);
     }
   });

@@ -91,6 +91,7 @@ describe("bootstrap", () => {
       persistence: false,
       streaming: true,
       verification: false,
+      secretStore: false,
       drivers: [
         { id: "local", available: true, isolated: false },
         { id: "docker", available: false, isolated: true },
@@ -111,7 +112,7 @@ describe("bootstrap", () => {
     expect(bare.capabilities.agentExecution).toBe(false);
     expect(bare.capabilities.persistence).toBe(true);
     expect(bare.defaultModel).toBeNull();
-    modelsViewSchema.parse(keyless.engine.models());
+    modelsViewSchema.parse(await keyless.engine.models());
     const team = await createTeam(engine, ["Ada"]);
     expect(
       (

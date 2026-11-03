@@ -13,8 +13,14 @@ import type { EngineConfigInput } from "../config";
 import type { Logger } from "../context";
 import { createDriverRegistry, type DriverEntry } from "../drivers";
 import { createEngine, type Engine } from "../engine";
-import type { ChatResponder, DriverRegistry, RunExecutor } from "../ports";
+import type {
+  ChatResponder,
+  DriverRegistry,
+  ModelCatalog,
+  RunExecutor,
+} from "../ports";
 import type { Secret } from "../redact";
+import type { SecretStore } from "../secrets/store";
 import { FakeExecutor } from "./fake-executor";
 import { FakeChatResponder, FakeModels } from "./fakes";
 
@@ -95,7 +101,7 @@ export interface TestEngineOptions {
   chat?: FakeChatResponder;
   /** A real chat responder instead of the fake one (such as the pi runtime's, on the scripted model). */
   chatResponder?: ChatResponder;
-  models?: FakeModels;
+  models?: ModelCatalog;
   /** Extra drivers next to `local`. */
   drivers?: DriverEntry[];
   /** Replace the whole registry. */
@@ -106,6 +112,8 @@ export interface TestEngineOptions {
   clock?: () => Date;
   /** Secret values the engine redacts. */
   secrets?: Secret[];
+  /** The stored secrets; default a store with no master key. */
+  secretStore?: SecretStore;
 }
 
 export async function testEngine(
@@ -137,6 +145,7 @@ export async function testEngine(
     logger: quietLogger,
     clock: options.clock,
     secrets: () => options.secrets ?? [],
+    ...(options.secretStore ? { secretStore: options.secretStore } : {}),
     config: {
       pollIntervalMs: 25,
       leaseMs: 5_000,
