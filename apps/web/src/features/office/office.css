@@ -157,6 +157,13 @@
   overflow-wrap: anywhere;
 }
 
+.office .office-stage__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-4);
+}
+
 /* Why 3D is not offered on this screen or in this browser. */
 .office__note {
   margin: calc(var(--sp-3) * -1) 0 0;

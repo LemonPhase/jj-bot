@@ -7,10 +7,41 @@ import { ApiProvider } from "../../api/ApiContext";
 import { createDemoApi } from "../../api/demoApi";
 import { WorkspaceProvider } from "../../state/WorkspaceContext";
 import { OFFICE_MODE_KEY } from "./playback";
-import { no3dReason } from "./TaskOffice";
+import { no3dReason, Office3DBoundary } from "./TaskOffice";
 
 // Whole-provider renders share CPU with the other suites in a full run.
 configure({ asyncUtilTimeout: 5000 });
+
+describe("a 3D office that cannot start", () => {
+  function Failing(): never {
+    throw new TypeError(
+      "Failed to fetch dynamically imported module: /assets/Office3D-abcd1234.js",
+    );
+  }
+
+  it("says why and offers the 2D office or a reload, which alone fetches a failed chunk again", () => {
+    // React reports the caught render error; keep the output quiet.
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onShow2d = vi.fn();
+    const onReload = vi.fn();
+    try {
+      render(
+        <Office3DBoundary onShow2d={onShow2d} onReload={onReload}>
+          <Failing />
+        </Office3DBoundary>,
+      );
+    } finally {
+      quiet.mockRestore();
+    }
+    expect(screen.getByRole("status").textContent).toContain(
+      "The 3D office could not start: Failed to fetch dynamically imported module",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    expect(onReload).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Show the 2D office" }));
+    expect(onShow2d).toHaveBeenCalledOnce();
+  });
+});
 
 describe("no3dReason", () => {
   it("offers 3D only with WebGL on a screen wider than a phone", () => {

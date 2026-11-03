@@ -51,14 +51,10 @@ import {
 import "./office.css";
 
 // Three.js is large: the 3D view downloads only when someone switches to it.
-// React keeps a failed lazy load, so a failed chunk makes a new one: the
-// next switch to 3D asks the network again instead of failing until reload.
-const load3d = () =>
-  import("./Office3D").catch((error: unknown) => {
-    Office3D = lazy(load3d);
-    throw error;
-  });
-let Office3D = lazy(load3d);
+// A chunk that failed to load stays failed for the life of the page (React
+// keeps the rejection, and the browser its failed module fetch), so only a
+// reload fetches it again: Office3DBoundary offers one.
+const Office3D = lazy(() => import("./Office3D"));
 
 /** Desks the 3D room has (OfficeScene `MAX_DESKS`); kept here so 2D never loads Three.js. */
 const DESKS_3D = 6;
@@ -84,10 +80,16 @@ export function no3dReason(
 /**
  * Keeps a 3D office that fails to start (WebGL lost or refused, or its chunk
  * not arriving) from taking the Tasks screen down: it says so in the stage
- * and offers the 2D office.
+ * and offers the 2D office, or a reload, the only way to fetch a chunk that
+ * failed once.
  */
-class Office3DBoundary extends Component<
-  { onShow2d: () => void; children: ReactNode },
+export class Office3DBoundary extends Component<
+  {
+    onShow2d: () => void;
+    /** Reloads the page; replaceable for tests. */
+    onReload?: () => void;
+    children: ReactNode;
+  },
   { error: Error | null }
 > {
   override state: { error: Error | null } = { error: null };
@@ -99,13 +101,17 @@ class Office3DBoundary extends Component<
   override render() {
     const { error } = this.state;
     if (!error) return this.props.children;
+    const reload = this.props.onReload ?? (() => window.location.reload());
     return (
       <div
         className="office-stage office-stage--3d office-stage--loading office-stage--failed"
         role="status"
       >
         <span>The 3D office could not start: {error.message}</span>
-        <Button onClick={this.props.onShow2d}>Show the 2D office</Button>
+        <span className="office-stage__actions">
+          <Button onClick={this.props.onShow2d}>Show the 2D office</Button>
+          <Button onClick={reload}>Reload</Button>
+        </span>
       </div>
     );
   }
