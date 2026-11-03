@@ -65,7 +65,9 @@
   flex: 1 1 280px;
 }
 
+/* Wraps when the column is narrow (the Office view), so Stop stays in reach. */
 .task-main .screen-header__actions {
+  flex-wrap: wrap;
   gap: var(--sp-6);
 }
 
@@ -910,7 +912,6 @@
   }
 
   .task-main .screen-header__actions {
-    flex-wrap: wrap;
     gap: var(--sp-4);
   }
 
