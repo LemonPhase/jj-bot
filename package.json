@@ -23,6 +23,7 @@
     "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base",
     "dev:worker": "npm run dev -w @jj/worker",
     "smoke:e2e": "node --import tsx --env-file-if-exists=.env scripts/smoke-e2e.ts",
+    "data:check": "node --import tsx --env-file-if-exists=.env apps/api/src/data-check.ts",
     "smoke:nightly": "node --import tsx --env-file-if-exists=.env scripts/smoke-nightly.ts",
     "test:browser": "npm run build -w @jj/web && playwright test -c apps/web/e2e"
   },

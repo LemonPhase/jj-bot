@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { EngineConfigInput, Logger } from "@jj/backend";
 import type { TaskView } from "@jj/contracts";
 import { type AppConfig, createApp, type JJApp } from "./app";
-import type { Env, SecretKeys } from "./config";
+import type { DatabaseSetting, Env, SecretKeys } from "./config";
 import { openServices, type Services } from "./wiring";
 
 export const OPEN_TIMEOUT = 60_000;
@@ -49,13 +49,15 @@ export interface TestAppOptions {
   env?: Env;
   /** The secrets store's master keys; default none (the store is off). */
   secretKeys?: SecretKeys;
+  /** The database to open (and migrate); default a new in-memory PGlite. */
+  database?: DatabaseSetting;
 }
 
 export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
   const root = await mkdtemp(join(tmpdir(), "jj-api-test-"));
   const services = await openServices(
     {
-      database: { mode: "pglite", path: "memory://" },
+      database: options.database ?? { mode: "pglite", path: "memory://" },
       drivers: ["local"],
       localRoot: root,
       dockerNamespace: "jj-sandbox",

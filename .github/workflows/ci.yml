@@ -137,7 +137,7 @@ jobs:
     # the docker driver on the runner's daemon, driven over HTTP from outside.
     name: Compose stack
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       JJ_ENABLE_SCRIPTED_MODEL: "true"
       JJ_DEFAULT_MODEL: scripted/team
@@ -178,13 +178,45 @@ jobs:
           address() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q "$1")" | cut -d' ' -f1; }
           echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,$(address app):3001,$(address postgres):5432" >> "$GITHUB_ENV"
 
+      # A new install has no task workspace yet: its backup holds the
+      # database alone.
+      - name: Back up the new stack, before any task
+        run: |
+          scripts/backup.sh "$RUNNER_TEMP/fresh"
+          grep -F '"volumes": [],' "$RUNNER_TEMP/fresh/manifest.json"
+
       # Through the published loopback port, as a browser on the host would.
-      # Includes restart survival across `docker compose restart app`.
-      - name: Smoke against the stack (docker driver, restart survival)
+      # Includes backup survival: after its first task the running stack is
+      # backed up, wiped (`down -v`, its sandboxes and workspace volumes too)
+      # and restored, and the rest of the smoke runs on the restored data,
+      # with restart survival across `docker compose restart app`.
+      - name: Smoke against the stack (docker driver, backup and restore, restart survival)
         env:
           JJ_SMOKE_BASE_URL: http://127.0.0.1:3001
           JJ_SMOKE_RESTART_COMMAND: docker compose restart app
+          JJ_SMOKE_RESTORE_COMMAND: >-
+            scripts/backup.sh "$RUNNER_TEMP/backup" &&
+            docker compose down -v --remove-orphans &&
+            { docker ps -aq --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker rm -f; } &&
+            { docker volume ls -q --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker volume rm; } &&
+            scripts/restore.sh "$RUNNER_TEMP/backup" &&
+            docker compose up -d --wait --wait-timeout 180
         run: npm run smoke:e2e
+
+      # The manifest names the versions, the migration level and the
+      # workspaces; a restore into a stack that holds data is refused.
+      - name: Check the backup's manifest, and that restore refuses a stack with data
+        run: |
+          cat "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"format": "jj-bot-backup"' "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"state": "current"' "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"jj-bot-task-' "$RUNNER_TEMP/backup/manifest.json"
+          if scripts/restore.sh "$RUNNER_TEMP/backup" 2>restore.err; then
+            echo "restore replaced a stack that holds data without --force"
+            exit 1
+          fi
+          cat restore.err
+          grep -F "the stack is not empty" restore.err
 
       # One "Open JJ Bot" line per boot (two, with the restart), all with the
       # same token, and the token in no other line.
@@ -196,6 +228,28 @@ jobs:
           echo "lines with the token: $carrying; Open JJ Bot lines: $opening"
           test "$opening" -ge 2
           test "$carrying" = "$opening"
+
+      # A backup holding an archive its manifest does not list (named for the
+      # PostgreSQL volume) is refused before anything changes; --force then
+      # replaces the stack's data with the backup's, which the app serves.
+      - name: Refuse a backup with an unlisted archive, then restore with --force
+        run: |
+          cp -a "$RUNNER_TEMP/backup" "$RUNNER_TEMP/unlisted"
+          (cd "$RUNNER_TEMP/unlisted" &&
+            cp volumes/jj-bot-task-*.tar volumes/jj-bot_jj_postgres.tar &&
+            sha256sum volumes/jj-bot_jj_postgres.tar >>SHA256SUMS)
+          if scripts/restore.sh --force "$RUNNER_TEMP/unlisted" 2>restore.err; then
+            echo "restored a backup with an unlisted archive"
+            exit 1
+          fi
+          cat restore.err
+          grep -F "is not a workspace its manifest lists" restore.err
+          test -n "$(docker compose ps --status running --quiet app)"
+          scripts/restore.sh --force "$RUNNER_TEMP/backup"
+          docker compose up -d --wait --wait-timeout 180
+          bots=$(curl -fsS -H "Authorization: Bearer $JJ_SMOKE_TOKEN" http://127.0.0.1:3001/api/bots | jq '.bots | length')
+          echo "bots after the restore: $bots"
+          test "$bots" = 3
 
       - name: Show the stack's state and logs
         if: ${{ failure() }}

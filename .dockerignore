@@ -16,6 +16,8 @@
 **/.aws
 **/.docker
 **/.jj-data
+backups
+packages/db/fixtures
 **/jj-sandbox
 **/node_modules
 **/dist

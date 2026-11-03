@@ -4,13 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, getTableName, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  type Database,
-  migrationStatus,
-  migrationsFolder,
-  openDatabase,
-} from "./database";
+import { type Database, openDatabase } from "./database";
 import { newId } from "./ids";
+import { migrationStatus, migrationsFolder } from "./migrations";
 import {
   DatabaseInUseError,
   LOCK_FILE,
