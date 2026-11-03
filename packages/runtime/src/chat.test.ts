@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ChatReplyError, ChatResponder } from "./chat";
 import { ModelRegistry } from "./models";
 import { SCRIPTED_MODEL_REF } from "./scripted";
-import { callTool, say } from "./test-support";
+import { callTool, expecting, lastMessage, say, textOf } from "./test-support";
 import type { CollabTool } from "./types";
 
 interface Listed {
@@ -340,6 +340,29 @@ describe("ChatResponder", () => {
     // A retry of this reply must not create a second task: it succeeded.
     expect(answer.text).toBe("Created task task_1.");
     expect(created).toHaveLength(1);
+  });
+
+  it("never creates a task from a null goal: pi reports the goal missing", async () => {
+    const faux = fauxProvider();
+    const responder = new ChatResponder({
+      models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+    });
+    const { tools, created } = chatTools();
+    faux.setResponses([
+      callTool("create_task", { goal: null, participants: [] }),
+      expecting((context) => {
+        expect(textOf(lastMessage(context))).toContain("- goal: missing");
+      }, say("What should the task do?")),
+    ]);
+    const answer = await responder.reply({
+      systemPrompt: "x",
+      history: [{ role: "user", text: "Start a task" }],
+      model: "faux/faux-1",
+      tools,
+      signal: new AbortController().signal,
+    });
+    expect(answer.text).toBe("What should the task do?");
+    expect(created).toEqual([]);
   });
 
   it("refuses invalid budgets", async () => {

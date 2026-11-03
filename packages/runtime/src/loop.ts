@@ -112,6 +112,20 @@ export function toContractUsage(
   };
 }
 
+/**
+ * A call's arguments without its `null` ones. pi's validation would turn a
+ * `null` string into the text "null"; left out, a required argument is
+ * reported missing and an optional one is absent.
+ */
+function withoutNulls(args: unknown): unknown {
+  if (typeof args !== "object" || args === null || Array.isArray(args))
+    return args;
+  const entries = Object.entries(args);
+  return entries.some(([, value]) => value === null)
+    ? Object.fromEntries(entries.filter(([, value]) => value !== null))
+    : args;
+}
+
 /** Engine-supplied tools as pi tools. `onEndRun` records a request to end the run. */
 export function collabAgentTool(
   tool: CollabTool,
@@ -123,6 +137,7 @@ export function collabAgentTool(
     label: tool.name,
     description: tool.description,
     parameters: tool.parameters,
+    prepareArguments: withoutNulls,
     // Collaboration tools change shared task state; run them one at a time.
     executionMode: "sequential",
     async execute(toolCallId, params, signal) {
