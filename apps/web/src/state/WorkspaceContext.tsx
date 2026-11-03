@@ -35,6 +35,7 @@ import { createRefetcher } from "./refetch";
 import {
   applyOverlay,
   hintNeedsTaskList,
+  mergeTask,
   overlayMessage,
   overlayTask,
   pruneOverlay,
@@ -592,7 +593,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             [taskId]: overlayTask(current[taskId], task),
           }));
           setTasks((current) =>
-            current.map((t) => (t.id === task.id ? { ...t, ...task } : t)),
+            current.map((t) => (t.id === task.id ? mergeTask(t, task) : t)),
           );
           return { ok: true };
         } catch (reason) {

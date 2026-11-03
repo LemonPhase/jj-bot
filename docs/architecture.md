@@ -63,6 +63,7 @@ On first boot, with no profiles stored, the server seeds one profile per registe
 | Bot               | Identity, role, instructions, model choice, runtime profile, appearance, memory.                                   |
 | RuntimeProfile    | Sandbox driver and spec, coding tools, budgets and spend caps; reports driver availability and isolation.          |
 | BotConversation   | Direct user-to-bot chat outside task execution.                                                                    |
+| ChatTaskUpdate    | A task event its coordinator's chat is told (completed, failed, waiting for the user) until a reply answers it.    |
 | Task              | Title, goal and goal version, coordinator, state, final result, stop request, spend cap.                           |
 | TaskParticipation | Bot membership in a task.                                                                                          |
 | ExecutionSession  | Task, bot, parent session, role, brief, depth, goal version, status, what it waits for, result.                    |
@@ -80,7 +81,28 @@ Records are relational tables with indexed foreign keys. Every record carries an
 
 ## Direct bot chat
 
-A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, and two tools: create a task, or send a message to one of the bot's active tasks. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited.
+A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, a bounded history and the chat's task tools. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited. The chat prompt gives the count of the bot's unfinished tasks and points to `list_tasks`; it does not list them. In the history a reply sends, a past reply with a task card names that task (its id and title) in a note, as the card shows it to the user. JJ Bot attaches cards itself, so a note a reply copies is removed before the reply is stored. That history alternates between the user and the bot and starts with the user, as every provider accepts: consecutive messages of one side are joined. A reply that created, continued or stopped a task carries that task's card, and so does one that looked up exactly one task.
+
+The task tools cover only the tasks the bot takes part in (its participations); any other task id, known or not, is refused with a tool error:
+
+- `list_tasks(status?, limit?)`: the bot's tasks, newest first, each with its id, title, status, the bot's role, when it last changed and its result or error on one line.
+- `get_task(id)`: the task state as a session's `task_state` gives it (goal and goal version, status, result or error, each session's bot, role, status and the first line of its brief), the bot's role, and the latest task log entries as an index.
+- `read_task_log(id, …)`: the task log as `task_log` pages it (newest entries by default), or one entry in full. Session transcripts are never read.
+- `create_task`: as above.
+- `send_to_task(id, text)`: passes the message on to the task's coordinator, continuing a waiting, completed or failed task as a user message does: same task, workspace and coordinator transcript. A cancelled or stopping task refuses it.
+- `stop_task(id, reason?)`: stops the task as the user's stop does. Only the task's coordinator can.
+
+The read tools change nothing, and their output is never a reply's text when its budget cuts it short. Tool definitions are the same whatever tasks exist: task ids are plain string parameters checked inside each tool. A reply takes at most six model calls: the deepest planned reply, a question about a task, takes four (`list_tasks`, `get_task`, `read_task_log` for an entry in full, then the answer), and the other two absorb a refused call and its retry.
+
+**Task updates.** When a task completes, fails or waits for the user, its coordinator tells the user in its direct chat, in its own words:
+
+- The transaction that changes the task records the update (the task, what happened, and its result, error or the coordinator's question, as stored then and clipped) and enqueues a chat reply for the coordinator. Each event has one update, keyed by the task and its event sequence; a task that continues and then waits again is a new event.
+- A later event of the task closes its updates not told yet, and a waiting update whose task no longer waits (the user answered it, in the task or from chat) is dropped, so no stale update is told. The reply's input states the task's status now.
+- The update is the input of one chat reply and is never stored as a chat message. That reply gets the read tools only; it may suggest an action, and the user decides. Its message carries the task's id, so the chat shows the task's card under it.
+- A bot's chat replies run one at a time, each answering one input: the user's unanswered messages first, then the oldest update. An update, or a user message, that arrives during a reply is answered after it, by a reply that sees both.
+- The reply that answers an update marks it answered in the transaction that stores its message, so a crash or hand-off tells it once. If the reply fails (a model error or the budget), or its job keeps dying, the engine posts the update as a plain message with the task's card instead, so it is never lost. A user message whose reply failed is not answered again until the user writes more, and its error stays in the conversation view until then, whatever replied since.
+
+The task card reads the live task summary: it shows the task's current status, not its status when the message was written, and a completed or failed task's result or error, or a waiting task's question. The summary of a task waiting for the user carries that question (`question`): the coordinator's last message to the user (a discussion message its root session posted with no recipients), redacted and clipped, derived from the task log and gone once the task continues or finishes.
 
 ## Visibility is separate from activation
 
@@ -131,9 +153,9 @@ No model call starts once a cap it falls under is reached. Three caps apply, all
 - **Each bot's, over any rolling 24 hours** (its own profile's `budgets.maxUsdPerBotPerDay`, default $20): task sessions and direct chat together.
 - **The instance's, over any rolling 24 hours** (`JJ_MAX_USD_PER_DAY`, unset by default): everything.
 
-Stored profiles without the cap keys take the defaults, so no install is unbounded unless a profile says so. One guard is asked before every model call: each turn of a session run, each compaction summary call, the retry after a context overflow and each call of a chat reply. A refused call is never sent and reports no model events. A call in flight is counted when it finishes, so a task can pass its cap by the calls already running: at most one per running session.
+Stored profiles without the cap keys take the defaults, so no install is unbounded unless a profile says so. One guard is asked before every model call: each turn of a session run, each compaction summary call, the retry after a context overflow and each call of a chat reply, to the user or to a task update. A refused call is never sent and reports no model events. A call in flight is counted when it finishes, so a task can pass its cap by the calls already running: at most one per running session.
 
-At a cap, the session's run ends like a run at its turn budget, and `spend.capped` records which cap stopped it and by how much. A worker reports what it has, its result marked as stopped at the cap; its parent reacts to it like any result, and is stopped by the same cap at its next call. A coordinator left with no open delegations waits for the user, and the engine posts a system message naming the cap and what lets the task go on, so the task is `waiting`, not `failed`: no delegation or transcript is lost. A bot's cap stops only that bot's sessions. While a cap would refuse the next call, the API answers 409 `SPEND_CAP_REACHED` (with the scope, the spend and the cap) to a message that would continue the task, to a task whose coordinator is at its cap, and to a direct message to a bot at its cap; a chat reply the worker refuses fails visibly. Raising or clearing a cap continues nothing: the user's next message does.
+At a cap, the session's run ends like a run at its turn budget, and `spend.capped` records which cap stopped it and by how much. A worker reports what it has, its result marked as stopped at the cap; its parent reacts to it like any result, and is stopped by the same cap at its next call. A coordinator left with no open delegations waits for the user, and the engine posts a system message naming the cap and what lets the task go on, so the task is `waiting`, not `failed`: no delegation or transcript is lost. A bot's cap stops only that bot's sessions. While a cap would refuse the next call, the API answers 409 `SPEND_CAP_REACHED` (with the scope, the spend and the cap) to a message that would continue the task, to a task whose coordinator is at its cap, and to a direct message to a bot at its cap. A chat reply the worker refuses fails visibly; a refused task update reply is told by the engine's plain fallback message instead, without a model call. A reply's calls are recorded as each one finishes, so one that fails, or whose update is overtaken, still counts every call it made. Raising or clearing a cap continues nothing: the user's next message does.
 
 At 80% of the task's cap (`SPEND_SOFT_THRESHOLD`) the engine records `spend.threshold` once per cap value and clients show the spend amber. It is the hook for approvals ([#87](https://github.com/LemonPhase/jj-bot/issues/87)): spend past it will need the user's approval.
 
@@ -186,7 +208,7 @@ A bot's memory is one text that the user edits (`PUT /api/bots/:id/memory`). It 
 
 ## Concurrency and recovery
 
-A job lease gives each active run a single owner, and every write-back re-checks ownership. Event and conversation sequences are serialized per task and per bot rather than globally, so independent tasks never contend. Side effects of a job that can run again are keyed by its input: a chat reply that runs again after a hand-off or crash creates no second task and relays no message twice.
+A job lease gives each active run a single owner, and every write-back re-checks ownership. Event and conversation sequences are serialized per task and per bot rather than globally, so independent tasks never contend. Side effects of a job that can run again are keyed by its input: a chat reply that runs again after a hand-off or crash creates no second task, relays no message twice and tells a task update once.
 
 A session's pi transcript is persisted as the run proceeds: its inputs before the model call that sees them, an assistant message before its tools run, each tool result as soon as that tool finishes, and a compaction entry once everything it covers is stored. After a crash or restart, the session resumes from what was persisted, in a new run. A command that was running at the crash is reported to the agent as interrupted with an unknown outcome; it is never silently re-run. A session whose workspace did not survive, such as an ephemeral one, is not resumed: it fails visibly. A pi upgrade that changes the transcript format must migrate stored transcripts or refuse to resume them.
 

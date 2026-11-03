@@ -13,7 +13,7 @@ import type { EngineConfigInput } from "../config";
 import type { Logger } from "../context";
 import { createDriverRegistry, type DriverEntry } from "../drivers";
 import { createEngine, type Engine } from "../engine";
-import type { DriverRegistry, RunExecutor } from "../ports";
+import type { ChatResponder, DriverRegistry, RunExecutor } from "../ports";
 import type { Secret } from "../redact";
 import { FakeExecutor } from "./fake-executor";
 import { FakeChatResponder, FakeModels } from "./fakes";
@@ -93,6 +93,8 @@ export interface TestEngineOptions {
   /** A real executor to run sessions instead of the fake one (such as the pi runtime). */
   runExecutor?: RunExecutor;
   chat?: FakeChatResponder;
+  /** A real chat responder instead of the fake one (such as the pi runtime's, on the scripted model). */
+  chatResponder?: ChatResponder;
   models?: FakeModels;
   /** Extra drivers next to `local`. */
   drivers?: DriverEntry[];
@@ -130,7 +132,7 @@ export async function testEngine(
     db: database,
     drivers,
     executor: options.runExecutor ?? executor,
-    chat,
+    chat: options.chatResponder ?? chat,
     models: options.models ?? new FakeModels(),
     logger: quietLogger,
     clock: options.clock,

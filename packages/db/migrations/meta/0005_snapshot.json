@@ -1,5 +1,5 @@
 {
-  "id": "0e4c3699-842c-4035-860a-d260499d7be0",
+  "id": "7cbd887c-104e-4d7c-8056-a1663442064b",
   "prevId": "d1966145-af78-4998-961a-43774d803520",
   "version": "7",
   "dialect": "postgresql",
@@ -324,6 +324,134 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.chat_task_updates": {
+      "name": "chat_task_updates",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "bot_id": {
+          "name": "bot_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_event_seq": {
+          "name": "task_event_seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "answered_at": {
+          "name": "answered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "chat_task_updates_pending_idx": {
+          "name": "chat_task_updates_pending_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_task_updates\".\"answered_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "chat_task_updates_bot_id_bots_id_fk": {
+          "name": "chat_task_updates_bot_id_bots_id_fk",
+          "tableFrom": "chat_task_updates",
+          "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "chat_task_updates_task_id_tasks_id_fk": {
+          "name": "chat_task_updates_task_id_tasks_id_fk",
+          "tableFrom": "chat_task_updates",
+          "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "chat_task_updates_task_event": {
+          "name": "chat_task_updates_task_event",
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "task_event_seq"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "chat_task_updates_event_check": {
+          "name": "chat_task_updates_event_check",
+          "value": "\"chat_task_updates\".\"event\" in ('completed', 'failed', 'waiting')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.conversation_messages": {
       "name": "conversation_messages",
       "schema": "",
@@ -377,9 +505,38 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "handled_at": {
+          "name": "handled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "conversation_messages_waiting_idx": {
+          "name": "conversation_messages_waiting_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sequence",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"conversation_messages\".\"role\" = 'user' and \"conversation_messages\".\"handled_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "conversation_messages_bot_id_bots_id_fk": {
           "name": "conversation_messages_bot_id_bots_id_fk",
@@ -622,6 +779,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "jobs_chat_reply_answering_idx": {
+          "name": "jobs_chat_reply_answering_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->>'answering')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"jobs\".\"kind\" = 'chat.reply'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1877,12 +2056,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "spend_cap_usd": {
-          "name": "spend_cap_usd",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": false
-        },
         "sandbox_holder": {
           "name": "sandbox_holder",
           "type": "text",
@@ -2103,13 +2276,6 @@
           "notNull": true,
           "default": 0
         },
-        "priced": {
-          "name": "priced",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2124,42 +2290,6 @@
           "columns": [
             {
               "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "usage_bot_created_idx": {
-          "name": "usage_bot_created_idx",
-          "columns": [
-            {
-              "expression": "bot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "usage_created_idx": {
-          "name": "usage_created_idx",
-          "columns": [
-            {
-              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

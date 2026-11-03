@@ -222,7 +222,7 @@ describe("review regressions", () => {
       calls: [
         {
           name: "send_to_task",
-          args: { taskId: task.id, text: "make it blue" },
+          args: { id: task.id, text: "make it blue" },
         },
       ],
       text: "Forwarded.",

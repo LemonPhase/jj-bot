@@ -1,18 +1,27 @@
 /** UI-only data derived from a `TaskView`. */
-import type { ExecutionSession, TaskSummary, TaskView } from "@jj/contracts";
+import {
+  type ExecutionSession,
+  type TaskSummary,
+  type TaskView,
+  waitingQuestion,
+} from "@jj/contracts";
 
 const byCreation = (a: ExecutionSession, b: ExecutionSession) =>
   a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
 
-/** The list entry for a task, kept in step with its open view. */
-export const summaryFromView = (view: TaskView): TaskSummary => ({
-  ...view.task,
-  activeSessionCount: view.sessions.filter(
-    (s) => s.status === "queued" || s.status === "running",
-  ).length,
-  sessionCount: view.sessions.length,
-  usage: view.usage.total,
-});
+/** The list entry for a task, kept in step with its open view (its question too). */
+export const summaryFromView = (view: TaskView): TaskSummary => {
+  const question = waitingQuestion(view);
+  return {
+    ...view.task,
+    activeSessionCount: view.sessions.filter(
+      (s) => s.status === "queued" || s.status === "running",
+    ).length,
+    sessionCount: view.sessions.length,
+    usage: view.usage.total,
+    ...(question ? { question } : {}),
+  };
+};
 
 /** Sessions in the order they were created. */
 export const orderedSessions = (view: TaskView): ExecutionSession[] =>

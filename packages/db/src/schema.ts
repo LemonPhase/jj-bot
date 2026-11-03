@@ -50,6 +50,8 @@ export const MESSAGE_INTENTS = [
 ] as const;
 export const AUTHOR_KINDS = ["user", "bot", "system"] as const;
 export const CONVERSATION_ROLES = ["user", "assistant"] as const;
+/** What a task update tells its coordinator's chat: the task completed, failed or waits for the user. */
+export const TASK_UPDATE_EVENTS = ["completed", "failed", "waiting"] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 export const JOB_KINDS = ["session.run", "chat.reply"] as const;
 export const JOB_STATUSES = [
@@ -70,6 +72,7 @@ export type InboxKind = (typeof INBOX_KINDS)[number];
 export type MessageIntent = (typeof MESSAGE_INTENTS)[number];
 export type AuthorKind = (typeof AUTHOR_KINDS)[number];
 export type ConversationRole = (typeof CONVERSATION_ROLES)[number];
+export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
@@ -234,13 +237,64 @@ export const conversationMessages = pgTable(
     /** The task this message created or forwarded to; a reference kept as history, not a foreign key. */
     taskId: text("task_id"),
     createdAt: createdAt(),
+    /**
+     * A user message: when a reply took it up, answered or failed. Null while
+     * it waits, so one that arrives during a reply (whose answer is stored
+     * after it) is still answered next.
+     */
+    handledAt: optionalTime("handled_at"),
   },
   (t) => [
     unique("conversation_messages_bot_sequence").on(t.botId, t.sequence),
+    index("conversation_messages_waiting_idx")
+      .on(t.botId, t.sequence)
+      .where(sql`${t.role} = 'user' and ${t.handledAt} is null`),
     check(
       "conversation_messages_role_check",
       oneOf(t.role, CONVERSATION_ROLES),
     ),
+  ],
+);
+
+/**
+ * A task update for its coordinator's direct chat: the task completed, failed
+ * or waits for the user. Recorded in the transaction that changes the task,
+ * so each event has exactly one row, keyed by the task and the task's event
+ * sequence at that moment (a task that continues and waits again is a new
+ * event). A chat reply answers it: `answered_at` and `message_id` are set in
+ * the transaction that stores the conversation message telling the user (the
+ * bot's reply, or the engine's fallback), so an update is answered once. An
+ * update a later event of its task overtook is closed without a message.
+ */
+export const chatTaskUpdates = pgTable(
+  "chat_task_updates",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    botId: text("bot_id")
+      .notNull()
+      .references(() => bots.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    event: text("event").$type<TaskUpdateEvent>().notNull(),
+    /** `tasks.event_seq` once the event was recorded: with the task, the update's key. */
+    taskEventSeq: integer("task_event_seq").notNull(),
+    /** The result, error or the coordinator's question, as stored then, clipped. */
+    text: text("text").notNull(),
+    createdAt: createdAt(),
+    /** The conversation message that told it; null while pending or when overtaken (attribution, not a foreign key). */
+    messageId: text("message_id"),
+    /** When it was told, or overtaken by a later event of its task; null while pending. */
+    answeredAt: optionalTime("answered_at"),
+  },
+  (t) => [
+    // Also covers the task foreign key.
+    unique("chat_task_updates_task_event").on(t.taskId, t.taskEventSeq),
+    index("chat_task_updates_pending_idx")
+      .on(t.botId, t.createdAt)
+      .where(sql`${t.answeredAt} is null`),
+    check("chat_task_updates_event_check", oneOf(t.event, TASK_UPDATE_EVENTS)),
   ],
 );
 
@@ -565,6 +619,11 @@ export const jobs = pgTable(
     index("jobs_task_idx").on(t.taskId),
     index("jobs_session_idx").on(t.sessionId),
     index("jobs_bot_idx").on(t.botId),
+    // What a chat reply was answering (see the engine's chat-reply.ts): the
+    // conversation view looks up the reply to the user's latest message.
+    index("jobs_chat_reply_answering_idx")
+      .on(t.botId, sql`(${t.payload}->>'answering')`)
+      .where(sql`${t.kind} = 'chat.reply'`),
     // At most one pending and one running session.run per session, and one
     // chat.reply per bot. enqueue() coalesces wakes on the pending index;
     // claim() never starts a second run while one is running.
@@ -605,6 +664,8 @@ export type BotMemoryRow = typeof botMemory.$inferSelect;
 export type NewBotMemory = typeof botMemory.$inferInsert;
 export type ConversationMessageRow = typeof conversationMessages.$inferSelect;
 export type NewConversationMessage = typeof conversationMessages.$inferInsert;
+export type ChatTaskUpdateRow = typeof chatTaskUpdates.$inferSelect;
+export type NewChatTaskUpdate = typeof chatTaskUpdates.$inferInsert;
 export type RuntimeProfileRow = typeof runtimeProfiles.$inferSelect;
 export type NewRuntimeProfile = typeof runtimeProfiles.$inferInsert;
 export type TaskRow = typeof tasks.$inferSelect;
@@ -651,6 +712,7 @@ export const tables = {
   botMemory,
   tasks,
   conversationMessages,
+  chatTaskUpdates,
   taskParticipants,
   taskGoalVersions,
   sessions,

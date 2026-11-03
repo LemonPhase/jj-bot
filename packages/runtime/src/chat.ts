@@ -11,7 +11,12 @@ import {
 } from "./models";
 import type { CollabTool, PiMessage } from "./types";
 
-/** Most model calls one chat reply may take. */
+/**
+ * Most model calls one chat reply may take. The deepest planned reply is a
+ * question about a task: `list_tasks`, `get_task`, `read_task_log` for an
+ * entry in full, then the answer (four calls); the other two absorb a
+ * refused call (a mistyped id) and its retry.
+ */
 export const CHAT_MAX_TURNS = 6;
 const CHAT_DEFAULT_TURNS = 4;
 const CHAT_DEFAULT_TIMEOUT_MS = 120_000;
@@ -22,12 +27,15 @@ export interface ChatHistoryEntry {
 }
 
 export interface ChatReplyInput {
-  /** The bot's persona, memory, active tasks and roster. */
+  /** The bot's persona, memory, task count and roster. */
   systemPrompt: string;
-  /** Oldest first; the last entry is the user message being answered. */
+  /**
+   * Oldest first; the last entry is the input being answered, a user
+   * message or the engine's task update.
+   */
   history: readonly ChatHistoryEntry[];
   model: ModelRef | null;
-  /** create_task and send_to_task, supplied by the engine. */
+  /** The engine's chat task tools (only the read tools for a task update). */
   tools: readonly CollabTool[];
   budgets?: { maxTurns?: number; deadline?: Date };
   signal: AbortSignal;
@@ -119,7 +127,8 @@ export class ChatResponder {
           ...tool,
           execute: async (args, context) => {
             const result = await tool.execute(args, context);
-            if (!result.isError) toolText = result.text;
+            // A lookup is never the reply; an action that succeeded can be.
+            if (!result.isError && !tool.readOnly) toolText = result.text;
             return result;
           },
         },

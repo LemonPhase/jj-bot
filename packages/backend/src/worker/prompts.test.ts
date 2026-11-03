@@ -54,9 +54,7 @@ const chat = chatPrompt({
   bot: { name: "Ada", role: "Lead", instructions: "Be brief." },
   memory: "The client prefers Markdown.",
   team: [{ name: "Bob", role: "Researcher" }],
-  activeTasks: [
-    { id: "task_1", title: "Report", status: "running", coordinator: true },
-  ],
+  unfinishedTasks: { total: 2, coordinated: 1 },
 });
 
 describe("prompts", () => {
@@ -189,17 +187,42 @@ describe("prompts", () => {
     expect(chat).not.toContain("`task_log`");
   });
 
-  it("tell a chat bot when to answer, create a task or forward", () => {
+  it("tell a chat bot when to answer, look up, create, continue or stop a task", () => {
     for (const rule of [
       "cannot run commands",
-      "- task_1: Report (running, you coordinate)",
+      "You take part in 2 unfinished tasks, and you coordinate 1. `list_tasks` lists them, and your finished ones too.",
       "Do not create a task for them.",
+      "look it up with `list_tasks`, `get_task` and `read_task_log`",
       "call `create_task` once",
-      "forward it with `send_to_task` instead of creating a new task",
+      "pass it on with `send_to_task`: the task continues in its own workspace, with its files and history.",
+      "A new task starts with an empty workspace.",
+      "never write a card, or a task id for it.",
+      "`stop_task` stops a task you coordinate; use it only when the user asks.",
       "The client prefers Markdown.",
       "- Bob (Researcher)",
     ])
       expect(chat).toContain(rule);
+  });
+
+  it("count a chat bot's unfinished tasks instead of listing them", () => {
+    const count = (total: number, coordinated: number) =>
+      chatPrompt({
+        bot: { name: "Ada", role: "", instructions: "" },
+        memory: "",
+        team: [],
+        unfinishedTasks: { total, coordinated },
+      })
+        .split("\n## Your tasks\n")[1]
+        ?.split("\n")[0];
+    expect(count(0, 0)).toBe(
+      "You take part in no unfinished tasks. `list_tasks` lists your finished ones.",
+    );
+    expect(count(1, 1)).toBe(
+      "You take part in 1 unfinished task, and you coordinate it. `list_tasks` lists them, and your finished ones too.",
+    );
+    expect(count(3, 3)).toContain("and you coordinate all of them.");
+    expect(count(3, 0)).toContain("and you coordinate none of them.");
+    expect(count(3, 2)).toContain("and you coordinate 2.");
   });
 
   it("stay stable", () => {

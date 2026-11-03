@@ -31,7 +31,7 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.2.0 — 2026-11-03 — Spend caps and usage reporting
+## 1.3.0 — 2026-11-03 — Spend caps and usage reporting
 
 **Changed by:** backend and frontend ([#28](https://github.com/LemonPhase/jj-bot/issues/28), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/28#issuecomment-6593254682)) · **Compatibility:** additive
 
@@ -63,6 +63,21 @@ rather than landing it and announcing it afterwards.
 new-task dialog, the caps in the profile editor, spend on the bot inspector and a Usage tab in
 Settings, and never shows unpriced calls as free.
 **Action required (backend):** none.
+
+## 1.2.0 — 2026-11-03 — A waiting task's question in its summary
+
+**Changed by:** backend ([#81](https://github.com/LemonPhase/jj-bot/issues/81), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/81#issuecomment-6592902366)) · **Compatibility:** additive
+
+- `taskSummarySchema`: adds an optional `question`, set only while the task is `waiting` (the
+  schema refuses it on any other status): the coordinator's last message to the user, redacted
+  and clipped to `TASK_QUESTION_LIMIT` (240) on one line. It is derived from the task log, so no
+  stored record changes; a task that continues or finishes no longer carries it.
+- New pure helpers: `questionExcerpt` (the clip), `isCoordinatorToUser` (which task message is
+  the coordinator talking to the user) and `waitingQuestion`, which derives `question` from a
+  task view, so a client keeps the summary of a task it follows in step with the server's.
+
+**Action required (frontend):** none; the inline task card shows it as `Question · …`.
+**Action required (backend):** none; task summaries (`GET /api/tasks`, bootstrap) set it.
 
 ## 1.1.0 — 2026-11-02 — Task lookup tools
 

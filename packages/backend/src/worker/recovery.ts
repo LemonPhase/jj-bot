@@ -4,9 +4,9 @@
 import { isFinishedStatus } from "@jj/contracts";
 import type { JobRow, SessionRow, TaskRow } from "@jj/db";
 import type { EngineContext } from "../context";
-import { hint } from "../events";
 import { getSession, lockTask } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
+import { giveUpChatReply } from "./chat-reply";
 import { failSessionTx } from "./outcomes";
 import { closeStaleRun, runningRun } from "./runs";
 
@@ -19,8 +19,7 @@ export async function handleExhausted(
   job: JobRow,
 ): Promise<{ finishedTaskId?: string }> {
   if (job.kind === "chat.reply") {
-    if (job.botId)
-      await hint(ctx.db, { type: "conversation.changed", botId: job.botId });
+    await giveUpChatReply(ctx, job);
     return {};
   }
   if (!job.sessionId) return {};

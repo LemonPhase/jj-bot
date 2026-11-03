@@ -762,27 +762,7 @@ export function userMessage(
     ops.updateTask({ goal: input.goal, goalVersion });
     host.emit("task.goal_changed", { goal: input.goal, goalVersion });
   }
-  const previous = initial.status;
-  const reopened =
-    previous === "waiting" || previous === "completed" || previous === "failed";
-  if (reopened) {
-    ops.updateTask({
-      status: "running",
-      result: null,
-      error: null,
-      finishedAt: null,
-    });
-    host.emit("task.reopened", { previous });
-  }
-  const root = rootOf(host);
-  if (root && isFinishedStatus(root.status))
-    ops.updateSession(root.id, {
-      status: "queued",
-      waitingFor: null,
-      result: null,
-      error: null,
-      finishedAt: null,
-    });
+  const reopened = reopen(ops, host);
   const message = ops.post({
     authorKind: "user",
     authorBotId: null,
@@ -808,4 +788,56 @@ export function userMessage(
       : {},
   );
   return { message, reopened };
+}
+
+/**
+ * Continues a waiting, completed or failed task, as services/messages.ts
+ * `continueTask` does: the task runs again (`task.updated`, `task.reopened`)
+ * and its finished coordinator session is queued again. True when it reopened.
+ */
+function reopen(ops: Ops, host: ScriptHost): boolean {
+  const previous = ops.task().status;
+  const reopened =
+    previous === "waiting" || previous === "completed" || previous === "failed";
+  if (reopened) {
+    ops.updateTask({
+      status: "running",
+      result: null,
+      error: null,
+      finishedAt: null,
+    });
+    host.emit("task.reopened", { previous });
+  }
+  const root = rootOf(host);
+  if (root && isFinishedStatus(root.status))
+    ops.updateSession(root.id, {
+      status: "queued",
+      waitingFor: null,
+      result: null,
+      error: null,
+      finishedAt: null,
+    });
+  return reopened;
+}
+
+/**
+ * A message a bot relays from its direct chat, in the server's order
+ * (worker/chat-tools.ts `send_to_task`): the task continues, then the bot's
+ * message to the coordinator (`message.posted`). True when it reopened.
+ */
+export function relayMessage(
+  host: ScriptHost,
+  input: { botId: string; text: string },
+): boolean {
+  const ops = new Ops(host);
+  const reopened = reopen(ops, host);
+  ops.post({
+    authorKind: "bot",
+    authorBotId: input.botId,
+    sessionId: null,
+    intent: "discussion",
+    text: input.text,
+    recipientBotIds: [ops.task().coordinatorBotId],
+  });
+  return reopened;
 }

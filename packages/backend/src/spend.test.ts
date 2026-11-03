@@ -356,6 +356,81 @@ describe("a bot's daily spend cap", () => {
   });
 });
 
+describe("direct chat replies and spend", () => {
+  /** Completes the task with its first call. */
+  const finisher: Brain = (view) =>
+    said.turns(view) === 0
+      ? { calls: [{ name: "complete_task", args: { result: "Done." } }] }
+      : { text: "Done." };
+
+  const chatRows = (botId: string) =>
+    db.database.db
+      .select()
+      .from(usage)
+      .where(and(eq(usage.botId, botId), isNull(usage.taskId)));
+
+  it("records each call of a user reply and of an update reply once", async () => {
+    const { engine, executor, chat } = await setup();
+    const { bot } = await engine.bots.create({ name: `Tally${Date.now()}` });
+    executor.brain(bot.name, finisher);
+    chat.brain(bot.name, () => ({ text: "Noted." }));
+    await engine.bots.sendMessage(bot.id, { text: "Hi" });
+    await until(async () => (await chatRows(bot.id)).length === 1);
+    const { task } = await engine.tasks.create({
+      goal: "Finish.",
+      coordinatorBotId: bot.id,
+    });
+    await untilTask(
+      engine,
+      task.id,
+      (view) => view.task.status === "completed",
+    );
+    // The completion is told in the chat by an update reply: one more call.
+    await until(async () => {
+      const view = await engine.bots.conversation(bot.id);
+      return view.messages.filter((m) => m.role === "assistant").length === 2;
+    });
+    const rows = await chatRows(bot.id);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.priced && row.costUsd === 0.01)).toBe(true);
+  });
+
+  it("makes no model call for an update reply at the bot's cap, and tells the update plainly", async () => {
+    const { engine, executor, chat } = await setup();
+    const profile = await profileWith(engine, { maxUsdPerBotPerDay: 0.01 });
+    const { bot } = await engine.bots.create({
+      name: `Thrifty${Date.now()}`,
+      runtimeProfileId: profile.id,
+    });
+    executor.brain(bot.name, finisher);
+    const asked: string[] = [];
+    chat.brain(bot.name, () => {
+      asked.push("called");
+      return { text: "Told in my words." };
+    });
+    // The task's one call ($0.01) brings the bot to its daily cap.
+    const { task } = await engine.tasks.create({
+      goal: "Finish.",
+      coordinatorBotId: bot.id,
+    });
+    await untilTask(
+      engine,
+      task.id,
+      (view) => view.task.status === "completed",
+    );
+    const view = await until(async () => {
+      const current = await engine.bots.conversation(bot.id);
+      return current.messages.length > 0 ? current : undefined;
+    });
+    expect(view.messages[0]?.text).toContain(
+      "(Posted automatically: the reply to this update failed.)",
+    );
+    expect(view.messages[0]?.taskId).toBe(task.id);
+    expect(asked).toEqual([]);
+    expect(await chatRows(bot.id)).toHaveLength(0);
+  });
+});
+
 describe("the instance's daily spend cap", () => {
   it("stops every bot once the whole server reached it", async () => {
     const own = await openTestDatabase();

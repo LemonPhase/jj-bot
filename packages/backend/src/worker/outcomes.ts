@@ -25,6 +25,7 @@ import {
   updateSession,
   updateTask,
 } from "../services/sessions";
+import { recordTaskUpdate } from "../services/task-updates";
 import { settleCancellation } from "../services/tasks";
 import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
@@ -144,6 +145,7 @@ export async function failSessionTx(
     payload: { status: "failed", result: null, error: text },
     ...attribution,
   });
+  await recordTaskUpdate(tx, ctx, task, "failed", text);
   return { taskFinished: true };
 }
 
@@ -233,6 +235,7 @@ async function endTurn(
         payload: { status: "completed", result: request.result, error: null },
         ...attribution,
       });
+      await recordTaskUpdate(tx, ctx, task, "completed", request.result);
       rc.taskFinished = true;
       return;
     }
@@ -271,8 +274,11 @@ async function endTurn(
       attribution,
     );
     await closeRun(tx, ctx, rc.run, "waiting", attribution);
-    if (task.status !== "waiting")
+    if (task.status !== "waiting") {
       await updateTask(tx, ctx, task, { status: "waiting" }, attribution);
+      // A task that continues and waits again is a new event.
+      await recordTaskUpdate(tx, ctx, task, "waiting", text);
+    }
     return;
   }
   const parent = await getSession(tx, session.parentSessionId);

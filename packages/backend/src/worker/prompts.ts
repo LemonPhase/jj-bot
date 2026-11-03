@@ -1,6 +1,6 @@
 // System prompts for task sessions and direct chat. Kept short: the rules a
 // model needs to collaborate, nothing it can infer. The roster is also in the
-// tool schemas (delegate, message, send_to_task), which is what the scripted
+// tool schemas (delegate, message, create_task), which is what the scripted
 // test model reads.
 
 export interface PromptBot {
@@ -163,40 +163,45 @@ export interface ChatPromptInput {
   memory: string;
   /** Other active bots, for task rosters. */
   team: readonly RosterMember[];
-  activeTasks: readonly {
-    id: string;
-    title: string;
-    status: string;
-    coordinator: boolean;
-  }[];
+  /** The bot's unfinished tasks (queued, running or waiting), and how many it coordinates. */
+  unfinishedTasks: { total: number; coordinated: number };
+}
+
+/** The count of the bot's unfinished tasks, never the tasks: `list_tasks` has them. */
+function taskCount({ total, coordinated }: ChatPromptInput["unfinishedTasks"]) {
+  if (total === 0)
+    return "You take part in no unfinished tasks. `list_tasks` lists your finished ones.";
+  const share =
+    coordinated === total
+      ? total === 1
+        ? "it"
+        : "all of them"
+      : coordinated === 0
+        ? "none of them"
+        : String(coordinated);
+  return `You take part in ${total} unfinished task${total === 1 ? "" : "s"}, and you coordinate ${share}. \`list_tasks\` lists them, and your finished ones too.`;
 }
 
 export function chatPrompt(input: ChatPromptInput): string {
-  const tasks =
-    input.activeTasks.length === 0
-      ? "None."
-      : input.activeTasks
-          .map(
-            (task) =>
-              `- ${task.id}: ${task.title} (${task.status}${task.coordinator ? ", you coordinate" : ""})`,
-          )
-          .join("\n");
   return [
     ...persona(input.bot, input.memory),
     "",
     "This is a direct chat with the user. You have no workspace here and cannot run commands.",
     "",
-    "## Your active tasks",
-    tasks,
+    "## Your tasks",
+    taskCount(input.unfinishedTasks),
     "",
     "## Team",
     input.team.length > 0 ? formatRoster(input.team) : "Only you.",
     "",
     "## How to reply",
-    "- Answer greetings, thanks, questions and status checks directly. Do not create a task for them.",
-    "- When the user asks for work that needs commands or files, call `create_task` once with a clear goal and the teammates who should help. You coordinate the tasks you create.",
-    "- If the message is about one of your active tasks, forward it with `send_to_task` instead of creating a new task.",
+    "- Answer greetings, thanks and general questions directly. Do not create a task for them.",
+    "- For a question about your tasks (how one is going, how it went, what it produced), look it up with `list_tasks`, `get_task` and `read_task_log`, and answer from what you find.",
+    "- If the message continues one of your tasks, running or finished (a change, an addition, a fix or an answer to its question), pass it on with `send_to_task`: the task continues in its own workspace, with its files and history. The task cards in this chat name tasks, and `list_tasks` lists them all.",
+    "- Only for new work that needs commands or files, call `create_task` once with a clear goal and the teammates who should help. A new task starts with an empty workspace. You coordinate the tasks you create.",
+    "- `stop_task` stops a task you coordinate; use it only when the user asks.",
     "- If the request is unclear, ask one short question first.",
     "- Keep replies brief, and say what you did.",
+    "- JJ Bot shows a task's card under a reply about that task by itself: never write a card, or a task id for it. The `[Task card: …]` notes in your past replies stand for those cards.",
   ].join("\n");
 }

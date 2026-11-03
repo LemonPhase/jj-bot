@@ -40,6 +40,7 @@ import {
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
   type WorkspaceHint,
+  waitingQuestion,
   z,
 } from "@jj/contracts";
 import {
@@ -66,6 +67,7 @@ import {
   type EventRef,
   type IdKind,
   Ops,
+  relayMessage,
   requestCancel,
   type ScriptHost,
   type Step,
@@ -155,10 +157,26 @@ export function titleFromGoal(goal: string): string {
   return `${(space > 30 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
+const GREETING =
+  /^\s*(hi|hello|hey|yo|thanks|thank you|good (morning|afternoon|evening))\b/i;
 const isGreetingOrQuestion = (text: string) =>
-  /^\s*(hi|hello|hey|yo|thanks|thank you|good (morning|afternoon|evening))\b/i.test(
-    text,
-  ) || text.trim().endsWith("?");
+  GREETING.test(text) || text.trim().endsWith("?");
+/** A question about how a task is going or went. */
+const STATUS =
+  /\b(status|progress|how('s| is| did)|going|go\?|any news|done|finish)/i;
+/** A message that refers to a task without naming it. */
+const REFERS = /\b(it|that|this|task)\b/i;
+/** Work that follows up on a task: "also …", "… to the task". */
+const FOLLOW_UP = /\b(also|again|(the|that|this) task)\b/i;
+const STOP = /\b(stop|cancel)\b/i;
+/** Task statuses whose change the coordinator tells its chat, as the server does. */
+const UPDATE_STATUSES = new Set(["completed", "failed", "waiting"]);
+
+/** `text` on one line, cut near `max` characters. */
+const oneLine = (text: string, max = 200) => {
+  const line = text.replace(/\s+/g, " ").trim();
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+};
 
 export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   const clock = options.now ?? (() => new Date());
@@ -267,14 +285,19 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       }),
     );
 
-  const summarize = ({ view }: TaskState): TaskSummary => ({
-    ...clone(view.task),
-    activeSessionCount: view.sessions.filter(
-      (s) => s.status === "queued" || s.status === "running",
-    ).length,
-    sessionCount: view.sessions.length,
-    usage: clone(view.usage.total),
-  });
+  // As services/views.ts `taskSummaries`: a waiting task carries its question.
+  const summarize = ({ view }: TaskState): TaskSummary => {
+    const question = waitingQuestion(view);
+    return {
+      ...clone(view.task),
+      activeSessionCount: view.sessions.filter(
+        (s) => s.status === "queued" || s.status === "running",
+      ).length,
+      sessionCount: view.sessions.length,
+      usage: clone(view.usage.total),
+      ...(question ? { question } : {}),
+    };
+  };
 
   const createTaskState = (task: Task, autoplayTask: boolean): TaskState => {
     const counters: Record<IdKind, number> = {
@@ -334,6 +357,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           state.view = applyTaskEvent(state.view, event);
           for (const listener of [...state.listeners])
             listener.onEvent(clone(event));
+          // Seeded history is not news: only changes from now on are told.
+          if (seedClock === null) tellTaskUpdate(state, event);
           return event;
         },
         botName: (botId) => bots.get(botId)?.bot.name ?? "a teammate",
@@ -465,7 +490,43 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     return clone(state.view.task);
   };
 
+  /** After a message to a task: a reopened task plays its continuation. */
+  const afterMessage = (
+    state: TaskState,
+    reopened: boolean,
+    before: string,
+  ) => {
+    if (reopened) {
+      state.steps.push(...continueScript(state.host));
+      // Seeded tasks start paused; one the user continued must move on its own.
+      state.autoplay = true;
+    }
+    notify({ type: "tasks.changed", taskId: state.view.task.id });
+    if (botState() !== before) notify({ type: "bots.changed" });
+    schedule(state);
+  };
+
+  /** Requests the stop of an unfinished task and plays its settling. */
+  const stopState = (state: TaskState, reason: string | null) => {
+    const before = botState();
+    const settle = requestCancel(state.host, reason);
+    state.steps = settle ? [settle] : [];
+    state.autoplay = true;
+    notify({ type: "tasks.changed", taskId: state.view.task.id });
+    if (botState() !== before) notify({ type: "bots.changed" });
+    schedule(state);
+  };
+
   // ── Direct chat ──────────────────────────────────────────────────────────
+  const conversationOf = (botId: string): ConversationView => {
+    let view = conversations.get(botId);
+    if (!view) {
+      view = { botId, messages: [], replying: false, lastReplyError: null };
+      conversations.set(botId, view);
+    }
+    return view;
+  };
+
   const appendMessage = (
     botId: string,
     message: Omit<
@@ -473,13 +534,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       "id" | "botId" | "sequence" | "createdAt"
     >,
   ): ConversationMessage => {
-    const view = conversations.get(botId) ?? {
-      botId,
-      messages: [],
-      replying: false,
-      lastReplyError: null,
-    };
-    conversations.set(botId, view);
+    const view = conversationOf(botId);
     const sequence = view.messages.length + 1;
     const stored: ConversationMessage = {
       ...message,
@@ -492,34 +547,169 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     return stored;
   };
 
+  /**
+   * A bot's replies run one at a time, as the server's chat replies do: one
+   * that is due while another runs waits for it, and the bot is replying
+   * until the last is written.
+   */
+  const replyQueues = new Map<
+    string,
+    { running: boolean; queue: (() => void)[] }
+  >();
+  const runNextReply = (
+    botId: string,
+    entry: { running: boolean; queue: (() => void)[] },
+  ) => {
+    const run = entry.queue.shift();
+    entry.running = run !== undefined;
+    if (!run) return;
+    setTimeout(() => {
+      run();
+      conversationOf(botId).replying = entry.queue.length > 0;
+      notify({ type: "conversation.changed", botId });
+      runNextReply(botId, entry);
+    }, replyMs);
+  };
+  const queueReply = (botId: string, run: () => void) => {
+    const entry = replyQueues.get(botId) ?? { running: false, queue: [] };
+    replyQueues.set(botId, entry);
+    entry.queue.push(run);
+    conversationOf(botId).replying = true;
+    if (!entry.running) runNextReply(botId, entry);
+  };
+
+  /** The task's status and outcome, as a bot tells it in chat. */
+  const describeTask = (task: Task, question?: string | null) => {
+    const status =
+      task.cancelRequestedAt && task.status !== "cancelled"
+        ? "stopping"
+        : task.status;
+    switch (status) {
+      case "completed":
+        return `“${task.title}” is done. ${oneLine(task.result ?? "")}`.trim();
+      case "failed":
+        return `“${task.title}” failed: ${oneLine(task.error ?? "")}`.trim();
+      case "waiting":
+        return question
+          ? `“${task.title}” needs your answer: ${oneLine(question)}`
+          : `“${task.title}” is waiting for your answer.`;
+      default:
+        return `“${task.title}” is ${status}.`;
+    }
+  };
+
+  /**
+   * As the server does when a task completes, fails or waits for the user:
+   * its coordinator tells its chat, with the task card, after any reply in
+   * progress.
+   */
+  const tellTaskUpdate = (state: TaskState, event: TaskEvent) => {
+    if (event.type !== "task.updated") return;
+    const { task, previousStatus } = event.payload;
+    if (task.status === previousStatus || !UPDATE_STATUSES.has(task.status))
+      return;
+    const botId = task.coordinatorBotId;
+    const text = describeTask(task, waitingQuestion(state.view));
+    queueReply(botId, () =>
+      appendMessage(botId, { role: "assistant", text, taskId: task.id }),
+    );
+    notify({ type: "conversation.changed", botId });
+  };
+
+  /** The newest task the bot takes part in. */
+  const newestTaskOf = (botId: string) =>
+    [...tasks.values()]
+      .filter(({ view }) => view.task.participantBotIds.includes(botId))
+      .sort((a, b) =>
+        b.view.task.createdAt.localeCompare(a.view.task.createdAt),
+      )[0];
+
+  /** As `send_to_task`: the task continues, or the server's refusal. */
+  const continueFromChat = (botId: string, state: TaskState, text: string) => {
+    const { task } = state.view;
+    if (task.status === "cancelled" || task.cancelRequestedAt)
+      return {
+        text: `I couldn't pass that on: ${
+          task.status === "cancelled"
+            ? "The task was cancelled; start a new task to continue the work."
+            : "The task is stopping and takes no new messages."
+        }`,
+        taskId: null,
+      };
+    const before = botState();
+    const reopened = relayMessage(state.host, { botId, text });
+    afterMessage(state, reopened, before);
+    return {
+      text: reopened
+        ? `I've passed that on to “${task.title}”; it continues in its own workspace. (Demo: the rest of the run is simulated.)`
+        : `I've passed that on to “${task.title}”.`,
+      taskId: task.id,
+    };
+  };
+
+  /** As `stop_task`: only the coordinator stops a task, and only an unfinished one. */
+  const stopFromChat = (botId: string, state: TaskState) => {
+    const { task } = state.view;
+    if (task.coordinatorBotId !== botId)
+      return {
+        text: `I can't stop “${task.title}”: only its coordinator can. You can stop it from the task.`,
+        taskId: null,
+      };
+    if (task.status === "completed" || task.status === "failed")
+      return {
+        text: `“${task.title}” already ${task.status}; there is nothing to stop.`,
+        taskId: task.id,
+      };
+    if (task.status !== "cancelled" && !task.cancelRequestedAt)
+      stopState(state, null);
+    return { text: `Stopped “${task.title}”.`, taskId: task.id };
+  };
+
   const reply = (botId: string, text: string) => {
-    const view = conversations.get(botId);
     const record = bots.get(botId);
-    if (!view || !record) return;
-    view.replying = false;
+    if (!record) return;
+    const newest = newestTaskOf(botId);
+    let answer: { text: string; taskId: string | null } | undefined;
+    if (GREETING.test(text)) answer = undefined;
+    else if (newest && STOP.test(text) && REFERS.test(text))
+      answer = stopFromChat(botId, newest);
+    else if (
+      newest &&
+      text.trim().endsWith("?") &&
+      (STATUS.test(text) || REFERS.test(text))
+    )
+      answer = {
+        text: describeTask(newest.view.task),
+        taskId: newest.view.task.id,
+      };
+    else if (newest && !isGreetingOrQuestion(text) && FOLLOW_UP.test(text))
+      answer = continueFromChat(botId, newest, text);
+    if (answer) {
+      appendMessage(botId, { role: "assistant", ...answer });
+      return;
+    }
     if (isGreetingOrQuestion(text)) {
       appendMessage(botId, {
         role: "assistant",
         text: `Hi! This is a scripted demo reply from ${record.bot.name}: no model is connected, so I can't really answer. Ask me to do something and I'll start a demo task.`,
         taskId: null,
       });
-    } else {
-      const teammates = [...bots.values()]
-        .filter((other) => !other.archived && other.bot.id !== botId)
-        .slice(0, 2)
-        .map((other) => other.bot.id);
-      const task = createTask({
-        goal: text,
-        coordinatorBotId: botId,
-        participantBotIds: [botId, ...teammates],
-      });
-      appendMessage(botId, {
-        role: "assistant",
-        text: "I've started a demo task for this. Its progress is simulated: no model or sandbox runs in demo mode.",
-        taskId: task.id,
-      });
+      return;
     }
-    notify({ type: "conversation.changed", botId });
+    const teammates = [...bots.values()]
+      .filter((other) => !other.archived && other.bot.id !== botId)
+      .slice(0, 2)
+      .map((other) => other.bot.id);
+    const task = createTask({
+      goal: text,
+      coordinatorBotId: botId,
+      participantBotIds: [botId, ...teammates],
+    });
+    appendMessage(botId, {
+      role: "assistant",
+      text: "I've started a demo task for this. Its progress is simulated: no model or sandbox runs in demo mode.",
+      taskId: task.id,
+    });
   };
 
   // ── Profiles ─────────────────────────────────────────────────────────────
@@ -746,10 +936,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         text,
         taskId: null,
       });
-      const view = conversations.get(botId);
-      if (view) view.replying = true;
+      queueReply(botId, () => reply(botId, text));
       notify({ type: "conversation.changed", botId });
-      setTimeout(() => reply(botId, text), replyMs);
       return clone(message);
     },
     subscribeConversation: (botId, onView, streamOptions) =>
@@ -951,14 +1139,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       }
       const before = botState();
       const { message, reopened } = userMessage(state.host, parsed);
-      if (reopened) {
-        state.steps.push(...continueScript(state.host));
-        // Seeded tasks start paused; one the user continued must move on its own.
-        state.autoplay = true;
-      }
-      notify({ type: "tasks.changed", taskId });
-      if (botState() !== before) notify({ type: "bots.changed" });
-      schedule(state);
+      afterMessage(state, reopened, before);
       return clone(message);
     },
     // As services/tasks.ts `stopTask`: idempotent while stopping or cancelled,
@@ -976,13 +1157,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           undefined,
           409,
         );
-      const before = botState();
-      const settle = requestCancel(state.host, reason ?? null);
-      state.steps = settle ? [settle] : [];
-      state.autoplay = true;
-      notify({ type: "tasks.changed", taskId });
-      if (botState() !== before) notify({ type: "bots.changed" });
-      schedule(state);
+      stopState(state, reason ?? null);
       return clone(state.view.task);
     },
     // As services/tasks.ts `updateTaskSettings`: the cap only; it continues nothing.

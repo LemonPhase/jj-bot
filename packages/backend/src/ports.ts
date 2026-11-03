@@ -43,13 +43,18 @@ export interface CollabToolResult {
   endRun?: boolean;
 }
 
-/** A tool the engine supplies: delegate, message, complete_task, create_task, send_to_task. */
+/** A tool the engine supplies: a session's collaboration tools, or direct chat's task tools. */
 export interface CollabTool {
   name: string;
   description: string;
   parameters: JsonSchema;
   /** Activity summary for `tool.started`, such as the delegate's bot name. Default: the tool name. */
   summarize?(args: Record<string, unknown>): string;
+  /**
+   * The tool only reads. A chat reply cut short by its budget never answers
+   * with such a tool's output.
+   */
+  readOnly?: boolean;
   execute(
     args: Record<string, unknown>,
     context: CollabToolContext,
@@ -187,12 +192,15 @@ export interface ChatHistoryEntry {
 }
 
 export interface ChatReplyInput {
-  /** Persona, memory, active tasks and roster. */
+  /** Persona, memory, the count of unfinished tasks and roster. */
   systemPrompt: string;
-  /** Oldest first; ends with the user message being answered. */
+  /**
+   * Oldest first; ends with the input being answered: the user's message, or
+   * a task update (user-role text from the engine, never stored).
+   */
   history: readonly ChatHistoryEntry[];
   model: ModelRef | null;
-  /** create_task and send_to_task. */
+  /** The chat task tools; only the read tools for a task update. */
   tools: readonly CollabTool[];
   budgets?: { maxTurns?: number; deadline?: Date };
   signal: AbortSignal;

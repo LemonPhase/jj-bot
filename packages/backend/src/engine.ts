@@ -190,7 +190,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     async bootstrap() {
       const [bots, tasks, profiles, drivers] = await Promise.all([
         botService.listBots(ctx),
-        taskSummaries(ctx.db),
+        taskSummaries(ctx.db, { redact: await ctx.redactor() }),
         profileService.listProfiles(ctx),
         ctx.drivers.list(),
       ]);
@@ -239,7 +239,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     models: () => profileService.modelsView(ctx),
     usage: () => usageReport(ctx),
     tasks: {
-      list: async () => ({ tasks: await taskSummaries(ctx.db) }),
+      list: async () => ({
+        tasks: await taskSummaries(ctx.db, { redact: await ctx.redactor() }),
+      }),
       create: (command) => createTask(ctx, command),
       get: (taskId) => taskView(ctx, taskId),
       postMessage: (taskId, command) => postTaskMessage(ctx, taskId, command),

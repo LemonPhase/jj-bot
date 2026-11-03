@@ -3,12 +3,14 @@ import {
   type Task,
   type TaskMessage,
   type TaskView,
+  taskSummarySchema,
 } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../api/client";
 import {
   applyOverlay,
   hintNeedsTaskList,
+  mergeTask,
   overlayMessage,
   overlayTask,
   pruneOverlay,
@@ -99,6 +101,31 @@ describe("optimistic task updates", () => {
     const caughtUp = view([message(1), message(2)]);
     expect(pruneOverlay(caughtUp, overlay)).toBeNull();
     expect(applyOverlay(caughtUp, overlay).messages).toHaveLength(2);
+  });
+
+  it("drops a waiting task's question from its summary once a stop returns it", () => {
+    const summary = {
+      ...task,
+      status: "waiting" as const,
+      activeSessionCount: 0,
+      sessionCount: 1,
+      usage: emptyUsage(),
+      question: "Which colour?",
+    };
+    const stopped = mergeTask(summary, {
+      ...task,
+      status: "cancelled",
+      cancelRequestedAt: T1,
+      updatedAt: T1,
+    });
+    expect(stopped.status).toBe("cancelled");
+    expect("question" in stopped).toBe(false);
+    expect(taskSummarySchema.safeParse(stopped).success).toBe(true);
+    // Still waiting (stopping): the question stays.
+    expect(
+      mergeTask(summary, { ...task, status: "waiting", cancelRequestedAt: T1 })
+        .question,
+    ).toBe("Which colour?");
   });
 
   it("shows a stop request's task until the stream reflects it", () => {

@@ -40,8 +40,15 @@
     {
       "idx": 5,
       "version": "7",
-      "when": 1793670668959,
-      "tag": "0005_spend_caps",
+      "when": 1793674078234,
+      "tag": "0005_chat_task_updates",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793675376590,
+      "tag": "0006_spend_caps",
       "breakpoints": true
     }
   ]

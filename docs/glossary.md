@@ -12,7 +12,7 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 | **Worker**                        | A bot doing a piece of work delegated to it. _Coordinator_ and _worker_ are roles a bot takes within a task, not kinds of bot.                                                                                                                                             |
 | **Execution session** (_session_) | One bot doing one piece of work in one task, with its own transcript and inbox. The coordinator's session is the **root session**; each delegation creates a **child session** for the worker. A bot can have several sessions in one task, for example one per follow-up. |
 | **Run**                           | One active stretch of a session: it wakes, makes model calls, then waits or finishes. A session usually has several runs.                                                                                                                                                  |
-| **Direct chat**                   | A conversation between the user and one bot, outside any task. Each reply is a short, stateless model loop that can create a task or forward a message to one.                                                                                                             |
+| **Direct chat**                   | A conversation between the user and one bot, outside any task. Each reply is a short, stateless model loop that can look up, create, continue or stop the bot's tasks.                                                                                                     |
 
 ## What a model sees
 
@@ -41,6 +41,7 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 | **Task log**     | Every message of a task, stored once and in order: user messages, briefs, reports and teammate messages. The task chat in the UI shows it.                                                                     |
 | **Workspace**    | The task's shared folder of files. Every session in the task reads and writes it through its coding tools.                                                                                                     |
 | **Handoff note** | A note delivered with a brief when a bot gets more work from a session it reported to before: its last brief and report. It points to that work, rather than summarising it.                                   |
+| **Task update**  | What a coordinator's direct chat is told when its task completes, fails or waits for the user: the input of one chat reply, which the bot writes in its own words.                                             |
 
 ## Settings and records
 

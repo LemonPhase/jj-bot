@@ -17,10 +17,12 @@ import {
   parseTaskEvent,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
+  questionExcerpt,
   sandboxSpecPatchSchema,
   sandboxSpecSchema,
   stopTaskCommandSchema,
   TASK_EVENT_TYPES,
+  TASK_QUESTION_LIMIT,
   type TaskEvent,
   type TaskEventOf,
   type TaskEventType,
@@ -29,11 +31,13 @@ import {
   taskMessageSchema,
   taskObjectSchema,
   taskSchema,
+  taskSummarySchema,
   updateBotCommandSchema,
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
   usageReportSchema,
   usageSchema,
+  waitingQuestion,
 } from "./index";
 
 const at = "2026-10-31T12:00:00.000Z";
@@ -190,8 +194,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.2.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.2.0");
+  it("is version 1.3.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.3.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -611,7 +615,81 @@ describe("contracts 1.0", () => {
   });
 });
 
-describe("spend caps and usage (1.2.0)", () => {
+describe("task summary question", () => {
+  const summary = {
+    ...task,
+    activeSessionCount: 0,
+    sessionCount: 1,
+    usage,
+  };
+
+  it("is optional, and set only while the task is waiting", () => {
+    expect(taskSummarySchema.safeParse(summary).success).toBe(true);
+    expect(
+      taskSummarySchema.safeParse({
+        ...summary,
+        status: "waiting",
+        question: "Which colour?",
+      }).success,
+    ).toBe(true);
+    for (const status of ["running", "completed", "failed"] as const)
+      expect(
+        taskSummarySchema.safeParse({ ...summary, status, question: "Which?" })
+          .success,
+      ).toBe(false);
+    expect(
+      taskSummarySchema.safeParse({
+        ...summary,
+        status: "waiting",
+        question: "x".repeat(TASK_QUESTION_LIMIT + 1),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("is the excerpt of the coordinator's last message to the user", () => {
+    const root = { id: "s0", parentSessionId: null };
+    const worker = { id: "s1", parentSessionId: "s0" };
+    const said = (
+      text: string,
+      patch: Partial<{
+        authorBotId: string;
+        sessionId: string;
+        intent: "discussion" | "result" | "notification";
+        recipientBotIds: string[];
+      }> = {},
+    ) => ({
+      authorKind: "bot" as const,
+      authorBotId: "coord",
+      sessionId: "s0",
+      intent: "discussion" as const,
+      recipientBotIds: [],
+      text,
+      ...patch,
+    });
+    const view = {
+      task: { ...task, status: "waiting" as const },
+      sessions: [root, worker],
+      messages: [
+        said("Earlier status note."),
+        said("Which colour,\n\nblue or green?"),
+        said("To the worker", { recipientBotIds: ["worker"] }),
+        said("From the worker", { authorBotId: "worker", sessionId: "s1" }),
+        said("A broadcast", { intent: "notification" }),
+      ],
+    };
+    expect(waitingQuestion(view)).toBe("Which colour, blue or green?");
+    expect(
+      waitingQuestion({ ...view, task: { ...view.task, status: "running" } }),
+    ).toBeUndefined();
+    expect(waitingQuestion({ ...view, messages: [] })).toBeUndefined();
+    const long = questionExcerpt(`${"x".repeat(TASK_QUESTION_LIMIT - 2)}😀z`);
+    expect(long?.length).toBeLessThanOrEqual(TASK_QUESTION_LIMIT);
+    expect(long?.endsWith("x…")).toBe(true);
+    expect(questionExcerpt(" \n ")).toBeUndefined();
+  });
+});
+
+describe("spend caps and usage (1.3.0)", () => {
   it("defaults profile caps on, takes null for no cap, and bounds them", () => {
     expect(
       profileBudgetsSchema.parse({ maxTurnsPerRun: 10, maxRunMinutes: 5 }),

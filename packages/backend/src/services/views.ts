@@ -4,6 +4,7 @@
 import {
   addUsage,
   emptyUsage,
+  questionExcerpt,
   TASK_VIEW_EVENT_LIMIT,
   type TaskEvent,
   type TaskEventPage,
@@ -23,7 +24,7 @@ import {
   type UsageRow,
   usage,
 } from "@jj/db";
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { notFound } from "../errors";
 import {
@@ -169,13 +170,62 @@ export async function eventPage(
   };
 }
 
-/** Task summaries, newest first. */
+/**
+ * The question of each waiting task: its coordinator's last message to the
+ * user (a discussion message its root session posted with no recipients, as
+ * the contract's `isCoordinatorToUser` says), redacted, then clipped.
+ */
+async function waitingQuestions(
+  exec: Executor,
+  taskIds: string[],
+  redact: (text: string) => string,
+): Promise<Map<string, string>> {
+  if (taskIds.length === 0) return new Map();
+  const rows = await exec
+    .selectDistinctOn([taskMessages.taskId], {
+      taskId: taskMessages.taskId,
+      text: taskMessages.text,
+    })
+    .from(taskMessages)
+    .innerJoin(tasks, eq(tasks.id, taskMessages.taskId))
+    .innerJoin(
+      sessions,
+      and(
+        eq(sessions.id, taskMessages.sessionId),
+        isNull(sessions.parentSessionId),
+      ),
+    )
+    .where(
+      and(
+        inArray(taskMessages.taskId, taskIds),
+        eq(taskMessages.authorKind, "bot"),
+        eq(taskMessages.authorBotId, tasks.coordinatorBotId),
+        eq(taskMessages.intent, "discussion"),
+        sql`jsonb_array_length(${taskMessages.recipientBotIds}) = 0`,
+      ),
+    )
+    .orderBy(taskMessages.taskId, desc(taskMessages.sequence));
+  const questions = new Map<string, string>();
+  for (const row of rows) {
+    const question = questionExcerpt(redact(row.text));
+    if (question) questions.set(row.taskId, question);
+  }
+  return questions;
+}
+
+/**
+ * Task summaries, newest first. A waiting task carries its question, with
+ * the server's secrets replaced by `redact`.
+ */
 export async function taskSummaries(
   exec: Executor,
-  filter?: { taskIds: string[] },
+  options: {
+    taskIds?: string[];
+    redact?: (text: string) => string;
+  } = {},
 ): Promise<TaskSummary[]> {
-  const taskRows: TaskRow[] = await (filter
-    ? exec.select().from(tasks).where(inArray(tasks.id, filter.taskIds))
+  const taskRows: TaskRow[] = await (options.taskIds
+    ? exec.select().from(tasks).where(inArray(tasks.id, options.taskIds))
     : exec.select().from(tasks)
   ).orderBy(desc(tasks.createdAt), desc(tasks.id));
   if (taskRows.length === 0) return [];
@@ -193,8 +243,14 @@ export async function taskSummaries(
     .from(usage)
     .where(inArray(usage.taskId, ids))
     .orderBy(asc(usage.createdAt), asc(usage.id));
+  const questions = await waitingQuestions(
+    exec,
+    taskRows.filter((row) => row.status === "waiting").map((row) => row.id),
+    options.redact ?? ((text) => text),
+  );
   return taskRows.map((row) => {
     const own = sessionRows.filter((session) => session.taskId === row.id);
+    const question = questions.get(row.id);
     return {
       ...toTask(
         row,
@@ -213,6 +269,7 @@ export async function taskSummaries(
         .filter((entry) => entry.taskId === row.id)
         .map(usageOf)
         .reduce(addUsage, emptyUsage()),
+      ...(question ? { question } : {}),
     };
   });
 }

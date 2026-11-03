@@ -6,6 +6,9 @@
 // sandbox. Either way it creates three bots, creates a task with all three,
 // follows its SSE stream until it completes, checks that two workers ran in
 // parallel and that the artifacts download intact, and stops a second task.
+// Then it chats with a fourth bot: a work request creates a task, the bot
+// tells its result in the chat, answers how it went, and a follow-up
+// continues the same task.
 //
 // JJ_SMOKE_RESTART_COMMAND (with JJ_SMOKE_BASE_URL) adds restart survival: a
 // third task is caught mid-command, the command restarts the server (for
@@ -488,6 +491,15 @@ async function main(): Promise<boolean> {
       },
     );
 
+    await directChat({
+      expectStatus,
+      name: `Hopper${suffix}`,
+      bot: {
+        ...(realModel ? { model: realModel } : {}),
+        ...(dockerProfile ? { runtimeProfileId: dockerProfile.id } : {}),
+      },
+    });
+
     if (restartCommand)
       await restartSurvival({
         base,
@@ -533,6 +545,136 @@ async function main(): Promise<boolean> {
     await server?.close().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  taskId: string | null;
+}
+
+/**
+ * Direct chat with a bot of its own: a work request creates one task, the bot
+ * tells the user when it completes (an update with the task's card), answers
+ * "how did it go?", and a follow-up continues the same task (reopened, same
+ * coordinator session). On a real model only the structure is checked.
+ */
+async function directChat(options: {
+  expectStatus: ExpectStatus;
+  name: string;
+  bot: Record<string, string>;
+}) {
+  const { expectStatus } = options;
+  const botId = await step(
+    `create ${options.name} for direct chat`,
+    async () => {
+      const { bot } = await expectStatus("POST", "/api/bots", 201, {
+        name: options.name,
+        ...options.bot,
+      });
+      return bot.id as string;
+    },
+  );
+  /** The conversation once it holds `count` replies and the bot is idle. */
+  const replies = async (count: number): Promise<ChatMessage[]> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const view = await expectStatus(
+        "GET",
+        `/api/bots/${botId}/messages`,
+        200,
+      );
+      const messages = view.messages as ChatMessage[];
+      const answered = messages.filter((m) => m.role === "assistant").length;
+      if (answered >= count && !view.replying) return messages;
+      check(
+        !view.lastReplyError || view.replying,
+        `reply failed: ${view.lastReplyError?.message}`,
+      );
+      check(Date.now() < deadline, `${answered} of ${count} replies`);
+      await sleep(100);
+    }
+  };
+  const say = (text: string) =>
+    expectStatus("POST", `/api/bots/${botId}/messages`, 201, { text });
+  const taskView = (taskId: string): Promise<TaskView> =>
+    expectStatus("GET", `/api/tasks/${taskId}`, 200);
+  const untilCompleted = async (taskId: string, runs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const view = await taskView(taskId);
+      const root = view.sessions.find((s) => s.parentSessionId === null);
+      if (view.task.status === "completed" && (root?.runCount ?? 0) >= runs)
+        return view;
+      check(
+        view.task.status !== "failed" && view.task.status !== "cancelled",
+        `the chat's task ${view.task.status}: ${view.task.error}`,
+      );
+      check(Date.now() < deadline, `the chat's task is ${view.task.status}`);
+      await sleep(100);
+    }
+  };
+
+  const taskId = await step(
+    "direct chat: a work request creates one task",
+    async () => {
+      await say("Please write a short note about penguins.");
+      const messages = await replies(1);
+      const taskId = messages.find((m) => m.role === "assistant")?.taskId;
+      check(taskId, "the reply links no task");
+      return taskId;
+    },
+  );
+  await step(
+    "direct chat: the bot tells the result, with the task card",
+    async () => {
+      const view = await untilCompleted(taskId, 1);
+      const messages = await replies(2);
+      const update = messages.filter((m) => m.role === "assistant")[1];
+      check(update?.taskId === taskId, "the update links no task");
+      if (!realModel)
+        check(
+          update.text.startsWith(
+            `Update on "${view.task.title}": it completed.`,
+          ),
+          `update: ${update.text}`,
+        );
+    },
+  );
+  await step("direct chat: answers how it went from the result", async () => {
+    await say("How did it go?");
+    const messages = await replies(3);
+    const answer = messages.at(-1);
+    check(answer?.role === "assistant" && answer.text.trim(), "no answer");
+    if (!realModel)
+      check(
+        answer.text.includes("is completed. Result:"),
+        `answer: ${answer.text}`,
+      );
+  });
+  await step("direct chat: a follow-up continues the same task", async () => {
+    const before = await taskView(taskId);
+    const root = before.sessions.find((s) => s.parentSessionId === null);
+    await say("Please also add a line about their diet to the task.");
+    const messages = await replies(4);
+    check(messages.at(-1)?.taskId === taskId, "the follow-up went elsewhere");
+    const after = await untilCompleted(taskId, 2);
+    check(
+      after.events.some((event) => event.type === "task.reopened"),
+      "no task.reopened event",
+    );
+    const sameRoot = after.sessions.find((s) => s.parentSessionId === null);
+    check(sameRoot?.id === root?.id, "a new coordinator session");
+    // The second completion is told too.
+    const told = await replies(5);
+    check(told.at(-1)?.taskId === taskId, "the second update links no task");
+    const { tasks } = await expectStatus("GET", "/api/tasks", 200);
+    const own = (tasks as { coordinatorBotId: string }[]).filter(
+      (task) => task.coordinatorBotId === botId,
+    );
+    check(own.length === 1, `${own.length} tasks created from chat`);
+  });
 }
 
 /**

@@ -5,6 +5,7 @@ export const ID_PREFIXES = {
   bot: "bot",
   runtimeProfile: "prof",
   conversationMessage: "cmsg",
+  taskUpdate: "upd",
   task: "task",
   session: "sess",
   run: "run",
