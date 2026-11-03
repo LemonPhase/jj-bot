@@ -148,6 +148,22 @@
   color: var(--ink-muted);
 }
 
+/* A 3D office that could not start: why, and the way to 2D. */
+.office .office-stage--failed {
+  place-content: center;
+  gap: var(--sp-6);
+  padding: var(--sp-8);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* Why 3D is not offered on this screen or in this browser. */
+.office__note {
+  margin: calc(var(--sp-3) * -1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-muted);
+}
+
 .office .office-2d {
   position: absolute;
   inset: 0;

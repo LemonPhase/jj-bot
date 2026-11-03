@@ -554,10 +554,45 @@
   white-space: nowrap;
 }
 
-/* Phones: keep the header to the title and the two pills. */
+/* Phones: the header keeps the title and the two pills. */
 @media (max-width: 759px) {
   .studio-subtitle {
     display: none;
+  }
+
+  .studio-body {
+    padding: 0 16px 16px;
+  }
+
+  /*
+   * Colour swatches as 44px targets, four to a row: the colour fills the
+   * content box, and the selected ring (--ring-selected's 2px gap and 2px
+   * ink) is drawn inside the padding instead of outside the circle.
+   */
+  .studio-part__items--swatches {
+    display: grid;
+    grid-template-columns: repeat(4, 44px);
+    gap: var(--sp-4) var(--sp-6);
+    margin: 0;
+    padding: 0;
+  }
+
+  .studio-swatch {
+    width: 44px;
+    height: 44px;
+    padding: 8px;
+    background-clip: content-box;
+  }
+
+  .studio-swatch[aria-checked="true"] {
+    box-shadow:
+      inset 0 0 0 4px var(--bg-app),
+      inset 0 0 0 6px var(--ink),
+      inset 0 0 0 8px var(--bg-app);
+  }
+
+  .studio-swatch:focus-visible {
+    outline-offset: -1px;
   }
 }
 

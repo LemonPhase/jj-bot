@@ -72,3 +72,39 @@ test("starts a task and shows it in Progress, Graph and Office 2D", async ({
   // That list is for screen readers; on screen, Nova stands in the office.
   await expect(office.getByText("Nova", { exact: true })).toBeVisible();
 });
+
+test("without WebGL the office offers 2D only and says why", async ({
+  page,
+  request,
+}) => {
+  // A browser with WebGL turned off, and 3D the view chosen last time.
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, "WebGLRenderingContext");
+    Reflect.deleteProperty(window, "WebGL2RenderingContext");
+    localStorage.setItem("jj.officeMode", "3d");
+  });
+  const bot = await createBot(request, "Nova");
+  const created = await request.post("/api/tasks", {
+    data: { goal, coordinatorBotId: bot.id },
+  });
+  expect(created.status()).toBe(201);
+  const { task } = (await created.json()) as { task: { id: string } };
+  await page.goto(`/#/tasks/${task.id}`);
+  await page
+    .getByRole("tablist", { name: "Task view" })
+    .getByRole("tab", { name: "Office" })
+    .click();
+
+  const office = page.getByRole("tabpanel", { name: "Office" });
+  const views = office.getByRole("radiogroup", { name: "Office view" });
+  await expect(views.getByRole("radio", { name: "2D" })).toBeChecked();
+  await expect(views.getByRole("radio", { name: "3D" })).toBeDisabled();
+  await expect(views).toHaveAccessibleDescription(
+    "3D needs WebGL, which this browser does not offer. The 2D office shows the same task.",
+  );
+  await expect(
+    office.getByRole("img", {
+      name: "Pixel office acting out the task conversation",
+    }),
+  ).toBeVisible();
+});

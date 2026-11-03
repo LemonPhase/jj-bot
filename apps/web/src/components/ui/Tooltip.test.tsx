@@ -70,6 +70,32 @@ describe("Tooltip", () => {
     fireEvent.click(trigger);
     expect(bubble()?.hidden).toBe(false);
   });
+
+  it("slides in from a side of the viewport it would pass, so the page never widens", () => {
+    // A 360px screen, and a bubble the trigger's centre puts at 330–410px.
+    const width = vi
+      .spyOn(document.documentElement, "clientWidth", "get")
+      .mockReturnValue(360);
+    const box = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const at = this.getAttribute("role") === "tooltip" ? 330 : 0;
+        return DOMRect.fromRect({ x: at, y: 0, width: 80, height: 20 });
+      });
+    try {
+      render(
+        <Tooltip content="Close profile">
+          <button type="button">×</button>
+        </Tooltip>,
+      );
+      fireEvent.focus(screen.getByRole("button", { name: "×" }));
+      // 410px − (360 − 8) = 58px to the left.
+      expect(bubble()?.style.getPropertyValue("--tip-shift")).toBe("-58px");
+    } finally {
+      width.mockRestore();
+      box.mockRestore();
+    }
+  });
 });
 
 describe("IconButton", () => {

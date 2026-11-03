@@ -486,3 +486,48 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/*
+ * Phones: 16px gutters, the section tabs scroll sideways within their row
+ * instead of widening the page, and labels and summaries are 44px targets.
+ */
+@media (max-width: 759px) {
+  .settings-subtitle {
+    display: none;
+  }
+
+  .settings-tabs {
+    padding: 0 16px;
+  }
+
+  .settings-tabs .ui-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .settings-tabs .ui-tab {
+    flex: none;
+  }
+
+  .settings-body {
+    padding: 16px 16px 24px;
+  }
+
+  .settings-group {
+    padding: 12px;
+  }
+
+  .settings-dl__row {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  }
+
+  .settings-check {
+    min-height: 44px;
+  }
+
+  .settings-details summary {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}

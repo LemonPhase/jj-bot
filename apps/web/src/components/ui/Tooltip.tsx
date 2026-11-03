@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -16,6 +17,8 @@ import "./ui.css";
 const HIDE_DELAY = 120;
 /** With `placement="auto"`, flip below the trigger when less than this fits above. */
 const AUTO_FLIP_PX = 48;
+/** The least room the bubble keeps from the viewport's side edges, in px. */
+const EDGE_PX = 8;
 
 export interface TooltipProps {
   /** Short text; shown as an inverted pixel overlay. */
@@ -92,6 +95,26 @@ export function Tooltip({
   }, [placement]);
 
   const visible = open || pinned;
+  // Centred on its trigger, unless that puts it past the viewport's side:
+  // then it slides in, so it never widens the page (a phone's narrow screen).
+  const bubble = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const element = bubble.current;
+    if (!element || !visible) return;
+    element.style.setProperty("--tip-shift", "0px");
+    const box = element.getBoundingClientRect();
+    const width = document.documentElement.clientWidth;
+    // Nothing laid out (a test DOM): leave it centred.
+    if (!width || !box.width) return;
+    const shift =
+      box.right > width - EDGE_PX
+        ? width - EDGE_PX - box.right
+        : box.left < EDGE_PX
+          ? EDGE_PX - box.left
+          : 0;
+    element.style.setProperty("--tip-shift", `${shift}px`);
+  }, [visible, below, content]);
+
   useEffect(() => {
     if (!visible) return;
     const onKey = (event: KeyboardEvent) => {
@@ -143,6 +166,7 @@ export function Tooltip({
     >
       {trigger}
       <span
+        ref={bubble}
         role="tooltip"
         id={id}
         className={cx(

@@ -1,6 +1,7 @@
 import type { TaskView } from "@jj/contracts";
-import { useId } from "react";
+import { useId, useRef } from "react";
 import { cx, TabPanel, Tabs } from "../../components/ui";
+import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { TaskOffice } from "../office/TaskOffice";
 import { ArtifactList } from "./ArtifactList";
@@ -29,7 +30,8 @@ const LANDMARKS: Record<PanelTab, string> = {
  * the chosen tab panel. Progress and Graph share the selected session, so
  * picking a step shows it in the graph. The tab list keeps one place in the
  * DOM (so arrowing between tabs keeps focus); in the Office, CSS lays it
- * over the start of the office's header row, beside its 2D/3D switch.
+ * over the start of the office's header row, beside its 2D/3D switch. On a
+ * phone the panel follows the chat, and choosing a tab brings it into view.
  */
 export function TaskPanel({
   view,
@@ -48,11 +50,17 @@ export function TaskPanel({
     (selectedNodeId === TASK_NODE ||
       view.sessions.some((session) => session.id === selectedNodeId));
   const picked = known ? selectedNodeId : null;
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const panelRef = useRef<HTMLElement>(null);
+  const choose = (next: PanelTab) => {
+    onTab(next);
+    if (narrow) panelRef.current?.scrollIntoView?.({ block: "start" });
+  };
   const tabs = (
     <Tabs
       label="Task view"
       value={tab}
-      onChange={onTab}
+      onChange={choose}
       items={TABS}
       panelId={panelId}
     />
@@ -60,6 +68,7 @@ export function TaskPanel({
 
   return (
     <aside
+      ref={panelRef}
       className={cx("ui-panel", "task-panel", `task-panel--${tab}`)}
       aria-label={LANDMARKS[tab]}
     >
