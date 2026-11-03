@@ -30,6 +30,8 @@ function stdio(
     startupTimeoutMs?: number;
     exitOnEndInput?: boolean;
     launch?: (process: FakeSandboxProcess) => Promise<FakeSandboxProcess>;
+    maxInFlight?: number;
+    writeTimeoutMs?: number;
   } = {},
 ) {
   const server = new ScriptedMcpServer(options);
@@ -43,12 +45,14 @@ function stdio(
       return extra.launch ? extra.launch(process) : process;
     },
     closeGraceMs: 20,
+    ...(extra.writeTimeoutMs ? { writeTimeoutMs: extra.writeTimeoutMs } : {}),
   });
   const connection = new McpConnection({
     server: "files",
     transport,
     startupTimeoutMs: extra.startupTimeoutMs ?? 2_000,
     redact,
+    ...(extra.maxInFlight ? { maxInFlight: extra.maxInFlight } : {}),
   });
   open.push(connection);
   return { connection, server, process, transport, launched };
@@ -273,5 +277,72 @@ describe("SandboxStdioTransport", () => {
     await stubborn.connection.close();
     expect(stubborn.process.inputEnded).toBe(true);
     expect(stubborn.process.killed).toBe(true);
+  });
+
+  it("reports a call that waited for a slot as not sent when the server exits first", async () => {
+    const { connection, process, server } = stdio(
+      { tools: [{ name: "work", call: () => new Promise(() => {}) }] },
+      { maxInFlight: 1 },
+    );
+    await connection.start();
+    const first = failure(
+      connection.callTool("work", { n: 1 }, { timeoutMs: 5_000 }),
+    );
+    const second = failure(
+      connection.callTool("work", { n: 2 }, { timeoutMs: 5_000 }),
+    );
+    await tick();
+    process.exit(1);
+    expect((await first).interrupted).toBe("unknown");
+    const queued = await second;
+    expect(queued.interrupted).toBe("yes");
+    expect(queued.message).toBe(
+      "MCP server files exited with code 1 before the MCP call work was sent; it did not run.",
+    );
+    expect(server.calls).toEqual([{ name: "work", args: { n: 1 } }]);
+  });
+
+  it("stops waiting for a write when its request ends", async () => {
+    const { connection, process, transport } = stdio({ tools: [] });
+    await connection.start();
+    process.stuck = true;
+    const controller = new AbortController();
+    const sending = transport.send(
+      { jsonrpc: "2.0", method: "notifications/progress" },
+      { signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(), 20);
+    await expect(sending).rejects.toThrow("MCP request aborted");
+  });
+
+  it("closes the connection when the server stops taking its input", async () => {
+    const { connection, process } = stdio(
+      { tools: [{ name: "work" }] },
+      { writeTimeoutMs: 50 },
+    );
+    await connection.start();
+    process.stuck = true;
+    const started = Date.now();
+    const error = await failure(
+      connection.callTool("work", {}, { timeoutMs: 4_000 }),
+    );
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(error.kind).toBe("closed");
+    expect(error.message).toContain(
+      "The MCP server stopped reading its input for 0.1 s; the connection was closed",
+    );
+    expect(process.killed).toBe(true);
+  });
+
+  it("holds a long line's bytes, not a buffer per chunk, while it arrives", async () => {
+    const { connection, process } = stdio({ tools: [] });
+    await connection.start();
+    const before = globalThis.process.memoryUsage().heapUsed;
+    // Two million one-byte chunks: about 200 MiB of buffer objects if each is kept.
+    for (let index = 0; index < 2_000_000; index++)
+      process.stdout(Buffer.from("x"));
+    const grown = globalThis.process.memoryUsage().heapUsed - before;
+    expect(grown).toBeLessThan(80 * 1024 * 1024);
+    expect(connection.state).toBe("ready");
   });
 });

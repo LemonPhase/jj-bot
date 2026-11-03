@@ -207,6 +207,8 @@ export class FakeSandboxProcess implements SandboxProcessLike {
   readonly stdin: string[] = [];
   inputEnded = false;
   killed = false;
+  /** While set, writes never settle: a process that stopped reading its stdin. */
+  stuck = false;
   private readonly listeners = new Set<
     (chunk: Buffer, stream: "stdout" | "stderr") => void
   >();
@@ -226,6 +228,7 @@ export class FakeSandboxProcess implements SandboxProcessLike {
 
   async write(data: Buffer | string): Promise<void> {
     if (this.done) throw new Error("The process has exited.");
+    if (this.stuck) return new Promise(() => {});
     this.buffered += data.toString();
     let newline = this.buffered.indexOf("\n");
     while (newline >= 0) {

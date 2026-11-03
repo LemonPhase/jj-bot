@@ -90,6 +90,7 @@ function mcp(
         server: "docs",
         transport: pair.client,
         startupTimeoutMs: 2_000,
+        redact,
       });
       open.push(started);
       await started.start();
@@ -275,8 +276,20 @@ describe("createMcpTools: results", () => {
     expect(textOf(await run(nothing, {}))).toBe("(no output)");
   });
 
+  /** The first bytes of each image type, then filler. */
+  const bytesOf = (type: "png" | "jpeg" | "gif" | "webp") =>
+    Buffer.concat([
+      {
+        png: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        jpeg: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+        gif: Buffer.from("GIF89a"),
+        webp: Buffer.from("RIFF\u0000\u0000\u0000\u0000WEBPVP8 ", "latin1"),
+      }[type],
+      Buffer.from("image data"),
+    ]).toString("base64");
+
   it("keeps at most 4 images of at most 1 MiB, in types every provider accepts", async () => {
-    const png = Buffer.from("tiny png").toString("base64");
+    const png = bytesOf("png");
     const image = (data: string, mimeType = "image/png") => ({
       type: "image" as const,
       data,
@@ -292,9 +305,9 @@ describe("createMcpTools: results", () => {
               image(png, "image/svg+xml"),
               image("not base64!"),
               image(png),
-              image(png, "image/jpeg"),
-              image(png, "image/webp"),
-              image(png, "image/gif"),
+              image(bytesOf("jpeg"), "image/jpeg"),
+              image(bytesOf("webp"), "image/webp"),
+              image(bytesOf("gif"), "image/gif"),
               image(png),
               { type: "text" as const, text: "five shots" },
             ],
@@ -321,6 +334,128 @@ describe("createMcpTools: results", () => {
         "five shots",
       ].join("\n"),
     );
+  });
+
+  it("omits an image whose bytes are not of its declared type", async () => {
+    const image = (data: string, mimeType: string) => ({
+      type: "image" as const,
+      data,
+      mimeType,
+    });
+    const server = mcp({
+      tools: [
+        {
+          name: "shots",
+          call: () => ({
+            content: [
+              image(
+                Buffer.from("<svg onload=x>").toString("base64"),
+                "image/png",
+              ),
+              image(bytesOf("png"), "image/jpeg"),
+              image(bytesOf("gif"), "image/gif"),
+            ],
+          }),
+        },
+      ],
+    });
+    const [tool] = createMcpTools(server.bindings(), policy());
+    if (!tool) throw new Error("no tool");
+    const result = await run(tool, {});
+    expect(
+      result.content.filter((block) => block.type === "image"),
+    ).toHaveLength(1);
+    expect(textOf(result).split("|")[0]).toBe(
+      [
+        "[Image omitted: its data is not a PNG image.]",
+        "[Image omitted: its data is not a JPEG image.]",
+      ].join("\n"),
+    );
+  });
+
+  it("answers a malformed result with what it could read, never failing after the server ran", async () => {
+    const server = mcp({
+      tools: [
+        {
+          name: "odd",
+          call: () =>
+            ({
+              content: [
+                null,
+                { type: "image", data: 5, mimeType: "image/png" },
+                { type: "text", text: 7 },
+                { type: "resource", resource: null },
+                { type: "text", text: "kept" },
+              ],
+            }) as never,
+        },
+      ],
+    });
+    const [tool] = createMcpTools(server.bindings(), policy());
+    if (!tool) throw new Error("no tool");
+    const result = await run(tool, {});
+    expect(result.isError).toBeUndefined();
+    expect(textOf(result)).toBe(
+      [
+        "[Content omitted: a block the server sent is malformed.]",
+        "[Content omitted: a block the server sent is malformed.]",
+        "[Content omitted: a block the server sent is malformed.]",
+        "[Content omitted: a block the server sent is malformed.]",
+        "kept",
+      ].join("\n"),
+    );
+  });
+
+  it("never shows part of an image type, so no cut can leave part of a secret", async () => {
+    const server = mcp({
+      tools: [
+        {
+          name: "typed",
+          call: () => ({
+            content: [
+              {
+                type: "image",
+                data: bytesOf("png"),
+                mimeType: `image/${"a".repeat(70)}${SECRET}`,
+              },
+            ],
+          }),
+        },
+      ],
+    });
+    const [tool] = createMcpTools(server.bindings(), policy());
+    if (!tool) throw new Error("no tool");
+    const text = textOf(await run(tool, {}));
+    expect(text).toBe(
+      "[Image omitted: its type is not PNG, JPEG, GIF or WebP.]",
+    );
+    for (let at = 0; at + 6 <= SECRET.length; at++)
+      expect(text).not.toContain(SECRET.slice(at, at + 6));
+  });
+
+  it("lets progress from the server renew a call's timeout", async () => {
+    const server = mcp(
+      {
+        tools: [
+          {
+            name: "slow",
+            call: async (_args, context) => {
+              for (let step = 1; step <= 5; step++) {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+                context.progress(step, 5);
+              }
+              return { content: [{ type: "text", text: "done" }] };
+            },
+          },
+        ],
+      },
+      { timeoutMs: 120 },
+    );
+    const [tool] = createMcpTools(server.bindings(), policy());
+    if (!tool) throw new Error("no tool");
+    const result = await run(tool, {});
+    expect(result.isError).toBeUndefined();
+    expect(textOf(result)).toBe("done");
   });
 
   it("cancels a call the run stops, telling the server, and reports the outcome unknown", async () => {
@@ -607,10 +742,24 @@ describe("MCP tools in a session run", () => {
     expect(server.scripted.calls).toHaveLength(1);
   });
 
-  it("cuts a call short at the run's deadline, cancelling it at the server", async () => {
-    const server = mcp({
-      tools: [{ name: "hang", call: () => new Promise(() => {}) }],
-    });
+  it("cuts a call short at the run's deadline, however often its progress renews the timeout", async () => {
+    const server = mcp(
+      {
+        tools: [
+          {
+            name: "hang",
+            call: (_args, context) =>
+              new Promise(() => {
+                const beat = setInterval(() => context.progress(1), 20);
+                context.signal.addEventListener("abort", () =>
+                  clearInterval(beat),
+                );
+              }),
+          },
+        ],
+      },
+      { timeoutMs: 100 },
+    );
     const recorded = recordingHooks();
     faux.setResponses([callTool("mcp__docs__hang", {})]);
     const outcome = await new PiSessionExecutor({ models: registry }).run(

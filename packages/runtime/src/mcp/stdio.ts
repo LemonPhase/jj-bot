@@ -1,10 +1,12 @@
 import {
   type JsonRpcMessage,
+  McpAbortError,
   McpConnectionClosedError,
   type McpTransport,
   type McpTransportCloseListener,
   type McpTransportErrorListener,
   type McpTransportMessageListener,
+  type McpTransportSendOptions,
   parseJsonRpcMessage,
 } from "@earendil-works/pi-mcp";
 import {
@@ -46,14 +48,28 @@ export interface SandboxStdioTransportOptions {
   maxStderrBytes?: number;
   /** How long the server may take to exit on its own once stdin is closed, before it is killed; default 500 ms. */
   closeGraceMs?: number;
+  /**
+   * How long one write may wait for the process to take it, default 30 s.
+   * A process that stops reading its stdin is broken: the connection is
+   * closed and the process stopped.
+   */
+  writeTimeoutMs?: number;
 }
+
+/** stderr chunks the ring holds at most before it joins them, so it holds bytes, not a buffer per chunk. */
+const MAX_STDERR_CHUNKS = 64;
+
+const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
 /**
  * MCP over newline-delimited JSON on a sandbox process's stdin and stdout,
  * as pi-mcp's `StdioTransport` speaks it, but with the process started by a
  * sandbox driver instead of on the host. stderr is kept only as a ring of
  * its latest bytes, shown (redacted) when the server fails. A line longer
- * than the message cap closes the connection and kills the process.
+ * than the message cap closes the connection and kills the process. Every
+ * write is bounded: by its request's signal (a request that timed out or
+ * was cancelled stops waiting), and by `writeTimeoutMs`, after which the
+ * process is taken to have stopped reading and the connection is closed.
  */
 export class SandboxStdioTransport
   implements McpTransport, McpTransportDiagnostics
@@ -70,10 +86,12 @@ export class SandboxStdioTransport
   private started = false;
   private closed = false;
   private closeEmitted = false;
-  /** stdout received since the last newline. */
-  private pending: Buffer[] = [];
-  private pendingBytes = 0;
-  private stderr = Buffer.alloc(0);
+  /** stdout received since the last newline: the first `lineBytes` of `line`. */
+  private line = Buffer.alloc(0);
+  private lineBytes = 0;
+  /** The latest stderr chunks, at most `maxStderrBytes` beyond the first. */
+  private stderr: Buffer[] = [];
+  private stderrBytes = 0;
   private stderrWrapped = false;
   private exitValue: McpProcessExit | undefined;
   private closeReasonValue: string | undefined;
@@ -93,7 +111,15 @@ export class SandboxStdioTransport
   }
 
   stderrTail(): { text: string; cut: boolean } {
-    return { text: this.stderr.toString("utf8"), cut: this.stderrWrapped };
+    const joined = Buffer.concat(this.stderr, this.stderrBytes);
+    const kept =
+      joined.length > this.maxStderrBytes
+        ? joined.subarray(-this.maxStderrBytes)
+        : joined;
+    return {
+      text: kept.toString("utf8"),
+      cut: this.stderrWrapped || kept.length < joined.length,
+    };
   }
 
   async start(): Promise<void> {
@@ -118,7 +144,10 @@ export class SandboxStdioTransport
     );
   }
 
-  async send(message: JsonRpcMessage): Promise<void> {
+  async send(
+    message: JsonRpcMessage,
+    options: McpTransportSendOptions = {},
+  ): Promise<void> {
     const process = this.process;
     if (!this.started || this.closed || !process || this.exitValue)
       throw new McpConnectionClosedError();
@@ -126,7 +155,32 @@ export class SandboxStdioTransport
     const bytes = Buffer.byteLength(line);
     if (bytes > this.maxMessageBytes)
       throw new McpMessageTooLargeError(bytes, this.maxMessageBytes, "out");
-    await process.write(line);
+    const { signal } = options;
+    if (signal?.aborted) throw new McpAbortError();
+    const timeoutMs = this.options.writeTimeoutMs ?? 30_000;
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        process.write(line),
+        new Promise<never>((_, reject) => {
+          onAbort = () => reject(new McpAbortError());
+          signal?.addEventListener("abort", onAbort, { once: true });
+          timer = setTimeout(() => {
+            // It stopped reading its input: the connection is broken, and
+            // the write fails once it is closed and the process stopped.
+            this.closeReasonValue ??= `The MCP server stopped reading its input for ${seconds(timeoutMs)}; the connection was closed.`;
+            const reason = this.closeReasonValue;
+            void this.close()
+              .catch(() => {})
+              .finally(() => reject(new McpConnectionClosedError(reason)));
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   async close(): Promise<void> {
@@ -185,12 +239,11 @@ export class SandboxStdioTransport
   private handleExit(exit: McpProcessExit) {
     if (this.exitValue) return;
     this.exitValue = exit;
-    if (this.pendingBytes > 0 && !this.closed)
+    if (this.lineBytes > 0 && !this.closed)
       this.emitError(
         new Error("The MCP server exited in the middle of a JSON-RPC message."),
       );
-    this.pending = [];
-    this.pendingBytes = 0;
+    this.dropLine();
     this.closed = true;
     this.unsubscribe?.();
     this.emitClose();
@@ -204,10 +257,33 @@ export class SandboxStdioTransport
       "in",
     );
     this.closeReasonValue = error.message;
-    this.pending = [];
-    this.pendingBytes = 0;
+    this.dropLine();
     this.emitError(error);
     void this.close();
+  }
+
+  /** Forgets the line being received, and a large buffer it grew. */
+  private dropLine() {
+    this.lineBytes = 0;
+    if (this.line.length > 64 * 1024) this.line = Buffer.alloc(0);
+  }
+
+  /**
+   * Adds bytes to the line being received. The buffer doubles as it fills,
+   * so a line sent a byte at a time costs its bytes, copied a constant
+   * number of times each, never a buffer object per chunk.
+   */
+  private appendLine(bytes: Buffer) {
+    const needed = this.lineBytes + bytes.length;
+    if (needed > this.line.length) {
+      const grown = Buffer.allocUnsafe(
+        Math.max(needed, this.line.length * 2, 1024),
+      );
+      this.line.copy(grown, 0, 0, this.lineBytes);
+      this.line = grown;
+    }
+    bytes.copy(this.line, this.lineBytes);
+    this.lineBytes = needed;
   }
 
   private handleStdout(chunk: Buffer) {
@@ -215,29 +291,26 @@ export class SandboxStdioTransport
     let rest = chunk;
     for (;;) {
       const newline = rest.indexOf(0x0a);
+      const head = newline < 0 ? rest : rest.subarray(0, newline);
+      // Counted as it arrives: nothing past the cap is ever held.
+      if (this.lineBytes + head.length > this.maxMessageBytes) {
+        this.tooLarge(this.lineBytes + head.length);
+        return;
+      }
       if (newline < 0) {
-        if (rest.length > 0) {
-          this.pending.push(rest);
-          this.pendingBytes += rest.length;
-        }
-        if (this.pendingBytes > this.maxMessageBytes)
-          this.tooLarge(this.pendingBytes);
+        if (head.length > 0) this.appendLine(head);
         return;
       }
-      const head = rest.subarray(0, newline);
+      let line = head;
+      if (this.lineBytes > 0) {
+        this.appendLine(head);
+        line = this.line.subarray(0, this.lineBytes);
+      }
+      // Decoded before the buffer is reused for the next line.
+      const text = line.toString("utf8").replace(/\r$/, "");
+      this.dropLine();
       rest = rest.subarray(newline + 1);
-      const bytes = this.pendingBytes + head.length;
-      const line =
-        this.pending.length === 0
-          ? head
-          : Buffer.concat([...this.pending, head], bytes);
-      this.pending = [];
-      this.pendingBytes = 0;
-      if (bytes > this.maxMessageBytes) {
-        this.tooLarge(bytes);
-        return;
-      }
-      this.handleLine(line.toString("utf8").replace(/\r$/, ""));
+      this.handleLine(text);
       if (this.closed) return;
     }
   }
@@ -254,11 +327,28 @@ export class SandboxStdioTransport
     for (const listener of this.messageListeners) listener(message);
   }
 
+  /**
+   * Keeps the chunk, dropping whole chunks the ring no longer needs, so most
+   * chunks cost no copy; many small ones, or one far over the ring, are
+   * joined into the ring's latest bytes.
+   */
   private handleStderr(chunk: Buffer) {
-    const joined = Buffer.concat([this.stderr, chunk]);
-    if (joined.length > this.maxStderrBytes) {
-      this.stderr = Buffer.from(joined.subarray(-this.maxStderrBytes));
+    const max = this.maxStderrBytes;
+    this.stderr.push(chunk);
+    this.stderrBytes += chunk.length;
+    while (
+      this.stderr.length > 1 &&
+      this.stderrBytes - (this.stderr[0]?.length ?? 0) >= max
+    ) {
+      this.stderrBytes -= this.stderr.shift()?.length ?? 0;
       this.stderrWrapped = true;
-    } else this.stderr = joined;
+    }
+    if (this.stderr.length > MAX_STDERR_CHUNKS || this.stderrBytes > max * 2) {
+      const joined = Buffer.concat(this.stderr, this.stderrBytes);
+      const kept = Buffer.from(joined.subarray(-max));
+      if (kept.length < joined.length) this.stderrWrapped = true;
+      this.stderr = [kept];
+      this.stderrBytes = kept.length;
+    }
   }
 }

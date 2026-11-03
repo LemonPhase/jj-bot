@@ -91,39 +91,120 @@ function base64Bytes(data: string): number | undefined {
   return (data.length / 4) * 3 - padding;
 }
 
+/** How each kept image type's data starts. */
+const SIGNATURES: Record<
+  string,
+  { name: string; matches(head: Buffer): boolean }
+> = {
+  "image/png": {
+    name: "PNG",
+    matches: (head) =>
+      head
+        .subarray(0, 8)
+        .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  },
+  "image/jpeg": {
+    name: "JPEG",
+    matches: (head) => head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff,
+  },
+  "image/gif": {
+    name: "GIF",
+    matches: (head) =>
+      ["GIF87a", "GIF89a"].includes(head.subarray(0, 6).toString("latin1")),
+  },
+  "image/webp": {
+    name: "WebP",
+    matches: (head) =>
+      head.subarray(0, 4).toString("latin1") === "RIFF" &&
+      head.subarray(8, 12).toString("latin1") === "WEBP",
+  },
+};
+
+const MALFORMED = "[Content omitted: a block the server sent is malformed.]";
+
+/** One block as the model receives it, or undefined when it is malformed. */
+function blockContent(block: unknown): TextContent | ImageContent | undefined {
+  if (typeof block !== "object" || block === null) return undefined;
+  let converted: ReturnType<typeof toLlmContent>[number] | undefined;
+  try {
+    [converted] = toLlmContent({
+      content: [block as CallToolResult["content"][number]],
+    });
+  } catch {
+    return undefined;
+  }
+  if (converted?.type === "text")
+    return typeof converted.text === "string" ? converted : undefined;
+  if (
+    converted?.type === "image" &&
+    typeof converted.data === "string" &&
+    typeof converted.mimeType === "string"
+  )
+    return converted;
+  return undefined;
+}
+
+/** An image the model receives, or why it is omitted. */
+function keptImage(
+  block: ImageContent,
+  images: number,
+): ImageContent | TextContent {
+  const signature = SIGNATURES[block.mimeType];
+  // The server's own type is never shown: a cut through it could leave part of a secret.
+  if (!signature || !IMAGE_TYPES.has(block.mimeType))
+    return placeholder(
+      /^[a-z]+\/[a-z0-9.+-]{1,40}$/.test(block.mimeType)
+        ? `[Image omitted: type ${block.mimeType} is not PNG, JPEG, GIF or WebP.]`
+        : "[Image omitted: its type is not PNG, JPEG, GIF or WebP.]",
+    );
+  const data = block.data.replace(/\s+/g, "");
+  const bytes = base64Bytes(data);
+  if (bytes === undefined)
+    return placeholder("[Image omitted: its data is not valid base64.]");
+  if (bytes > MCP_MAX_IMAGE_BYTES)
+    return placeholder(
+      `[Image omitted: ${bytes} bytes, over the ${MCP_MAX_IMAGE_BYTES}-byte limit for one image.]`,
+    );
+  if (!signature.matches(Buffer.from(data.slice(0, 24), "base64")))
+    return placeholder(
+      `[Image omitted: its data is not a ${signature.name} image.]`,
+    );
+  if (images >= MCP_MAX_IMAGES)
+    return placeholder(
+      `[Image omitted: a result keeps at most ${MCP_MAX_IMAGES} images.]`,
+    );
+  return { type: "image", data, mimeType: block.mimeType };
+}
+
 /**
  * A result as the model receives it: pi-mcp's `toLlmContent` (text, images,
  * embedded text resources; other blocks, and `structuredContent` alone,
  * become text), with at most MCP_MAX_IMAGES images of at most
- * MCP_MAX_IMAGE_BYTES each, in a type every provider accepts. Others become
- * a line saying so, since a malformed image in a stored result would make
- * every later model call of the session fail.
+ * MCP_MAX_IMAGE_BYTES each, in a type every provider accepts and whose
+ * bytes start as that type does. Others become a line saying so, since a
+ * malformed image in a stored result would make every later model call of
+ * the session fail; so does a block that is not one (the server already
+ * ran the call, so its result is never an exception).
  */
 export function mcpResultContent(
   result: Pick<CallToolResult, "content" | "structuredContent">,
 ): (TextContent | ImageContent)[] {
   let images = 0;
-  const content = toLlmContent(result).map((block) => {
-    if (block.type === "text") return block;
-    const data = block.data.replace(/\s+/g, "");
-    const bytes = base64Bytes(data);
-    if (!IMAGE_TYPES.has(block.mimeType))
-      return placeholder(
-        `[Image omitted: type ${visibleText(String(block.mimeType)).slice(0, 80)} is not PNG, JPEG, GIF or WebP.]`,
-      );
-    if (bytes === undefined)
-      return placeholder("[Image omitted: its data is not valid base64.]");
-    if (bytes > MCP_MAX_IMAGE_BYTES)
-      return placeholder(
-        `[Image omitted: ${bytes} bytes, over the ${MCP_MAX_IMAGE_BYTES}-byte limit for one image.]`,
-      );
-    if (images >= MCP_MAX_IMAGES)
-      return placeholder(
-        `[Image omitted: a result keeps at most ${MCP_MAX_IMAGES} images.]`,
-      );
-    images++;
-    return { type: "image" as const, data, mimeType: block.mimeType };
-  });
+  const blocks = Array.isArray(result.content) ? result.content : [];
+  const content =
+    blocks.length > 0
+      ? blocks.map((block) => {
+          const converted = blockContent(block);
+          if (!converted) return placeholder(MALFORMED);
+          if (converted.type === "text") return converted;
+          const kept = keptImage(converted, images);
+          if (kept.type === "image") images++;
+          return kept;
+        })
+      : toLlmContent({
+          content: [],
+          structuredContent: result.structuredContent,
+        });
   return content.length > 0 ? content : [placeholder("(no output)")];
 }
 
@@ -190,7 +271,13 @@ export function createMcpTools(
           result = await connector.callTool(
             tool.name,
             params as Record<string, unknown>,
-            { signal: runSignal, timeoutMs: binding.timeoutMs },
+            {
+              // The run's signal aborts at its deadline: the ceiling progress never passes.
+              signal: runSignal,
+              timeoutMs: binding.timeoutMs,
+              // Asking for progress sends a token, so progress renews the timeout.
+              onProgress: () => {},
+            },
           );
         } catch (error) {
           const interrupted =
