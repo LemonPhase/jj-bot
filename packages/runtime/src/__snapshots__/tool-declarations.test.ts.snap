@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`coding tool declarations > stay byte-stable 1`] = `
+[
+  {
+    "description": "Run a shell command (sh -c) in the task workspace /workspace, which is the working directory of every command. Returns combined stdout and stderr. Output over 64 KiB is truncated to its head and tail, and output past 256 KiB is not kept. Each call starts a fresh shell; files persist, shell state does not. Commands time out after 120 s.",
+    "name": "bash",
+    "parameters": "{"type":"object","required":["command"],"properties":{"command":{"type":"string","description":"Shell command to run"},"timeout":{"type":"number","description":"Timeout in seconds. At most 120 s, the sandbox's limit."}}}",
+  },
+  {
+    "description": "Read a file in the workspace. Text output is limited to 2000 lines or 50 KB; use offset and limit for large files. Images (png, jpeg, gif, webp) are returned as attachments.",
+    "name": "read",
+    "parameters": "{"type":"object","required":["path"],"properties":{"path":{"type":"string","description":"File path, relative to the workspace or absolute inside it"},"offset":{"type":"number","description":"Line to start at (1-indexed)"},"limit":{"type":"number","description":"Most lines to read"}}}",
+  },
+  {
+    "description": "Edit one file with exact text replacements. Every edits[].oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit.",
+    "name": "edit",
+    "parameters": "{"type":"object","required":["path","edits"],"properties":{"path":{"type":"string","description":"File path, relative to the workspace or absolute inside it"},"edits":{"type":"array","items":{"type":"object","required":["oldText","newText"],"properties":{"oldText":{"type":"string","description":"Exact text to replace. It must be unique in the original file and not overlap other edits."},"newText":{"type":"string","description":"Replacement text."}}},"description":"One or more replacements, each matched against the original file."}}}",
+  },
+  {
+    "description": "Write a file in the workspace, creating it and its parent directories, or overwriting it.",
+    "name": "write",
+    "parameters": "{"type":"object","required":["path","content"],"properties":{"path":{"type":"string","description":"File path, relative to the workspace or absolute inside it"},"content":{"type":"string","description":"The whole file content"}}}",
+  },
+  {
+    "description": "Search file contents in the workspace. Returns matching lines as path:line: text. Skips .git and, with ripgrep, ignored files. Returns at most 100 matches by default; long lines are cut to 500 characters.",
+    "name": "grep",
+    "parameters": "{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string","description":"Search pattern (regex, or a literal string with literal: true)"},"path":{"type":"string","description":"Directory or file to search (default: the workspace)"},"glob":{"type":"string","description":"Only search files matching this glob, e.g. '*.ts'"},"ignoreCase":{"type":"boolean","description":"Case-insensitive search (default: false)"},"literal":{"type":"boolean","description":"Treat the pattern as a literal string (default: false)"},"context":{"type":"number","description":"Lines of context around each match (default: 0)"},"limit":{"type":"number","description":"Maximum matches to return (default: 100)"}}}",
+  },
+  {
+    "description": "Find files and directories by glob pattern, e.g. '*.ts', '**/*.json' or 'src/**/*.spec.ts'. Paths are relative to the search directory; directories end with '/'. Skips node_modules, .git, dist, build, .cache, .next, .venv, venv, __pycache__, coverage, target. Returns at most 1000 results by default.",
+    "name": "find",
+    "parameters": "{"type":"object","required":["pattern"],"properties":{"pattern":{"type":"string","description":"Glob pattern; without a '/' it matches file names"},"path":{"type":"string","description":"Directory to search (default: the workspace)"},"limit":{"type":"number","description":"Maximum results (default: 1000)"}}}",
+  },
+  {
+    "description": "List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to 500 entries or 50KB (whichever is hit first).",
+    "name": "ls",
+    "parameters": "{"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: current directory)"},"limit":{"type":"number","description":"Maximum number of entries to return (default: 500)"}}}",
+  },
+]
+`;
