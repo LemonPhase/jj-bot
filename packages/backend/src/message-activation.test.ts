@@ -13,6 +13,7 @@ import {
   callTool,
   conversation,
   fauxAssistantMessage,
+  fauxToolCall,
   lastMessage,
   say,
   textOf,
@@ -26,6 +27,7 @@ import {
   resultArrived,
   rootOf,
   route,
+  turn,
 } from "./testing/faux-team";
 import {
   OPEN_TIMEOUT,
@@ -543,4 +545,131 @@ describe("a message a worker finished without reading", () => {
       `${bob} finished before reading a message sent to it, so it is handed to you (each is in the task log):\n\n> Message from ${ada}:\n> Also add line 2.`,
     );
   }, 60_000);
+
+  it("is counted with the ones its inbox left out, which the parent can list, and a clipped one points at its entry", async () => {
+    const { engine, faux } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const reporting = held();
+    const sent = held();
+    const adaSaw: TranscriptContext[] = [];
+    const long = `START ${"x".repeat(3000)} END`;
+    route(faux, {
+      [ada]: async (context, n) => {
+        adaSaw.push({ ...context, messages: [...context.messages] });
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (resultArrived(context, bob))
+          return callTool("complete_task", { result: "Done." });
+        if (n === 1) {
+          // 28 messages while Bob writes his report: his inbox keeps 20.
+          await reporting.opened;
+          return turn([
+            ...Array.from({ length: 27 }, (_, i) =>
+              fauxToolCall("message", { to: bob, text: `note ${i}` }),
+            ),
+            fauxToolCall("message", { to: bob, text: long }),
+          ]);
+        }
+        sent.open();
+        return say("");
+      },
+      [bob]: async (_context, n) => {
+        if (n === 0)
+          return callTool("write", { path: "bob.txt", content: "bob\n" });
+        reporting.open();
+        await sent.opened;
+        return say("Bob's report.");
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+    const entry = (text: string) =>
+      done.messages.find((message) => message.text === text)?.id;
+    const result = textOf(lastMessage(adaSaw.at(-1) as TranscriptContext));
+    expect(result).toContain(
+      `${bob} finished before reading 28 messages sent to it, so they are handed to you (each is in the task log):\n\n(8 earlier messages, left out of its inbox — use \`task_log\` with kind "message" and before "${entry("note 8")}" to list them.)\n\n> Message from ${ada}:\n> note 8\n\n`,
+    );
+    expect(result).not.toContain("omitted]");
+    expect(result).not.toContain("note 7\n");
+    expect(result).toContain(
+      `\n\n${entry(long)} (clipped; \`read_entry\` shows it in full):\n> Message from ${ada}:\n> START x`,
+    );
+    expect(result).toContain("characters left out …]");
+  });
+
+  it("is not handed on when it went to everyone: the parent received it too", async () => {
+    const { engine, faux } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob", "Carol"]);
+    const [ada, bob, carol] = team.names as [string, string, string];
+    const reporting = held();
+    const sent = held();
+    let adaSaw: string[] = [];
+    const has = (context: TranscriptContext, name: string) =>
+      conversation(context).some((message) =>
+        textOf(message).startsWith(`Result from ${name}`),
+      );
+    route(faux, {
+      [ada]: async (context, n) => {
+        adaSaw = conversation(context).map((message) => textOf(message));
+        if (n === 0)
+          return turn([
+            fauxToolCall("delegate", { bot: bob, brief: "Write bob.txt." }),
+            fauxToolCall("delegate", { bot: carol, brief: "Write carol.txt." }),
+          ]);
+        if (has(context, bob) && has(context, carol))
+          return callTool("complete_task", { result: "Done." });
+        return say("");
+      },
+      [bob]: async (_context, n) => {
+        if (n === 0)
+          return callTool("write", { path: "bob.txt", content: "bob\n" });
+        reporting.open();
+        await sent.opened;
+        return say("Bob's report.");
+      },
+      [carol]: async (_context, n) => {
+        if (n === 0) {
+          await reporting.opened;
+          return turn([
+            fauxToolCall("message", { to: bob, text: "Bob, use port 8080." }),
+            fauxToolCall("message", { text: "Team: lower case." }),
+          ]);
+        }
+        sent.open();
+        return say("Carol's report.");
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get the files written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+    const bobResult = adaSaw.find((text) =>
+      text.startsWith(`Result from ${bob}`),
+    );
+    expect(bobResult).toContain(
+      `${bob} finished before reading a message sent to it, so it is handed to you (each is in the task log):\n\n> Message from ${carol}:\n> Bob, use port 8080.`,
+    );
+    expect(bobResult).not.toContain("lower case");
+    // Ada read the broadcast once, from her own inbox.
+    expect(adaSaw.filter((text) => text.includes("Team: lower case."))).toEqual(
+      [`Message from ${carol} to everyone:\nTeam: lower case.`],
+    );
+  });
 });
