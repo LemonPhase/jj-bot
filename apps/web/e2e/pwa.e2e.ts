@@ -319,6 +319,40 @@ test("a chunk redirected once to a login page is not kept: the screen loads afte
   ).toBeVisible();
 });
 
+test("a chunk labelled JavaScript whose body is a web page is not kept", async ({
+  page,
+  request,
+}) => {
+  await createBot(request, "Nova");
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  // A proxy answers the Settings chunk once with its login page, mislabelled.
+  let answered = false;
+  await page
+    .context()
+    .route(/\/assets\/SettingsScreen-[\w-]+\.js$/, async (route) => {
+      if (answered) return route.continue();
+      answered = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/javascript",
+        body: "﻿\n  <!doctype html><title>Sign in</title>",
+      });
+    });
+  await page.goto("/#/settings");
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  expect(answered).toBe(true);
+  await page.context().unrouteAll();
+
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Settings" }),
+  ).toBeVisible();
+});
+
 test("a page that is not the app is never kept as the offline shell", async ({
   page,
   request,

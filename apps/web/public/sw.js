@@ -14,8 +14,9 @@
  * - Vite's content-hashed build files (`/assets/<name>-<hash>.<ext>`) never
  *   change content under a name, so a stored one is served without asking,
  *   and one not stored yet is fetched and stored if the answer is really
- *   that file: a 200, not redirected, with its type (never a web page).
- *   Anything else under `/assets/` goes to the network. The demo data's
+ *   that file: a 200, not redirected, of the type a known extension calls
+ *   for (never a web page), and for scripts, styles and JSON a body that is
+ *   not markup. Anything else under `/assets/` goes to the network. The demo data's
  *   chunk is never stored: the app must not open on it without the API.
  *
  * A fetched shell that differs from the stored one (a deploy) is stored once
@@ -71,14 +72,36 @@ const TYPES = {
   wasm: /^application\/wasm/,
 };
 
-/** Whether `response` is really the asset at `path`, and so may be stored. */
-function isAsset(path, response) {
+/** Text assets, whose body must not be markup whatever its label says. */
+const TEXT = new Set(["js", "mjs", "css", "json"]);
+
+/** Whether a text body starts with `<` (after a BOM or spaces): markup. */
+async function looksLikeMarkup(response) {
+  const reader = response.clone().body?.getReader();
+  if (!reader) return false;
+  const { value } = await reader.read();
+  reader.cancel().catch(() => {});
+  const start = new TextDecoder()
+    .decode(value ?? new Uint8Array())
+    .replace(/^﻿/, "")
+    .trimStart();
+  return start.startsWith("<");
+}
+
+/**
+ * Whether `response` is really the asset at `path`, and so may be stored: a
+ * 200, not redirected, of a known extension's type, and, for scripts,
+ * styles and JSON, a body that is not markup. Anything else is refused.
+ */
+async function isAsset(path, response) {
   if (response.status !== 200 || response.redirected) return false;
   if (response.type !== "basic" && response.type !== "default") return false;
   const type = contentType(response);
   if (type.includes("text/html")) return false;
-  const expected = TYPES[path.split(".").pop() ?? ""];
-  return expected ? expected.test(type) : true;
+  const extension = path.split(".").pop() ?? "";
+  const expected = TYPES[extension];
+  if (!expected?.test(type)) return false;
+  return !(TEXT.has(extension) && (await looksLikeMarkup(response)));
 }
 
 /** The hashed entry script the app's own index.html loads. */
@@ -118,7 +141,7 @@ async function storeShell(html) {
     assets.map(async (path) => {
       if (await cache.match(path)) return;
       const response = await fetch(path);
-      if (!isAsset(path, response))
+      if (!(await isAsset(path, response)))
         throw new Error(`${path}: not the asset (${response.status})`);
       await cache.put(path, response);
     }),
@@ -184,7 +207,7 @@ async function asset(event) {
   const stored = await cache.match(event.request);
   if (stored) return stored;
   const response = await fetch(event.request);
-  if (isAsset(path, response))
+  if (await isAsset(path, response))
     event.waitUntil(cache.put(event.request, response.clone()));
   return response;
 }
