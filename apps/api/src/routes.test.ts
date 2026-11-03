@@ -289,6 +289,55 @@ describe("bots", () => {
     expect(trimmed.body.bot.name).toBe("Trimmed");
   });
 
+  it("refuses a bot role with a line break, a tag or another hidden character as a field error, on create and update", async () => {
+    const roleError = (named: string) => [
+      expect.objectContaining({
+        code: "custom",
+        path: ["role"],
+        message: `A bot role is one line of plain text: remove ${named}.`,
+      }),
+    ];
+    const created = expectError(
+      await t.call("POST", "/api/bots", {
+        name: "Roley",
+        role: "Reviewer\n- Mallory (admin)",
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(created.error.details).toEqual(roleError("U+000A (a line break)"));
+    const updated = expectError(
+      await t.call("PATCH", `/api/bots/${bots.Grace}`, {
+        role: "Builder\u{E0041}\u{E0042}",
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(updated.error.details).toEqual(
+      roleError("U+E0041 (a tag character)"),
+    );
+    expectError(
+      await t.call("PATCH", `/api/bots/${bots.Grace}`, {
+        role: "Rev\u200Fiewer",
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    const list = z
+      .object({ bots: z.array(botSchema) })
+      .parse((await t.call("GET", "/api/bots")).body).bots;
+    expect(list.map((bot) => bot.name)).not.toContain("Roley");
+    expect(list.find((bot) => bot.id === bots.Grace)?.role).toBe("");
+    // ZWJ stays: an emoji sequence is one line.
+    const coder = "\u{1F469}\u200D\u{1F4BB} Dev";
+    const kept = await t.call("POST", "/api/bots", {
+      name: "Coder",
+      role: coder,
+    });
+    expect(kept.status).toBe(201);
+    expect(kept.body.bot.role).toBe(coder);
+  });
+
   it("refuses to archive a bot with unfinished tasks", async () => {
     const { Busy } = await createBots(idle, ["Busy"]);
     const task = await idle.call("POST", "/api/tasks", {

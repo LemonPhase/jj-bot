@@ -31,28 +31,36 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.8.0 — 2026-11-03 — Bot names are a single line
+## 1.8.0 — 2026-11-03 — Bot names and roles are a single line
 
-**Changed by:** backend and frontend ([#100](https://github.com/LemonPhase/jj-bot/issues/100), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6607691571)) · **Compatibility:** tightens validation: a 1.7.0 writer that sends a multi-line name is now refused, and a 1.8.0 reader refuses a bot record with such a name, which a 1.8.0 server never sends
+**Changed by:** backend and frontend ([#100](https://github.com/LemonPhase/jj-bot/issues/100), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6607691571) and amended in [this one](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6613746021)) · **Compatibility:** tightens validation: a 1.7.0 writer that sends a multi-line name or role is now refused, and a 1.8.0 reader refuses a bot record holding one, which a 1.8.0 server never sends
 
-- `botNameSchema` (bot records, `createBotCommandSchema` and `updateBotCommandSchema`): still
-  trimmed and 1 to 60 characters once trimmed, and now one line of plain text. It refuses every
-  control character (`\p{Cc}`, LF, CR, VT, FF and NEL among them), LS (U+2028) and PS (U+2029),
-  the bidirectional controls U+202A to U+202E and U+2066 to U+2069 and the zero-width characters
-  U+200B to U+200D and U+FEFF, because names appear unquoted in model-facing text (entry
-  headers, the team roster, `task_log` index lines and handoff notes), where a line break could
-  forge a line. A refused name is a `VALIDATION_FAILED` field error on `name` that names the
-  first refused character as `U+XXXX`, such as "A bot name is one line of plain text: remove
-  U+000A (a line break)." A break at either end is trimmed away like other surrounding
-  whitespace.
+- `botNameSchema` and the bot's role schema (bot records, `createBotCommandSchema` and
+  `updateBotCommandSchema`): still trimmed, a name 1 to 60 characters and a role at most 80 once
+  trimmed, and now each one line of plain text. Both refuse every control character (`\p{Cc}`:
+  LF, CR, VT, FF and NEL among them), LS (U+2028) and PS (U+2029); Unicode's Bidi_Control set
+  (U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069); the invisible U+180E, U+200B,
+  U+2060 to U+2064, U+206A to U+206F, U+FEFF and U+FFF9 to U+FFFB; the tag characters U+E0000 to
+  U+E007F, which can hide text a model reads but a reader does not see; and lone surrogates. ZWNJ
+  and ZWJ (U+200C, U+200D) are allowed, since scripts and emoji sequences need them. Names and
+  roles appear unquoted in model-facing text (the persona line, the team roster, the `delegate`
+  and `message` tool descriptions, entry headers, `task_log` index lines and handoff notes), where
+  a line break could forge a line. A refused value is a `VALIDATION_FAILED` field error on `name`
+  or `role` that names the first refused character as `U+XXXX`, such as "A bot name is one line
+  of plain text: remove U+000A (a line break)." A break at either end is trimmed away like other
+  surrounding whitespace.
 
-**Action required (frontend):** none: Bot Studio checks a name with the contract's schema and shows
-the field error under the name, and the demo API applies the same schema.
-**Action required (backend):** none: create and rename refuse such a name, and migration 0012
-normalises the names stored before (each run of refused characters becomes one space, then the name
-is trimmed; an empty one becomes `Bot`; an active bot whose new name another active bot of its
-owner holds, ignoring case, takes the first free ` (2)`, ` (3)`, …, the oldest first, so names
-that were already valid never change). No read path rewrites a name.
+**Action required (frontend):** none: Bot Studio checks a draft with the contract's schema and
+shows the field error under the name or role, and the demo API applies the same schema.
+**Action required (backend):** none: create and update refuse such a name or role, and migration
+0012 normalises those stored before, refusing exactly the contract's set: each run of refused
+characters becomes one space, then the value is trimmed; an empty name becomes `Bot` and an empty
+role stays empty; an active bot whose new name another active bot of its owner holds, ignoring
+case, takes the first free ` (2)`, ` (3)`, …, the oldest first, so names that were already valid
+never change; roles take no number. The migration refuses a database whose `server_encoding` is
+not `UTF8`, which JJ Bot requires. No read path rewrites a bot record, so its stored and shown
+name and role agree. Text stored before the upgrade keeps the old names and roles as they were:
+queued inbox items, first inputs, approval texts and transcripts.
 
 ## 1.7.0 — 2026-11-03 — MCP servers and skills per profile
 

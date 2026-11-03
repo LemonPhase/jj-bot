@@ -448,7 +448,7 @@ describe("demo API", () => {
     expect(views.at(-1)).toEqual(view);
   });
 
-  it("refuses a bot name with a line break as the server does, as a field error", async () => {
+  it("refuses a bot name or role with a line break as the server does, as a field error", async () => {
     const api = demo();
     const fieldError = (character: string) => ({
       code: "VALIDATION_FAILED",
@@ -468,6 +468,21 @@ describe("demo API", () => {
     const names = (await api.listBots()).map((bot) => bot.name);
     expect(names.some((name) => /[\n\u2028]/.test(name))).toBe(false);
     expect((await api.getBot("bot-kite")).name).toBe("Kite");
+    // A role follows the same rule.
+    const role = (await api.getBot("bot-kite")).role;
+    await expect(
+      api.updateBot("bot-kite", { role: "Lead\u{E0041}" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      details: [
+        expect.objectContaining({
+          path: ["role"],
+          message:
+            "A bot role is one line of plain text: remove U+E0041 (a tag character).",
+        }),
+      ],
+    });
+    expect((await api.getBot("bot-kite")).role).toBe(role);
   });
 
   it("rejects what the server would reject", async () => {

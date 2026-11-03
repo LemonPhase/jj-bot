@@ -91,3 +91,20 @@ describe("Bot Studio: a name with a line break", () => {
     expect((await api.getBot("bot-kite")).name).toBe("Kite");
   });
 });
+
+describe("Bot Studio: a role with a hidden character", () => {
+  it("is refused inline under the role, and nothing is saved", async () => {
+    const { updateBot } = renderStudio("#/studio/bot-kite");
+    await heading("Edit Kite");
+    const role = screen.getByLabelText("Role");
+    fireEvent.change(role, { target: { value: "Lead\u{E0041}\u{E0042}" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    const message =
+      "A bot role is one line of plain text: remove U+E0041 (a tag character).";
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(role.getAttribute("aria-invalid")).toBe("true");
+    expect(describedBy(role)).toContain(message);
+    expect(updateBot).not.toHaveBeenCalled();
+  });
+});
