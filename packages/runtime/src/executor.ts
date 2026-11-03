@@ -1,4 +1,9 @@
-import type { RetryPolicy } from "@earendil-works/pi-ai";
+import type {
+  AssistantMessage,
+  RetryPolicy,
+  ToolCall,
+  ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
 import {
   type CompactionOptions,
@@ -8,7 +13,13 @@ import {
 } from "./compaction";
 import { type RetryOptions, redactSecrets, retryPolicy } from "./errors";
 import { ModelCallGate } from "./gate";
-import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
+import {
+  type ApprovedCall,
+  budgetProblem,
+  collabAgentTool,
+  runLoop,
+  userMessage,
+} from "./loop";
 import {
   type ModelRegistry,
   ModelResolutionError,
@@ -17,7 +28,13 @@ import {
 import { createSandboxTools } from "./sandbox-tools";
 import type { OutputPolicy } from "./tools";
 import { appendedRepairs, repairTranscript } from "./transcript";
-import type { RunExecutor, RunInput, RunOutcome } from "./types";
+import type {
+  HeldCallDecision,
+  PiMessage,
+  RunExecutor,
+  RunInput,
+  RunOutcome,
+} from "./types";
 
 export interface PiSessionExecutorOptions {
   models: ModelRegistry;
@@ -33,6 +50,46 @@ export interface PiSessionExecutorOptions {
    * tokens, clamped to the model's context window).
    */
   compaction?: CompactionOptions;
+}
+
+/**
+ * The held call a decision answers, when it is still unanswered: the call
+ * and the assistant message that made it. Undefined when the transcript has
+ * no such call or already holds its result.
+ */
+function heldCall(
+  messages: readonly PiMessage[],
+  decision: HeldCallDecision | undefined,
+): { call: ToolCall; assistant: AssistantMessage } | undefined {
+  if (!decision) return undefined;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index] as PiMessage;
+    if (
+      message.role === "toolResult" &&
+      message.toolCallId === decision.toolCallId
+    )
+      return undefined;
+    if (message.role !== "assistant") continue;
+    const call = message.content.find(
+      (block): block is ToolCall =>
+        block.type === "toolCall" && block.id === decision.toolCallId,
+    );
+    if (call) return { call, assistant: message };
+  }
+  return undefined;
+}
+
+/** The error result of a held call the user did not approve. */
+function deniedResult(call: ToolCall, text: string): ToolResultMessage {
+  return {
+    role: "toolResult",
+    toolCallId: call.id,
+    toolName: call.name,
+    content: [{ type: "text", text }],
+    details: { truncated: false, notApproved: true },
+    isError: true,
+    timestamp: Date.now(),
+  };
 }
 
 /** Clamps a configured output cap to the contract's preview limit. */
@@ -67,10 +124,30 @@ export class PiSessionExecutor implements RunExecutor {
   async run(input: RunInput): Promise<RunOutcome> {
     const { hooks } = input;
     // The context: the latest compaction's summary, then what it kept and
-    // everything after it, repaired.
+    // everything after it, repaired. A denied held call gets its error
+    // result first; an approved one stays open until it runs.
     const view = viewTranscript(input.transcript);
-    const transcript = repairTranscript(view.messages);
-    const repairs = appendedRepairs(view.messages, transcript);
+    const decided = heldCall(view.messages, input.decision);
+    const decision = decided ? input.decision : undefined;
+    const denial =
+      decided && decision && !decision.approved
+        ? deniedResult(decided.call, decision.text)
+        : undefined;
+    const messages = denial ? [...view.messages, denial] : view.messages;
+    const open = new Set(decision?.approved ? [decision.toolCallId] : []);
+    const transcript = repairTranscript(messages, open);
+    const repairs = [
+      ...(denial ? [denial] : []),
+      ...appendedRepairs(messages, transcript),
+    ];
+    const approved: ApprovedCall | undefined =
+      decided && decision?.approved
+        ? {
+            ...decided,
+            claim: async () =>
+              (await hooks.claimApprovedCall?.(decided.call.id)) ?? true,
+          }
+        : undefined;
     let inputs = input.inputs
       .filter((text) => text.trim().length > 0)
       .map((text) => userMessage(text));
@@ -146,7 +223,11 @@ export class PiSessionExecutor implements RunExecutor {
         .map((text) => userMessage(text));
 
     const tail = transcript.at(-1);
-    if (inputs.length === 0 && (!tail || tail.role === "assistant")) {
+    if (
+      inputs.length === 0 &&
+      !approved &&
+      (!tail || tail.role === "assistant")
+    ) {
       // A wake with nothing new: take what is in the inbox, else there is nothing to do.
       try {
         inputs = await drain();
@@ -207,6 +288,10 @@ export class PiSessionExecutor implements RunExecutor {
       signal,
       retry: this.retry,
       endRequested: () => endRequested,
+      ...(hooks.reviewToolCall
+        ? { reviewToolCall: hooks.reviewToolCall.bind(hooks) }
+        : {}),
+      ...(approved ? { approved } : {}),
       ...(input.redact ? { redact: input.redact } : {}),
       getSteering: drain,
       persist: async (entries) => {

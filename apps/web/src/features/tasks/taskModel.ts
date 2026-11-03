@@ -4,6 +4,7 @@
  * activity lines and mentions. Pure, so every rule here is unit tested.
  */
 import {
+  type Approval,
   type Bot,
   type ExecutionSession,
   isFinishedStatus,
@@ -367,7 +368,9 @@ export function statusAnnouncements(
             ? `${name} is waiting for you`
             : session.waitingFor === "delegations"
               ? `${name} is waiting on delegated work`
-              : `${name} is waiting`,
+              : session.waitingFor === "approval"
+                ? `${name} is waiting for your approval`
+                : `${name} is waiting`,
         );
         break;
       case "completed":
@@ -468,7 +471,9 @@ export type TimelineEntry =
       /** The goal version this message set, when it replaced the goal. */
       goalVersion: number | null;
     }
-  | { kind: "notice"; id: string; text: string };
+  | { kind: "notice"; id: string; text: string }
+  /** A call that waits, or waited, for the user's approval: the record as it is now. */
+  | { kind: "approval"; approval: Approval };
 
 const noticeText = (event: TaskEvent): string | null => {
   switch (event.type) {
@@ -499,6 +504,10 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
   const postedAt = new Map<string, number>();
   const goalSetBy = new Map<string, number>();
   const notices: { sequence: number; entry: TimelineEntry }[] = [];
+  const approvals = new Map(
+    view.approvals.map((approval) => [approval.id, approval]),
+  );
+  const placed = new Set<string>();
   // The server posts the user's message after `task.goal_changed` (and the
   // task reopening) in the same transaction, so the next user message is the
   // one that set the goal.
@@ -519,6 +528,18 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
         sequence: event.sequence,
         entry: { kind: "notice", id: event.id, text },
       });
+    // An approval shows where it was requested, as it is now.
+    const approval =
+      event.type === "approval.requested"
+        ? approvals.get(event.payload.approval.id)
+        : undefined;
+    if (approval && !placed.has(approval.id)) {
+      placed.add(approval.id);
+      notices.push({
+        sequence: event.sequence,
+        entry: { kind: "approval", approval },
+      });
+    }
   }
 
   const entries: TimelineEntry[] = [];
@@ -537,6 +558,19 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
   }
   for (; next < notices.length; next += 1)
     entries.push((notices[next] as (typeof notices)[number]).entry);
+  // Requested before the retained events: placed among messages by time.
+  for (const approval of view.approvals) {
+    if (placed.has(approval.id)) continue;
+    const at = entries.findIndex(
+      (entry) =>
+        entry.kind === "message" &&
+        entry.message.createdAt > approval.createdAt,
+    );
+    entries.splice(at === -1 ? entries.length : at, 0, {
+      kind: "approval",
+      approval,
+    });
+  }
   return entries;
 }
 

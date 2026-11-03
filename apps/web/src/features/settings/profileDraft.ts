@@ -1,8 +1,11 @@
 import {
+  APPROVAL_MATCH_LIMIT,
+  type ApprovalRule,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   DEFAULT_MAX_USD_PER_BOT_PER_DAY,
   DEFAULT_MAX_USD_PER_TASK,
+  MAX_APPROVAL_RULES,
   MAX_SPEND_CAP_USD,
   type RuntimeProfile,
   type SandboxSpecPatch,
@@ -20,7 +23,7 @@ import {
 /**
  * The runtime-profile form: its text draft, validation, the create command,
  * and the PATCH for an edit. The server deep-merges a PATCH onto the stored
- * profile (nested objects field by field; `tools`, `secrets`,
+ * profile (nested objects field by field; `tools`, `secrets`, `approvals`,
  * `sandbox.network`, `sandbox.env` and `sandbox.driverConfig` replaced
  * whole; a driver change
  * drops the old image and driverConfig), so the patch carries only what
@@ -41,8 +44,15 @@ export interface ProfileDraft {
   /** US dollars; empty for no cap. */
   maxUsdPerTask: string;
   maxUsdPerBotPerDay: string;
+  /** Calls that wait for the user's approval; an empty match is every call of the tool. */
+  approvals: readonly ApprovalRuleDraft[];
   /** Create only: make the new profile the default. */
   isDefault: boolean;
+}
+
+export interface ApprovalRuleDraft {
+  tool: ToolName;
+  match: string;
 }
 
 /** Budget bounds and defaults, as in the contract's `profileBudgetsSchema`. */
@@ -82,6 +92,7 @@ export interface DesiredProfile {
   tools: ToolName[];
   secrets: string[];
   budgets: Record<BudgetKey, number> & Record<SpendCapKey, number | null>;
+  approvals: ApprovalRule[];
   isDefault: boolean;
 }
 
@@ -102,6 +113,7 @@ export function newProfileDraft(
     maxRunMinutes: String(BUDGETS.maxRunMinutes.default),
     maxUsdPerTask: String(SPEND_CAPS.maxUsdPerTask.default),
     maxUsdPerBotPerDay: String(SPEND_CAPS.maxUsdPerBotPerDay.default),
+    approvals: [],
     isDefault: false,
   };
 }
@@ -121,8 +133,31 @@ export function draftFromProfile(
     maxRunMinutes: String(profile.budgets.maxRunMinutes),
     maxUsdPerTask: capText(profile.budgets.maxUsdPerTask),
     maxUsdPerBotPerDay: capText(profile.budgets.maxUsdPerBotPerDay),
+    approvals: profile.approvals.map((rule) => ({
+      tool: rule.tool,
+      match: rule.match ?? "",
+    })),
     isDefault: profile.isDefault,
   };
+}
+
+/** The error key of an approval rule's match field. */
+export const approvalMatchKey = (index: number) => `approvals.${index}.match`;
+
+/** The rules a draft holds; an empty match asks before every call of the tool. */
+function readApprovals(
+  drafts: readonly ApprovalRuleDraft[],
+  errors: Record<string, string>,
+): ApprovalRule[] {
+  if (drafts.length > MAX_APPROVAL_RULES)
+    errors.approvals = `At most ${MAX_APPROVAL_RULES} rules.`;
+  return drafts.map((rule, index) => {
+    const match = rule.match.trim();
+    if (match.length > APPROVAL_MATCH_LIMIT)
+      errors[approvalMatchKey(index)] =
+        `At most ${APPROVAL_MATCH_LIMIT} characters.`;
+    return match ? { tool: rule.tool, match } : { tool: rule.tool };
+  });
 }
 
 const capText = (cap: number | null) => (cap === null ? "" : String(cap));
@@ -181,6 +216,7 @@ export function readProfileDraft(
       errors,
     ),
   };
+  const approvals = readApprovals(draft.approvals, errors);
   if (Object.keys(errors).length > 0) return { errors };
   return {
     errors,
@@ -191,6 +227,7 @@ export function readProfileDraft(
       tools: orderedTools(draft.tools),
       secrets: [...draft.secrets].sort(),
       budgets,
+      approvals,
       isDefault: draft.isDefault,
     },
   };
@@ -206,6 +243,7 @@ export function createProfileCommand(
     sandbox: value.sandbox,
     tools: value.tools,
     budgets: value.budgets,
+    ...(value.approvals.length > 0 ? { approvals: value.approvals } : {}),
     ...(value.secrets.length > 0 ? { secrets: value.secrets } : {}),
     ...(value.isDefault ? { isDefault: true } : {}),
   };
@@ -310,6 +348,10 @@ export function profilePatch(
     if (desired.budgets[key] !== stored.budgets[key])
       budgets[key] = desired.budgets[key];
   if (Object.keys(budgets).length > 0) patch.budgets = budgets;
+
+  // Replaced whole, like `tools`.
+  if (!sameJson(stored.approvals, desired.approvals))
+    patch.approvals = desired.approvals;
 
   // The default moves by making another profile the default, never by unsetting it.
   if (desired.isDefault && !stored.isDefault) patch.isDefault = true;

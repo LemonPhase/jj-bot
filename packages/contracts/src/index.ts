@@ -10,6 +10,7 @@
 // Keep API validation on the same schema implementation as the shared contracts.
 export { z } from "zod";
 export * from "./api";
+export * from "./approvals";
 export * from "./bots";
 export * from "./common";
 export * from "./events";

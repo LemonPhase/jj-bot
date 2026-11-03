@@ -88,6 +88,30 @@ export type ExecutorEvent =
       artifactId?: string;
     };
 
+/** A tool call about to run, as the approval policy sees it. */
+export interface PendingToolCall {
+  toolCallId: string;
+  tool: string;
+  /** The validated arguments, unredacted: redact what is stored. */
+  args: Record<string, unknown>;
+  /** Its activity summary (redacted). */
+  summary: string;
+  /** The text of the assistant message that made it (redacted), or "". */
+  text: string;
+}
+
+/**
+ * `run`; `hold` (an approval was recorded: the call does not run, reports
+ * no tool events and stays unanswered, and the run ends `held` after its
+ * batch); or `{ refuse }` (it does not run; the text is its error result).
+ */
+export type ToolCallVerdict = "run" | "hold" | { refuse: string };
+
+/** The user's answer to a call an earlier run of the session held. */
+export type HeldCallDecision =
+  | { toolCallId: string; approved: true }
+  | { toolCallId: string; approved: false; text: string };
+
 export interface RunHooks {
   /** Awaited: the event is durable before the run goes on. */
   onEvent(event: ExecutorEvent): void | Promise<void>;
@@ -109,6 +133,14 @@ export interface RunHooks {
    * sent; the run ends with `budget` and `limit: "spend"`.
    */
   admitModelCall?(): Promise<string | undefined>;
+  /** Asked before each tool call runs (absent: every call runs). A rejection ends the run. */
+  reviewToolCall?(call: PendingToolCall): Promise<ToolCallVerdict>;
+  /**
+   * Claims the approved call of `RunInput.decision` right before it runs.
+   * False when an earlier run claimed it: it is then answered as
+   * interrupted with an unknown outcome, never run again.
+   */
+  claimApprovedCall?(toolCallId: string): Promise<boolean>;
 }
 
 export interface RunBudgets {
@@ -150,6 +182,13 @@ export interface RunInput {
    * a cut never leaves part of a secret; the engine redacts again on write.
    */
   redact?: (text: string) => string;
+  /**
+   * The user's answer to the call an earlier run held, applied before the
+   * first model call while the call is unanswered in the transcript: an
+   * approved call runs once (after `claimApprovedCall`) with its stored
+   * arguments; a denied one gets `text` as its error result.
+   */
+  decision?: HeldCallDecision;
 }
 
 /** Why a model call failed, when the runtime knows. */
@@ -169,6 +208,8 @@ export type RunOutcome =
    * the transcript's last turn had already ended before the restart.
    */
   | { kind: "idle" }
+  /** A call waits for the user's approval; the run ended after its batch. */
+  | { kind: "held" }
   /** `sandbox_released`: the sandbox went away under the run; never a completion. */
   | { kind: "aborted"; reason?: "signal" | "sandbox_released" }
   /** `limit: "spend"`: a model call was refused at a spend cap; `reason` says which. */

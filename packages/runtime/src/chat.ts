@@ -174,6 +174,12 @@ export class ChatResponder {
         throw new ChatReplyError(outcome.error, outcome.code);
       case "idle":
         throw new ChatReplyError("Nothing to reply to.", "invalid_request");
+      case "held":
+        // Chat asks no review hook, so no call is ever held.
+        throw new ChatReplyError(
+          "A tool call was held for approval.",
+          "invalid_request",
+        );
       case "budget":
         // A tool that succeeded (create_task) is the reply: a retry must not repeat it.
         if (!outcome.finalText && toolText)

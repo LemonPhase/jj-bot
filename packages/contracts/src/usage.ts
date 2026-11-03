@@ -12,7 +12,7 @@ export const spendScopeSchema = z.enum(SPEND_SCOPES);
 
 /**
  * The share of a task's cap past which its spend is flagged (`spend.threshold`,
- * shown amber). Approvals (#87) will build on it.
+ * shown amber). A warning only: nothing waits for the user there.
  */
 export const SPEND_SOFT_THRESHOLD = 0.8;
 

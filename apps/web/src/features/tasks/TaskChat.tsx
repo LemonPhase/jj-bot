@@ -27,6 +27,8 @@ import { formatMessageTime } from "../../lib/format";
 import { acceptsMessages, moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
+import { ApprovalCard } from "./ApprovalCard";
+import { coordinatorHolds } from "./approvals";
 import {
   type ActivityLine,
   activityLines,
@@ -78,13 +80,17 @@ export function TaskChat({ view }: { view: TaskView }) {
     if (element && stick.current) element.scrollTop = element.scrollHeight;
   }, [timeline.length, pending, activityKey, stopping]);
 
+  // The coordinator reads a message only with its approval's answer.
+  const holding = coordinatorHolds(view);
   const placeholder = !open
     ? stopping
       ? "This task is stopping"
       : "This task was stopped"
     : changingGoal
       ? `Write the new goal (v${task.goalVersion + 1})…`
-      : "Message task group…";
+      : holding
+        ? "Answer the approval above; a message waits for it…"
+        : "Message task group…";
 
   return (
     <>
@@ -111,7 +117,13 @@ export function TaskChat({ view }: { view: TaskView }) {
             )}
             {timeline.map((entry) => (
               <TimelineItem
-                key={entry.kind === "notice" ? entry.id : entry.message.id}
+                key={
+                  entry.kind === "notice"
+                    ? entry.id
+                    : entry.kind === "approval"
+                      ? entry.approval.id
+                      : entry.message.id
+                }
                 entry={entry}
                 mention={mention}
                 getBot={getBot}
@@ -194,6 +206,13 @@ function TimelineItem({
 }) {
   if (entry.kind === "notice")
     return <p className="task-notice">{entry.text}</p>;
+  if (entry.kind === "approval")
+    return (
+      <ApprovalCard
+        approval={entry.approval}
+        bot={getBot(entry.approval.botId)}
+      />
+    );
   const { message, goalVersion } = entry;
   if (message.authorKind === "system")
     return <p className="task-notice">{message.text}</p>;

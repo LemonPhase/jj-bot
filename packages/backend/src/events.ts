@@ -85,6 +85,8 @@ function hintsFor(event: TaskEvent): WorkspaceHint[] {
             botsChanged(event.payload.session.botId),
           ];
     case "model.finished":
+    case "approval.requested":
+    case "approval.updated":
       return [{ type: "tasks.changed", taskId: event.taskId }];
     default:
       return [];

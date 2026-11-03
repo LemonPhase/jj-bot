@@ -99,6 +99,7 @@ function viewOf(
     sessions: [],
     messages: [],
     artifacts: [],
+    approvals: [],
     verificationChecks: checks,
     usage: { total: emptyUsage(), bySession: {} },
     events: [],
@@ -237,6 +238,7 @@ describe("verification display", () => {
       activeSessionCount: 0,
       sessionCount: 1,
       usage: emptyUsage(),
+      pendingApprovals: [],
       verification: verificationSummary(view.task, view.verificationChecks),
     };
     const failing: TaskSummary = {
@@ -340,6 +342,7 @@ describe("checks editor", () => {
             activeSessionCount: 0,
             sessionCount: 1,
             usage: emptyUsage(),
+            pendingApprovals: [],
             verification: verificationSummary(
               withPlan.task,
               withPlan.verificationChecks,
@@ -402,6 +405,7 @@ describe("checks editor", () => {
             activeSessionCount: 0,
             sessionCount: 1,
             usage: emptyUsage(),
+            pendingApprovals: [],
             verification: verificationSummary(
               view.task,
               view.verificationChecks,

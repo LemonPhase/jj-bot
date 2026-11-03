@@ -112,6 +112,34 @@ export type ExecutorEvent =
       artifactId?: string;
     };
 
+/** A tool call about to run, as the engine's approval policy sees it. */
+export interface PendingToolCall {
+  toolCallId: string;
+  tool: string;
+  /** The arguments as the tool will receive them (validated), unredacted. */
+  args: Record<string, unknown>;
+  /** The call's activity summary, as `tool.started` would carry it (redacted). */
+  summary: string;
+  /** The text of the assistant message that made the call (redacted); empty when it had none. */
+  text: string;
+}
+
+/**
+ * What happens to a call before it runs:
+ * - `run`: it runs.
+ * - `hold`: it waits for the user's approval, which the engine recorded. It
+ *   does not run and reports no tool events, and its result is never
+ *   persisted, so the transcript keeps it unanswered. The rest of its batch
+ *   runs, then the run ends `held`.
+ * - `{ refuse }`: it does not run; `refuse` is its error result.
+ */
+export type ToolCallVerdict = "run" | "hold" | { refuse: string };
+
+/** The user's answer to a call that an earlier run of the session held. */
+export type HeldCallDecision =
+  | { toolCallId: string; approved: true }
+  | { toolCallId: string; approved: false; text: string };
+
 export interface RunHooks {
   onEvent(event: ExecutorEvent): void | Promise<void>;
   /**
@@ -139,6 +167,19 @@ export interface RunHooks {
    * and reports no events; the run ends with `budget` (`limit: "spend"`).
    */
   admitModelCall?(): Promise<string | undefined>;
+  /**
+   * Asked before each tool call runs, after its arguments are validated
+   * (absent: every call runs). See `ToolCallVerdict`. A rejection ends the
+   * run with an error outcome, like `onEvent`'s.
+   */
+  reviewToolCall?(call: PendingToolCall): Promise<ToolCallVerdict>;
+  /**
+   * Claims the approved call of `RunInput.decision` right before it runs
+   * (absent: always claimed). False when an earlier run claimed it: that run
+   * may have started it, so it is answered as interrupted with an unknown
+   * outcome and never run again.
+   */
+  claimApprovedCall?(toolCallId: string): Promise<boolean>;
 }
 
 export interface RunBudgets {
@@ -184,6 +225,14 @@ export interface RunInput {
    * a cut never leaves part of a secret; the engine redacts again on write.
    */
   redact?: (text: string) => string;
+  /**
+   * The user's answer to the call an earlier run held. Applied before the
+   * first model call while the call is still unanswered in the transcript
+   * (otherwise ignored): an approved call runs once, after
+   * `claimApprovedCall`, with its arguments as stored; a denied one gets
+   * `text` as its error result. The run then goes on like any other.
+   */
+  decision?: HeldCallDecision;
 }
 
 export type RunOutcome =
@@ -191,6 +240,8 @@ export type RunOutcome =
   | { kind: "ended"; finalText: string }
   /** Woken with no inputs and an empty inbox: nothing was run. */
   | { kind: "idle" }
+  /** A call waits for the user's approval (`reviewToolCall` held it); the run ended after its batch. */
+  | { kind: "held" }
   /**
    * The signal was aborted, or the sandbox was released under the run
    * (`reason: "sandbox_released"`): what was in flight was stopped.
