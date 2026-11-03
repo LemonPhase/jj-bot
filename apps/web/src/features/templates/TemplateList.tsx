@@ -55,6 +55,7 @@ function TemplateRow({
   coordinator: string | undefined;
 }) {
   const { openTemplateDialog } = useShell();
+  const problemId = useId();
   const problems = problemLines(template.problems);
   const count = template.participantBotIds.length;
   const open = (kind: "start" | "edit" | "delete") =>
@@ -63,7 +64,7 @@ function TemplateRow({
     <li className="template-row">
       <span className="template-row__title clamp2">{template.title}</span>
       {problems.length > 0 ? (
-        <span className="template-row__problem">
+        <span id={problemId} className="template-row__problem">
           <span className="template-row__mark" aria-hidden="true">
             !
           </span>
@@ -81,6 +82,7 @@ function TemplateRow({
           variant="primary"
           aria-label={`Start ${template.title}`}
           disabled={problems.length > 0}
+          aria-describedby={problems.length > 0 ? problemId : undefined}
           onClick={() => open("start")}
         >
           Start

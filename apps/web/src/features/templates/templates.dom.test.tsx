@@ -30,6 +30,14 @@ configure({ asyncUtilTimeout: 5000 });
 
 const SEEDED = "tmpl-demo-1";
 
+/** The text an element's `aria-describedby` points at. */
+const description = (element: HTMLElement) =>
+  (element.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ")
+    .trim();
+
 /** The demo API without seeded tasks, so every demo bot can be archived. */
 const demo = () => createDemoApi({ autoplay: false, tasks: [] });
 
@@ -91,11 +99,11 @@ describe("the Templates sidebar section", () => {
     expect(start as HTMLButtonElement).toHaveProperty("disabled", false);
     await api.archiveBot("bot-vesper");
     expect(await screen.findByText("Vesper is archived.")).toBeTruthy();
-    expect(
-      screen.getByRole("button", {
-        name: "Start Weekly contract review",
-      }) as HTMLButtonElement,
-    ).toHaveProperty("disabled", true);
+    const blocked = screen.getByRole("button", {
+      name: "Start Weekly contract review",
+    }) as HTMLButtonElement;
+    expect(blocked).toHaveProperty("disabled", true);
+    expect(description(blocked)).toContain("Vesper is archived.");
     expect(
       screen.getByRole("button", {
         name: "Edit Weekly contract review",
@@ -401,11 +409,11 @@ describe("the start dialog", () => {
     expect(within(dialog).getByRole("alert").textContent).toContain(
       "Can't startVesper is archived.",
     );
-    expect(
-      within(dialog).getByRole("button", {
-        name: "Start task",
-      }) as HTMLButtonElement,
-    ).toHaveProperty("disabled", true);
+    const blocked = within(dialog).getByRole("button", {
+      name: "Start task",
+    }) as HTMLButtonElement;
+    expect(blocked).toHaveProperty("disabled", true);
+    expect(description(blocked)).toContain("Vesper is archived.");
     fireEvent.click(
       within(dialog).getByRole("button", { name: "Edit template" }),
     );

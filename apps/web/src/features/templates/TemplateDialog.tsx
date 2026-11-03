@@ -358,6 +358,7 @@ function StartTemplateDialog({
   const { bots, profiles, getBot, startTemplate } = useWorkspace();
   const { openTemplateDialog } = useShell();
   const formId = useId();
+  const problemsId = useId();
   const [instructions, setInstructions] = useState("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
@@ -408,6 +409,7 @@ function StartTemplateDialog({
             form={formId}
             variant="primary"
             disabled={!canStart}
+            aria-describedby={problems.length > 0 ? problemsId : undefined}
           >
             {busy ? "Starting…" : "Start task"}
           </Button>
@@ -431,7 +433,9 @@ function StartTemplateDialog({
         </dl>
         {problems.length > 0 ? (
           <div className="template-start__problems">
-            <ErrorBanner word="Can't start">{problems.join(" ")}</ErrorBanner>
+            <div id={problemsId}>
+              <ErrorBanner word="Can't start">{problems.join(" ")}</ErrorBanner>
+            </div>
             <Button
               size="sm"
               onClick={() =>
