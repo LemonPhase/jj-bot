@@ -24,6 +24,7 @@ interface LazyScreen<P extends object> {
  * as long as React holds a fallback on screen (about 300 ms).
  */
 function lazyScreen<P extends object>(
+  name: string,
   importScreen: () => Promise<ComponentType<P>>,
 ): LazyScreen<P> {
   let loading: Promise<ComponentType<P>> | undefined;
@@ -41,17 +42,18 @@ function lazyScreen<P extends object>(
     const [Component] = useState<ComponentType<P>>(() => loaded ?? Lazy);
     return <Component {...props} />;
   }
+  Screen.displayName = name;
   return { Screen, load };
 }
 
 const screens = {
-  tasks: lazyScreen(() =>
+  tasks: lazyScreen("TasksScreen", () =>
     import("../tasks/TasksScreen").then((m) => m.TasksScreen),
   ),
-  studio: lazyScreen(() =>
+  studio: lazyScreen("StudioScreen", () =>
     import("../studio/StudioScreen").then((m) => m.StudioScreen),
   ),
-  settings: lazyScreen(() =>
+  settings: lazyScreen("SettingsScreen", () =>
     import("../settings/SettingsScreen").then((m) => m.SettingsScreen),
   ),
 };

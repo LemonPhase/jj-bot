@@ -89,13 +89,17 @@ function watchFor(text: string) {
   };
 }
 
+// Each test opens a screen of its own (Settings, Tasks, Studio): loaded
+// modules stay loaded for the whole file, so tests that shared a screen
+// would depend on their order.
 describe("lazy screens", () => {
   it("preload the deep-linked screen's chunk before anything renders, then show it without a spinner", async () => {
+    const others = () => [chunks.tasks.started, chunks.studio.started];
+    const before = others();
     preloadScreen(parseRoute("#/bots/bot-1"));
     preloadScreen(parseRoute("#/settings"));
     await vi.waitFor(() => expect(chunks.settings.started).toBe(1));
-    expect(chunks.tasks.started).toBe(0);
-    expect(chunks.studio.started).toBe(0);
+    expect(others()).toEqual(before);
 
     // The chunk arrives while the workspace would still be loading.
     chunks.settings.arrive();
