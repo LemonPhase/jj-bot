@@ -314,6 +314,29 @@ describe("output a sandbox's output limit cut", () => {
     expect(textOf(result)).toMatch(/^out \[redacted\]\nerr \[redacted\]\n\n/);
   });
 
+  it("bash masks it at the end of the output of a command killed mid-way", async () => {
+    const printed = `out ${KEY.slice(0, 10)}`;
+    const killed = {
+      ...done(printed),
+      truncated: false,
+      exitCode: null,
+      interrupted: "yes" as const,
+      interruptReason: "timeout",
+    };
+    const streaming = printing(async (_command, options) => {
+      options?.onData?.(Buffer.from(printed), "stdout");
+      return killed;
+    });
+    const silent = printing(async () => killed);
+    for (const sandbox of [streaming, silent]) {
+      const result = await tool(tools(sandbox, ["bash"]).built, "bash").execute(
+        "1",
+        { command: "cat" },
+      );
+      expect(textOf(result)).toMatch(/^out \[redacted\]\n\nCommand timed out/);
+    }
+  });
+
   it("grep redacts lines before cutting them, and masks the last one the limit cut", async () => {
     const sandbox = printing(async () =>
       done(

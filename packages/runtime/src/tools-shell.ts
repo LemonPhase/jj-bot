@@ -119,19 +119,23 @@ function bashTool(
         }),
       );
       if (result.interruptReason === "release") options.onReleased();
-      const cut = output.cut || result.truncated;
-      // Redacted before anything is added after a cut, which may have gone
-      // through a secret.
+      const limited = output.cut || result.truncated;
+      // Output ends where a cut went: the output limit, or the kill of a
+      // command stopped mid-way. Redacted before anything is added after it,
+      // since the cut may have gone through a secret.
+      const stopped = result.interrupted !== "no";
       let body =
         output.bytes > 0
-          ? redactOutput(policy, output.text(), cut)
+          ? redactOutput(policy, output.text(), limited || stopped)
           : [result.stdout, result.stderr]
-              .map((part) => redactOutput(policy, part, result.truncated))
+              .map((part) =>
+                redactOutput(policy, part, result.truncated || stopped),
+              )
               .filter(Boolean)
               .join("\n");
       body = body.replace(/\n$/, "");
       const status: string[] = [];
-      if (cut)
+      if (limited)
         status.push(
           `[Output was cut at ${Math.floor(maxBytes / 1024)} KiB, the sandbox's output limit; the rest was not kept.]`,
         );
