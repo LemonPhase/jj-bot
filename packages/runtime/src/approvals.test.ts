@@ -11,6 +11,7 @@ import {
 import { CODING_TOOLS } from "@jj/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
+import { TRUNCATED_CALL_TEXT, userMessage } from "./loop";
 import { ModelRegistry } from "./models";
 import {
   budgets,
@@ -401,6 +402,68 @@ describe("approval holds", () => {
     ]);
     expect(results(recorded.entries)[0]?.details).toMatchObject({
       interrupted: expect.not.stringMatching(/^no$/),
+    });
+  });
+
+  it("never holds a call of a response cut at the output limit", async () => {
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("bash", { command: PUSH }, { id: "cut" }),
+        { stopReason: "length" },
+      ),
+      expecting((context) => {
+        expect(resultOf(context, "cut")).toMatchObject({ isError: true });
+        expect(textOf(resultOf(context, "cut"))).toContain(
+          "output token limit",
+        );
+      }, say("I will send the whole command again.")),
+    ]);
+    const recorded = recordingHooks();
+    const review = reviewing(recorded.hooks);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: review.hooks }),
+    );
+    expect(outcome).toEqual({
+      kind: "ended",
+      finalText: "I will send the whole command again.",
+    });
+    expect(review.asked).toEqual([]);
+    expect(await pushes()).toBe(0);
+  });
+
+  it("never runs an approved call of a response cut at the output limit", async () => {
+    const cut = fauxAssistantMessage(
+      fauxToolCall("bash", { command: PUSH }, { id: "cut" }),
+      { stopReason: "length" },
+    );
+    faux.setResponses([
+      expecting((context) => {
+        expect(textOf(resultOf(context, "cut"))).toBe(TRUNCATED_CALL_TEXT);
+      }, say("Noted.")),
+    ]);
+    const recorded = recordingHooks();
+    const claims: string[] = [];
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          claimApprovedCall: async (id) => {
+            claims.push(id);
+            return true;
+          },
+        },
+        transcript: [userMessage("Do the work."), cut],
+        inputs: [],
+        decision: { toolCallId: "cut", approved: true },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Noted." });
+    expect(claims).toEqual([]);
+    expect(await pushes()).toBe(0);
+    expect(results(recorded.entries)[0]).toMatchObject({
+      toolCallId: "cut",
+      isError: true,
+      details: { refused: true },
     });
   });
 

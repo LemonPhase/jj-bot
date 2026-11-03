@@ -252,6 +252,10 @@ const hasToolCalls = (message: AssistantMessage) =>
 /** The result recorded for a call the run stopped before it started. */
 export const NOT_STARTED_TEXT = "Not started: the run was stopped.";
 
+/** The result of an approved call from a response cut at the output limit: it never runs. */
+export const TRUNCATED_CALL_TEXT =
+  "Not run: the response that made this call hit the output token limit, so its arguments may be cut off. Make the call again with complete arguments.";
+
 /** pi's in-memory result for a held call; it is never persisted or sent. */
 const HELD_TEXT = "Waiting for the user's approval.";
 
@@ -460,9 +464,12 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           scrub,
         );
         calls.set(event.toolCallId, { tool: event.toolName, summary });
+        // pi refuses every call of a response cut at the output limit (its
+        // arguments may be cut off), so such a call is never held.
         if (
           spec.reviewToolCall &&
-          event.toolCallId !== spec.approved?.call.id
+          event.toolCallId !== spec.approved?.call.id &&
+          batch?.stopReason !== "length"
         ) {
           const call: ToolCall = {
             type: "toolCall",
@@ -672,7 +679,21 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
    */
   const runApproved = async ({ call, assistant, claim }: ApprovedCall) => {
     let result: ToolResultMessage;
-    if (!(await claim())) {
+    if (assistant.stopReason === "length") {
+      // A call of a response cut at the output limit may be cut off: never run it.
+      result = {
+        role: "toolResult",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: [{ type: "text", text: TRUNCATED_CALL_TEXT }],
+        details: { truncated: false, refused: true },
+        isError: true,
+        timestamp: Date.now(),
+      };
+      answered.add(call.id);
+      pending.push(result);
+      await flush();
+    } else if (!(await claim())) {
       result = interruptedResult(call, Date.now());
       answered.add(call.id);
       pending.push(result);
