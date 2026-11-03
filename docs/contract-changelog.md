@@ -66,9 +66,10 @@ queued inbox items, first inputs, approval texts and transcripts.
 
 **Changed by:** backend and frontend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/29#issuecomment-6602672162)) · **Compatibility:** additive for writers; a 1.6.0 reader that parses profiles strictly cannot parse one holding an approval rule on an MCP tool (`approvalRuleSchema.tool` was the coding tools only)
 
-The routes below are part of the contract, but a server serves them only once it reports the
-capability they belong to (`capabilities.mcp`, `capabilities.skills`); until then they answer 404,
-bootstrap reports both false, and a profile asking for MCP servers or skills is refused with
+`capabilities.mcp` says, per kind, whether sessions can use MCP servers of that kind. While it is
+false, servers of that kind may still be stored and discovered, through the MCP routes below, but
+they reach no session. The skills routes are served only once a server reports
+`capabilities.skills`; until then they answer 404, and a profile granting a skill is refused with
 `MCP_UNAVAILABLE`.
 
 - New `mcp.ts`. `mcpServerSchema`, a union on `transport` of `mcpStdioServerSchema` (`command`,

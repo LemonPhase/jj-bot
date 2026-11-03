@@ -19,9 +19,10 @@ export const capabilitiesSchema = z.object({
   /** Keys and sandbox secrets can be stored encrypted: the server has `JJ_SECRET_KEY`. */
   secretStore: z.boolean().default(false),
   /**
-   * MCP servers run: `stdio` ones in a task's sandbox (where its driver can
-   * spawn processes), `remote` (http) ones called by the worker. While
-   * false, a profile asking for that kind is refused with MCP_UNAVAILABLE.
+   * Per kind, whether sessions can use MCP servers of that kind: `stdio`
+   * ones run in a task's sandbox (where its driver can spawn processes),
+   * `remote` (http) ones are called by the worker. While false, servers of
+   * that kind may still be stored and discovered, but they reach no session.
    */
   mcp: z
     .object({ stdio: z.boolean(), remote: z.boolean() })
