@@ -23,6 +23,8 @@ import type {
   CreateRuntimeProfileCommand,
   CreateTaskCommand,
   DecideApprovalCommand,
+  McpDiscovery,
+  McpToolSnapshot,
   ModelsView,
   PostTaskMessageCommand,
   PutSecretCommand,
@@ -31,6 +33,7 @@ import type {
   SecretInfo,
   SecretsView,
   SendBotMessageCommand,
+  StartMcpDiscoveryCommand,
   StopTaskCommand,
   Task,
   TaskMessage,
@@ -160,6 +163,19 @@ export interface JJApi {
   ): Promise<RuntimeProfile>;
   /** Rejects with `PROFILE_IN_USE` while a bot references the profile. */
   deleteProfile(profileId: string): Promise<void>;
+  /**
+   * `POST /api/runtime-profiles/:id/mcp-discoveries`: tests an MCP server
+   * configuration, saved or not, with the profile's sandbox and grants.
+   * Resolves with the queued discovery; poll `getMcpDiscovery` for its end.
+   */
+  startMcpDiscovery(
+    profileId: string,
+    command: StartMcpDiscoveryCommand,
+  ): Promise<McpDiscovery>;
+  /** `GET /api/mcp-discoveries/:id`: with its snapshot once it succeeded. */
+  getMcpDiscovery(discoveryId: string): Promise<McpDiscovery>;
+  /** `GET /api/mcp-snapshots/:id`: a reviewed tool list a server can pin. */
+  getMcpSnapshot(snapshotId: string): Promise<McpToolSnapshot>;
   listDrivers(): Promise<SandboxDriverInfo[]>;
   getModels(): Promise<ModelsView>;
   /**
