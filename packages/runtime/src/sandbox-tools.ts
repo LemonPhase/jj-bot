@@ -9,6 +9,7 @@ import {
   type OutputPolicy,
   type SandboxToolOptions,
   statOrThrow,
+  toolLabel,
   workspacePath,
 } from "./tools";
 import { fileTools } from "./tools-files";
@@ -56,7 +57,7 @@ function lsTool(
       return finalizeResult(
         result,
         policy,
-        `ls: ${String(args.path).slice(0, 120)}`,
+        toolLabel(policy, "ls", String(args.path)),
       );
     },
   };

@@ -127,6 +127,7 @@ describe("readDataReport", () => {
         stored: 2,
         keyConfigured: true,
         unreadable: [],
+        retired: { stored: 0, unreadable: 0 },
       });
       expect(formatReport(same)).toContain(
         "Secrets: 2 stored values, all readable with the configured JJ_SECRET_KEY.",
@@ -174,6 +175,59 @@ describe("readDataReport", () => {
       expect(
         (await read({ JJ_SECRET_KEY: sealedWith })).secrets?.unreadable,
       ).toEqual([]);
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "counts the replaced and removed values kept for redaction, and those the key cannot read",
+    async () => {
+      const path = await directory();
+      const sealedWith = randomBytes(32).toString("base64");
+      const t = await testApp({
+        startWorker: false,
+        database: { mode: "pglite", path },
+        secretKeys: secretKeys({ JJ_SECRET_KEY: sealedWith }),
+      });
+      try {
+        for (const value of [
+          "ghp_retiredReport0123456789abcdefA",
+          "ghp_retiredReport0123456789abcdefB",
+        ])
+          expect(
+            (await t.call("PUT", "/api/secrets/GITHUB_TOKEN", { value }))
+              .status,
+          ).toBeLessThan(300);
+        expect(
+          (await t.call("DELETE", "/api/secrets/GITHUB_TOKEN")).status,
+        ).toBe(204);
+      } finally {
+        await t.dispose();
+      }
+      const setting = { mode: "pglite" as const, path };
+      const same = await readDataReport(setting, { JJ_SECRET_KEY: sealedWith });
+      expect(same.secrets).toMatchObject({
+        stored: 0,
+        retired: { stored: 2, unreadable: 0 },
+      });
+      expect(formatReport(same)).toContain(
+        "Replaced or removed secrets: 2 values kept for redaction, all readable with the configured JJ_SECRET_KEY.",
+      );
+      const another = await readDataReport(setting, {
+        JJ_SECRET_KEY: randomBytes(32).toString("base64"),
+      });
+      expect(another.secrets?.retired).toEqual({ stored: 2, unreadable: 2 });
+      const text = formatReport(another);
+      expect(text).toContain("Secrets: none stored.");
+      expect(text).toContain(
+        "Replaced or removed secrets: 2 of 2 values kept for redaction cannot be read with the configured JJ_SECRET_KEY, so they are no longer redacted from task history.",
+      );
+      expect(formatEnv(another)).toContain(
+        "\nsecrets_retired=2\nsecrets_retired_unreadable=2\n",
+      );
+      expect(formatReport(await readDataReport(setting, {}))).toContain(
+        "Replaced or removed secrets: 2 values kept for redaction, but JJ_SECRET_KEY is not set",
+      );
     },
     OPEN_TIMEOUT,
   );

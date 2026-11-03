@@ -1,17 +1,22 @@
 import { randomBytes } from "node:crypto";
-import type { Executor, SecretRow } from "@jj/db";
+import { type Executor, retiredSecrets, type SecretRow } from "@jj/db";
 import { describe, expect, it } from "vitest";
 import { createKeyring } from "./keyring";
 import { SecretStore } from "./store";
 
-/** An executor whose reads of the secrets table resolve when the test says. */
+/**
+ * An executor whose reads of the secrets table resolve when the test says;
+ * the retired values' table reads empty at once.
+ */
 function controlledReads() {
   const pending: ((rows: SecretRow[]) => void)[] = [];
   const db = {
     select: () => ({
-      from: () => ({
+      from: (table: unknown) => ({
         where: () =>
-          new Promise<SecretRow[]>((resolve) => pending.push(resolve)),
+          table === retiredSecrets
+            ? Promise.resolve([])
+            : new Promise<SecretRow[]>((resolve) => pending.push(resolve)),
       }),
     }),
   } as unknown as Executor;

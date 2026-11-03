@@ -24,7 +24,8 @@
 # restores the database and the workspaces, under the target stack's docker
 # namespace, and runs the restore check: the database's migration level
 # against this build, its records against the backup's, and the stored
-# secrets the configured JJ_SECRET_KEY cannot read. The app is left stopped:
+# secrets the configured JJ_SECRET_KEY cannot read, with the replaced or
+# removed values kept for redaction that it can no longer redact. The app is left stopped:
 # start it with `docker compose up -d --wait`.
 #
 # Exits 1 when the backup is damaged or refused, the stack refuses it, or the
