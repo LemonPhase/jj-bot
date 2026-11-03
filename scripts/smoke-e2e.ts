@@ -286,12 +286,18 @@ async function untilReady(base: string, withinMs: number): Promise<void> {
   }
 }
 
+/** The server the smoke booted and its directory, for a stop by signal. */
+let booted: RunningServer | undefined;
+let workDir: string | undefined;
+
 async function main(): Promise<boolean> {
   const dir = await mkdtemp(join(tmpdir(), "jj-smoke-e2e-"));
+  workDir = dir;
   let server: RunningServer | undefined;
   try {
     const target = await serverUnderTest(dir);
     server = target.server;
+    booted = server;
     const { base, token } = target;
     const headers: Record<string, string> = token
       ? { Authorization: `Bearer ${token}` }
@@ -757,7 +763,7 @@ async function main(): Promise<boolean> {
 function removeDockerNamespace() {
   const label = `label=jj.sandbox.namespace=${dockerNamespace}`;
   const docker = (args: string[]) =>
-    spawnSync("docker", args, { encoding: "utf8", timeout: 60_000 });
+    spawnSync("docker", args, { encoding: "utf8", timeout: 20_000 });
   const ids = (args: string[]) =>
     (docker(args).stdout ?? "").split("\n").filter(Boolean);
   const containers = ids(["ps", "-aq", "--filter", label]);
@@ -1424,39 +1430,75 @@ async function download(
 }
 
 const started = Date.now();
-const ok = await main();
-const durationMs = Date.now() - started;
-const spent = usageReport?.instance.last24h;
-const dailyCap = usageReport?.instance.capUsdPerDay ?? null;
-console.log(
-  `\nsmoke:e2e (${realModel ?? "scripted/team"}${remoteUrl ? ` at ${remoteUrl}` : ""}): ${ok ? "passed" : "FAILED"} in ${(durationMs / 1000).toFixed(1)} s`,
-);
-for (const entry of steps)
+
+/** Prints the steps and the spend, writes JJ_SMOKE_REPORT, and exits. */
+function finish(ok: boolean, code = ok ? 0 : 1): never {
+  const durationMs = Date.now() - started;
+  const spent = usageReport?.instance.last24h;
+  const dailyCap = usageReport?.instance.capUsdPerDay ?? null;
   console.log(
-    `  ${entry.ok ? "ok  " : "FAIL"} ${entry.name} (${entry.ms} ms)${entry.detail ? `\n       ${entry.detail}` : ""}`,
+    `\nsmoke:e2e (${realModel ?? "scripted/team"}${remoteUrl ? ` at ${remoteUrl}` : ""}): ${ok ? "passed" : "FAILED"} in ${(durationMs / 1000).toFixed(1)} s`,
   );
-if (spent)
-  console.log(
-    `  spent ${formatUsd(spent.costUsd)} in ${spent.modelCalls} model call(s) in the server's last 24 hours${dailyCap === null ? "" : `, of its ${formatUsd(dailyCap)} daily cap`}${spent.unpricedCalls > 0 ? `; ${spent.unpricedCalls} call(s) had no listed price` : ""}`,
-  );
-if (cappedBy) console.log(`  stopped at a spend cap: ${cappedBy}`);
-if (reportPath)
-  writeFileSync(
-    reportPath,
-    `${JSON.stringify(
-      {
-        test: "e2e",
-        status: ok ? "passed" : "failed",
-        model: realModel ?? "scripted/team",
-        durationMs,
-        steps,
-        usage: spent ?? null,
-        capUsdPerDay: dailyCap,
-        taskCapUsd: taskCapUsd ?? null,
-        ...(cappedBy ? { capped: cappedBy } : {}),
-      },
-      null,
-      2,
-    )}\n`,
-  );
-process.exit(ok ? 0 : 1);
+  for (const entry of steps)
+    console.log(
+      `  ${entry.ok ? "ok  " : "FAIL"} ${entry.name} (${entry.ms} ms)${entry.detail ? `\n       ${entry.detail}` : ""}`,
+    );
+  if (spent)
+    console.log(
+      `  spent ${formatUsd(spent.costUsd)} in ${spent.modelCalls} model call(s) in the server's last 24 hours${dailyCap === null ? "" : `, of its ${formatUsd(dailyCap)} daily cap`}${spent.unpricedCalls > 0 ? `; ${spent.unpricedCalls} call(s) had no listed price` : ""}`,
+    );
+  if (cappedBy) console.log(`  stopped at a spend cap: ${cappedBy}`);
+  if (reportPath)
+    writeFileSync(
+      reportPath,
+      `${JSON.stringify(
+        {
+          test: "e2e",
+          status: ok ? "passed" : "failed",
+          model: realModel ?? "scripted/team",
+          // Where the model's commands ran; a deployed server is checked to be docker.
+          driver: remoteUrl ? "docker" : bootDriver,
+          durationMs,
+          steps,
+          usage: spent ?? null,
+          capUsdPerDay: dailyCap,
+          taskCapUsd: taskCapUsd ?? null,
+          ...(cappedBy ? { capped: cappedBy } : {}),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  process.exit(code);
+}
+
+// Stopped from outside (the nightly's timeout, Ctrl+C): stop the booted
+// server, remove its docker namespace and directory, and still report the
+// steps and the spend, within the nightly's 30 s before SIGKILL.
+let stopping = false;
+for (const signal of ["SIGTERM", "SIGINT"] as const)
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    console.error(`\nsmoke:e2e: ${signal}, stopping the server it booted`);
+    const within = <T>(ms: number, work: Promise<T>) =>
+      Promise.race([work, sleep(ms).then(() => undefined)]);
+    void (async () => {
+      steps.push({ name: `stopped by ${signal}`, ok: false, ms: 0 });
+      if (!usageReport && readUsage)
+        usageReport = await within(
+          3_000,
+          readUsage().catch(() => undefined),
+        );
+      await within(
+        10_000,
+        booted?.close().catch(() => {}) ?? Promise.resolve(),
+      );
+      if (booted && bootDriver === "docker") removeDockerNamespace();
+      if (workDir)
+        await rm(workDir, { recursive: true, force: true }).catch(() => {});
+      finish(false, signal === "SIGINT" ? 130 : 143);
+    })();
+  });
+
+finish(await main());

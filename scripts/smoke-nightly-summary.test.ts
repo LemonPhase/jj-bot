@@ -9,6 +9,7 @@ import {
   overallState,
   remainingUsd,
   renderSummary,
+  requireDocker,
   type SmokeReport,
   smokeEnv,
   spent,
@@ -256,22 +257,80 @@ describe("the nightly workflow", () => {
   it("can only read the repository, and hands the key to one step", () => {
     expect(keysOf("permissions")).toEqual(["contents"]);
     expect(workflow).toMatch(/^permissions:\n {2}contents: read\n/m);
-    expect(workflow.match(/secrets\.\w+/g)).toEqual(["secrets.OPENAI_API_KEY"]);
+    expect(new Set(workflow.match(/secrets\.\w+/g))).toEqual(
+      new Set(["secrets.OPENAI_API_KEY"]),
+    );
+    // Its value in one step's env; elsewhere only whether it is set.
+    expect(
+      workflow.match(
+        /^ +OPENAI_API_KEY: \$\{\{ secrets\.OPENAI_API_KEY \}\}$/gm,
+      ),
+    ).toHaveLength(1);
+    expect(workflow.match(/secrets\.OPENAI_API_KEY/g)).toHaveLength(2);
+    expect(workflow).toContain(
+      "JJ_NIGHTLY_HAS_KEY: ${{ secrets.OPENAI_API_KEY != '' }}",
+    );
   });
 
-  it("runs the live smokes on docker: the daemon checked and the sandbox image built first", () => {
-    const runs = [...workflow.matchAll(/^ {8}run: (.+)$/gm)].map(
-      (match) => match[1],
-    );
-    expect(runs).toEqual([
-      "npm ci",
-      "docker version",
-      "npm run sandbox:image",
-      "npm run smoke:nightly",
+  it("pins every action to a full commit SHA", () => {
+    const uses = [...workflow.matchAll(/uses: (\S+)(.*)$/gm)];
+    expect(uses).toHaveLength(2);
+    for (const [, action, comment] of uses) {
+      expect(action).toMatch(/^[\w-]+\/[\w-]+@[0-9a-f]{40}$/);
+      expect(comment).toMatch(/^ # v\d+\.\d+\.\d+$/);
+    }
+  });
+
+  it("runs the live smokes on docker: the daemon checked and the sandbox image built first, when there is a key", () => {
+    const steps = workflow
+      .split(/^ {6}- name: /m)
+      .slice(1)
+      .map((step) => ({
+        name: step.split("\n")[0],
+        run: step.match(/^ {8}run: (.+)$/m)?.[1],
+        when: step.match(/^ {8}if: (.+)$/m)?.[1],
+      }));
+    expect(steps.filter((step) => step.run)).toEqual([
+      { name: "Install dependencies", run: "npm ci", when: undefined },
+      {
+        name: "Check Docker daemon",
+        run: "docker version",
+        when: "${{ env.JJ_NIGHTLY_HAS_KEY == 'true' }}",
+      },
+      {
+        name: "Build sandbox base image",
+        run: "npm run sandbox:image",
+        when: "${{ env.JJ_NIGHTLY_HAS_KEY == 'true' }}",
+      },
+      // Always: without the key it writes the skipped summary.
+      {
+        name: "Live smokes under the cost cap, on docker",
+        run: "npm run smoke:nightly",
+        when: undefined,
+      },
     ]);
     // The key's step runs the nightly script, whose smokes always get the
     // docker driver (smokeEnv, below); nothing in the workflow overrides it.
     expect(workflow).not.toMatch(/JJ_SMOKE_DRIVER|JJ_SANDBOX_DRIVERS/);
+  });
+});
+
+describe("requireDocker", () => {
+  it("fails a check whose smoke ran the model's commands on any driver but docker", () => {
+    const passed = (driver?: string) => {
+      const smoke = report({ driver });
+      return requireDocker(
+        checkResult("smoke:runtime", "runtime", smoke, { code: 0 }, 1),
+        smoke,
+      );
+    };
+    expect(passed("docker").state).toBe("passed");
+    expect(passed("local")).toMatchObject({
+      state: "failed",
+      detail: "the model's commands ran on the local driver, not docker",
+      costUsd: 0.01,
+    });
+    expect(passed(undefined).state).toBe("failed");
   });
 });
 

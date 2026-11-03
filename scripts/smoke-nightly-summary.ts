@@ -36,6 +36,8 @@ export interface SmokeReport {
   status: "passed" | "failed";
   usage: Usage | null;
   durationMs: number;
+  /** The sandbox driver the model's commands ran on. */
+  driver?: string;
   /** The spend cap that stopped the smoke, when one did. */
   capped?: string;
   /** smoke:runtime: an unexpected error. */
@@ -144,6 +146,22 @@ export function checkResult(
     detail: failed
       ? `${failed.name}${failed.detail ? `: ${failed.detail}` : ""}`
       : (report.error ?? `exited with ${exit.code ?? "a signal"}`),
+  };
+}
+
+/**
+ * Fails a check whose smoke reported a driver other than docker, whatever
+ * else it reported: then the model's commands may have run next to the key.
+ */
+export function requireDocker(
+  result: CheckResult,
+  report: SmokeReport | undefined,
+): CheckResult {
+  if (!report || report.driver === "docker") return result;
+  return {
+    ...result,
+    state: "failed",
+    detail: `the model's commands ran on the ${report.driver ?? "unreported"} driver, not docker`,
   };
 }
 

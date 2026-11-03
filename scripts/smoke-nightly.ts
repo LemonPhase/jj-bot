@@ -37,6 +37,7 @@ import {
   overallState,
   remainingUsd,
   renderSummary,
+  requireDocker,
   type SmokeExit,
   type SmokeReport,
   smokeEnv,
@@ -142,7 +143,8 @@ async function runSmoke(
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 15_000).unref();
+      // smoke:e2e stops its server and removes its docker namespace first.
+      setTimeout(() => child.kill("SIGKILL"), 30_000).unref();
     }, timeoutMs);
     child.on("exit", (code) => {
       clearTimeout(timer);
@@ -184,7 +186,10 @@ try {
     5 * 60_000,
   );
   checks.push(
-    checkResult(...RUNTIME, runtime.report, runtime.exit, runtime.ms),
+    requireDocker(
+      checkResult(...RUNTIME, runtime.report, runtime.exit, runtime.ms),
+      runtime.report,
+    ),
   );
 
   const sofar = spent(checks);
@@ -215,7 +220,12 @@ try {
       },
       30 * 60_000,
     );
-    checks.push(checkResult(...E2E, e2e.report, e2e.exit, e2e.ms));
+    checks.push(
+      requireDocker(
+        checkResult(...E2E, e2e.report, e2e.exit, e2e.ms),
+        e2e.report,
+      ),
+    );
   }
 } finally {
   rmSync(reports, { recursive: true, force: true });
