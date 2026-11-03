@@ -165,8 +165,7 @@ export function createScriptedProvider(
         return answer.message;
       },
     ]);
-    // No prompt cache: the faux core would count uncached tokens both as
-    // input and as cache writes, overstating the context the usage reports.
+    // No prompt cache, so the usage reports the whole prompt as input tokens.
     return withUsage(
       core.stream(model, context, { ...options, cacheRetention: "none" }),
       model,
