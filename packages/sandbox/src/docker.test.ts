@@ -14,6 +14,7 @@ import {
   type AcquireRequest,
   type Sandbox,
   SandboxCapabilityError,
+  type SandboxProcess,
   SandboxRequestError,
   type SandboxSpecInput,
 } from "./contract";
@@ -600,6 +601,72 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
       expect(result.stdout.trim()).toMatch(/^c\d+-[0-9a-f]+$/);
     });
 
+    /** Process states in the container (`R`, `S`, `Z`…), one per process. */
+    const processStates = async (sandbox: Sandbox) =>
+      (
+        await sandbox.exec(
+          "for f in /proc/[0-9]*/stat; do sed 's/.*) //' \"$f\" 2>/dev/null | cut -c1; done",
+        )
+      ).stdout
+        .split("\n")
+        .filter(Boolean);
+
+    it("runs a spawned process as the sandbox user and leaves neither a running exec nor a zombie once killed", async () => {
+      const sandbox = await acquire();
+      const spawned = (await sandbox.spawn?.(
+        [
+          "sh",
+          "-c",
+          'trap "" TERM; id -u; echo "$JJ_SANDBOX_EXEC"; while :; do sleep 0.1; done',
+        ],
+        { env: { JJ_SANDBOX_EXEC: "spoofed" } },
+      )) as SandboxProcess & { execId: string };
+      let output = "";
+      const ready = new Promise<void>((done) =>
+        spawned.onOutput((chunk) => {
+          output += chunk.toString();
+          if (output.split("\n").length > 2) done();
+        }),
+      );
+      await ready;
+      const [uid, marker] = output.split("\n");
+      expect(uid).toBe("1000");
+      // Its marker is the driver's, whatever the caller passes.
+      expect(marker).toMatch(/^s\d+-[0-9a-f]+$/);
+      expect((await engine?.inspectExec(spawned.execId))?.Running).toBe(true);
+      const exit = await spawned.kill();
+      expect(exit).toMatchObject({
+        interrupted: "yes",
+        interruptReason: "kill",
+        exitCode: 137,
+      });
+      expect((await engine?.inspectExec(spawned.execId))?.Running).toBe(false);
+      expect(await processStates(sandbox)).not.toContain("Z");
+    });
+
+    it("leaves other commands' and processes' background work alone when it kills a spawned process", async () => {
+      const sandbox = await acquire();
+      await sandbox.exec(
+        "nohup sh -c 'while :; do echo x >> kept-exec; sleep 0.1; done' >/dev/null 2>&1 &",
+      );
+      const other = await sandbox.spawn?.([
+        "sh",
+        "-c",
+        "while :; do echo x >> kept-spawn; sleep 0.1; done",
+      ]);
+      const target = await sandbox.spawn?.(["sleep", "30"]);
+      await delay(400);
+      expect((await target?.kill())?.interrupted).toBe("yes");
+      const before = [
+        await size(sandbox, "kept-exec"),
+        await size(sandbox, "kept-spawn"),
+      ];
+      await delay(600);
+      expect(await size(sandbox, "kept-exec")).toBeGreaterThan(before[0] ?? 0);
+      expect(await size(sandbox, "kept-spawn")).toBeGreaterThan(before[1] ?? 0);
+      expect(other).toBeDefined();
+    });
+
     it("round-trips binary files and refuses to block on a FIFO", async () => {
       const sandbox = await acquire();
       const data = randomBytes(300_000);
@@ -939,6 +1006,23 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         expect(inside.stdout).toContain(
           `secret=never-in-container-config proxy=${url}`,
         );
+        // A spawned process gets the same: the proxy, and the secret per exec.
+        const spawned = await sandbox.spawn?.([
+          "sh",
+          "-c",
+          'echo "secret=$JJ_SECRET proxy=$HTTPS_PROXY"',
+        ]);
+        let spawnedOut = "";
+        spawned?.onOutput((chunk) => {
+          spawnedOut += chunk.toString();
+        });
+        expect((await spawned?.exited)?.exitCode).toBe(0);
+        expect(spawnedOut.trim()).toBe(
+          `secret=never-in-container-config proxy=${url}`,
+        );
+        expect(
+          JSON.stringify((await inspect(sandbox.containerId)).Config.Env),
+        ).not.toContain("never-in-container-config");
         const [routes = "", inet6 = ""] = inside.stdout.split("---");
         expect(routes).not.toMatch(/^\S+\s+00000000\s/m);
         for (const line of inet6.trim().split("\n").filter(Boolean))
