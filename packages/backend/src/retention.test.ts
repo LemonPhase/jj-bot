@@ -685,11 +685,12 @@ describe("a compacted task", () => {
     expect(done.verificationChecks).toEqual([
       expect.objectContaining({ attempt: 5, outcome: "passed" }),
     ]);
-    // Past the soft threshold again at the same cap: not noted twice.
+    // Past the soft threshold again at the same cap: not noted twice. The
+    // one note is the first stretch's, which compaction kept.
     const all = await allEvents(engine, task.id);
-    expect(
-      all.filter((event) => event.type === "spend.threshold"),
-    ).toHaveLength(1);
+    const notes = all.filter((event) => event.type === "spend.threshold");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.sequence).toBeLessThanOrEqual(compacted.compactedThrough);
     // Its new events age out only after it finishes again.
     const reopened = all.find((event) => event.type === "task.reopened");
     expect(reopened?.sequence).toBeGreaterThan(compacted.compactedThrough);
