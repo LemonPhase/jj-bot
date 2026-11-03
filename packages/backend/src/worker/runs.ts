@@ -51,7 +51,7 @@ export async function closeRun(
     .update(runs)
     .set({ status, error: error ?? null, finishedAt: ctx.clock() })
     .where(eq(runs.id, run.id));
-  await emit(tx, run.taskId, {
+  await emit(tx, ctx, run.taskId, {
     type: "run.finished",
     payload: { outcome: OUTCOME[status], ...(error ? { error } : {}) },
     ...attribution,
@@ -65,6 +65,7 @@ export async function closeRun(
  */
 export async function closeOpenTools(
   tx: Tx,
+  ctx: EngineContext,
   run: RunRow,
   attribution: Attribution,
   note: string,
@@ -89,7 +90,7 @@ export async function closeOpenTools(
     if (row.type !== "tool.started") continue;
     const toolCallId = String(row.payload.toolCallId);
     if (finished.has(toolCallId)) continue;
-    await emit(tx, run.taskId, {
+    await emit(tx, ctx, run.taskId, {
       type: "tool.finished",
       payload: {
         toolCallId,
@@ -127,7 +128,7 @@ export async function closeStaleRun(
   note: string,
 ): Promise<void> {
   const attribution = { botId: session.botId, sessionId: session.id };
-  await closeOpenTools(tx, run, attribution, note);
+  await closeOpenTools(tx, ctx, run, attribution, note);
   await closeRun(tx, ctx, run, status, attribution, note);
 }
 

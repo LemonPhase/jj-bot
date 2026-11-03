@@ -17,7 +17,10 @@ import {
   type Tx,
 } from "@jj/db";
 import { eq } from "drizzle-orm";
+import type { EngineContext } from "./context";
+import { clipPayload, payloadBytes } from "./event-payloads";
 import { toTaskEvent } from "./records";
+import { storeArtifact } from "./services/artifacts";
 
 export interface Attribution {
   botId?: string | null;
@@ -36,21 +39,58 @@ export type EmitInput = {
 /**
  * Appends a task event and applies `activityFromEvent` to its session, so the
  * stored activity always equals what a client folds from the stream. Sends the
- * workspace hints the event implies.
+ * workspace hints the event implies. A payload whose JSON is over the cap
+ * (`eventPayloadCapBytes`) is stored in full as an `output` artifact first,
+ * attributed like the event, and the event keeps a clipped copy that names it
+ * (`payloadArtifactId`).
  */
 export async function emit(
   tx: Tx,
+  ctx: EngineContext,
   taskId: string,
   input: EmitInput,
 ): Promise<TaskEvent> {
+  let payload = input.payload as Record<string, unknown>;
+  let payloadArtifactId: string | null = null;
+  const json = JSON.stringify(payload);
+  if (Buffer.byteLength(json, "utf8") > ctx.config.eventPayloadCapBytes) {
+    const artifact = await storeArtifact(
+      tx,
+      ctx,
+      {
+        taskId,
+        kind: "output",
+        path: `${input.type} payload`,
+        name: `${input.type}.json`,
+        content: Buffer.from(json, "utf8"),
+        contentType: "application/json",
+      },
+      {
+        botId: input.botId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        causedBy: input.causedBy,
+      },
+    );
+    payload = clipPayload(payload, ctx.config.eventPayloadCapBytes);
+    payloadArtifactId = artifact.id;
+    ctx.metrics.payloadSpilled(input.type);
+    if (payloadBytes(payload) > ctx.config.eventPayloadCapBytes)
+      ctx.logger.warn("An event payload is over the cap even clipped", {
+        taskId,
+        type: input.type,
+        bytes: payloadBytes(payload),
+      });
+  }
   const row = await appendEvent(tx, {
     taskId,
     type: input.type,
-    payload: input.payload as Record<string, unknown>,
+    payload,
     botId: input.botId ?? null,
     sessionId: input.sessionId ?? null,
     runId: input.runId ?? null,
     causedBy: input.causedBy ?? null,
+    payloadArtifactId,
   });
   const event = toTaskEvent(row);
   const activity = activityFromEvent(event);

@@ -259,7 +259,7 @@ async function startRun(
       },
       attribution,
     );
-    await emit(tx, task.id, {
+    await emit(tx, ctx, task.id, {
       type: "run.started",
       payload: { reason },
       ...attribution,

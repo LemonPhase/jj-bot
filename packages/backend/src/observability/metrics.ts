@@ -36,6 +36,10 @@ export interface EngineMetrics {
   toolCall(tool: string, outcome: Outcome, seconds: number): void;
   modelCall(model: ModelRef, usage: Usage): void;
   sandboxAcquire(driver: string, outcome: Outcome, seconds: number): void;
+  /** A compaction pass deleted `removed` events and stripped the previews of `stripped`. */
+  eventsCompacted(removed: number, stripped: number): void;
+  /** An event payload over the cap was stored as an artifact. */
+  payloadSpilled(type: string): void;
 }
 
 export interface MetricsOptions {
@@ -56,7 +60,11 @@ export function modelLabels(model: ModelRef): {
     : { provider: "unknown", model };
 }
 
-const JOB_KINDS: readonly JobKind[] = ["session.run", "chat.reply"];
+const JOB_KINDS: readonly JobKind[] = [
+  "session.run",
+  "chat.reply",
+  "maintenance.compact",
+];
 
 export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
   const registry = new Registry();
@@ -145,6 +153,19 @@ export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
     registers: [registry],
   });
 
+  const compacted = new Counter({
+    name: "jj_events_compacted_total",
+    help: "Task events compaction deleted (removed) or stripped of their previews (stripped).",
+    labelNames: ["action"],
+    registers: [registry],
+  });
+  const spilled = new Counter({
+    name: "jj_event_payloads_spilled_total",
+    help: "Event payloads over the cap, stored in full as an artifact, by event type.",
+    labelNames: ["type"],
+    registers: [registry],
+  });
+
   return {
     contentType: registry.contentType,
     text: () => registry.metrics(),
@@ -177,6 +198,13 @@ export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
     sandboxAcquire(driver, outcome, seconds) {
       acquires.observe({ driver, outcome }, seconds);
       if (outcome === "error") acquireFailures.inc({ driver });
+    },
+    eventsCompacted(removed, stripped) {
+      compacted.inc({ action: "removed" }, Math.max(0, removed));
+      compacted.inc({ action: "stripped" }, Math.max(0, stripped));
+    },
+    payloadSpilled(type) {
+      spilled.inc({ type });
     },
   };
 }

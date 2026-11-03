@@ -47,5 +47,10 @@ export {
   type SecretStoreOptions,
   type StoredProviderKey,
 } from "./secrets/store";
+export type {
+  CompactionPass,
+  CompactionPassOptions,
+  TaskCompaction,
+} from "./services/retention";
 export type { TaskStreamOptions, TaskSubscription } from "./services/stream";
 export type { Worker } from "./worker/worker";

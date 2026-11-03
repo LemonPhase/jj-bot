@@ -215,6 +215,9 @@ export function toTaskEvent(row: TaskEventRow): TaskEvent {
     sessionId: row.sessionId,
     runId: row.runId,
     causedBy: row.causedBy,
+    ...(row.payloadArtifactId
+      ? { payloadArtifactId: row.payloadArtifactId }
+      : {}),
     type: row.type,
     payload: row.payload,
   } as TaskEvent;

@@ -112,7 +112,7 @@ export async function createTaskTx(
     author: input.createdByBotId ?? "user",
     createdAt: now,
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "task.created",
     payload: { task: toTask(task, participants) },
     botId: input.createdByBotId ?? null,
@@ -245,7 +245,7 @@ export async function requestStopTx(
     cancelRequestedAt: ctx.clock(),
     cancelReason: reason,
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "cancellation.requested",
     payload: { reason },
   });
@@ -331,11 +331,11 @@ export async function settleCancellation(
   }
   await cancelWhere(tx, { taskId: task.id });
   const cancelled = await updateTask(tx, ctx, task, { status: "cancelled" });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "cancellation.completed",
     payload: { stopped, neverStarted },
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "task.finished",
     payload: { status: "cancelled", result: null, error: null },
   });

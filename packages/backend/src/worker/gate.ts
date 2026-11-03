@@ -156,7 +156,7 @@ export async function runVerificationGate(
       const due = dueRequest(task, session, rc.run.id);
       if (!due) return undefined;
       const attempt = await nextAttempt(tx, task.id, task.goalVersion);
-      await emit(tx, task.id, {
+      await emit(tx, ctx, task.id, {
         type: "verification.started",
         payload: {
           goalVersion: task.goalVersion,
@@ -234,7 +234,7 @@ export async function runVerificationGate(
         .returning();
       if (!row) throw new Error("The check insert returned no row.");
       const check: VerificationCheck = toVerificationCheck(row);
-      await emit(tx, rc.task.id, {
+      await emit(tx, ctx, rc.task.id, {
         type: "verification.checked",
         payload: { check },
         ...attributionOf(rc),
@@ -255,7 +255,7 @@ export async function runVerificationGate(
     rc.task = task;
     rc.session = session;
     const attribution = attributionOf(rc);
-    await emit(tx, task.id, {
+    await emit(tx, ctx, task.id, {
       type: "verification.finished",
       payload: { goalVersion, attempt, outcome, passed, failed, inconclusive },
       ...attribution,
