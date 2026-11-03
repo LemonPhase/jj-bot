@@ -488,7 +488,6 @@ describe("orchestration", () => {
           task.id,
           finished("completed"),
           "a chain to finish",
-          30_000,
         );
         expect(view.sessions.map((s) => s.depth).sort()).toEqual([0, 1, 2]);
       }
