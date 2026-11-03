@@ -435,15 +435,43 @@ describe("runtime profiles", () => {
     );
     expect(unchanged.body.profile).toEqual(created.body.profile);
 
-    // Approval rules may already name MCP tools; they match nothing until a server runs.
+    // A rule on every tool of a server is stored; it matches nothing until one runs.
     const ruled = await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
-      approvals: [{ tool: "mcp__docs__*" }, { tool: "mcp__docs__search" }],
+      approvals: [{ tool: "mcp__docs__*", match: "delete" }],
     });
     expect(ruled.status).toBe(200);
     expect(ruled.body.profile.approvals).toEqual([
-      { tool: "mcp__docs__*" },
-      { tool: "mcp__docs__search" },
+      { tool: "mcp__docs__*", match: "delete" },
     ]);
+    // An exact name must name a tool of its server's pinned snapshot, and none is pinned.
+    for (const approvals of [
+      [{ tool: "mcp__docs__search" }],
+      [{ tool: "bash" }, { tool: "mcp__docs__search", match: "x" }],
+    ]) {
+      const exact = expectError(
+        await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+          approvals,
+        }),
+        400,
+        "VALIDATION_FAILED",
+      );
+      expect(exact.error.message).toMatch(
+        /^approvals\.\d\.tool: mcp__docs__search names no tool of its MCP server's pinned snapshot/,
+      );
+    }
+    expectError(
+      await t.call("POST", "/api/runtime-profiles", {
+        name: "Exact rule",
+        sandbox: spec,
+        approvals: [{ tool: "mcp__docs__search" }],
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(
+      (await t.call("GET", `/api/runtime-profiles/${profile.id}`)).body.profile
+        .approvals,
+    ).toEqual([{ tool: "mcp__docs__*", match: "delete" }]);
     expectError(
       await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
         approvals: [{ tool: "mcp__Docs__*" }],

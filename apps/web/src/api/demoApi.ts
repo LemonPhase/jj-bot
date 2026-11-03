@@ -8,6 +8,7 @@
  * or in a sandbox, and every scripted text says so.
  */
 import {
+  type ApprovalRule,
   addUsage,
   applyTaskEvent,
   type Bot,
@@ -22,6 +23,7 @@ import {
   defaultAppearanceFor,
   emptyUsage,
   isFinishedStatus,
+  mcpRulesWithoutTool,
   pendingApprovalOf,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
@@ -772,6 +774,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   const assertNoMcp = (command: {
     mcpServers?: readonly unknown[];
     skills?: readonly unknown[];
+    approvals?: readonly ApprovalRule[];
   }) => {
     if (command.mcpServers?.length || command.skills?.length)
       throw new ApiError(
@@ -779,6 +782,15 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         "The demo runs no MCP servers and has no skills library: connect JJ Bot to a server that reports them.",
         undefined,
         422,
+      );
+    // With no server, no exact MCP rule names a tool of a pinned snapshot.
+    const [unknown] = mcpRulesWithoutTool(command.approvals ?? [], [], []);
+    if (unknown !== undefined)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `approvals.${unknown}.tool: names no tool of its MCP server's pinned snapshot; mcp__<server>__* covers every tool of a server.`,
+        undefined,
+        400,
       );
   };
   const noStore = () =>

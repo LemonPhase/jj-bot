@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  approvalRuleMatches,
   approvalRuleSchema,
   approvalSubject,
+  approvalSubjectProblem,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
+  canonicalForm,
   canonicalJson,
   createRuntimeProfileCommandSchema,
   declaredMcpTools,
@@ -14,10 +17,13 @@ import {
   MCP_TOOL_SELECTOR_PATTERN,
   type McpServer,
   type McpServerInput,
+  type McpTool,
   type McpToolSnapshot,
   matchingApprovalRule,
   mcpDiscoveryResultSchema,
   mcpDiscoverySchema,
+  mcpHttpServerSchema,
+  mcpRulesWithoutTool,
   mcpServerNameSchema,
   mcpServerSchema,
   mcpServersSchema,
@@ -121,13 +127,23 @@ describe("MCP server configuration", () => {
       expect(mcpServerNameSchema.safeParse(bad).success, bad).toBe(false);
   });
 
-  it("accepts only an https URL, without credentials in it", () => {
-    for (const good of [
+  it("accepts only an https URL, without credentials in it, stored normalized", () => {
+    const url = (value: string) =>
+      mcpHttpServerSchema.parse({ ...http, url: value }).url;
+    expect(url("https://mcp.example.com/mcp")).toBe(
       "https://mcp.example.com/mcp",
-      "HTTPS://Mcp.Example.com",
+    );
+    expect(url(" HTTPS://Mcp.Example.com ")).toBe("https://mcp.example.com/");
+    expect(url("https://203.0.113.7:8443/mcp")).toBe(
       "https://203.0.113.7:8443/mcp",
-    ])
-      expect(server({ url: good }, http).success, good).toBe(true);
+    );
+    expect(url("https://mcp.example.com/mcp?team=core&page=2")).toBe(
+      "https://mcp.example.com/mcp?team=core&page=2",
+    );
+    // A non-ASCII host is stored as punycode, so a look-alike shows as such.
+    expect(url("https://bücher.example/mcp")).toBe(
+      "https://xn--bcher-kva.example/mcp",
+    );
     for (const bad of [
       "http://mcp.example.com/mcp",
       "ftp://mcp.example.com",
@@ -138,6 +154,18 @@ describe("MCP server configuration", () => {
       "mcp.example.com",
       "https://user:token@mcp.example.com/mcp",
       "https://token@mcp.example.com/mcp",
+      "https://mcp.example.com/mcp?api_key=abc",
+      "https://mcp.example.com/mcp?apikey=abc",
+      "https://mcp.example.com/mcp?access_token=abc",
+      "https://mcp.example.com/mcp?Secret=abc",
+      "https://mcp.example.com/mcp?password=abc",
+      "https://mcp.example.com/mcp?auth=abc",
+      // The name pattern is broad on purpose: a false positive only moves a value to secretHeaders.
+      "https://mcp.example.com/mcp?author=me",
+      // URL parsing would drop the newline and tab, and read \ as /.
+      "https://mcp.exa\nmple.com/mcp",
+      "https://mcp.example.com/m\tcp",
+      "https://mcp.example.com\\@evil.example/mcp",
       `https://example.com/${"x".repeat(2048)}`,
     ]) {
       const result = server({ url: bad }, http);
@@ -146,13 +174,31 @@ describe("MCP server configuration", () => {
     }
   });
 
-  it("refuses reserved, malformed or doubly set environment variables", () => {
+  it("takes any POSIX variable name for a stdio server except JJ_*", () => {
     for (const name of [
       "PATH",
+      "HOME",
+      "NODE_OPTIONS",
       "LD_PRELOAD",
       "HTTPS_PROXY",
+      "npm_config_cache",
+      "_private",
+      "x".repeat(128),
+    ]) {
+      expect(server({ env: { [name]: "x" } }).success, name).toBe(true);
+      expect(
+        server({ secretEnv: { [name]: "DOCS_TOKEN" } }).success,
+        name,
+      ).toBe(true);
+    }
+    for (const name of [
+      "JJ_SANDBOX_EXEC",
       "JJ_TOKEN",
-      "lower",
+      "1BAD",
+      "has-dash",
+      "has space",
+      "",
+      "x".repeat(129),
     ]) {
       expect(server({ env: { [name]: "x" } }).success, name).toBe(false);
       expect(
@@ -160,7 +206,7 @@ describe("MCP server configuration", () => {
         name,
       ).toBe(false);
     }
-    // The value of secretEnv names a stored secret, with the same rules.
+    // The value of secretEnv names a stored secret, with the secrets' rules.
     expect(server({ secretEnv: { DOCS_TOKEN: "PATH" } }).success).toBe(false);
     expect(server({ secretEnv: { DOCS_TOKEN: "docs" } }).success).toBe(false);
     // A variable comes from one place only.
@@ -179,8 +225,19 @@ describe("MCP server configuration", () => {
     expect(
       server({ args: Array.from({ length: 65 }, () => "a") }).success,
     ).toBe(false);
-    for (const cwd of ["/etc", "../outside", "a/../../b", "a/\u0000"])
+    for (const cwd of [
+      "/etc",
+      "../outside",
+      "a/../../b",
+      ".",
+      "./.",
+      "./tools",
+      "tools//docs",
+      "tools/",
+      "a/\u0000",
+    ])
       expect(server({ cwd }).success, cwd).toBe(false);
+    expect(server({ cwd: "tools/.docs" }).success).toBe(true);
     for (const timeout of [0, 601, 1.5])
       expect(server({ timeoutSec: timeout }).success, String(timeout)).toBe(
         false,
@@ -192,6 +249,8 @@ describe("MCP server configuration", () => {
     for (const name of [
       "Host",
       "content-length",
+      "Content-Type",
+      "Accept",
       "Connection",
       "Transfer-Encoding",
       "Mcp-Session-Id",
@@ -215,16 +274,45 @@ describe("MCP server configuration", () => {
     ).toBe(false);
     const repeated = server(
       {
-        headers: { authorization: "plain" },
-        secretHeaders: { Authorization: { secret: "TRACKER_TOKEN" } },
+        headers: { "x-team": "core" },
+        secretHeaders: { "X-Team": { secret: "TRACKER_TOKEN" } },
       },
       http,
     );
     expect(repeated.success).toBe(false);
-    expect(issuePath(repeated)).toEqual(["secretHeaders", "Authorization"]);
+    expect(issuePath(repeated)).toEqual(["secretHeaders", "X-Team"]);
     expect(
       server({ secretHeaders: { "X-Key": { secret: "lower" } } }, http).success,
     ).toBe(false);
+  });
+
+  it("keeps credential headers out of plain headers, for secretHeaders instead", () => {
+    for (const name of [
+      "Authorization",
+      "proxy-authorization",
+      "Cookie",
+      "X-Api-Key",
+      "X-APIKEY",
+      "Api-Key",
+      "X-Auth-Token",
+      "X-Access-Token",
+      "X-Client-Secret",
+      "X-Password",
+      "X-Passwd",
+    ]) {
+      const plain = server({ headers: { [name]: "value" } }, http);
+      expect(plain.success, name).toBe(false);
+      expect(plain.error?.issues[0]?.message, name).toContain("secretHeaders");
+      expect(
+        server({ secretHeaders: { [name]: { secret: "TRACKER_TOKEN" } } }, http)
+          .success,
+        name,
+      ).toBe(true);
+    }
+    expect(
+      server({ headers: { "X-Team": "core", "X-Request-Source": "jj" } }, http)
+        .success,
+    ).toBe(true);
   });
 
   it("holds at most 8 servers with unique names", () => {
@@ -470,7 +558,10 @@ const snapshot = (
       version: "1.0.0",
       protocolVersion: "2025-06-18",
     },
-    tools: tools.map((name) => tool(name, server)),
+    tools: tools.map((name) => ({
+      ...tool(name, server),
+      exposedName: mcpToolNames(server, tools).get(name),
+    })),
     warnings: [],
     discoveredAt: at,
   });
@@ -540,6 +631,33 @@ describe("MCP snapshots and discoveries", () => {
         tools: Array.from({ length: 201 }, (_, index) => tool(`t${index}`)),
       }).success,
     ).toBe(false);
+  });
+
+  it("keeps every exposed name under its server's prefix, and unique, within a snapshot", () => {
+    const docs = snapshot("snap_1", "docs", ["search", "fetch"]);
+    const withTools = (tools: unknown[]) =>
+      mcpToolSnapshotSchema.safeParse({ ...docs, tools });
+    const [search, fetch] = docs.tools as [McpTool, McpTool];
+    expect(withTools([search, fetch]).success).toBe(true);
+    const foreign = withTools([
+      search,
+      { ...fetch, exposedName: "mcp__tracker__fetch" },
+    ]);
+    expect(foreign.success).toBe(false);
+    expect(issuePath(foreign)).toEqual(["tools", 1, "exposedName"]);
+    // A server name that only starts the same is another server.
+    expect(
+      withTools([{ ...search, exposedName: "mcp__docs_v2__search" }]).success,
+    ).toBe(false);
+    const sameExposed = withTools([
+      search,
+      { ...fetch, exposedName: search.exposedName },
+    ]);
+    expect(sameExposed.success).toBe(false);
+    expect(issuePath(sameExposed)).toEqual(["tools", 1, "exposedName"]);
+    const sameName = withTools([search, { ...fetch, name: search.name }]);
+    expect(sameName.success).toBe(false);
+    expect(issuePath(sameName)).toEqual(["tools", 1, "name"]);
   });
 
   it("declares the direct tools of enabled servers with a matching snapshot, sorted", () => {
@@ -636,24 +754,44 @@ describe("approval rules on MCP tools", () => {
     expect(toolSelectorMatches("bash", "mcp__bash__x")).toBe(false);
   });
 
-  it("looks for a rule's match in the call's arguments as canonical one-line JSON", () => {
+  it("matches a rule against the arguments' unescaped keys and values, in canonical order", () => {
     const args = {
       query: "drop\ntable",
-      options: { z: 1, a: [2, { y: 3, b: 4 }] },
+      options: { z: 1, a: [2, { y: 3, b: true, c: null }] },
     };
     expect(approvalSubject("mcp__docs__search", args)).toBe(
-      '{"options":{"a":[2,{"b":4,"y":3}],"z":1},"query":"drop\\ntable"}',
+      "options a 2 b c y 3 z 1 query drop\ntable",
     );
-    expect(approvalSubject("mcp__docs__search", args)).toBe(
-      canonicalJson({
-        options: { a: [2, { b: 4, y: 3 }], z: 1 },
-        query: "drop\ntable",
+    // The card shows canonical one-line JSON; the rule sees what the call holds.
+    expect(canonicalJson(args)).toBe(
+      '{"options":{"a":[2,{"b":true,"c":null,"y":3}],"z":1},"query":"drop\\ntable"}',
+    );
+    const rule = (match: string) =>
+      approvalRuleSchema.parse({ tool: "mcp__shell__run", match });
+    // JSON escaping would hide both of these from a match on the JSON text.
+    expect(
+      approvalRuleMatches(rule("rm -rf /"), "mcp__shell__run", {
+        cmd: "rm -rf\n/",
       }),
-    );
+    ).toBe(true);
+    expect(
+      approvalRuleMatches(rule("C:\\Windows"), "mcp__shell__run", {
+        path: "C:\\Windows",
+      }),
+    ).toBe(true);
+    expect(
+      approvalRuleMatches(rule("C:\\Windows"), "mcp__shell__run", {
+        path: "C:\\Windows\\System32",
+      }),
+    ).toBe(true);
+    expect(
+      approvalRuleMatches(rule('"rm'), "mcp__shell__run", { cmd: "rm -rf /" }),
+    ).toBe(false);
+
     const rules = [
       approvalRuleSchema.parse({
         tool: "mcp__docs__search",
-        match: '"query":"drop*',
+        match: "query drop*",
       }),
       approvalRuleSchema.parse({ tool: "mcp__tracker__*" }),
     ];
@@ -674,6 +812,109 @@ describe("approval rules on MCP tools", () => {
     ).toBeUndefined();
   });
 
+  it("stays linear on long MCP arguments that do not match", () => {
+    const args = {
+      text: "a".repeat(400_000),
+      items: Array.from({ length: 20_000 }, (_, index) => ({ n: index })),
+    };
+    const started = performance.now();
+    expect(
+      approvalRuleMatches(
+        { tool: "mcp__docs__write", match: "a*a*a*a*b" },
+        "mcp__docs__write",
+        args,
+      ),
+    ).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1_500);
+  });
+
+  it("holds a call whose arguments it cannot read under every rule for its tool, and says why", () => {
+    let deep: Record<string, unknown> = { leaf: "x" };
+    for (let level = 0; level < 10_000; level += 1) deep = { deep };
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    const unreadable: [string, Record<string, unknown>, string][] = [
+      ["cycle", cyclic, "refer to themselves"],
+      ["10k levels", deep, "nest deeper than 64 levels"],
+      ["BigInt", { size: 10n }, "hold a value JSON cannot represent"],
+      [
+        "huge string",
+        { text: "x".repeat(2_000_000) },
+        "run longer than 1048576 characters",
+      ],
+      [
+        "throwing getter",
+        Object.defineProperty({}, "boom", {
+          enumerable: true,
+          get() {
+            throw new Error("boom");
+          },
+        }),
+        "hold a value JSON cannot represent",
+      ],
+    ];
+    const rules = [
+      approvalRuleSchema.parse({ tool: "mcp__other__*" }),
+      approvalRuleSchema.parse({
+        tool: "mcp__docs__search",
+        match: "never there",
+      }),
+    ];
+    for (const [label, args, reason] of unreadable) {
+      expect(approvalSubject("mcp__docs__search", args), label).toBeUndefined();
+      expect(canonicalJson(args), label).toBeUndefined();
+      expect(
+        approvalSubjectProblem("mcp__docs__search", args),
+        label,
+      ).toContain(reason);
+      // Fails closed: the rule's match cannot be checked, so the call waits.
+      expect(
+        matchingApprovalRule(rules, "mcp__docs__search", args),
+        label,
+      ).toBe(rules[1]);
+      // A rule for another tool still never holds it.
+      expect(
+        matchingApprovalRule(rules.slice(1), "mcp__docs__fetch", args),
+        label,
+      ).toBeUndefined();
+    }
+    expect(approvalSubjectProblem("mcp__docs__search", { q: "ok" })).toBe(
+      undefined,
+    );
+    expect(approvalSubjectProblem("write", { path: "a" })).toBe(undefined);
+  });
+
+  it("finds exact MCP rules that name no tool of their server's pinned snapshot", () => {
+    const servers = mcpServersSchema.parse([
+      { ...stdio, secretEnv: {}, snapshotId: "snap_docs" },
+      { ...http },
+    ]);
+    const snapshots = [snapshot("snap_docs", "docs", ["search", "a-b"])];
+    const rules = [
+      { tool: "mcp__docs__search" },
+      // a-b's exposed name.
+      { tool: "mcp__docs__a_b" },
+      { tool: "mcp__docs__fetch" },
+      { tool: "mcp__docs__*" },
+      // tracker has no snapshot.
+      { tool: "mcp__tracker__create" },
+      { tool: "mcp__tracker__*" },
+      { tool: "mcp__gone__x" },
+      { tool: "bash", match: "git push" },
+    ] as const;
+    expect(mcpRulesWithoutTool(rules, servers, snapshots)).toEqual([2, 4, 6]);
+    expect(mcpRulesWithoutTool(rules, [], [])).toEqual([0, 1, 2, 4, 6]);
+    // `a-b` alone keeps the plain name; add `a_b` and both are renamed.
+    const renamed = [snapshot("snap_docs", "docs", ["search", "a-b", "a_b"])];
+    expect(
+      mcpRulesWithoutTool(
+        [approvalRuleSchema.parse({ tool: mcpToolName("docs", "a-b") })],
+        servers,
+        renamed,
+      ),
+    ).toEqual([0]);
+  });
+
   it("describes MCP rules on one line", () => {
     expect(describeApprovalRule({ tool: "mcp__docs__*" })).toBe(
       "every call to MCP server docs",
@@ -688,19 +929,56 @@ describe("approval rules on MCP tools", () => {
 });
 
 describe("canonical JSON and SHA-256", () => {
-  it("sorts keys at every depth and keeps arrays in order", () => {
+  it("sorts keys by code units at every depth and keeps arrays in order", () => {
     expect(canonicalJson({ b: 1, a: { d: [3, 1], c: null } })).toBe(
       '{"a":{"c":null,"d":[3,1]},"b":1}',
     );
     expect(canonicalJson({ a: 1, b: 2 })).toBe(canonicalJson({ b: 2, a: 1 }));
-    expect(canonicalJson({ a: undefined, b: [undefined] })).toBe(
-      '{"b":[null]}',
+    // An object would list integer-like keys first, in numeric order.
+    expect(canonicalJson({ a: 3, 2: 2, 10: 1 })).toBe('{"10":1,"2":2,"a":3}');
+    expect(canonicalForm({ a: 3, 2: "two", 10: 1 })).toEqual({
+      ok: true,
+      json: '{"10":1,"2":"two","a":3}',
+      words: "10 1 2 two a 3",
+    });
+    expect(canonicalJson({ a: undefined, b: [undefined, Number.NaN] })).toBe(
+      '{"b":[null,null]}',
     );
     expect(canonicalJson(undefined)).toBe("null");
     // An own "__proto__" key is data, not a prototype.
     expect(canonicalJson(JSON.parse('{"__proto__":{"x":1},"a":2}'))).toBe(
       '{"__proto__":{"x":1},"a":2}',
     );
+    // A shared, non-cyclic value is written each time it appears.
+    const shared = { x: 1 };
+    expect(canonicalJson({ a: shared, b: shared })).toBe(
+      '{"a":{"x":1},"b":{"x":1}}',
+    );
+  });
+
+  it("never throws, and says why a value has no canonical form", () => {
+    const cyclic: unknown[] = [];
+    cyclic.push(cyclic);
+    let deep: unknown = "leaf";
+    for (let level = 0; level < 10_000; level += 1) deep = [deep];
+    let deepEnough: unknown = "leaf";
+    for (let level = 0; level < 64; level += 1) deepEnough = [deepEnough];
+    const problem = (value: unknown) => {
+      const form = canonicalForm(value);
+      return form.ok ? "ok" : form.problem;
+    };
+    expect(problem(cyclic)).toBe("cycle");
+    expect(problem(deep)).toBe("depth");
+    expect(problem(deepEnough)).toBe("ok");
+    expect(problem([deepEnough])).toBe("depth");
+    expect(problem({ n: 1n })).toBe("unserializable");
+    expect(problem({ f: () => 1 })).toBe("unserializable");
+    expect(problem({ s: Symbol("s") })).toBe("unserializable");
+    expect(problem({ d: new Date(0) })).toBe("unserializable");
+    expect(problem("x".repeat(2_000_000))).toBe("length");
+    expect(problem({ ["k".repeat(2_000_000)]: 1 })).toBe("length");
+    expect(problem(Array.from({ length: 300_000 }, () => null))).toBe("length");
+    expect(problem("x".repeat(1_048_574))).toBe("ok");
   });
 
   it("hashes as Node's crypto does", () => {

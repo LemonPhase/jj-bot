@@ -1,7 +1,14 @@
 // What an approval card says. Its state never claims more than the record
 // does: a pending call has not run, an approved one "runs" only once a run
 // started it, and "ran" needs its stored outcome.
-import type { Approval, PendingApproval, TaskView } from "@jj/contracts";
+import {
+  type Approval,
+  approvalSubjectProblem,
+  canonicalJson,
+  MCP_TOOL_PREFIX,
+  type PendingApproval,
+  type TaskView,
+} from "@jj/contracts";
 import type { StatusTone } from "../../lib/status";
 
 export interface ApprovalState {
@@ -49,14 +56,26 @@ export function approvalState(approval: Approval): ApprovalState {
   }
 }
 
-/** The call as the user reviews it: the whole command for bash, else the arguments. */
+/**
+ * The call as the user reviews it: the whole command for bash, an MCP
+ * tool's arguments as canonical one-line JSON, else the arguments.
+ */
 export function approvalCall(
   approval: Pick<Approval, "tool" | "args">,
 ): string {
   const { tool, args } = approval;
   if (tool === "bash" && typeof args.command === "string") return args.command;
+  if (tool.startsWith(MCP_TOOL_PREFIX))
+    return (
+      canonicalJson(args) ??
+      "(The arguments are too long or too deeply nested to show.)"
+    );
   return JSON.stringify(args, null, 2);
 }
+
+/** Why the call waits whatever its rule's match: its arguments could not be checked. */
+export const approvalProblem = (approval: Pick<Approval, "tool" | "args">) =>
+  approvalSubjectProblem(approval.tool, approval.args);
 
 /** The task's approvals still waiting for the user, oldest first. */
 export const pendingOf = (approvals: readonly Approval[]): Approval[] =>

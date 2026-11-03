@@ -70,19 +70,48 @@ const maxEntriesMessage = (limit: number) => ({
   message: `Use at most ${limit} entries.`,
 });
 
-/** An environment variable a stdio server gets: the names sandbox secrets may take. */
-const envNameSchema = secretNameSchema;
+/**
+ * A variable a stdio server's process gets: any POSIX name except `JJ_*`,
+ * which the sandbox drivers keep for themselves (`JJ_SANDBOX_EXEC` tags
+ * every process they start). The process runs inside the sandbox, so
+ * `PATH`, `HOME` or `NODE_OPTIONS` are the server's own business.
+ */
+export const mcpEnvNameSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_]{0,127}$/,
+    "Use an environment variable name: letters, digits and underscores, not starting with a digit, at most 128 characters.",
+  )
+  .refine((name) => !name.startsWith("JJ_"), {
+    message: "JJ_ variables are reserved for the sandbox.",
+  });
 
 /** HTTP headers the transport sets itself, which a server's configuration may not. */
 const RESERVED_HEADERS = new Set([
   "host",
   "content-length",
+  "content-type",
+  "accept",
   "connection",
   "transfer-encoding",
   "mcp-session-id",
   "mcp-protocol-version",
   "last-event-id",
 ]);
+
+/**
+ * Header and query parameter names that carry credentials. Plain `headers`
+ * and the URL are stored and shown in the clear, so these go in
+ * `secretHeaders` instead.
+ */
+const CREDENTIAL_NAME = /(api[-_]?key|token|secret|password|passwd|auth)/i;
+const CREDENTIAL_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+]);
+const isCredentialName = (name: string) =>
+  CREDENTIAL_HEADERS.has(name.toLowerCase()) || CREDENTIAL_NAME.test(name);
 
 export const mcpHeaderNameSchema = z
   .string()
@@ -99,7 +128,7 @@ const headerValueSchema = z
   .max(4096)
   .regex(noControl, noControlMessage);
 
-/** Workspace-relative: no leading `/`, no `.` or `..` segment. */
+/** Workspace-relative: no leading `/`, and no empty, `.` or `..` part. */
 const workspaceRelativeSchema = z
   .string()
   .min(1)
@@ -108,8 +137,15 @@ const workspaceRelativeSchema = z
   .refine(
     (path) =>
       !path.startsWith("/") &&
-      path.split("/").every((segment) => segment !== ".."),
-    { message: "Use a path relative to the workspace, without `..`." },
+      path
+        .split("/")
+        .every(
+          (segment) => segment !== "" && segment !== "." && segment !== "..",
+        ),
+    {
+      message:
+        "Use a path relative to the workspace, without empty, `.` or `..` parts.",
+    },
   );
 
 const mcpServerCommon = {
@@ -157,7 +193,10 @@ export const mcpStdioServerSchema = z
     cwd: workspaceRelativeSchema.optional(),
     /** Non-secret variables. */
     env: z
-      .record(envNameSchema, z.string().max(4096).refine(noNul, noNulMessage))
+      .record(
+        mcpEnvNameSchema,
+        z.string().max(4096).refine(noNul, noNulMessage),
+      )
       .refine(maxEntries(64), maxEntriesMessage(64))
       .default({}),
     /**
@@ -166,7 +205,7 @@ export const mcpStdioServerSchema = z
      * value never travels in argv, events or logs.
      */
     secretEnv: z
-      .record(envNameSchema, secretNameSchema)
+      .record(mcpEnvNameSchema, secretNameSchema)
       .refine(maxEntries(64), maxEntriesMessage(64))
       .default({}),
     /** How long the process may take to answer `initialize`. */
@@ -190,11 +229,24 @@ const parseUrl = (value: string): URL | undefined => {
   }
 };
 
-/** An https URL without credentials in it; credentials go in `secretHeaders`. */
+const IN_THE_CLEAR =
+  "put credentials in secretHeaders, since the URL is stored and shown in the clear.";
+
+/**
+ * An https URL without credentials in it (no user or password, no query
+ * parameter named like a key, token, secret, password or auth), and without
+ * control characters or backslashes, which URL parsing would silently drop
+ * or turn into `/`. Stored normalized (`new URL(url).href`), so a host with
+ * non-ASCII letters is stored and shown as punycode (`xn--…`) and a
+ * look-alike host is visible as such.
+ */
 const mcpUrlSchema = z
   .string()
   .trim()
   .max(2048)
+  .refine((value) => /^[^\u0000-\u001f\u007f\\]*$/.test(value), {
+    message: "Use a URL without control characters or backslashes.",
+  })
   .refine(
     (value) => {
       const url = /^https:\/\//i.test(value) ? parseUrl(value) : undefined;
@@ -207,11 +259,18 @@ const mcpUrlSchema = z
       const url = parseUrl(value);
       return !url || (url.username === "" && url.password === "");
     },
-    {
-      message:
-        "Put credentials in a secret header, not in the URL: a URL is stored and shown in the clear.",
+    { message: `No user or password in the URL: ${IN_THE_CLEAR}` },
+  )
+  .refine(
+    (value) => {
+      const url = parseUrl(value);
+      return !url || ![...url.searchParams.keys()].some(isCredentialName);
     },
-  );
+    {
+      message: `A query parameter of the URL carries credentials: ${IN_THE_CLEAR}`,
+    },
+  )
+  .transform((value) => parseUrl(value)?.href ?? value);
 
 /**
  * A remote server over Streamable HTTP (legacy SSE is refused). The worker
@@ -228,7 +287,7 @@ export const mcpHttpServerSchema = z
      */
     askUnlessReadOnly: z.boolean().default(true),
     url: mcpUrlSchema,
-    /** Non-secret headers. */
+    /** Non-secret headers; one that carries credentials (`Authorization`, `Cookie`, `X-Api-Key`, …) goes in `secretHeaders`. */
     headers: z
       .record(mcpHeaderNameSchema, headerValueSchema)
       .refine(maxEntries(32), maxEntriesMessage(32))
@@ -254,6 +313,13 @@ export const mcpHttpServerSchema = z
       .default({}),
   })
   .superRefine((server, context) => {
+    for (const name of Object.keys(server.headers))
+      if (isCredentialName(name))
+        context.addIssue({
+          code: "custom",
+          path: ["headers", name],
+          message: `${name} carries credentials: put it in secretHeaders, since plain headers are stored and shown in the clear.`,
+        });
     const seen = new Set<string>();
     for (const [field, names] of [
       ["headers", Object.keys(server.headers)],
@@ -378,23 +444,53 @@ export const mcpToolSchema = z.object({
  * The reviewed tool list of one server for one configuration. Immutable: a
  * new discovery makes a new snapshot. Saving a profile pins one per server
  * (`snapshotId`), and its `configHash` must match the configuration
- * (MCP_SNAPSHOT_MISMATCH otherwise).
+ * (MCP_SNAPSHOT_MISMATCH otherwise). Exposed names hold within a snapshot
+ * only: each starts with `mcp__<server>__` and is unique in it, but a new
+ * snapshot of the same server can rename a tool.
  */
-export const mcpToolSnapshotSchema = z.object({
-  id: idSchema,
-  profileId: idSchema,
-  server: mcpServerNameSchema,
-  /** SHA-256 of what runs: the configuration the tools were discovered with. */
-  configHash: sha256Schema,
-  serverInfo: z.object({
-    name: z.string().max(200),
-    version: z.string().max(100),
-    protocolVersion: z.string().max(20),
-  }),
-  tools: z.array(mcpToolSchema).max(MAX_MCP_SNAPSHOT_TOOLS),
-  warnings: z.array(z.string().max(500)).max(50),
-  discoveredAt: timestampSchema,
-});
+export const mcpToolSnapshotSchema = z
+  .object({
+    id: idSchema,
+    profileId: idSchema,
+    server: mcpServerNameSchema,
+    /** SHA-256 of what runs: the configuration the tools were discovered with. */
+    configHash: sha256Schema,
+    serverInfo: z.object({
+      name: z.string().max(200),
+      version: z.string().max(100),
+      protocolVersion: z.string().max(20),
+    }),
+    tools: z.array(mcpToolSchema).max(MAX_MCP_SNAPSHOT_TOOLS),
+    warnings: z.array(z.string().max(500)).max(50),
+    discoveredAt: timestampSchema,
+  })
+  .superRefine((snapshot, context) => {
+    const prefix = `${MCP_TOOL_PREFIX}${snapshot.server}__`;
+    const names = new Set<string>();
+    const exposed = new Set<string>();
+    snapshot.tools.forEach((tool, index) => {
+      if (!tool.exposedName.startsWith(prefix))
+        context.addIssue({
+          code: "custom",
+          path: ["tools", index, "exposedName"],
+          message: `An exposed name of server ${snapshot.server} starts with ${prefix}.`,
+        });
+      if (names.has(tool.name))
+        context.addIssue({
+          code: "custom",
+          path: ["tools", index, "name"],
+          message: `${tool.name} is listed more than once.`,
+        });
+      if (exposed.has(tool.exposedName))
+        context.addIssue({
+          code: "custom",
+          path: ["tools", index, "exposedName"],
+          message: `${tool.exposedName} is given to more than one tool.`,
+        });
+      names.add(tool.name);
+      exposed.add(tool.exposedName);
+    });
+  });
 
 export const MCP_DISCOVERY_STATUSES = [
   "queued",
@@ -539,8 +635,9 @@ export function mcpToolNames(
  * tools of each enabled server's pinned snapshot whose exposure (the tool's
  * own in `toolExposure`, else the server's) is `direct`. A server without a
  * snapshot, or whose `snapshotId` names a snapshot of another server or not
- * among `snapshots`, declares none. A profile declares at most
- * MAX_MCP_DIRECT_TOOLS.
+ * among `snapshots`, declares none. It lists them all: a profile save that
+ * would declare more than MAX_MCP_DIRECT_TOOLS is refused, so nothing is
+ * ever dropped silently.
  */
 export function declaredMcpTools(
   servers: readonly McpServer[],

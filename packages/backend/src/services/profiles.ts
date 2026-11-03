@@ -2,9 +2,11 @@
 // budgets. A spec the driver cannot enforce is refused with the driver's own
 // message (PROFILE_UNSUPPORTED); nothing is silently downgraded.
 import {
+  type ApprovalRule,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   createRuntimeProfileCommandSchema,
+  mcpRulesWithoutTool,
   profileBudgetsSchema,
   type RuntimeProfile,
   type RuntimeProfileStatus,
@@ -158,6 +160,7 @@ async function checkGrants(
 function refuseMcpAndSkills(command: {
   mcpServers?: readonly unknown[];
   skills?: readonly unknown[];
+  approvals?: readonly ApprovalRule[];
 }): void {
   if (command.mcpServers?.length)
     throw new DomainError(
@@ -168,6 +171,20 @@ function refuseMcpAndSkills(command: {
     throw new DomainError(
       "MCP_UNAVAILABLE",
       "skills: this server has no skills library (capabilities.skills is off). Remove them to save the profile.",
+    );
+  // An exact MCP rule must name a tool of its server's pinned snapshot, and
+  // no profile holds a server here, so none does; `mcp__<server>__*` may.
+  const rules = command.approvals ?? [];
+  const unknown = mcpRulesWithoutTool(rules, [], []);
+  if (unknown.length > 0)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      unknown
+        .map(
+          (index) =>
+            `approvals.${index}.tool: ${rules[index]?.tool} names no tool of its MCP server's pinned snapshot. Exact names hold only within a snapshot; mcp__<server>__* covers every tool of a server.`,
+        )
+        .join("; "),
     );
 }
 

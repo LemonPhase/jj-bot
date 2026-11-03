@@ -101,9 +101,20 @@ describe("runtime profile editor: approvals", () => {
     expect(first.selectedOptions[0]?.textContent).toBe("mcp__docs__*");
     const second = screen.getByLabelText("Rule 2 tool") as HTMLSelectElement;
     expect(second.value).toBe("bash");
-    expect([...second.options].map((option) => option.value)).not.toContain(
+
+    // Switched to a coding tool and back, the MCP tool is still offered.
+    fireEvent.change(first, { target: { value: "write" } });
+    expect(
+      (screen.getByLabelText("Rule 1 tool") as HTMLSelectElement).value,
+    ).toBe("write");
+    const again = screen.getByLabelText("Rule 1 tool") as HTMLSelectElement;
+    expect([...again.options].map((option) => option.value)).toContain(
       "mcp__docs__*",
     );
+    fireEvent.change(again, { target: { value: "mcp__docs__*" } });
+    expect(
+      (screen.getByLabelText("Rule 1 tool") as HTMLSelectElement).value,
+    ).toBe("mcp__docs__*");
   });
 });
 

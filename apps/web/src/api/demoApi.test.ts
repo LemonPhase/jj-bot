@@ -590,7 +590,18 @@ describe("demo API", () => {
       api.updateProfile("profile-docker", { skills: ["pdf-tools"] }),
       "MCP_UNAVAILABLE",
     );
+    // No snapshot is pinned, so no exact MCP rule names a tool; a server's * may.
+    await rejects(
+      api.updateProfile("profile-docker", {
+        approvals: [{ tool: "mcp__docs__search" }],
+      }),
+      "VALIDATION_FAILED",
+    );
     expect(await api.listProfiles()).toEqual(before);
+    const ruled = await api.updateProfile("profile-docker", {
+      approvals: [{ tool: "mcp__docs__*" }],
+    });
+    expect(ruled.approvals).toEqual([{ tool: "mcp__docs__*" }]);
   });
 
   it("keeps a reopened seeded task moving on its own", async () => {

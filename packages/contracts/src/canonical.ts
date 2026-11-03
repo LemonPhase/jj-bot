@@ -3,34 +3,133 @@
  * They run in the browser and on the server alike, so they use no Node API.
  */
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> => {
-  if (typeof value !== "object" || value === null) return false;
+/** Deepest value `canonicalForm` reads; deeper ones have no canonical form. */
+export const CANONICAL_DEPTH_LIMIT = 64;
+/** Longest canonical JSON, in UTF-16 code units; longer values have no canonical form. */
+export const CANONICAL_LENGTH_LIMIT = 1_048_576;
+
+/** Why a value has no canonical form. */
+export type CanonicalProblem = "cycle" | "depth" | "length" | "unserializable";
+
+/**
+ * A JSON value in canonical form: `json`, on one line with object keys
+ * sorted by UTF-16 code units at every depth; and `words`, its keys and its
+ * string and number values, unescaped, in the same order, separated by
+ * spaces. Equal values give the same texts whatever their key order.
+ */
+export type CanonicalForm =
+  | { ok: true; json: string; words: string }
+  | { ok: false; problem: CanonicalProblem };
+
+const isPlainObject = (value: object): value is Record<string, unknown> => {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 };
 
-/**
- * JSON on one line with object keys sorted (by UTF-16 code units) at every
- * depth, so equal values always give the same text whatever their key order.
- * Values JSON cannot hold are dropped from objects and written as `null` in
- * arrays, as `JSON.stringify` does.
- */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortKeys(value)) ?? "null";
+class Unreadable extends Error {
+  constructor(readonly problem: CanonicalProblem) {
+    super(problem);
+  }
 }
 
-function sortKeys(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (!isPlainObject(value)) return value;
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort())
-    Object.defineProperty(sorted, key, {
-      value: sortKeys(value[key]),
-      enumerable: true,
-      writable: true,
-      configurable: true,
-    });
-  return sorted;
+/**
+ * The canonical form of a JSON value, or why it has none: a cycle, nesting
+ * deeper than CANONICAL_DEPTH_LIMIT, JSON longer than CANONICAL_LENGTH_LIMIT,
+ * or a value JSON cannot hold faithfully (a BigInt, a function, a symbol, an
+ * object that is not plain, a property that throws). `undefined` is dropped
+ * from objects and written as `null` in arrays, and a number that is not
+ * finite as `null`, as `JSON.stringify` does. Never throws, and takes time
+ * linear in the output, so it is safe on whatever a model wrote.
+ */
+export function canonicalForm(value: unknown): CanonicalForm {
+  const json: string[] = [];
+  const words: string[] = [];
+  const ancestors = new Set<object>();
+  let length = 0;
+  const emit = (part: string) => {
+    length += part.length;
+    if (length > CANONICAL_LENGTH_LIMIT) throw new Unreadable("length");
+    json.push(part);
+  };
+  // Checked before escaping, so a huge string is never copied.
+  const quote = (text: string) => {
+    if (length + text.length > CANONICAL_LENGTH_LIMIT)
+      throw new Unreadable("length");
+    return JSON.stringify(text);
+  };
+  const walk = (current: unknown, depth: number): void => {
+    switch (typeof current) {
+      case "string":
+        emit(quote(current));
+        words.push(current);
+        return;
+      case "number":
+        if (Number.isFinite(current)) {
+          emit(JSON.stringify(current));
+          words.push(String(current));
+        } else emit("null");
+        return;
+      case "boolean":
+        emit(current ? "true" : "false");
+        return;
+      case "undefined":
+        emit("null");
+        return;
+      case "object":
+        break;
+      default:
+        throw new Unreadable("unserializable");
+    }
+    if (current === null) {
+      emit("null");
+      return;
+    }
+    if (depth >= CANONICAL_DEPTH_LIMIT) throw new Unreadable("depth");
+    if (ancestors.has(current)) throw new Unreadable("cycle");
+    ancestors.add(current);
+    if (Array.isArray(current)) {
+      emit("[");
+      for (let index = 0; index < current.length; index += 1) {
+        if (index > 0) emit(",");
+        walk(current[index], depth + 1);
+      }
+      emit("]");
+    } else if (isPlainObject(current)) {
+      emit("{");
+      let first = true;
+      // Sorted by code units explicitly: an object would put integer-like keys first.
+      for (const key of Object.keys(current).sort()) {
+        const child = current[key];
+        if (child === undefined) continue;
+        if (!first) emit(",");
+        first = false;
+        emit(`${quote(key)}:`);
+        words.push(key);
+        walk(child, depth + 1);
+      }
+      emit("}");
+    } else throw new Unreadable("unserializable");
+    ancestors.delete(current);
+  };
+  try {
+    walk(value, 0);
+    return { ok: true, json: json.join(""), words: words.join(" ") };
+  } catch (error) {
+    return {
+      ok: false,
+      problem: error instanceof Unreadable ? error.problem : "unserializable",
+    };
+  }
+}
+
+/**
+ * JSON on one line with object keys sorted by UTF-16 code units at every
+ * depth, or undefined when the value has no canonical form (see
+ * `canonicalForm`). Never throws.
+ */
+export function canonicalJson(value: unknown): string | undefined {
+  const form = canonicalForm(value);
+  return form.ok ? form.json : undefined;
 }
 
 // FIPS 180-4: the first 32 bits of the fractional parts of the cube roots of

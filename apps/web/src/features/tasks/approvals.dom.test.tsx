@@ -141,6 +141,13 @@ describe("approval state", () => {
     expect(
       approvalCall({ tool: "write", args: { path: "a.txt", content: "x" } }),
     ).toBe('{\n  "path": "a.txt",\n  "content": "x"\n}');
+    // An MCP call as canonical one-line JSON.
+    expect(
+      approvalCall({
+        tool: "mcp__docs__search",
+        args: { q: "a\nb", limit: 5, filter: { z: 1, a: 2 } },
+      }),
+    ).toBe('{"filter":{"a":2,"z":1},"limit":5,"q":"a\\nb"}');
   });
 
   it("counts what waits, and knows when the coordinator holds one", () => {
@@ -325,6 +332,27 @@ describe("ApprovalCard", () => {
       reason: "use a branch",
     });
     expect(screen.getByText(/Your reason: use a branch/)).toBeTruthy();
+  });
+
+  it("says why an MCP call waits when its arguments could not be checked", () => {
+    let deep: Record<string, unknown> = { leaf: "x" };
+    for (let level = 0; level < 100; level += 1) deep = { deep };
+    renderCard(
+      approval({
+        tool: "mcp__docs__search",
+        summary: "docs/search",
+        args: deep,
+        rule: { tool: "mcp__docs__search", match: "never" },
+      }),
+    );
+    expect(
+      screen.getByLabelText("The mcp__docs__search call").textContent,
+    ).toBe("(The arguments are too long or too deeply nested to show.)");
+    expect(
+      screen.getByText(
+        "Its arguments nest deeper than 64 levels, so no rule's match could be checked: every rule for mcp__docs__search holds it.",
+      ),
+    ).toBeTruthy();
   });
 
   it("shows a hidden character in the call as its code point", () => {
