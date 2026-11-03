@@ -9,7 +9,12 @@ import type { TaskEvent } from "@jj/contracts";
 import { jobs, runs } from "@jj/db";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type Brain, type FakeMessage, said } from "./testing/fake-executor";
+import {
+  type Brain,
+  type FakeMessage,
+  promptBot,
+  said,
+} from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -21,6 +26,7 @@ import {
   untilTask,
 } from "./testing/harness";
 import { createTeam, lastResult } from "./testing/scenarios";
+import { COMPLETION_SET_ASIDE } from "./worker/prompts";
 
 let db: TestDatabase;
 const engines: TestEngine[] = [];
@@ -296,6 +302,73 @@ describe("draining a worker", () => {
     const view = await untilTask(second.engine, task.id, status("completed"));
     expect(view.task.result).toBe("blue");
     expect(second.executor.inputs[0]?.inputs.join("\n")).toContain("use blue");
+  });
+
+  it("keeps what continuing input would have set aside, for the next worker to tell", async () => {
+    // As in orchestration.test.ts: Bob's result arrives after Ada's
+    // complete_task, which sets her completion aside. The drain stops her
+    // run before that result is taken, so the next run takes it, with the
+    // notice that the completion was set aside.
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const coordinator: Brain = (view) => {
+      if (said.turns(view) === 0)
+        return {
+          calls: [
+            { name: "delegate", args: { bot: bob, brief: "Write bob.txt" } },
+            { name: "gate", args: { name: "hold" } },
+            { name: "complete_task", args: { result: "too early" } },
+          ],
+        };
+      const completions = said
+        .results(view)
+        .filter((result) => result.name === "complete_task").length;
+      if (completions > 1) return { text: "Done." };
+      // Without the notice a model takes its first completion as done.
+      if (!said.heard(view, COMPLETION_SET_ASIDE))
+        return { text: "Already completed." };
+      return {
+        calls: [{ name: "complete_task", args: { result: "with bob" } }],
+      };
+    };
+    first.executor
+      .brain(ada, coordinator)
+      .brain(bob, () => ({ text: "bob done" }));
+    const { task } = await first.engine.tasks.create({
+      goal: "Complete after the result",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await first.executor.gate("hold").reached;
+    await untilTask(
+      first.engine,
+      task.id,
+      (view) =>
+        view.sessions.find((s) => s.botId === team.byName[bob])?.status ===
+        "completed",
+      "Bob's result",
+    );
+    const drain = watch(first.engine.worker.drain(600_000));
+    first.executor.gate("hold").open();
+    await until(() => drain.settled, { what: "the drain" });
+
+    const second = await worker();
+    second.executor
+      .brain(ada, coordinator)
+      .brain(bob, () => ({ text: "bob done" }));
+    const view = await untilTask(
+      second.engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "waiting",
+    );
+    expect(view.task.status).toBe("completed");
+    expect(view.task.result).toBe("with bob");
+    const resumed = second.executor.inputs.find(
+      (input) => promptBot(input.systemPrompt) === ada,
+    );
+    expect(resumed?.inputs[0]).toBe(COMPLETION_SET_ASIDE);
+    expect(resumed?.inputs[1]).toContain(`Result from ${bob} (session`);
   });
 });
 
