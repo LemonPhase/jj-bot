@@ -1631,10 +1631,12 @@ export class DockerSandboxDriver implements SandboxDriver {
   }
 
   /**
-   * Creates the internal network and starts the egress proxy on it, and
-   * returns the proxy's address there. Fails closed: a network that would
-   * not isolate the sandbox, or a proxy that exits or does not start
-   * listening, fails the acquire. The caller removes `egress` on failure.
+   * Creates the internal network and starts the egress proxy on it. Returns
+   * the proxy's address there once it has one, so the caller can start the
+   * sandbox meanwhile, and `ready`, which resolves once the proxy listens.
+   * Fails closed: a network that would not isolate the sandbox, or a proxy
+   * that exits or does not start listening, fails the acquire. The caller
+   * awaits `ready` and removes `egress` on failure.
    */
   private async startEgress(
     engine: DockerEngine,
@@ -1642,7 +1644,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     hosts: readonly string[],
     labels: Record<string, string>,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<{ address: string; ready: Promise<void> }> {
     const subnet = await this.createEgressNetwork(
       engine,
       egress,
@@ -1696,24 +1698,25 @@ export class DockerSandboxDriver implements SandboxDriver {
       throw new Error(
         `Egress proxy ${egress.proxyName} has no address on ${egress.networkName}`,
       );
-    const ready = await withSignal(
-      engine
-        .run(egress.proxyName, {
-          Cmd: egressListeningCheck(PROXY_START_MS),
-          Env: [],
-          User: SANDBOX_USER,
-          WorkingDir: "/",
-        })
-        .catch(
-          (error: unknown): ExecOutput => ({
-            exitCode: null,
-            stdout: Buffer.alloc(0),
-            stderr: Buffer.from(errorMessage(error)),
-          }),
-        ),
-      signal,
-    );
-    if (ready.exitCode !== 0) {
+    const listening = async () => {
+      const ready = await withSignal(
+        engine
+          .run(egress.proxyName, {
+            Cmd: egressListeningCheck(PROXY_START_MS),
+            Env: [],
+            User: SANDBOX_USER,
+            WorkingDir: "/",
+          })
+          .catch(
+            (error: unknown): ExecOutput => ({
+              exitCode: null,
+              stdout: Buffer.alloc(0),
+              stderr: Buffer.from(errorMessage(error)),
+            }),
+          ),
+        signal,
+      );
+      if (ready.exitCode === 0) return;
       // Running right after a failed check proves nothing: the engine may not
       // have recorded the exit yet. Only a proxy still running once it had
       // time to is one that did not start listening.
@@ -1735,8 +1738,11 @@ export class DockerSandboxDriver implements SandboxDriver {
             ? `: ${ready.stderr.toString("utf8").trim().slice(0, 500)}`
             : ""),
       );
-    }
-    return address;
+    };
+    const ready = listening();
+    // The caller awaits it after starting the sandbox, which may fail first.
+    ready.catch(() => {});
+    return { address, ready };
   }
 
   /**
@@ -1862,34 +1868,42 @@ export class DockerSandboxDriver implements SandboxDriver {
         }
       : undefined;
     let containerId: string | undefined;
+    let proxy: { address: string; ready: Promise<void> } | undefined;
+    // The sandbox starts while the proxy's listening check runs: it runs no
+    // command before acquire returns. A failed check stops it at its next step.
+    let proxyFailed = false;
+    const proxyFailure = async () => {
+      if (proxyFailed) await proxy?.ready;
+    };
     try {
-      const network =
-        egress && allowlist
-          ? {
-              networkName: egress.networkName,
-              proxyAddress: await this.startEgress(
-                engine,
-                egress,
-                allowlist,
-                {
-                  ...this.extraLabels,
-                  [LABELS.sandbox]: "1",
-                  [LABELS.id]: id,
-                  [LABELS.namespace]: this.namespace,
-                  [LABELS.task]: request.taskId,
-                  [LABELS.session]: request.sessionId,
-                  [LABELS.instance]: this.instanceId,
-                },
-                signal,
-              ),
-            }
-          : undefined;
+      if (egress && allowlist) {
+        proxy = await this.startEgress(
+          engine,
+          egress,
+          allowlist,
+          {
+            ...this.extraLabels,
+            [LABELS.sandbox]: "1",
+            [LABELS.id]: id,
+            [LABELS.namespace]: this.namespace,
+            [LABELS.task]: request.taskId,
+            [LABELS.session]: request.sessionId,
+            [LABELS.instance]: this.instanceId,
+          },
+          signal,
+        );
+        proxy.ready.catch(() => {
+          proxyFailed = true;
+        });
+      }
       const config = this.containerConfig(
         image,
         spec,
         volumeName,
         labels,
-        network,
+        egress && proxy
+          ? { networkName: egress.networkName, proxyAddress: proxy.address }
+          : undefined,
       );
       const create = () =>
         engine.json<{ Id: string }>("POST", "/containers/create", {
@@ -1905,6 +1919,7 @@ export class DockerSandboxDriver implements SandboxDriver {
         return create();
       });
       containerId = created.Id;
+      await proxyFailure();
       // Give the workspace mount point to the sandbox user. With copyUIDGID the
       // daemon chowns the extracted entry to the container's user; the entry is
       // the volume root itself, so images without a /workspace work too.
@@ -1915,6 +1930,7 @@ export class DockerSandboxDriver implements SandboxDriver {
         signal,
       });
       await engine.json("POST", `/containers/${containerId}/start`, { signal });
+      await proxyFailure();
       const sandbox = new DockerSandbox({
         id,
         containerId,
@@ -1942,9 +1958,11 @@ export class DockerSandboxDriver implements SandboxDriver {
               "this Docker Engine does not disable IPv6 on IPv4-only networks (CVE-2024-32473, 26.0.0 and 26.0.1): upgrade it",
           );
       }
+      await proxy?.ready;
       signal?.throwIfAborted();
       return sandbox;
     } catch (error) {
+      await proxy?.ready.catch(() => {});
       // By name, so a container the daemon created while the call failed (an
       // abort mid-request) goes too, before the network it is attached to.
       await removeContainer(engine, containerName).catch(() => {});

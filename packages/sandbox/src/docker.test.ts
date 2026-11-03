@@ -799,7 +799,10 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
       }
     });
 
-    describe("network mode allowlist", () => {
+    // Each allowlist sandbox is a network and two containers, which a daemon
+    // other suites share creates slowly: the conformance suite's budget, not
+    // the 20 s default meant for PGlite suites.
+    describe("network mode allowlist", { timeout: 60_000 }, () => {
       const allowlist = (...hosts: string[]): Partial<SandboxSpecInput> => ({
         network: { mode: "allowlist", hosts },
       });
@@ -993,28 +996,30 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           { name: `${namespace}-victim-compose`, network: victimNetwork },
         ];
         try {
-          for (const victim of victims) {
-            await engine.json("POST", "/containers/create", {
-              query: { name: victim.name },
-              body: {
-                Image: image,
-                Entrypoint: ["node", "-e", server],
-                Cmd: [],
-                User: "1000:1000",
-                Labels: labels,
-                HostConfig: { NetworkMode: victim.network },
-                NetworkingConfig: {
-                  EndpointsConfig: {
-                    [victim.network]:
-                      victim.network === "bridge"
-                        ? {}
-                        : { Aliases: ["postgres", "app"] },
+          await Promise.all(
+            victims.map(async (victim) => {
+              await engine.json("POST", "/containers/create", {
+                query: { name: victim.name },
+                body: {
+                  Image: image,
+                  Entrypoint: ["node", "-e", server],
+                  Cmd: [],
+                  User: "1000:1000",
+                  Labels: labels,
+                  HostConfig: { NetworkMode: victim.network },
+                  NetworkingConfig: {
+                    EndpointsConfig: {
+                      [victim.network]:
+                        victim.network === "bridge"
+                          ? {}
+                          : { Aliases: ["postgres", "app"] },
+                    },
                   },
                 },
-              },
-            });
-            await engine.json("POST", `/containers/${victim.name}/start`);
-          }
+              });
+              await engine.json("POST", `/containers/${victim.name}/start`);
+            }),
+          );
           const details = await Promise.all(
             victims.map((v) => inspect(v.name)),
           );
@@ -1191,12 +1196,13 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           ...options,
           instanceId: "current-worker",
         });
-        const orphan = (await crashed.acquire(
-          request(allowlist("example.com")),
-        )) as DockerSandbox;
-        const mine = (await current.acquire(
-          request(allowlist("example.com")),
-        )) as DockerSandbox;
+        // Independent, so acquired together: each is two containers and a
+        // network, which a daemon other suites share is slow to make.
+        const [orphan, mine] = (await Promise.all([
+          crashed.acquire(request(allowlist("example.com"))),
+          current.acquire(request(allowlist("example.com"))),
+        ])) as DockerSandbox[];
+        if (!orphan || !mine) throw new Error("no sandboxes");
         live.push(orphan, mine);
 
         const { removed } = await current.reapOrphans();
@@ -1333,8 +1339,8 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         throw new Error("No /27 in 10.214.0.0/16 is free on this daemon");
       };
 
-      // Three allowlist sandboxes of two containers each: on a daemon another
-      // suite is busy with, more than the default 20 s.
+      // Three allowlist sandboxes in a row, while other suites on the daemon
+      // may be in the pool test above: twice this block's budget.
       it("skips subnets other networks hold, and says so when its pool is full", async () => {
         // Two /28s; another network already holds the first.
         const blocker = `${namespace}-blocker`;
