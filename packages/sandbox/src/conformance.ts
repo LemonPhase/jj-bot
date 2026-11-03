@@ -934,11 +934,12 @@ export function describeSandboxConformance(
       async (context) => {
         spawnOnly(context);
         const sandbox = await acquire();
-        // The process exits at once; a child it left writes a second later.
+        // The process exits at once; a child it left writes half a second later,
+        // well inside the time the in-tree drivers keep relaying its output.
         const spawned = await spawner(sandbox)([
           "sh",
           "-c",
-          "(sleep 1; echo late; echo late-err >&2) & echo early; exit 0",
+          "(sleep 0.5; echo late; echo late-err >&2) & echo early; exit 0",
         ]);
         const output = capture(spawned);
         const exit = await spawned.exited;
@@ -967,7 +968,9 @@ export function describeSandboxConformance(
           throw new Error(`process ${pid} never ended`);
         };
 
-        // A child it left keeps its stdout open, so `exited` is still pending.
+        // A child it left keeps its stdout open, so `exited` is still pending
+        // (unless the driver stops relaying it first, as the docker daemon does
+        // shortly after the exit; the unread case below covers that driver).
         const holder = await spawn([
           "sh",
           "-c",

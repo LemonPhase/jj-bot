@@ -318,17 +318,24 @@ export interface SandboxProcess {
   onOutput(listener: OutputListener): () => void;
   /**
    * Settles once the process has exited and its stdout and stderr have
-   * closed, after every chunk read was passed to the listeners. Never
-   * rejects. A descendant that keeps stdout or stderr open delays it, as it
-   * delays `exec`; held output that nobody reads delays it too.
+   * closed, after every chunk read was passed to the listeners, never at
+   * the exit alone. Never rejects. A descendant that keeps stdout or stderr
+   * open delays it, as it delays `exec`, for as long as the driver relays
+   * that output (driver-specific: the docker daemon closes an exec's output
+   * shortly after its process exits); held output that nobody reads delays
+   * it too.
    */
   readonly exited: Promise<SpawnExit>;
   /**
    * Stops the process and its descendants: SIGTERM first, then SIGKILL for
    * whatever is left after the driver's grace period. Resolves with
    * `exited`'s value (`interruptReason: "kill"`), or with it unchanged when
-   * the process has already ended. Idempotent. Background processes it
-   * left after exiting by itself live until `release()`, as with `exec`.
+   * the process has already ended. Idempotent. When the process itself
+   * has already exited but `exited` is still pending (a descendant holds its
+   * output, or held output is unread), it only ends what holds the output,
+   * and `exited` reports the natural exit; an abort does the same. Background
+   * processes it left after exiting by itself live until `release()`, as
+   * with `exec`.
    */
   kill(): Promise<SpawnExit>;
 }
