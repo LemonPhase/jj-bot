@@ -1198,12 +1198,18 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         });
         // Independent, so acquired together: each is two containers and a
         // network, which a daemon other suites share is slow to make.
-        const [orphan, mine] = (await Promise.all([
+        const made = await Promise.allSettled([
           crashed.acquire(request(allowlist("example.com"))),
           current.acquire(request(allowlist("example.com"))),
-        ])) as DockerSandbox[];
+        ]);
+        // Released after the test even when the other acquire failed.
+        for (const result of made)
+          if (result.status === "fulfilled") live.push(result.value);
+        const [orphan, mine] = made.map((result) => {
+          if (result.status === "rejected") throw result.reason;
+          return result.value as DockerSandbox;
+        });
         if (!orphan || !mine) throw new Error("no sandboxes");
-        live.push(orphan, mine);
 
         const { removed } = await current.reapOrphans();
         expect([...removed].sort()).toEqual(
