@@ -814,6 +814,83 @@ describe("orchestration", () => {
     expect(done.messages.map((m) => m.text)).not.toContain("late note");
   });
 
+  it("judges a message's recipient by its sessions in this task only, and reaches its active one beside a finished one", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob", "Cy"]);
+    const [ada, bob, cy] = team.names as [string, string, string];
+    const resultsFrom = (view: Parameters<Brain>[0]) =>
+      said
+        .inputs(view)
+        .filter((text) => text.startsWith(`Result from ${bob} (session`))
+        .length;
+    executor
+      .brain(cy, delegatingCoordinator([bob]))
+      .brain(bob, () => ({ text: "bob done" }))
+      .brain(ada, (view) => {
+        if (said.turns(view) === 0)
+          return {
+            calls: [
+              // Bob's only session so far is a finished one in another task.
+              { name: "message", args: { to: bob, text: "before" } },
+              { name: "delegate", args: { bot: bob, brief: "first" } },
+            ],
+          };
+        const sent = said.results(view).filter((r) => r.name === "message");
+        if (resultsFrom(view) === 1 && sent.length === 1)
+          return {
+            calls: [
+              { name: "message", args: { to: bob, text: "after" } },
+              { name: "delegate", args: { bot: bob, brief: "second" } },
+              // Bob now has a finished and a queued session in this task.
+              { name: "message", args: { to: bob, text: "again" } },
+            ],
+          };
+        if (resultsFrom(view) < 2) return { text: "" };
+        if (lastResult(view)?.name === "complete_task")
+          return { text: "Done." };
+        return { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      });
+    const other = await engine.tasks.create({
+      goal: "Earlier task",
+      coordinatorBotId: team.byName[cy] as string,
+      participantBotIds: [team.byName[bob] as string],
+    });
+    await untilTask(engine, other.task.id, finished("completed"));
+    const { task } = await engine.tasks.create({
+      goal: "Later task",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: [team.byName[bob] as string],
+    });
+    const done = await untilTask(engine, task.id, finished("completed"));
+    const page = await engine.tasks.events(task.id);
+    const outputs = page.events.flatMap((e) =>
+      e.type === "tool.finished" && e.payload.tool === "message"
+        ? [{ ok: e.payload.ok, output: e.payload.output ?? "" }]
+        : [],
+    );
+    expect(outputs).toEqual([
+      {
+        ok: false,
+        output: `Not sent: ${bob} has no session on this task, so no bot would read the message. To have ${bob} act on it, \`delegate\` to ${bob}.`,
+      },
+      {
+        ok: false,
+        output: `Not sent: ${bob}'s session on this task has finished, so no bot would read the message. To have ${bob} act on it, \`delegate\` to ${bob}.`,
+      },
+      { ok: true, output: `Sent to ${bob}.` },
+    ]);
+    const posted = done.messages.filter((m) =>
+      ["before", "after", "again"].includes(m.text),
+    );
+    expect(posted).toEqual([
+      expect.objectContaining({
+        text: "again",
+        intent: "discussion",
+        recipientBotIds: [team.byName[bob]],
+      }),
+    ]);
+  });
+
   it("keeps a waiting session's newest 20 notifications and collapses the older ones", async () => {
     const { engine, executor } = await setup();
     const team = await createTeam(engine, ["Ada", "Bob"]);
