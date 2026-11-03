@@ -47,6 +47,7 @@ const taskQueued: Task = {
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: null,
+  templateId: null,
   createdAt: time(1),
   updatedAt: time(1),
   finishedAt: null,

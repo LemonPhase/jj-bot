@@ -1,5 +1,6 @@
 import {
   Component,
+  lazy,
   type ReactNode,
   Suspense,
   useEffect,
@@ -8,7 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Button, ErrorBanner, Spinner } from "../../components/ui";
+import { Button, Dialog, ErrorBanner, Spinner } from "../../components/ui";
 import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
@@ -22,7 +23,11 @@ import {
   type Section,
   sectionOf,
 } from "./router";
-import { type ShellActions, ShellContext } from "./ShellContext";
+import {
+  type ShellActions,
+  ShellContext,
+  type TemplateDialogRequest,
+} from "./ShellContext";
 import { Sidebar, useModeBadge } from "./Sidebar";
 import {
   SCREEN_NAMES,
@@ -33,7 +38,13 @@ import {
 import { navigate, useRoute } from "./useRoute";
 import "./shell.css";
 
-type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
+type OpenDialog =
+  | { kind: "none" }
+  | { kind: "task"; botIds: string[] }
+  | { kind: "template"; request: TemplateDialogRequest };
+
+/** The template dialogs, loaded when one first opens. */
+const TemplateDialog = lazy(() => import("../templates/TemplateDialog"));
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -135,6 +146,10 @@ export function AppShell() {
               : [],
         });
       },
+      openTemplateDialog: (request) => {
+        setNavOpen(false);
+        setDialog({ kind: "template", request });
+      },
     }),
     [selectedBotId],
   );
@@ -192,6 +207,13 @@ export function AppShell() {
       </div>
       {dialog.kind === "task" && (
         <NewTaskDialog initialBotIds={dialog.botIds} onClose={closeDialog} />
+      )}
+      {dialog.kind === "template" && (
+        <DialogBoundary onClose={closeDialog}>
+          <Suspense fallback={null}>
+            <TemplateDialog request={dialog.request} onClose={closeDialog} />
+          </Suspense>
+        </DialogBoundary>
       )}
     </ShellContext.Provider>
   );
@@ -268,6 +290,40 @@ class ScreenBoundary extends Component<
         onRetry={() => window.location.reload()}
         retryLabel="Reload"
       />
+    );
+  }
+}
+
+/**
+ * A lazy dialog whose chunk fails to load says so in a dialog of its own,
+ * with a reload, instead of unmounting the app.
+ */
+class DialogBoundary extends Component<
+  { children: ReactNode; onClose: () => void },
+  { error: Error | null }
+> {
+  override state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown): { error: Error } {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  override render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <Dialog
+        open
+        onClose={this.props.onClose}
+        title="Couldn't open this"
+        footer={
+          <Button variant="primary" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        }
+      >
+        <ErrorBanner word="Couldn't load">{error.message}</ErrorBanner>
+      </Dialog>
     );
   }
 }
