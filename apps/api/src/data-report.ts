@@ -13,10 +13,13 @@ import {
   LOCAL_OWNER,
   readSchemaLevel,
   type SchemaLevel,
+  type SecretKind,
+  shippedMigrations,
 } from "@jj/db";
 import { sql } from "drizzle-orm";
 import {
   type DatabaseSetting,
+  dockerNamespace,
   type Env,
   REPO_ROOT,
   redactUrl,
@@ -38,6 +41,8 @@ export interface DataReport {
     contractVersion: string;
     migrations: number;
     latestMigration: string;
+    /** Every migration this build ships, oldest first. */
+    migrationTags: string[];
   };
   schema: {
     state: SchemaState;
@@ -66,8 +71,6 @@ export interface DataReport {
   /** The docker driver's namespace: its task workspaces are `<namespace>-task-<taskId>`. */
   dockerNamespace: string;
 }
-
-const text = (env: Env, name: string) => env[name]?.trim() || undefined;
 
 export function stateOf(level: SchemaLevel): SchemaState {
   if (!level.recorded || level.applied === 0) return "empty";
@@ -107,6 +110,7 @@ export async function reportOn(
       contractVersion: CONTRACT_VERSION,
       migrations: level.shipped,
       latestMigration: level.shippedLatest,
+      migrationTags: shippedMigrations().map((migration) => migration.tag),
     },
     schema: {
       state,
@@ -116,7 +120,7 @@ export async function reportOn(
       pending: level.pending,
       newer: level.newer,
     },
-    dockerNamespace: text(env, "JJ_DOCKER_NAMESPACE") ?? "jj-sandbox",
+    dockerNamespace: dockerNamespace(env),
   };
   if (state === "empty") return report;
   report.records = {
@@ -135,11 +139,35 @@ export async function reportOn(
       ...(keys ? { keyring: createKeyring(keys.current, keys.previous) } : {}),
       owner: LOCAL_OWNER,
     });
-    await store.refresh();
+    // Raw SQL, not the current schema: the database may be an older one.
+    const rows = (
+      (await exec.execute(
+        sql`select kind, name, key_id, nonce, ciphertext from secrets where owner_id = ${LOCAL_OWNER} order by kind, name`,
+      )) as unknown as {
+        rows: {
+          kind: SecretKind;
+          name: string;
+          key_id: string;
+          nonce: Uint8Array;
+          ciphertext: Uint8Array;
+        }[];
+      }
+    ).rows;
     report.secrets = {
-      stored: await count(exec, "select count(*) as n from secrets"),
+      stored: rows.length,
       keyConfigured: keys !== undefined,
-      unreadable: store.unreadable(),
+      unreadable: rows
+        .filter(
+          (row) =>
+            !store.opens({
+              kind: row.kind,
+              name: row.name,
+              keyId: row.key_id,
+              nonce: new Uint8Array(row.nonce),
+              ciphertext: new Uint8Array(row.ciphertext),
+            }),
+        )
+        .map((row) => ({ kind: row.kind, name: row.name })),
     };
   }
   return report;
@@ -229,6 +257,7 @@ export function formatEnv(report: DataReport): string {
     ["build_contract_version", report.build.contractVersion],
     ["build_migrations", report.build.migrations],
     ["build_latest_migration", report.build.latestMigration],
+    ["build_migration_tags", report.build.migrationTags.join(",")],
     ["schema_state", report.schema.state],
     ["schema_applied", report.schema.applied],
     ["schema_latest", report.schema.latest ?? ""],

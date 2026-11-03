@@ -6,11 +6,13 @@
 #
 #   scripts/backup.sh [DIR]
 #
-# DIR (default backups/<project>-<UTC time>) must not exist or be empty. It
-# receives database.dump (pg_dump, custom format, one consistent snapshot),
+# DIR (relative to the current directory; default backups/<project>-<UTC
+# time> in the repository) must not exist or be empty. It receives
+# database.dump (pg_dump, custom format, one consistent snapshot),
 # volumes/<volume>.tar with volumes/<volume>.labels (each workspace, copied by
 # a throwaway container), check.json and check.env (the data check: versions,
-# migration level, record counts), manifest.json and SHA256SUMS.
+# migration level, record counts), manifest.json and SHA256SUMS, which covers
+# every other file.
 #
 # The backup holds everything the database holds, the generated API token
 # included: keep it as secret as the server. It never holds JJ_SECRET_KEY,
@@ -40,6 +42,14 @@ case "${1:-}" in
 esac
 [ $# -le 1 ] || fail "too many arguments (see --help)"
 
+# A DIR given relative to where the script was called from, not the
+# repository root it then works in.
+out=${1:-}
+case "$out" in
+  "" | /*) ;;
+  *) out=$PWD/$out ;;
+esac
+
 cd "$(dirname "$0")/.."
 image=${JJ_BACKUP_IMAGE:-jj-sandbox:base-1}
 
@@ -55,9 +65,10 @@ postgres=$(docker compose ps --status running --quiet postgres)
 [ -n "$postgres" ] || fail "the stack's postgres service is not running; start the stack first (docker compose up -d --wait)."
 project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$postgres")
 started=$(date -u +%Y%m%dT%H%M%SZ)
-out=${1:-backups/$project-$started}
+out=${out:-$PWD/backups/$project-$started}
 if [ -e "$out" ] && [ -n "$(ls -A "$out")" ]; then fail "$out exists and is not empty."; fi
 docker image inspect "$image" >/dev/null 2>&1 || fail "the image $image is missing; build the stack (docker compose build) or set JJ_BACKUP_IMAGE."
+commit=$(git rev-parse --short=12 HEAD 2>/dev/null || true)
 
 umask 077
 mkdir -p "$out/volumes"
@@ -81,28 +92,50 @@ pg_dump_version=$(docker compose exec -T postgres pg_dump --version)
 server_version=$(docker compose exec -T postgres sh -c 'psql -tA --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" -c "show server_version"')
 
 # Each task workspace, read by a throwaway container that mounts it read-only.
-# Ephemeral workspaces live only as long as their sandbox and are left out.
+# Ephemeral workspaces live only as long as their sandbox and are left out, as
+# is a workspace that is gone by the time it is read (a sandbox released it).
 volumes=()
+skipped=0
+gone() {
+  echo "- workspace $1: gone before it was copied, skipped"
+  rm -f "$out/volumes/$1.labels" "$out/volumes/$1.tar"
+  skipped=$((skipped + 1))
+}
 while IFS= read -r volume; do
   [ -n "$volume" ] || continue
-  mode=$(docker volume inspect --format '{{index .Labels "jj.sandbox.workspace-mode"}}' "$volume")
-  [ "$mode" != ephemeral ] || continue
+  if ! labels=$(docker volume inspect --format '{{range $key, $value := .Labels}}{{$key}}={{$value}}{{println}}{{end}}' "$volume" 2>/dev/null); then
+    gone "$volume"
+    continue
+  fi
+  if grep -qx 'jj.sandbox.workspace-mode=ephemeral' <<<"$labels"; then continue; fi
   echo "- workspace $volume"
-  docker volume inspect --format '{{range $key, $value := .Labels}}{{$key}}={{$value}}{{println}}{{end}}' "$volume" | sed '/^$/d' >"$out/volumes/$volume.labels"
-  docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
+  sed '/^$/d' <<<"$labels" >"$out/volumes/$volume.labels"
+  if ! docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
     --cap-add DAC_READ_SEARCH --security-opt no-new-privileges \
     --volume "$volume:/workspace:ro" --entrypoint tar "$image" \
-    --numeric-owner -C /workspace -cf - . >"$out/volumes/$volume.tar"
+    --numeric-owner -C /workspace -cf - . >"$out/volumes/$volume.tar"; then
+    docker volume inspect "$volume" >/dev/null 2>&1 || {
+      gone "$volume"
+      continue
+    }
+    fail "could not copy the workspace $volume."
+  fi
+  # `docker run` creates a volume that vanished just before it: that one is
+  # empty and carries no driver labels. Remove it again.
+  if [ "$(docker volume inspect --format '{{index .Labels "jj.sandbox"}}' "$volume" 2>/dev/null)" != 1 ]; then
+    docker volume rm "$volume" >/dev/null 2>&1 || true
+    gone "$volume"
+    continue
+  fi
   volumes+=("$volume")
 done < <(docker volume ls --quiet --filter "label=jj.sandbox=1" --filter "label=jj.sandbox.namespace=$namespace")
-
-(cd "$out" && sha256 database.dump volumes/* >SHA256SUMS)
 
 {
   printf '{\n  "format": "jj-bot-backup",\n  "version": 1,\n'
   printf '  "createdAt": %s,\n' "$(json_string "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
   printf '  "composeProject": %s,\n' "$(json_string "$project")"
   printf '  "dockerNamespace": %s,\n' "$(json_string "$namespace")"
+  printf '  "checkoutCommit": %s,\n' "$(json_string "$commit")"
   printf '  "postgres": { "server": %s, "pgDump": %s },\n' \
     "$(json_string "$server_version")" "$(json_string "$pg_dump_version")"
   printf '  "secretKey": "not included: keep JJ_SECRET_KEY apart from this backup",\n'
@@ -118,5 +151,13 @@ done < <(docker volume ls --quiet --filter "label=jj.sandbox=1" --filter "label=
   printf '}\n'
 } >"$out/manifest.json"
 
-echo "Backed up: schema $(field schema_state) at $(field schema_latest); bots: $(field bots), tasks: $(field tasks), artifacts: $(field artifacts), workspaces: ${#volumes[@]}."
+# Every file the restore reads, listed explicitly (a backup may hold no
+# workspace at all).
+files=(manifest.json check.env check.json database.dump)
+for volume in ${volumes[@]+"${volumes[@]}"}; do
+  files+=("volumes/$volume.labels" "volumes/$volume.tar")
+done
+(cd "$out" && sha256 "${files[@]}" >SHA256SUMS)
+
+echo "Backed up: schema $(field schema_state) at $(field schema_latest); bots: $(field bots), tasks: $(field tasks), artifacts: $(field artifacts), workspaces: ${#volumes[@]}$([ "$skipped" -eq 0 ] || echo " ($skipped gone meanwhile, skipped)")."
 echo "Keep JJ_SECRET_KEY apart from $out; restore with scripts/restore.sh $out"
