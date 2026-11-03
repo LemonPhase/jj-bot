@@ -317,7 +317,9 @@ export async function runChatJob(
       const told =
         answered.kind === "user" ||
         (await answerTaskUpdate(tx, ctx, answered.update.id, id));
-      if (told) {
+      // An update overtaken during the reply is not told, but its model
+      // calls were made: their usage is recorded either way.
+      if (told)
         await storeMessage(tx, ctx, botId, {
           id,
           text: reply.text,
@@ -326,8 +328,7 @@ export async function runChatJob(
               ? (state.linkedTaskId ?? onlyTaskLookedAt(state))
               : answered.update.taskId,
         });
-        await storeUsage(tx, ctx, botId, reply);
-      }
+      await storeUsage(tx, ctx, botId, reply);
       if (answered.kind === "user")
         await markHandled(
           tx,

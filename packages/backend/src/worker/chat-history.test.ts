@@ -61,9 +61,31 @@ describe("chat history for the model", () => {
     expect(stripCardNotes("Line one\n[Task card: task_2]\nLine two")).toBe(
       "Line one\n\nLine two",
     );
-    // A note in the middle of a sentence is the bot's own text.
-    expect(stripCardNotes("See [Task card: x] above.")).toBe(
-      "See [Task card: x] above.",
+    // Copies anywhere in a line, wrapped in bold, or with titles that hold
+    // brackets, quotes or backslashes.
+    for (const title of [
+      "Fix [auth] bug",
+      "[WIP] report",
+      'Say "hi"',
+      "C:\\temp\\out",
+      undefined,
+    ]) {
+      const note = cardNote("task_1", title);
+      expect(stripCardNotes(`Done.\n\n${note}`)).toBe("Done.");
+      expect(stripCardNotes(`Done. ${note}`)).toBe("Done.");
+      expect(stripCardNotes(`Done.\n\n**${note}**`)).toBe("Done.");
+      expect(stripCardNotes(`See ${note} above.\nNext line.`)).toBe(
+        "See above.\nNext line.",
+      );
+    }
+    expect(
+      stripCardNotes(
+        `First.\n\n${cardNote("task_1", "A")}\n\n${cardNote("task_2", "B")}\n\nLast.`,
+      ),
+    ).toBe("First.\n\nLast.");
+    // Brackets that are not a card note stay.
+    expect(stripCardNotes("Use [Task card] or [x] here.")).toBe(
+      "Use [Task card] or [x] here.",
     );
     // An old reply stored with a note gets one note, not two.
     const [, reply] = modelHistory(

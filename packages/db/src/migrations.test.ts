@@ -198,6 +198,13 @@ describe.each(targets)("migrations on $name", (target) => {
           "cmsg_4",
           "cmsg_7",
         ]);
+        // The conversation view finds a reply by what it was answering.
+        const indexes = await database.execute(
+          sql`select indexdef from pg_indexes where indexname = 'jobs_chat_reply_answering_idx'`,
+        );
+        expect((indexes.rows as { indexdef: string }[])[0]?.indexdef).toContain(
+          "'answering'",
+        );
       } finally {
         await database.close();
       }

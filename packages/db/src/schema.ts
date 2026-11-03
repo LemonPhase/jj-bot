@@ -610,6 +610,11 @@ export const jobs = pgTable(
     index("jobs_task_idx").on(t.taskId),
     index("jobs_session_idx").on(t.sessionId),
     index("jobs_bot_idx").on(t.botId),
+    // What a chat reply was answering (see the engine's chat-reply.ts): the
+    // conversation view looks up the reply to the user's latest message.
+    index("jobs_chat_reply_answering_idx")
+      .on(t.botId, sql`(${t.payload}->>'answering')`)
+      .where(sql`${t.kind} = 'chat.reply'`),
     // At most one pending and one running session.run per session, and one
     // chat.reply per bot. enqueue() coalesces wakes on the pending index;
     // claim() never starts a second run while one is running.

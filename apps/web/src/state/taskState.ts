@@ -2,7 +2,13 @@
  * Pure pieces of the workspace's task state, kept out of the React provider
  * so they can be tested on their own.
  */
-import type { Task, TaskMessage, TaskView, WorkspaceHint } from "@jj/contracts";
+import type {
+  Task,
+  TaskMessage,
+  TaskSummary,
+  TaskView,
+  WorkspaceHint,
+} from "@jj/contracts";
 import type { ApiError } from "../api/client";
 import { isTerminalTaskError } from "../api/follow";
 
@@ -64,6 +70,17 @@ export const overlayTask = (
   overlay: TaskOverlay | undefined,
   task: Task,
 ): TaskOverlay => ({ ...(overlay ?? emptyOverlay()), task });
+
+/**
+ * A list entry with a newer task record (such as the one a stop returns)
+ * merged in. Its question stays only while the task still waits.
+ */
+export function mergeTask(summary: TaskSummary, task: Task): TaskSummary {
+  const { question, ...merged } = { ...summary, ...task };
+  return merged.status === "waiting" && question !== undefined
+    ? { ...merged, question }
+    : merged;
+}
 
 /** The overlay entries the view does not reflect yet; null when none are left. */
 export function pruneOverlay(

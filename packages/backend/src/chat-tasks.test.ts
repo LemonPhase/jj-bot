@@ -10,9 +10,9 @@ import {
   taskSummarySchema,
   waitingQuestion,
 } from "@jj/contracts";
-import { chatTaskUpdates, conversationMessages, jobs } from "@jj/db";
+import { chatTaskUpdates, conversationMessages, jobs, usage } from "@jj/db";
 import { ModelRegistry, ChatResponder as PiChatResponder } from "@jj/runtime";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type {
   ChatReply,
@@ -1177,6 +1177,49 @@ describe("chat replies and updates, after review", () => {
     );
     expect(update).toContain("\nShipped.\n");
     engine.executor.gate("more").open();
+  });
+
+  it("record the usage of an update reply overtaken while it ran, and store no message for it", async () => {
+    const chat = new GatedChat("update");
+    const engine = await engineOn({ chat });
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    chat.brain(ada, politeBrain);
+    engine.executor.brain(ada, (view) =>
+      said.heard(view, "blue")
+        ? completes("Painted it blue.")(view)
+        : { text: "Which colour?" },
+    );
+    chat.hold();
+    const { task } = await engine.engine.tasks.create({
+      goal: "Paint",
+      coordinatorBotId: adaId,
+    });
+    await until(() => chat.order.includes("start update"), {
+      what: "the waiting update's reply to start",
+    });
+    // The user answers in the task while the reply runs: the task completes.
+    await engine.engine.tasks.postMessage(task.id, { text: "blue" });
+    await untilTask(
+      engine.engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    chat.let();
+    const view = await untilReplies(engine, adaId, 1);
+    await sleep(200);
+    expect(
+      (await conversation(engine, adaId)).messages.map((m) => m.text),
+    ).toEqual(["In my words: Painted it blue."]);
+    expect(view.messages).toHaveLength(1);
+    // Both replies called the model; both are accounted.
+    expect(chat.inputs.filter(isUpdate)).toHaveLength(2);
+    const chatUsage = await db.database.db
+      .select()
+      .from(usage)
+      .where(and(eq(usage.botId, adaId), isNull(usage.taskId)));
+    expect(chatUsage).toHaveLength(2);
   });
 
   it("tell an update that shared a queued reply with a user message", async () => {

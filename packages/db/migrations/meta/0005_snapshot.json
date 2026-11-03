@@ -1,5 +1,5 @@
 {
-  "id": "10ba6c68-54b9-4a30-8d89-865eafa941c1",
+  "id": "7cbd887c-104e-4d7c-8056-a1663442064b",
   "prevId": "d1966145-af78-4998-961a-43774d803520",
   "version": "7",
   "dialect": "postgresql",
@@ -779,6 +779,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "jobs_chat_reply_answering_idx": {
+          "name": "jobs_chat_reply_answering_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->>'answering')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"jobs\".\"kind\" = 'chat.reply'",
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -9,12 +9,19 @@ import type { ChatHistoryEntry } from "../ports";
 export const cardNote = (taskId: string, title: string | undefined) =>
   `[Task card: ${taskId}${title === undefined ? "" : ` ${JSON.stringify(title)}`}]`;
 
-const CARD_NOTE_LINE = /^[ \t]*\[Task card:[^\]\n]*\][ \t]*$/gm;
+/**
+ * A card note by its own grammar, anywhere in a line: `[Task card: <id>]` or
+ * `[Task card: <id> "<JSON-quoted title>"]` (a title may hold brackets or
+ * quotes), with the spaces before it and any `**` around it.
+ */
+const CARD_NOTE =
+  /[ \t]*(\*{0,2})\[Task card: [^\s\]]+(?: "(?:[^"\\\n]|\\.)*")?\]\1/g;
 
-/** `text` without card notes (lines like `[Task card: task_… "Title"]`). */
+/** `text` without card notes, and without the blank lines they leave. */
 export function stripCardNotes(text: string): string {
   return text
-    .replace(CARD_NOTE_LINE, "")
+    .replace(CARD_NOTE, "")
+    .replace(/[ \t]+$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
