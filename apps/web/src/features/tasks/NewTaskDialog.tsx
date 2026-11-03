@@ -2,20 +2,18 @@ import { profileBudgetsSchema } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
-  Avatar,
   Button,
-  Chip,
   Dialog,
   ErrorBanner,
   Input,
   SectionLabel,
-  Select,
   Textarea,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
 import { formatCap } from "./format";
 import { readCapInput } from "./SpendControl";
+import { rosterOf, TeamPicker } from "./TeamPicker";
 import { type CheckDraft, planFromDrafts } from "./verification";
 
 export interface NewTaskDialogProps {
@@ -33,7 +31,6 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const { bots, profiles, createTask } = useWorkspace();
   const api = useApi();
   const formId = useId();
-  const pickLabelId = useId();
   const checksLabelId = useId();
   const [drafts, setDrafts] = useState<CheckDraft[]>([]);
   const [checkErrors, setCheckErrors] = useState<Record<string, string>>({});
@@ -58,18 +55,8 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const capValue = capText ?? (profileCap === null ? "" : String(profileCap));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const participants = [
-    coordinatorId,
-    ...others.filter((botId) => botId !== coordinatorId),
-  ].filter(Boolean);
+  const participants = rosterOf(coordinatorId, others);
   const canStart = goal.trim().length > 0 && Boolean(coordinatorId) && !busy;
-
-  const toggle = (botId: string) =>
-    setOthers((current) =>
-      current.includes(botId)
-        ? current.filter((id) => id !== botId)
-        : [...current, botId],
-    );
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -145,55 +132,13 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
             placeholder="What should the bots accomplish?"
             onChange={(event) => setGoal(event.target.value)}
           />
-          <Select
-            label="Coordinator"
-            value={coordinatorId}
-            onChange={setCoordinatorId}
-            options={bots.map((bot) => ({
-              value: bot.id,
-              label: bot.role ? `${bot.name} · ${bot.role}` : bot.name,
-            }))}
+          <TeamPicker
+            bots={bots}
+            coordinatorId={coordinatorId}
+            onCoordinator={setCoordinatorId}
+            others={others}
+            onOthers={setOthers}
           />
-          <div className="new-task-form__bots">
-            <SectionLabel id={pickLabelId} tracking="part">
-              Participants · {participants.length}
-            </SectionLabel>
-            <div
-              className="new-task-form__chips"
-              role="group"
-              aria-labelledby={pickLabelId}
-            >
-              {bots.map((bot) => {
-                const isCoordinator = bot.id === coordinatorId;
-                return (
-                  <Chip
-                    key={bot.id}
-                    selected={isCoordinator || others.includes(bot.id)}
-                    aria-disabled={isCoordinator || undefined}
-                    onClick={() => {
-                      if (!isCoordinator) toggle(bot.id);
-                    }}
-                    leading={
-                      <Avatar
-                        appearance={bot.appearance}
-                        name={bot.name}
-                        size={18}
-                        animate={false}
-                        decorative
-                      />
-                    }
-                  >
-                    {bot.name}
-                    {isCoordinator && (
-                      <span className="new-task-form__coordinator">
-                        · coordinator
-                      </span>
-                    )}
-                  </Chip>
-                );
-              })}
-            </div>
-          </div>
           <Input
             label="Spend cap (USD)"
             type="number"

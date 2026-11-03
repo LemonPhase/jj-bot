@@ -1,0 +1,160 @@
+import {
+  type Bot,
+  describeTemplateProblem,
+  profileBudgetsSchema,
+  type RuntimeProfile,
+  type Task,
+  type TaskTemplate,
+  type TemplateProblem,
+  type VerificationPlan,
+} from "@jj/contracts";
+import { formatCap } from "../tasks/format";
+
+/** How a template sets a started task's cap: the profile's at start, none, or an amount. */
+export type CapChoice = "profile" | "none" | "amount";
+
+/** What the template editor holds while the user edits it. */
+export interface TemplateDraft {
+  title: string;
+  goal: string;
+  coordinatorId: string;
+  /** The other participants, archived bots included until the user saves. */
+  others: string[];
+  plan: VerificationPlan | null;
+  cap: CapChoice;
+  /** The amount when `cap` is `amount`. */
+  capText: string;
+}
+
+const capOf = (
+  spendCapUsd: number | null | undefined,
+): Pick<TemplateDraft, "cap" | "capText"> =>
+  spendCapUsd === undefined
+    ? { cap: "profile", capText: "" }
+    : spendCapUsd === null
+      ? { cap: "none", capText: "" }
+      : { cap: "amount", capText: String(spendCapUsd) };
+
+/** A new template: the first bot coordinates, the profile's cap applies. */
+export function blankDraft(bots: readonly Bot[]): TemplateDraft {
+  return {
+    title: "",
+    goal: "",
+    coordinatorId: bots[0]?.id ?? "",
+    others: [],
+    plan: null,
+    ...capOf(undefined),
+  };
+}
+
+export function draftFromTemplate(template: TaskTemplate): TemplateDraft {
+  return {
+    title: template.title,
+    goal: template.goal,
+    coordinatorId: template.coordinatorBotId,
+    others: template.participantBotIds.filter(
+      (botId) => botId !== template.coordinatorBotId,
+    ),
+    plan: template.verificationPlan,
+    ...capOf(template.spendCapUsd),
+  };
+}
+
+/**
+ * "Save as template": the task as it is now (its current goal, roster, plan
+ * and cap). A cap equal to the coordinator's profile's now (`profileCapUsd`)
+ * reads as that profile's, so the template follows the profile; any other
+ * cap is kept as the task's own.
+ */
+export function draftFromTask(
+  task: Task,
+  profileCapUsd?: number | null,
+): TemplateDraft {
+  return {
+    title: task.title,
+    goal: task.goal,
+    coordinatorId: task.coordinatorBotId,
+    others: task.participantBotIds.filter(
+      (botId) => botId !== task.coordinatorBotId,
+    ),
+    plan: task.verificationPlan,
+    ...capOf(
+      profileCapUsd !== undefined && task.spendCapUsd === profileCapUsd
+        ? undefined
+        : task.spendCapUsd,
+    ),
+  };
+}
+
+/** The task cap a new task of this coordinator gets now: its profile's `maxUsdPerTask`. */
+export function profileCapOf(
+  coordinatorBotId: string,
+  bots: readonly Bot[],
+  profiles: readonly RuntimeProfile[],
+): number | null {
+  const coordinator = bots.find((bot) => bot.id === coordinatorBotId);
+  return (
+    profileOf(coordinator, profiles)?.budgets ?? profileBudgetsSchema.parse({})
+  ).maxUsdPerTask;
+}
+
+/** The profile a bot runs with, as the server picks it: its own, else the default. */
+export function profileOf(
+  bot: Pick<Bot, "runtimeProfileId"> | undefined,
+  profiles: readonly RuntimeProfile[],
+): RuntimeProfile | undefined {
+  return bot?.runtimeProfileId
+    ? profiles.find((profile) => profile.id === bot.runtimeProfileId)
+    : profiles.find((profile) => profile.isDefault);
+}
+
+/** The cap a start sets now, and where it comes from, in words. */
+export function resolvedCapLine(
+  template: Pick<TaskTemplate, "spendCapUsd" | "coordinatorBotId">,
+  bots: readonly Bot[],
+  profiles: readonly RuntimeProfile[],
+): string {
+  if (template.spendCapUsd === null) return "No cap, as the template says.";
+  if (template.spendCapUsd !== undefined)
+    return `${formatCap(template.spendCapUsd)}, as the template says.`;
+  const coordinator = bots.find((bot) => bot.id === template.coordinatorBotId);
+  const profileCap = profileCapOf(template.coordinatorBotId, bots, profiles);
+  const whose = coordinator ? `${coordinator.name}'s profile` : "the profile";
+  return profileCap === null
+    ? `No cap: ${whose} sets none.`
+    : `${formatCap(profileCap)}, from ${whose}.`;
+}
+
+/** The problems of a template, one sentence each. */
+export const problemLines = (problems: readonly TemplateProblem[]) =>
+  problems.map(describeTemplateProblem);
+
+/** A template's team in words: "Kite coordinates, with Vesper". */
+export function teamLine(
+  template: Pick<TaskTemplate, "coordinatorBotId" | "participantBotIds">,
+  nameOf: (botId: string) => string,
+): string {
+  const others = template.participantBotIds
+    .filter((botId) => botId !== template.coordinatorBotId)
+    .map(nameOf);
+  const lead = `${nameOf(template.coordinatorBotId)} coordinates`;
+  return others.length > 0 ? `${lead}, with ${others.join(", ")}` : lead;
+}
+
+/**
+ * What a task's header says about the template it was started from;
+ * undefined for a task created otherwise. "Deleted" only when the loaded list
+ * lacks it: while the list is unknown (loading, or a failed load) it says
+ * no more than that the task came from a template.
+ */
+export function templateOrigin(
+  templateId: string | null,
+  templates: readonly Pick<TaskTemplate, "id" | "title">[] | null,
+): string | undefined {
+  if (templateId === null) return undefined;
+  if (templates === null) return "From a template";
+  const template = templates.find((entry) => entry.id === templateId);
+  return template
+    ? `From template ${template.title}`
+    : "From a deleted template";
+}

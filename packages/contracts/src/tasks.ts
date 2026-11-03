@@ -128,12 +128,20 @@ export const taskObjectSchema = z.object({
    * as null from events stored before caps existed.
    */
   spendCapUsd: spendCapUsdSchema.nullable().default(null),
+  /**
+   * The task template the task was started from (`POST
+   * /api/task-templates/:id/tasks`), null for one created otherwise.
+   * Attribution only: deleting the template leaves it set. Parsed as null
+   * from events stored before templates existed.
+   */
+  templateId: idSchema.nullable().default(null),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   finishedAt: timestampSchema.nullable(),
 });
 
-const coordinatorParticipates = (
+/** Refinement for records with a roster: the coordinator is one of the participants. */
+export const coordinatorParticipates = (
   task: { coordinatorBotId: string; participantBotIds: string[] },
   context: z.RefinementCtx,
 ) => {
@@ -274,17 +282,23 @@ export const createTaskCommandObjectSchema = z.object({
   spendCapUsd: spendCapUsdSchema.nullable().optional(),
 });
 
+/** The command with its coordinator added to the participants when missing, first. */
+export const withCoordinator = <
+  Command extends { coordinatorBotId: string; participantBotIds: string[] },
+>(
+  command: Command,
+): Command => ({
+  ...command,
+  participantBotIds: command.participantBotIds.includes(
+    command.coordinatorBotId,
+  )
+    ? command.participantBotIds
+    : [command.coordinatorBotId, ...command.participantBotIds],
+});
+
 /** `POST /api/tasks`. The coordinator is added to the participants when missing. */
-export const createTaskCommandSchema = createTaskCommandObjectSchema.transform(
-  (command) => ({
-    ...command,
-    participantBotIds: command.participantBotIds.includes(
-      command.coordinatorBotId,
-    )
-      ? command.participantBotIds
-      : [command.coordinatorBotId, ...command.participantBotIds],
-  }),
-);
+export const createTaskCommandSchema =
+  createTaskCommandObjectSchema.transform(withCoordinator);
 
 /** The post-message command without its goal/version refinement. */
 export const postTaskMessageCommandObjectSchema = z.object({

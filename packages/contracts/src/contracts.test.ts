@@ -76,6 +76,7 @@ const task = {
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: 5,
+  templateId: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,
@@ -283,8 +284,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.8.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.8.0");
+  it("is version 1.9.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.9.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
