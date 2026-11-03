@@ -104,7 +104,12 @@ const TaskRow = memo(function TaskRow({
         muted={task.status === "completed"}
         onClick={() => navigate({ name: "tasks", taskId: task.id })}
         title={task.title}
-        subtitle={<StatusTag status={task} detail={`v${task.goalVersion}`} />}
+        subtitle={
+          <StatusTag
+            status={task}
+            detail={`v${task.goalVersion}${task.pendingApprovals.length > 0 ? " · needs approval" : ""}`}
+          />
+        }
         trailing={
           <span
             className="task-list__bots"

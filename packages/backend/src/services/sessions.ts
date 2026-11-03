@@ -19,6 +19,7 @@ import { asc, eq } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit } from "../events";
 import { toSession, toTask } from "../records";
+import { cancelApprovals } from "./approvals";
 
 /** Row-locks the task for the rest of the transaction. Every task write takes this first. */
 export async function lockTask(
@@ -197,6 +198,9 @@ export async function updateSession(
     runId: attribution.runId,
     causedBy: attribution.causedBy,
   });
+  // A call waiting for approval, or approved and not started, never runs now.
+  if (finishing && !isFinishedStatus(current.status))
+    await cancelApprovals(tx, ctx, row, attribution);
   return row;
 }
 

@@ -567,6 +567,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             activeSessionCount: 0,
             sessionCount: 0,
             usage: emptyUsage(),
+            pendingApprovals: [],
             ...(verification ? { verification } : {}),
           }),
         );

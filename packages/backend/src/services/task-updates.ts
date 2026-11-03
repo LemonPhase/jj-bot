@@ -6,6 +6,8 @@
 // message; the reply, or the engine's fallback when the reply fails, marks it
 // answered in the transaction that stores the message, so it is told once.
 import {
+  type ApprovalStatus,
+  approvals,
   type ChatTaskUpdateRow,
   chatTaskUpdates,
   type Executor,
@@ -43,7 +45,8 @@ export function clipVerbatim(text: string, max: number): string {
 
 /**
  * Records an update for the task's coordinator and wakes its chat. Call it in
- * the transaction that changes the task's status, after the task's events.
+ * the transaction that changes the task's status, after the task's events,
+ * or that records an approval request (`approvalId`).
  */
 export async function recordTaskUpdate(
   tx: Tx,
@@ -51,6 +54,7 @@ export async function recordTaskUpdate(
   task: Pick<TaskRow, "id" | "coordinatorBotId">,
   event: TaskUpdateEvent,
   text: string,
+  options: { approvalId?: string } = {},
 ): Promise<void> {
   const [row] = await tx
     .select({ eventSeq: tasks.eventSeq })
@@ -74,6 +78,7 @@ export async function recordTaskUpdate(
     taskEventSeq: row?.eventSeq ?? 0,
     text: clipVerbatim(text, UPDATE_TEXT_CHARS) || "(no text)",
     createdAt: ctx.clock(),
+    approvalId: options.approvalId ?? null,
   });
   await enqueue(tx, { kind: "chat.reply", botId: task.coordinatorBotId });
   await wakeWorkers(tx);
@@ -88,6 +93,8 @@ export type PendingUpdate = ChatTaskUpdateRow & {
   /** The task's status now, which may have moved on since the event. */
   status: TaskStatus;
   cancelRequestedAt: Date | null;
+  /** An `approval` update's approval status now. */
+  approvalStatus: ApprovalStatus | null;
 };
 
 const pendingColumns = {
@@ -95,6 +102,7 @@ const pendingColumns = {
   title: tasks.title,
   status: tasks.status,
   cancelRequestedAt: tasks.cancelRequestedAt,
+  approvalStatus: approvals.status,
 };
 
 const toPending = (row: {
@@ -102,20 +110,25 @@ const toPending = (row: {
   title: string;
   status: TaskStatus;
   cancelRequestedAt: Date | null;
+  approvalStatus: ApprovalStatus | null;
 }): PendingUpdate => ({
   ...row.update,
   title: row.title,
   status: row.status,
   cancelRequestedAt: row.cancelRequestedAt,
+  approvalStatus: row.approvalStatus,
 });
 
 /**
  * A waiting update whose task no longer waits for the user: its question was
- * answered (in the task or from chat), so telling it would be stale.
+ * answered (in the task or from chat), so telling it would be stale. Or an
+ * approval update whose approval was answered, expired or cancelled.
  */
 export const isOvertaken = (update: PendingUpdate) =>
-  update.event === "waiting" &&
-  (update.status !== "waiting" || update.cancelRequestedAt !== null);
+  (update.event === "waiting" &&
+    (update.status !== "waiting" || update.cancelRequestedAt !== null)) ||
+  (update.event === "approval" &&
+    (update.approvalStatus !== "pending" || update.cancelRequestedAt !== null));
 
 /** A bot's unanswered updates, oldest first. */
 export async function pendingTaskUpdates(
@@ -127,6 +140,7 @@ export async function pendingTaskUpdates(
     .select(pendingColumns)
     .from(chatTaskUpdates)
     .innerJoin(tasks, eq(tasks.id, chatTaskUpdates.taskId))
+    .leftJoin(approvals, eq(approvals.id, chatTaskUpdates.approvalId))
     .where(
       and(eq(chatTaskUpdates.botId, botId), isNull(chatTaskUpdates.answeredAt)),
     )
@@ -144,6 +158,7 @@ export async function pendingTaskUpdate(
     .select(pendingColumns)
     .from(chatTaskUpdates)
     .innerJoin(tasks, eq(tasks.id, chatTaskUpdates.taskId))
+    .leftJoin(approvals, eq(approvals.id, chatTaskUpdates.approvalId))
     .where(
       and(eq(chatTaskUpdates.id, updateId), isNull(chatTaskUpdates.answeredAt)),
     );
@@ -196,6 +211,8 @@ const HAPPENED: Record<UpdateKind, string> = {
   failed: "failed",
   waiting: "is waiting for the user: you asked them something in the task",
   capped: "is waiting for the user: a spend cap stopped it",
+  approval:
+    "has a call waiting for the user's approval: it has not run, and its session waits for the answer",
 };
 
 const BODY: Record<UpdateKind, string> = {
@@ -203,6 +220,7 @@ const BODY: Record<UpdateKind, string> = {
   failed: "Error",
   waiting: "Your question",
   capped: "Why it stopped",
+  approval: "The call",
 };
 
 const NEXT: Record<UpdateKind, string> = {
@@ -214,6 +232,8 @@ const NEXT: Record<UpdateKind, string> = {
     "Ask the user, in your own words and briefly; the task's card is shown under your message. When they answer, you can pass it on with `send_to_task`.",
   capped:
     "Tell the user which cap stopped it and what lets it go on, in your own words and briefly; the task's card is shown under your message.",
+  approval:
+    "Tell the user, in your own words and briefly, what waits for their approval; the task's card under your message has Approve and Deny buttons. Only the user can answer it: you cannot approve or deny it, and `send_to_task` does not answer it.",
 };
 
 /** The input of the reply that tells the user about an update. */
@@ -223,7 +243,9 @@ export function updateInput(update: PendingUpdate, redact: Redact): string {
     [
       `${UPDATE_MARKER} This comes from JJ Bot, not from the user: a task you coordinate ${HAPPENED[kind]}.`,
       `Task: ${update.taskId} ${JSON.stringify(update.title)}`,
-      update.status === update.event && !update.cancelRequestedAt
+      (update.event === "approval"
+        ? update.approvalStatus === "pending"
+        : update.status === update.event) && !update.cancelRequestedAt
         ? `Status now: ${statusNow(update)}.`
         : `Status now: ${statusNow(update)}; it has moved on since this update.`,
       `${BODY[kind]}, as the task recorded it:`,
@@ -239,6 +261,7 @@ const PLAIN: Record<UpdateKind, string> = {
   failed: "failed",
   waiting: "is waiting for your answer",
   capped: "stopped at a spend cap and is waiting for you",
+  approval: "has a call waiting for your approval",
 };
 
 const PLAIN_BODY: Record<UpdateKind, string> = {
@@ -246,6 +269,7 @@ const PLAIN_BODY: Record<UpdateKind, string> = {
   failed: "Error",
   waiting: "Question",
   capped: "Why it stopped",
+  approval: "The call (approve or deny it on the task's card)",
 };
 
 /** The message the engine posts when the bot's reply to an update fails. */

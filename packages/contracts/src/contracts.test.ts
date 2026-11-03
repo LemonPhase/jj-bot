@@ -124,6 +124,27 @@ const artifact = {
   createdAt: at,
 };
 
+const approval = {
+  id: "ap1",
+  taskId: "t1",
+  sessionId: "s1",
+  runId: "r1",
+  botId: "worker",
+  toolCallId: "call-1",
+  tool: "bash",
+  summary: "git push origin main",
+  args: { command: "git push origin main" },
+  rule: { tool: "bash" as const, match: "git push" },
+  text: "Pushing the branch.",
+  goalVersion: 1,
+  status: "pending" as const,
+  reason: null,
+  outcome: null,
+  createdAt: at,
+  decidedAt: null,
+  startedAt: null,
+};
+
 // Typed by event type, so adding a variant without a sample fails to compile.
 const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
   "task.created": { task },
@@ -204,6 +225,17 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
   },
   "spend.capped": { scope: "task", spentUsd: 5.02, capUsd: 5 },
   "spend.threshold": { spentUsd: 4.1, capUsd: 5 },
+  "approval.requested": { approval },
+  "approval.updated": {
+    approval: {
+      ...approval,
+      status: "approved",
+      decidedAt: at,
+      startedAt: at,
+      outcome: { ok: true, exitCode: 0, interrupted: "no" },
+    },
+    previousStatus: "pending",
+  },
   "cancellation.requested": { reason: null },
   "cancellation.completed": {
     stopped: [
@@ -240,8 +272,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.5.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.5.0");
+  it("is version 1.6.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.6.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -783,6 +815,7 @@ describe("spend caps and usage (1.3.0)", () => {
       sessions: [session],
       messages: [],
       artifacts: [],
+      approvals: [],
       verificationChecks: [],
       usage: { total: emptyUsage(), bySession: {} },
       events: [],

@@ -124,7 +124,8 @@ export function statusTone(input: StatusInput): StatusTone {
  * Extra context for words that need it, for a tooltip or `title`. Only
  * "waiting" has one, saying what the subject waits on:
  * - a session: `waitingFor` "user" → "waiting for you", "delegations" →
- *   "waiting on delegated work", null (no reason recorded) → "waiting";
+ *   "waiting on delegated work", "approval" → "waiting for your approval",
+ *   null (no reason recorded) → "waiting";
  * - a task or a bare status (no `waitingFor` field): a waiting task's
  *   coordinator ended its turn to ask the user, so "waiting for you".
  */
@@ -134,6 +135,8 @@ export function statusTitle(input: StatusInput): string | undefined {
   switch (subject.waitingFor) {
     case "delegations":
       return "waiting on delegated work";
+    case "approval":
+      return "waiting for your approval";
     case null:
       return "waiting";
     default:

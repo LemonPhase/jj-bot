@@ -1,6 +1,7 @@
 /** UI-only data derived from a `TaskView`. */
 import {
   type ExecutionSession,
+  pendingApprovalOf,
   type TaskSummary,
   type TaskView,
   verificationSummary,
@@ -22,6 +23,9 @@ export const summaryFromView = (view: TaskView): TaskSummary => {
     sessionCount: view.sessions.length,
     usage: view.usage.total,
     ...(question ? { question } : {}),
+    pendingApprovals: view.approvals
+      .filter((approval) => approval.status === "pending")
+      .map(pendingApprovalOf),
     ...(verification ? { verification } : {}),
   };
 };

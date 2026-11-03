@@ -708,6 +708,122 @@ async function main(): Promise<boolean> {
     );
     await verificationGate({ expectStatus, coordinatorBotId: bots.Ada });
 
+    await step(
+      "hold a call for approval, then run it once when approved",
+      async () => {
+        // A profile like the default one that asks before `git push`.
+        const { profiles } = await expectStatus(
+          "GET",
+          "/api/runtime-profiles",
+          200,
+        );
+        const like =
+          dockerProfile ??
+          profiles.find((profile: { isDefault: boolean }) => profile.isDefault);
+        check(like, "no default profile to copy");
+        const { profile } = await expectStatus(
+          "POST",
+          "/api/runtime-profiles",
+          201,
+          {
+            name: `Guarded${suffix}`,
+            sandbox: like.sandbox,
+            approvals: [{ tool: "bash", match: "git push" }],
+          },
+        );
+        const { bot: guarded } = await expectStatus("POST", "/api/bots", 201, {
+          name: `Gatekeeper${suffix}`,
+          runtimeProfileId: profile.id,
+          ...(realModel ? { model: realModel } : {}),
+        });
+        const command = "echo shipped > shipped.txt # git push";
+        const { task: held } = await expectStatus("POST", "/api/tasks", 201, {
+          goal: `Ship it: run \`${command}\` with bash, then complete the task.`,
+          title: "Guarded push",
+          coordinatorBotId: guarded.id,
+        });
+        const deadline = Date.now() + timeoutMs;
+        let current: TaskView;
+        for (;;) {
+          current = await expectStatus("GET", `/api/tasks/${held.id}`, 200);
+          if (
+            current.task.status === "waiting" &&
+            current.approvals.some((approval) => approval.status === "pending")
+          )
+            break;
+          check(
+            current.task.status !== "completed" &&
+              current.task.status !== "failed",
+            `the task ${current.task.status} without holding the call`,
+          );
+          check(Date.now() < deadline, `still ${current.task.status}`);
+          await sleep(100);
+        }
+        const approval = current.approvals.find(
+          (entry) => entry.status === "pending",
+        );
+        check(approval?.tool === "bash", `held ${approval?.tool}`);
+        check(
+          !current.events.some(
+            (event) =>
+              event.type === "tool.started" &&
+              event.payload.toolCallId === approval.toolCallId,
+          ),
+          "the held call started",
+        );
+        check(
+          !current.artifacts.some(
+            (artifact) => artifact.path === "shipped.txt",
+          ),
+          "the held call wrote its file",
+        );
+        await expectStatus(
+          "POST",
+          `/api/tasks/${held.id}/approvals/${approval.id}`,
+          200,
+          { decision: "approve" },
+        );
+        for (;;) {
+          current = await expectStatus("GET", `/api/tasks/${held.id}`, 200);
+          if (current.task.status === "completed") break;
+          check(
+            current.task.status !== "failed",
+            `the approved task failed: ${current.task.error}`,
+          );
+          check(Date.now() < deadline, `still ${current.task.status}`);
+          await sleep(100);
+        }
+        const ran = current.approvals.find((entry) => entry.id === approval.id);
+        check(
+          ran?.status === "approved" && ran.outcome?.ok === true,
+          `approval ${JSON.stringify(ran)}`,
+        );
+        check(
+          current.events.filter(
+            (event) =>
+              event.type === "tool.finished" &&
+              event.payload.toolCallId === approval.toolCallId,
+          ).length === 1,
+          "the approved call did not run exactly once",
+        );
+        const file = current.artifacts.find(
+          (artifact) => artifact.path === "shipped.txt",
+        );
+        check(file, "no shipped.txt artifact");
+        await download(base, headers, held.id, file);
+        const again = await expectStatus(
+          "POST",
+          `/api/tasks/${held.id}/approvals/${approval.id}`,
+          409,
+          { decision: "deny" },
+        );
+        check(
+          again.error.code === "APPROVAL_NOT_PENDING",
+          `answered again with ${again.error.code}`,
+        );
+      },
+    );
+
     await directChat({
       expectStatus,
       name: `Hopper${suffix}`,

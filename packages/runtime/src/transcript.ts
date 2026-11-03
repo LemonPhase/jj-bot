@@ -6,8 +6,9 @@ import type { PiMessage, TranscriptEntry } from "./types";
 export const INTERRUPTED_BY_RESTART =
   "Interrupted by a restart; the outcome is unknown. Check the workspace before retrying.";
 
-function interruptedResult(
-  call: ToolCall,
+/** The result `repairTranscript` gives a call whose outcome was lost. */
+export function interruptedResult(
+  call: Pick<ToolCall, "id" | "name">,
   timestamp: number,
 ): ToolResultMessage {
   return {
@@ -30,9 +31,13 @@ function interruptedResult(
  *   executor stores each result as soon as its tool finishes.
  *
  * Results that answer no call of the message are kept after the others.
+ * Calls in `open` (an approved call about to run) are left without a result.
  * Returns a new array; an intact transcript comes back equal to the input.
  */
-export function repairTranscript(messages: readonly PiMessage[]): PiMessage[] {
+export function repairTranscript(
+  messages: readonly PiMessage[],
+  open: ReadonlySet<string> = new Set(),
+): PiMessage[] {
   const repaired: PiMessage[] = [];
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index] as PiMessage;
@@ -50,10 +55,12 @@ export function repairTranscript(messages: readonly PiMessage[]): PiMessage[] {
       results.push(candidate);
     }
     const byId = new Map(results.map((result) => [result.toolCallId, result]));
-    for (const call of calls)
-      repaired.push(
-        byId.get(call.id) ?? interruptedResult(call, message.timestamp),
-      );
+    for (const call of calls) {
+      const result = byId.get(call.id);
+      if (result) repaired.push(result);
+      else if (!open.has(call.id))
+        repaired.push(interruptedResult(call, message.timestamp));
+    }
     const callIds = new Set(calls.map((call) => call.id));
     repaired.push(
       ...results.filter((result) => !callIds.has(result.toolCallId)),
