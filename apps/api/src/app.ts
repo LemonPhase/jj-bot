@@ -49,6 +49,12 @@ export type JJApp = Hono & {
   endStreams(): void;
   /** Event streams open right now. */
   readonly openStreams: number;
+  /**
+   * The process is stopping: `/health/ready` answers 503 from now on, while
+   * everything else is still served (the worker drains meanwhile).
+   */
+  startDraining(): void;
+  readonly draining: boolean;
 };
 
 export function createApp({
@@ -58,6 +64,7 @@ export function createApp({
 }: AppOptions): JJApp {
   const app = new Hono();
   const streams = new StreamRegistry();
+  let draining = false;
   const handleError = onError(logger);
   const maxBytes = config.bodyLimitBytes ?? 1024 * 1024;
 
@@ -81,6 +88,7 @@ export function createApp({
         ...(config.readinessTimeoutMs
           ? { checkTimeoutMs: config.readinessTimeoutMs }
           : {}),
+        draining: () => draining,
       },
       logger,
     ),
@@ -151,5 +159,11 @@ export function createApp({
   return Object.defineProperties(app, {
     endStreams: { value: () => streams.endAll() },
     openStreams: { get: () => streams.size },
+    startDraining: {
+      value: () => {
+        draining = true;
+      },
+    },
+    draining: { get: () => draining },
   }) as JJApp;
 }

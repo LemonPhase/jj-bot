@@ -135,12 +135,28 @@ jobs:
   compose:
     # The product as `docker compose up` ships it: the app image, PostgreSQL and
     # the docker driver on the runner's daemon, driven over HTTP from outside.
-    name: Compose stack
+    # Twice: with the host's Docker socket mounted into the app, and with
+    # compose.socket-proxy.yaml, where the app reaches the daemon only through
+    # the socket proxy and mounts no socket.
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Compose stack
+            files: compose.yaml
+            proxy: false
+          - name: Compose stack (socket proxy)
+            files: compose.yaml:compose.socket-proxy.yaml
+            proxy: true
     env:
       JJ_ENABLE_SCRIPTED_MODEL: "true"
       JJ_DEFAULT_MODEL: scripted/team
+      # Every docker compose command below, the backup and restore scripts'
+      # included, runs the stack from these files.
+      COMPOSE_FILE: ${{ matrix.files }}
     steps:
       - name: Check out
         uses: actions/checkout@v7
@@ -156,6 +172,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # compose.image.yaml merges with compose.yaml, alone and with the socket
+      # proxy file. It is not run: its images exist once a release is tagged.
+      - name: Check the optional compose files
+        run: |
+          docker compose -f compose.yaml -f compose.image.yaml config --quiet
+          docker compose -f compose.yaml -f compose.image.yaml -f compose.socket-proxy.yaml config --quiet
 
       # Builds the app image and, through the sandbox-image service, jj-sandbox:base-1.
       - name: Build images
@@ -177,6 +200,42 @@ jobs:
           echo "JJ_SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
           address() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q "$1")" | cut -d' ' -f1; }
           echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,$(address app):3001,$(address postgres):5432" >> "$GITHUB_ENV"
+
+      # With the proxy, the app holds no host socket: it reaches the daemon
+      # through the proxy's Unix socket, which only the app's user may open,
+      # and which answers 403 outside the driver's sections. The proxy has no
+      # network and no TCP listener, and no other user, on the host or in the
+      # app's container, can open its socket.
+      - name: Check the app reaches the daemon only through the proxy
+        if: ${{ matrix.proxy }}
+        run: |
+          app=$(docker compose ps -q app)
+          proxy=$(docker compose ps -q docker-proxy)
+          mounts=$(docker inspect -f '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' "$app")
+          echo "app mounts: $mounts"
+          if grep -q /var/run/docker.sock <<<"$mounts"; then exit 1; fi
+          docker compose exec -T app sh -c 'test ! -e /var/run/docker.sock && test "$DOCKER_HOST" = unix:///run/docker-proxy/docker.sock'
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}} {{json .NetworkSettings.Ports}}' "$proxy")" = "none {}"
+          listeners=$(docker compose exec -T docker-proxy sh -c 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null; true' | awk '$4 == "0A"')
+          echo "the proxy's TCP listeners: ${listeners:-none}"
+          test -z "$listeners"
+          test "$(docker compose exec -T docker-proxy stat -c '%a %u' /run/docker-proxy/docker.sock)" = "600 10001"
+          status() { docker compose exec -T --user "$1" app node -e 'require("node:http").get({ socketPath: "/run/docker-proxy/docker.sock", path: `/v1.41/${process.argv[1]}` }, (r) => console.log(r.statusCode)).on("error", (e) => console.log(e.code))' "$2"; }
+          for allowed in _ping containers/json images/json networks volumes; do
+            test "$(status 10001 "$allowed")" = 200
+          done
+          for refused in info swarm system/df plugins secrets events build; do
+            test "$(status 10001 "$refused")" = 403
+          done
+          test "$(status 65534 _ping)" = EACCES
+          volume=$(docker volume ls -q --filter label=com.docker.compose.volume=docker-proxy-socket)
+          socket="$(docker volume inspect -f '{{.Mountpoint}}' "$volume")/docker.sock"
+          for user in nobody "$(id -un)"; do
+            if sudo -u "$user" curl -sS --max-time 5 --unix-socket "$socket" http://docker/_ping; then
+              echo "$user on the host reached the proxy"
+              exit 1
+            fi
+          done
 
       # A new install has no task workspace yet: its backup holds the
       # database alone.

@@ -1,0 +1,59 @@
+# Optional, with compose.yaml: the app reaches the Docker daemon through a
+# filtering socket proxy and never mounts the host's socket.
+#   docker compose -f compose.yaml -f compose.socket-proxy.yaml up -d --build --wait
+# or put COMPOSE_FILE=compose.yaml:compose.socket-proxy.yaml in .env, so every
+# docker compose command, scripts/backup.sh and scripts/restore.sh use both.
+# It needs docker/socket-proxy.cfg beside it, and combines with
+# compose.image.yaml. What the proxy allows, and what it does not protect
+# against: docs/development.md, "Docker socket proxy".
+services:
+  docker-proxy:
+    # HAProxy, pinned by digest, run with docker/socket-proxy.cfg instead of
+    # the image's own configuration: it listens on a Unix socket that only
+    # the app's uid may open, in a volume only the app shares, and on no
+    # network at all, so nothing on a network reaches it. A host process of
+    # the app's uid can, through the app's /proc root: no host account may
+    # have that uid (docs/development.md, "Docker socket proxy").
+    image: tecnativa/docker-socket-proxy:v0.4.1@sha256:3400c429c5f9e1b21d62130fb93b16e2e772d4fb7695bd52fc2b743800b9fe9e
+    command: ["haproxy", "-f", "/usr/local/etc/haproxy/jj-bot.cfg"]
+    environment:
+      # The app user's uid, which the socket is given to: the app image's,
+      # 10001 unless it was built with another JJ_APP_UID (compose.yaml).
+      JJ_APP_UID: ${JJ_APP_UID:-10001}
+    volumes:
+      - ./docker/socket-proxy.cfg:/usr/local/etc/haproxy/jj-bot.cfg:ro
+      # The one place the host's socket is mounted, root-equivalent on the
+      # host. `:ro` keeps the socket file from being replaced; it does not
+      # limit the API behind it.
+      - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - docker-proxy-socket:/run/docker-proxy
+    network_mode: none
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/docker-proxy/docker.sock"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    # Runs as root to open the host's socket, with CHOWN and FOWNER alone:
+    # HAProxy gives its listening socket to the app's user, then sets its mode.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  app:
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: unix:///run/docker-proxy/docker.sock
+    # The proxy's socket instead of the host's.
+    volumes: !override
+      - docker-proxy-socket:/run/docker-proxy:ro
+
+volumes:
+  docker-proxy-socket:

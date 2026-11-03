@@ -96,7 +96,7 @@ Report the evidence path and the commit from `$RUN/commit`.
 .agents/skills/verify-jj-bot/scripts/stop.sh "$RUN"
 ```
 
-It closes the run's browser session, checks that the recorded pid still carries this run's `--jj-verify-run` tag, sends SIGTERM to the process group `launch.sh` started (the API hands running sessions back within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name, and an interrupt cuts short only the step it hits, never the rest of the cleanup. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
+It closes the run's browser session, checks that the recorded pid still carries this run's `--jj-verify-run` tag, sends SIGTERM to the process group `launch.sh` started (the instance has no drain, `JJ_DRAIN_TIMEOUT_SEC=0`: running sessions are interrupted at once, and the API closes within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name, and an interrupt cuts short only the step it hits, never the rest of the cleanup. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
 
 ## Helpers
 

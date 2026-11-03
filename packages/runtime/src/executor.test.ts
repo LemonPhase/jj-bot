@@ -303,6 +303,49 @@ describe("PiSessionExecutor", () => {
     );
   });
 
+  it("starts no model call once the run is stopped at a turn boundary", async () => {
+    const controller = new AbortController();
+    const recorded = recordingHooks();
+    let drains = 0;
+    let admitted = 0;
+    const hooks: RunHooks = {
+      ...recorded.hooks,
+      // The first drain is before the first model call; the second is the
+      // boundary after the bash turn, where a draining worker stops the run.
+      drainInbox: async () => {
+        drains += 1;
+        if (drains === 2) controller.abort(new Error("drain"));
+        return [];
+      },
+      admitModelCall: async () => {
+        admitted += 1;
+        return undefined;
+      },
+    };
+    faux.setResponses([
+      callTool("bash", { command: "echo one" }),
+      say("never asked"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks, signal: controller.signal }),
+    );
+    expect(outcome).toEqual({ kind: "aborted" });
+    expect(faux.state.callCount).toBe(1);
+    expect(admitted).toBe(1);
+    expect(
+      recorded.events
+        .filter((event) => event.type.startsWith("model."))
+        .map((event) => event.type),
+    ).toEqual(["model.started", "model.finished"]);
+    // The turn is whole: its command finished and its result is persisted.
+    expect(finished(recorded.events, "bash")).toMatchObject([{ ok: true }]);
+    expect(recorded.entries.map((entry) => entry.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+    ]);
+  });
+
   it("resumes from a serialized transcript in a fresh executor", async () => {
     const first = recordingHooks();
     faux.setResponses([

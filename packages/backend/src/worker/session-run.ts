@@ -56,6 +56,7 @@ import {
   outcomeLabel,
   type RunContext,
   runHooks,
+  stopAtBoundary,
   takeInbox,
   type WorkerDeps,
 } from "./run-context";
@@ -356,6 +357,7 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   const call = async (inputs: string[]): Promise<RunOutcome> => {
+    const hooks = runHooks(rc);
     // Rebuilt every call: a new goal version brings its own plan.
     const plan = planOf(rc.task.verificationPlan);
     // The prompt below gives the model the task's goal as it is now.
@@ -394,12 +396,13 @@ async function prepare(
       },
       signal: rc.control.controller.signal,
       hooks: {
-        ...runHooks(rc),
+        ...hooks,
         // Uploads reach the workspace before the boundary takes the inbox,
-        // so the notice that they are there comes with it.
+        // so the notice that they are there comes with it. A draining run
+        // takes nothing more, so it places nothing either.
         drainInbox: async (turnEnded) => {
-          await placeUploads(rc, hold.sandbox);
-          return takeInbox(rc, turnEnded);
+          if (!rc.control.draining) await placeUploads(rc, hold.sandbox);
+          return hooks.drainInbox(turnEnded);
         },
         reviewToolCall: (pending) => reviewCall(rc, pending),
         claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
@@ -522,6 +525,16 @@ async function executeRun(
     // it, so a message alone never gives the model another turn. A recovery
     // with none finishes the turn as the run would have: the executor is
     // idle on an answer, and a turn the engine ended is not resumed at all.
+    // A draining worker stops the run before it takes the inbox for another
+    // executor call, a turn boundary: taking it writes (a completion set
+    // aside, the goal version caught up) for the call that delivers it.
+    // Where the turn has ended, only input that continues the run makes
+    // another call; without any, the run ends as it would have.
+    const stopBeforeTaking = async (continuingOnly: boolean) =>
+      rc.control.draining &&
+      (!continuingOnly || (await hasContinuingInput(ctx.db, rc.session.id))) &&
+      stopAtBoundary(rc.control);
+    const stopped: RunOutcome = { kind: "aborted", reason: "signal" };
     for (let calls = 1; ; calls += 1) {
       let outcome: RunOutcome;
       let inputs: string[] = [];
@@ -532,13 +545,21 @@ async function executeRun(
           calls === 1 && rc.reason === "recovery"
             ? await endedTurn(ctx.db, rc.session.id)
             : undefined;
-        inputs = await take(calls > 1 || ended !== undefined);
-        outcome =
-          ended === "engine" && inputs.length === 0
-            ? { kind: "idle" }
-            : await call(inputs);
+        const continuingOnly = calls > 1 || ended !== undefined;
+        if (await stopBeforeTaking(continuingOnly)) outcome = stopped;
+        else {
+          inputs = await take(continuingOnly);
+          outcome =
+            ended === "engine" && inputs.length === 0
+              ? { kind: "idle" }
+              : await call(inputs);
+        }
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
+          if (await stopBeforeTaking(true)) {
+            outcome = stopped;
+            break;
+          }
           inputs = await take(true);
           if (inputs.length === 0) break;
           calls += 1;

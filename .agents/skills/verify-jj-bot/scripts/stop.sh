@@ -25,7 +25,8 @@ if ! kill -0 "$pid" 2>/dev/null; then
 elif ! ours; then
   echo "stop.sh: pid $pid is no longer this run's server; not killing it"
 else
-  # SIGTERM lets the API hand running sessions back; it allows itself 20 s.
+  # SIGTERM stops the API at once (launch.sh gives it no drain: the instance
+  # is thrown away); it allows itself 20 s to close.
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid"
   for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
   kill -0 "$pid" 2>/dev/null && ours && { kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid"; }

@@ -14,9 +14,10 @@
 //
 // JJ_SMOKE_RESTART_COMMAND (with JJ_SMOKE_BASE_URL) adds restart survival: a
 // third task is caught mid-command, the command restarts the server (for
-// example `docker compose restart app`), and the task must still complete
-// without repeating finished work, with the replayed stream rebuilding the
-// same view as a reload. Exits non-zero on any failure.
+// example `docker compose restart app`, whose drain times out on that
+// command), and the task must still complete without repeating finished
+// work, with the replayed stream rebuilding the same view as a reload.
+// Exits non-zero on any failure.
 //
 // JJ_SMOKE_RESTORE_COMMAND (with JJ_SMOKE_BASE_URL) adds backup survival:
 // after the first task, the command backs the stack up, wipes it and restores
@@ -92,7 +93,7 @@ const onDocker = Boolean(remoteUrl) || bootDriver === "docker";
  */
 const dockerNamespace = `jj-smoke-${randomBytes(4).toString("hex")}`;
 const timeoutMs = realModel ? 10 * 60_000 : onDocker ? 120_000 : 60_000;
-/** The slow command the restart lands on; it would outlast the whole check. */
+/** The slow command the restart lands on; it outlasts the server's drain and the whole check. */
 const SLOW_COMMAND = "sleep 300";
 /** Shows where commands run: the docker driver's sandbox user and workspace. */
 const WHERE_COMMAND = "id -un && pwd";
@@ -1417,7 +1418,7 @@ async function restartSurvival(options: {
     200,
   );
 
-  await step("the stop handed the running commands back", async () => {
+  await step("the stop interrupted the running commands", async () => {
     check(
       fresh.task.status === "completed",
       `status ${fresh.task.status}: ${fresh.task.error ?? ""}`,
@@ -1429,24 +1430,28 @@ async function restartSurvival(options: {
     );
     check(cutShort.length >= 2, `${cutShort.length} slow command result(s)`);
     for (const event of cutShort) {
-      // A graceful stop verifies the command is gone ("yes"); a crash, where
-      // the next process finds an expired lease, could only say "unknown".
+      // Still running when the drain timed out, the command was interrupted
+      // as a lost lease interrupts one: the next process reports it with an
+      // unknown outcome and closes the run as interrupted by the restart.
       check(
         event.type === "tool.finished" &&
           !event.payload.ok &&
-          event.payload.interrupted === "yes",
-        `the slow command was not stopped cleanly: ${JSON.stringify(event.payload)}`,
+          event.payload.interrupted === "unknown",
+        `the slow command was not reported as cut off: ${JSON.stringify(event.payload)}`,
       );
       const after = events.filter(
         (other) =>
           other.sessionId === event.sessionId &&
           other.sequence > event.sequence,
       );
-      const handedBack = after.find((other) => other.type === "run.finished");
+      const interrupted = after.find((other) => other.type === "run.finished");
       check(
-        handedBack?.type === "run.finished" &&
-          handedBack.payload.outcome === "cancelled",
-        `session ${event.sessionId}'s run was not handed back on shutdown: ${JSON.stringify(handedBack?.payload)}`,
+        interrupted?.type === "run.finished" &&
+          interrupted.payload.outcome === "failed" &&
+          interrupted.payload.error?.startsWith(
+            "Interrupted by a worker restart",
+          ),
+        `session ${event.sessionId}'s run was not closed as interrupted by the restart: ${JSON.stringify(interrupted?.payload)}`,
       );
       check(
         after.some(
