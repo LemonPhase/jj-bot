@@ -283,6 +283,28 @@ export class ModelRegistry {
     return null;
   }
 
+  /**
+   * Why `JJ_DEFAULT_MODEL` is not the default, and what bots without a model
+   * use instead; undefined when it is unset or in use. Servers log it at boot,
+   * since a model pi's catalog drops falls back without failing.
+   */
+  defaultModelWarning(): string | undefined {
+    const requested = this.env.JJ_DEFAULT_MODEL?.trim();
+    if (!requested || this.isUsable(requested)) return undefined;
+    let reason = "";
+    try {
+      this.resolve(requested);
+    } catch (error) {
+      if (error instanceof Error) reason = ` ${error.message}`;
+    }
+    const fallback = this.defaultModel();
+    return `JJ_DEFAULT_MODEL ${JSON.stringify(requested)} is not used:${reason} ${
+      fallback
+        ? `Bots without a model use ${fallback} instead.`
+        : "Bots without a model cannot run until a provider is configured."
+    }`;
+  }
+
   private isUsable(ref: string): boolean {
     const parsed = parseModelRef(ref);
     const entry = parsed && this.entry(parsed.provider);

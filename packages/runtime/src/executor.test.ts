@@ -4,9 +4,9 @@ import {
   fauxText,
   fauxToolCall,
   type ToolResultMessage,
-  Type,
 } from "@earendil-works/pi-ai";
 import { CODING_TOOLS, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
 import { NOT_STARTED_TEXT } from "./loop";
@@ -1217,5 +1217,45 @@ describe("reviewTurn", () => {
     );
     expect(outcome).toMatchObject({ kind: "error", error: "lease lost" });
     await expect(workspace.sandbox.fs.read("one.txt")).rejects.toThrow();
+  });
+});
+
+describe("engine tool arguments", () => {
+  it("drops null arguments: a required one is reported missing, an optional one is left out", async () => {
+    const received: unknown[] = [];
+    const finish: CollabTool = {
+      name: "finish",
+      description: "Finish with a result.",
+      // Plain JSON Schema, as the engine declares its tools.
+      parameters: {
+        type: "object",
+        properties: { result: { type: "string" }, note: { type: "string" } },
+        required: ["result"],
+        additionalProperties: false,
+      },
+      execute: async (args) => {
+        received.push(args);
+        return { text: "finished" };
+      },
+    };
+    faux.setResponses([
+      callTool("finish", { result: null, note: null }),
+      expecting(
+        (context) => {
+          // Not the text "null": pi says the result is missing.
+          const refusal = textOf(lastMessage(context));
+          expect(refusal).toContain('Validation failed for tool "finish"');
+          expect(refusal).toContain("- result: missing");
+        },
+        callTool("finish", { result: "Done.", note: null }),
+      ),
+      say("Finished."),
+    ]);
+    const recorded = recordingHooks();
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: recorded.hooks, collaborationTools: [finish] }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Finished." });
+    expect(received).toEqual([{ result: "Done." }]);
   });
 });

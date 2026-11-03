@@ -103,6 +103,8 @@ export async function startServer(
         `web ${config.webDist ? "served" : "not built"}`,
       ].join(" · "),
     );
+    const defaultModelWarning = services.models.defaultModelWarning();
+    if (defaultModelWarning) logger.warn(defaultModelWarning);
     // The one line that carries a generated token: the user opens it once,
     // and the web app keeps the token and drops it from the address bar.
     if (auth.kind === "generated")
