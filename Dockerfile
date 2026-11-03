@@ -1,11 +1,15 @@
 # syntax=docker/dockerfile:1
 # The JJ Bot app image: the API, which serves the built web app and embeds the
-# worker. `docker compose up` builds it (see compose.yaml). The internal
-# packages export TypeScript source, so the API runs on Node with tsx.
+# worker. `docker compose up` builds it (see compose.yaml), and
+# .github/workflows/image.yml builds it for linux/amd64 and linux/arm64 and
+# publishes each release. The internal packages export TypeScript source, so
+# the API runs on Node with tsx.
 ARG NODE_IMAGE=node:24-bookworm-slim
 
-# Workspace manifests only, so dependency layers are cached across source edits.
-FROM ${NODE_IMAGE} AS manifests
+# Workspace manifests only, so dependency layers are cached across source
+# edits. On the build's own platform: the web bundle is the same for every
+# target, so an arm64 image never builds it under emulation.
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS manifests
 WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/
@@ -30,8 +34,11 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY . .
 RUN npm run build -w @jj/web
 
-# Production dependencies of the API and the worker only (tsx included).
-FROM manifests AS deps
+# Production dependencies of the API and the worker only (tsx included), on
+# the target platform, for its native packages (esbuild's binary).
+FROM ${NODE_IMAGE} AS deps
+WORKDIR /src
+COPY --from=manifests /src/ ./
 RUN --mount=type=cache,target=/root/.npm \
   --mount=type=secret,id=build_ca,required=false \
   if [ -s /run/secrets/build_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build_ca; fi \
