@@ -2,10 +2,11 @@
 // the sandbox drivers, the model registry, the pi executor and chat responder,
 // and the engine over them. The caller decides whether the worker runs.
 import {
-  consoleLogger,
   createDriverRegistry,
   createEngine,
   createKeyring,
+  createLogger,
+  createMetrics,
   type DriverEntry,
   type DriverRegistry,
   type Engine,
@@ -16,6 +17,7 @@ import {
 import { type Database, openDatabase, readInstanceSetting } from "@jj/db";
 import { ChatResponder, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import { DockerSandboxDriver, LocalSandboxDriver } from "@jj/sandbox";
+import type { Tracer } from "@opentelemetry/api";
 import {
   ConfigError,
   type Env,
@@ -23,6 +25,7 @@ import {
   type ServicesConfig,
 } from "./config";
 import { GENERATED_TOKEN_KEY } from "./token";
+import { otlpHeaders } from "./tracing";
 
 export interface Services {
   database: Database;
@@ -49,8 +52,24 @@ export function databasePassword(connectionString: string): string[] {
 }
 
 /**
+ * The values of `OTEL_EXPORTER_OTLP_HEADERS` (a collector's API key), and
+ * the credential after a scheme such as `Bearer `.
+ */
+export function otlpHeaderSecrets(env: Env): Secret[] {
+  return Object.values(otlpHeaders(env)).flatMap((value) => {
+    const credential = value.split(/\s+/).at(-1) ?? "";
+    return [
+      ...new Set(
+        credential && credential !== value ? [value, credential] : [value],
+      ),
+    ].map((text) => ({ name: "OTEL_EXPORTER_OTLP_HEADERS", value: text }));
+  });
+}
+
+/**
  * The server's secrets: the provider keys in `env`, `API_TOKEN`, the database
- * password, the secrets store's master keys, and the generated API token,
+ * password, the secrets store's master keys, the OTLP exporter's headers, and
+ * the generated API token,
  * which is read from the database on each call, so a worker that started
  * before the API generated it still redacts it. The engine adds the stored
  * secrets itself.
@@ -77,6 +96,7 @@ function serverSecrets(
           inUrl: true,
         }))
       : []),
+    ...otlpHeaderSecrets(env),
   ];
   return async () => {
     const generated = await readInstanceSetting(
@@ -117,14 +137,18 @@ export function sandboxDrivers(config: ServicesConfig): DriverEntry[] {
   });
 }
 
-async function open(config: ServicesConfig): Promise<Database> {
+async function open(config: ServicesConfig, logger: Logger): Promise<Database> {
   const setting = config.database;
+  // Errors no caller sees (a dropped pool client, the bus): the server log.
+  const onError = (error: unknown) =>
+    logger.error("Database connection error", { error });
   try {
     return setting.mode === "pglite"
-      ? await openDatabase({ mode: "pglite", path: setting.path })
+      ? await openDatabase({ mode: "pglite", path: setting.path, onError })
       : await openDatabase({
           mode: "postgres",
           connectionString: setting.connectionString,
+          onError,
         });
   } catch (error) {
     const where =
@@ -138,6 +162,13 @@ async function open(config: ServicesConfig): Promise<Database> {
   }
 }
 
+export interface TelemetryOptions {
+  /** Spans go here (`startTracing`); default none: no-op spans. */
+  tracer?: Tracer;
+  /** Also report the process's own metrics (CPU, memory, event loop, GC). */
+  processMetrics?: boolean;
+}
+
 /**
  * Opens the database (applying migrations), registers the drivers and models,
  * and builds the engine. The worker is not started. `env` is where the model
@@ -146,10 +177,11 @@ async function open(config: ServicesConfig): Promise<Database> {
 export async function openServices(
   config: ServicesConfig,
   env: Env,
-  logger: Logger = consoleLogger,
+  logger: Logger = createLogger(config.log),
+  telemetry: TelemetryOptions = {},
 ): Promise<Services> {
   const entries = sandboxDrivers(config);
-  const database = await open(config);
+  const database = await open(config, logger);
   try {
     const drivers = createDriverRegistry(entries);
     const keys = config.secretKeys;
@@ -164,6 +196,13 @@ export async function openServices(
     });
     const secrets = serverSecrets(config, env, database, models);
     const outputCapBytes = config.engine.outputCapBytes;
+    const metrics = createMetrics({
+      processMetrics: telemetry.processMetrics === true,
+      onError: (what, error) =>
+        logger.warn(`Reading ${what} for the metrics failed`, {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    });
     const engine = await createEngine({
       db: database,
       drivers,
@@ -172,6 +211,8 @@ export async function openServices(
       models,
       config: config.engine,
       logger,
+      metrics,
+      ...(telemetry.tracer ? { tracer: telemetry.tracer } : {}),
       secrets,
       secretStore,
     });

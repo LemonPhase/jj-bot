@@ -35,15 +35,14 @@ import {
   type UsageReport,
   type WorkspaceHint,
 } from "@jj/contracts";
-import type { Database, IdKind } from "@jj/db";
+import { type Database, type IdKind, queueDepth } from "@jj/db";
+import { type Tracer, trace } from "@opentelemetry/api";
 import { type EngineConfigInput, resolveConfig } from "./config";
-import {
-  consoleLogger,
-  defaultIds,
-  type EngineContext,
-  type Logger,
-} from "./context";
+import { defaultIds, type EngineContext, type Logger } from "./context";
+import { errorMessage } from "./errors";
 import { subscribeHints } from "./events";
+import { createLogger, logSettings } from "./observability/logger";
+import { createMetrics, type EngineMetrics } from "./observability/metrics";
 import type {
   ChatResponder,
   DriverRegistry,
@@ -84,7 +83,12 @@ export interface EngineOptions {
   config?: EngineConfigInput;
   clock?: () => Date;
   ids?: (kind: IdKind) => string;
+  /** Default: JSON lines on stdout and stderr, at `JJ_LOG_LEVEL` and `JJ_LOG_FORMAT`. */
   logger?: Logger;
+  /** Default: a registry of this engine's own, without the process's metrics. */
+  metrics?: EngineMetrics;
+  /** Default: the global tracer provider's, a no-op unless one is registered. */
+  tracer?: Tracer;
   /**
    * The server's secret values (provider keys, the API token, the database
    * password), read when each run starts so values stored later count. They
@@ -194,6 +198,8 @@ export interface Engine {
     ): Promise<{ artifact: Artifact; content: Uint8Array }>;
   };
   worker: Worker;
+  /** `GET /metrics`: the Prometheus metrics of this engine and its worker. */
+  metrics: EngineMetrics;
   /** The resolved settings. */
   readonly context: EngineContext;
 }
@@ -205,6 +211,18 @@ export interface Engine {
 export async function createEngine(options: EngineOptions): Promise<Engine> {
   const secrets = async () => (await options.secrets?.()) ?? [];
   const store = options.secretStore ?? new SecretStore({ db: options.db.db });
+  const logger = options.logger ?? createLogger(logSettings(process.env, true));
+  const metrics =
+    options.metrics ??
+    createMetrics({
+      onError: (what, error) =>
+        logger.warn(`Reading ${what} for the metrics failed`, {
+          error: errorMessage(error),
+        }),
+    });
+  // The log redacts with the newest redactor built, whichever finishes last.
+  let built = 0;
+  let applied = 0;
   const ctx: EngineContext = {
     db: options.db.db,
     bus: options.db.bus,
@@ -213,16 +231,24 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     models: options.models,
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
-    logger: options.logger ?? consoleLogger,
+    logger,
+    metrics,
+    tracer: options.tracer ?? trace.getTracer("jj-bot"),
     redactor: async (extra = []) => {
+      const order = ++built;
       await store.refresh();
-      return createRedactor([
+      const redactor = createRedactor([
         ...(await secrets()),
         ...store.values(),
         ...store.retiredValues(),
         ...ctx.heldSecrets(),
         ...extra,
       ]);
+      if (order > applied) {
+        applied = order;
+        logger.redactWith?.(redactor);
+      }
+      return redactor;
     },
     secretStore: store,
     serverSecrets: secrets,
@@ -236,8 +262,24 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   await store.rotate(ctx.logger);
   await store.refresh();
   warnUnreadable(store, ctx.logger);
+  // From here on the log redacts the stored secrets too.
+  await ctx.redactor();
   await profileService.seedDefaultProfiles(ctx);
   const worker = createWorker(ctx, options.executor, options.chat);
+  metrics.track({
+    queueDepth: () => queueDepth(ctx.db),
+    activeJobs: () => worker.activeJobs,
+  });
+  /** A stored secret changed: the log redacts the new value (and the retired one) at once. */
+  const refreshing = async <T>(change: Promise<T>): Promise<T> => {
+    const result = await change;
+    await ctx.redactor().catch((error: unknown) =>
+      ctx.logger.warn("Refreshing the log's redaction failed", {
+        error: errorMessage(error),
+      }),
+    );
+    return result;
+  };
 
   return {
     context: ctx,
@@ -294,13 +336,14 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     drivers: async () => ({ drivers: await ctx.drivers.list() }),
     models: () => secretService.modelsView(ctx),
     putProviderKey: (providerId, command) =>
-      secretService.putProviderKey(ctx, providerId, command),
+      refreshing(secretService.putProviderKey(ctx, providerId, command)),
     deleteProviderKey: (providerId) =>
-      secretService.deleteProviderKey(ctx, providerId),
+      refreshing(secretService.deleteProviderKey(ctx, providerId)),
     secrets: {
       list: () => secretService.listSecrets(ctx),
-      put: (name, command) => secretService.putSecret(ctx, name, command),
-      delete: (name) => secretService.deleteSecret(ctx, name),
+      put: (name, command) =>
+        refreshing(secretService.putSecret(ctx, name, command)),
+      delete: (name) => refreshing(secretService.deleteSecret(ctx, name)),
     },
     usage: () => usageReport(ctx),
     tasks: {
@@ -320,5 +363,6 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
         artifactContent(ctx, taskId, artifactId),
     },
     worker,
+    metrics,
   };
 }

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EngineConfigInput, Logger } from "@jj/backend";
 import type { TaskView } from "@jj/contracts";
+import type { Tracer } from "@opentelemetry/api";
 import { type AppConfig, createApp, type JJApp } from "./app";
 import type { DatabaseSetting, Env, SecretKeys } from "./config";
 import { openServices, type Services } from "./wiring";
@@ -51,6 +52,10 @@ export interface TestAppOptions {
   secretKeys?: SecretKeys;
   /** The database to open (and migrate); default a new in-memory PGlite. */
   database?: DatabaseSetting;
+  /** Default `quietLogger`. */
+  logger?: Logger;
+  /** The engine's spans go here; default none (no-op spans). */
+  tracer?: Tracer;
 }
 
 export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
@@ -73,13 +78,14 @@ export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
       },
     },
     options.env ?? {},
-    quietLogger,
+    options.logger ?? quietLogger,
+    options.tracer ? { tracer: options.tracer } : {},
   );
   const startWorker = options.startWorker !== false;
   if (startWorker) await services.engine.worker.start();
   const app = createApp({
     engine: services.engine,
-    logger: quietLogger,
+    logger: options.logger ?? quietLogger,
     config: { workerEmbedded: startWorker, ...options.app },
   });
   return {

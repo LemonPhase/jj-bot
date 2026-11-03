@@ -130,6 +130,19 @@ describe("loadServerConfig", () => {
     expect(() => loadServerConfig({ JJ_CONCURRENCY: "0" })).toThrow(
       ConfigError,
     );
+    expect(() => loadServerConfig({ JJ_LOG_LEVEL: "trace" })).toThrow(
+      /JJ_LOG_LEVEL must be one of debug, info, warn, error/,
+    );
+    expect(() =>
+      loadWorkerConfig({
+        DATABASE_URL: "postgresql://localhost/jj",
+        JJ_LOG_FORMAT: "logfmt",
+      }),
+    ).toThrow(ConfigError);
+    expect(loadServerConfig({ JJ_LOG_FORMAT: "pretty" }).log).toEqual({
+      level: "info",
+      format: "pretty",
+    });
     for (const pool of [
       "10.213.0.0",
       "10.213.0.1/16",
@@ -187,9 +200,14 @@ describe("JJ_DEFAULT_MODEL", () => {
       },
     });
     try {
-      expect(warnings).toEqual([
+      // The engine's own boot warnings (these keys are too short to redact)
+      // go to the same logger.
+      const tooShort = (line: string) =>
+        /^(OPENAI|MISTRAL)_API_KEY is shorter than 16 characters/.test(line);
+      expect(warnings.filter((line) => !tooShort(line))).toEqual([
         'JJ_DEFAULT_MODEL "mistral/mistral-nemo" is not used: Unknown model "mistral/mistral-nemo". Bots without a model use openai/gpt-6-luna instead.',
       ]);
+      expect(warnings.filter(tooShort)).toHaveLength(2);
       const bootstrap = bootstrapSchema.parse(
         await (await fetch(`${server.url}/api/bootstrap`)).json(),
       );

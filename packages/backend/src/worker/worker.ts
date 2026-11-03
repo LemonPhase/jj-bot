@@ -8,6 +8,9 @@ import {
   complete,
   enqueue,
   heartbeat,
+  pruneWorkerHeartbeats,
+  recordWorkerHeartbeat,
+  removeWorkerHeartbeat,
   sessions,
   tasks,
   type Unsubscribe,
@@ -15,6 +18,7 @@ import {
 import { eq, inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
+import { withLogFields } from "../observability/logger";
 import type { ChatResponder, RunExecutor } from "../ports";
 import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
@@ -29,6 +33,11 @@ interface ActiveJob {
   control: JobControl;
   done: Promise<void>;
 }
+
+/** How often a polling worker records its heartbeat row (`worker_heartbeats`). */
+export const WORKER_HEARTBEAT_MS = 5_000;
+/** Heartbeat rows older than this belong to workers long gone and are deleted at start. */
+const STALE_HEARTBEAT_MS = 24 * 60 * 60 * 1000;
 
 export interface Worker {
   /** Reaps driver orphans, then claims and runs jobs until stopped. */
@@ -96,6 +105,7 @@ export function createWorker(
   let again = false;
   let crashing = false;
   let lastPollAt: Date | null = null;
+  let lastBeatAt = 0;
 
   const abortWhere = (
     match: (job: ClaimedJob) => boolean,
@@ -107,23 +117,33 @@ export function createWorker(
 
   function launch(job: ClaimedJob) {
     const control = new JobControl();
-    const run =
-      job.kind === "session.run"
-        ? runSessionJob(deps, executor, job, control)
-        : runChatJob(deps, chat, job, control);
-    const entry: ActiveJob = {
-      job,
-      control,
-      done: run
-        .catch((error: unknown) => {
+    // Every line the job logs carries its ids (the run's is added once known),
+    // and only its own: whatever context woke the loop is left behind.
+    const run = withLogFields(
+      {
+        jobId: job.id,
+        ...(job.botId ? { botId: job.botId } : {}),
+        ...(job.taskId ? { taskId: job.taskId } : {}),
+        ...(job.sessionId ? { sessionId: job.sessionId } : {}),
+      },
+      () =>
+        (job.kind === "session.run"
+          ? runSessionJob(deps, executor, job, control)
+          : runChatJob(deps, chat, job, control)
+        ).catch((error: unknown) => {
           ctx.logger.error(`Job ${job.id} (${job.kind}) failed unexpectedly`, {
             error: errorMessage(error),
           });
-        })
-        .finally(() => {
-          active.delete(job.id);
-          if (!stopping) void pump();
         }),
+      true,
+    );
+    const entry: ActiveJob = {
+      job,
+      control,
+      done: run.finally(() => {
+        active.delete(job.id);
+        if (!stopping) void pump();
+      }),
     };
     active.set(job.id, entry);
   }
@@ -149,7 +169,13 @@ export function createWorker(
       );
   }
 
-  async function pump(): Promise<void> {
+  /**
+   * A claim pass, outside whatever scope asked for it (a request's wake, a
+   * job's end): its lines and the jobs it launches carry no one else's ids.
+   */
+  const pump = (): Promise<void> => withLogFields({}, claimPass, true);
+
+  async function claimPass(): Promise<void> {
     if (stopping) return;
     if (pumping) {
       again = true;
@@ -178,13 +204,22 @@ export function createWorker(
             if (result.finishedTaskId) sandboxes.finish(result.finishedTaskId);
           }
           for (const job of jobs) {
+            // The first claim: how long the job waited once it was due.
+            if (job.attempts === 1)
+              ctx.metrics.claimed(
+                job.kind,
+                (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
+              );
             if (stopping) await handBack(job);
             else launch(job);
           }
           if (jobs.length === 0) break;
         }
       } while (again && !stopping);
-      if (!stopping) lastPollAt = new Date();
+      if (!stopping) {
+        lastPollAt = new Date();
+        await beat();
+      }
     } catch (error) {
       ctx.logger.warn("Claiming jobs failed; retrying at the next poll", {
         error: errorMessage(error),
@@ -192,6 +227,23 @@ export function createWorker(
     } finally {
       pumping = false;
     }
+  }
+
+  /**
+   * Records this worker in `worker_heartbeats` at most every
+   * `WORKER_HEARTBEAT_MS`, after a claim pass: an API without an embedded
+   * worker is ready only while some worker's row is fresh.
+   */
+  async function beat() {
+    const now = Date.now();
+    if (now - lastBeatAt < WORKER_HEARTBEAT_MS) return;
+    lastBeatAt = now;
+    await recordWorkerHeartbeat(ctx.db, ctx.config.workerId).catch(
+      (error: unknown) =>
+        ctx.logger.warn("Recording the worker heartbeat failed", {
+          error: errorMessage(error),
+        }),
+    );
   }
 
   /** Extends every lease, and stops runs whose task or parent is gone (durable cancellation). */
@@ -310,6 +362,14 @@ export function createWorker(
     for (const entry of active.values()) entry.control.abort(reason);
     await Promise.all([...active.values()].map((entry) => entry.done));
     await sandboxes.releaseAll();
+    // A crash leaves its row to go stale, as a dead process would.
+    if (!crashing)
+      await removeWorkerHeartbeat(ctx.db, ctx.config.workerId).catch(
+        (error: unknown) =>
+          ctx.logger.warn("Removing the worker heartbeat failed", {
+            error: errorMessage(error),
+          }),
+      );
   }
 
   return {
@@ -324,6 +384,13 @@ export function createWorker(
       started = true;
       stopping = false;
       crashing = false;
+      lastBeatAt = 0;
+      await pruneWorkerHeartbeats(ctx.db, STALE_HEARTBEAT_MS).catch(
+        (error: unknown) =>
+          ctx.logger.warn("Pruning old worker heartbeats failed", {
+            error: errorMessage(error),
+          }),
+      );
       await reapOrphans();
       unsubscribers.push(
         await ctx.bus.subscribe("jj_control", (message) => {

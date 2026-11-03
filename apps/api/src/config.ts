@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import {
   configFromEnv,
   type EngineConfigInput,
+  type LogSettings,
+  logSettings,
   MasterKeyError,
   parseMasterKey,
 } from "@jj/backend";
@@ -50,6 +52,8 @@ export interface ServicesConfig {
   /** The secrets store's master keys; absent without `JJ_SECRET_KEY`. */
   secretKeys?: SecretKeys;
   engine: EngineConfigInput;
+  /** `JJ_LOG_LEVEL` and `JJ_LOG_FORMAT`; absent: info, JSON. */
+  log?: LogSettings;
 }
 
 /** `JJ_SECRET_KEY` and `JJ_SECRET_KEY_PREVIOUS`, decoded, with their text for redaction. */
@@ -185,8 +189,10 @@ export function secretKeys(env: Env): SecretKeys | undefined {
 export function loadServicesConfig(env: Env): ServicesConfig {
   const database = databaseSetting(env);
   let engine: EngineConfigInput;
+  let log: LogSettings;
   try {
     engine = configFromEnv(env);
+    log = logSettings(env);
   } catch (error) {
     throw new ConfigError(
       error instanceof Error ? error.message : String(error),
@@ -214,6 +220,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),
     ...(keys ? { secretKeys: keys } : {}),
     engine,
+    log,
   };
 }
 

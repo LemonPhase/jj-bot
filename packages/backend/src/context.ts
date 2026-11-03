@@ -1,30 +1,14 @@
 import type { Bus, Db, IdKind } from "@jj/db";
 import { newId } from "@jj/db";
+import type { Tracer } from "@opentelemetry/api";
 import type { EngineConfig } from "./config";
+import type { Logger } from "./observability/logger";
+import type { EngineMetrics } from "./observability/metrics";
 import type { DriverRegistry, ModelCatalog } from "./ports";
 import type { Redactor, Secret } from "./redact";
 import type { SecretStore } from "./secrets/store";
 
-export interface Logger {
-  info(message: string, details?: unknown): void;
-  warn(message: string, details?: unknown): void;
-  error(message: string, details?: unknown): void;
-}
-
-export const consoleLogger: Logger = {
-  info: (message, details) =>
-    details === undefined
-      ? console.info(`[engine] ${message}`)
-      : console.info(`[engine] ${message}`, details),
-  warn: (message, details) =>
-    details === undefined
-      ? console.warn(`[engine] ${message}`)
-      : console.warn(`[engine] ${message}`, details),
-  error: (message, details) =>
-    details === undefined
-      ? console.error(`[engine] ${message}`)
-      : console.error(`[engine] ${message}`, details),
-};
+export type { Logger } from "./observability/logger";
 
 /** What every service and worker module shares. */
 export interface EngineContext {
@@ -37,6 +21,10 @@ export interface EngineContext {
   clock: () => Date;
   ids: (kind: IdKind) => string;
   logger: Logger;
+  /** The engine's Prometheus metrics (`GET /metrics`). */
+  metrics: EngineMetrics;
+  /** Spans of runs, model turns, tool calls and sandbox starts; a no-op without a tracer provider. */
+  tracer: Tracer;
   /**
    * Builds a redactor over the server's secret values as they are now (a
    * token generated after boot and the stored secrets included), plus

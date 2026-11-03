@@ -1,19 +1,21 @@
-// Process boot for the API: settings, outbound proxy, database, drivers,
-// models, engine, the embedded worker, then listening. `close()` is the
-// graceful shutdown: stop accepting connections, end event streams, stop the
-// worker, close the database.
+// Process boot for the API: settings, the log, trace export, outbound proxy,
+// database, drivers, models, engine, the embedded worker, then listening.
+// `close()` is the graceful shutdown: stop accepting connections, end event
+// streams, stop the worker, close the database, flush the traces.
 import type { AddressInfo } from "node:net";
 import { type ServerType, serve } from "@hono/node-server";
-import type { Logger } from "@jj/backend";
+import { createLogger, type Logger } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
-import { apiLogger, createApp, type JJApp } from "./app";
+import { createApp, type JJApp } from "./app";
 import { type Env, loadServerConfig, type ServerConfig } from "./config";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
+import { startTracing, type Tracing } from "./tracing";
 import { openServices, type Services } from "./wiring";
 
 export interface StartOptions {
   /** Settings and provider keys. Default `process.env`. */
   env?: Env;
+  /** Default: JSON lines (JJ_LOG_FORMAT, JJ_LOG_LEVEL) on stdout and stderr. */
   logger?: Logger;
 }
 
@@ -25,6 +27,8 @@ export interface RunningServer {
   auth: ApiAuth;
   services: Services;
   app: JJApp;
+  /** Trace export, when OTEL_EXPORTER_OTLP_ENDPOINT is set. */
+  tracing?: Tracing;
   /** Graceful shutdown. Idempotent. */
   close(): Promise<void>;
 }
@@ -54,17 +58,23 @@ export async function startServer(
   options: StartOptions = {},
 ): Promise<RunningServer> {
   const env = options.env ?? process.env;
-  const logger = options.logger ?? apiLogger;
   // Settings that cannot work fail here, before anything opens.
   const config = loadServerConfig(env);
+  const logger = options.logger ?? createLogger(config.log);
 
+  const tracing = await startTracing(env, "jj-api", logger);
+  if (tracing) logger.info(`Exporting traces over OTLP to ${tracing.url}`);
   const proxy = configureOutboundProxy(env);
   if (proxy)
     logger.info(
       `Model calls use the outbound proxy ${proxy.httpsProxy ?? proxy.httpProxy}`,
     );
-  const services = await openServices(config, env).catch(async (error) => {
+  const services = await openServices(config, env, logger, {
+    ...(tracing ? { tracer: tracing.tracer } : {}),
+    processMetrics: true,
+  }).catch(async (error) => {
     await proxy?.restore();
+    await tracing?.shutdown();
     throw error;
   });
   const { engine, database } = services;
@@ -107,10 +117,13 @@ export async function startServer(
     if (defaultModelWarning) logger.warn(defaultModelWarning);
     // The one line that carries a generated token: the user opens it once,
     // and the web app keeps the token and drops it from the address bar.
-    if (auth.kind === "generated")
-      logger.info(
-        `Open JJ Bot: ${config.publicUrl ?? `http://127.0.0.1:${listening.address.port}`}/?token=${auth.token}`,
-      );
+    // Every other line redacts it, from now on even one generated just now.
+    if (auth.kind === "generated") {
+      await engine.context.redactor();
+      const line = `Open JJ Bot: ${config.publicUrl ?? `http://127.0.0.1:${listening.address.port}`}/?token=${auth.token}`;
+      if (logger.reveal) logger.reveal(line, auth.token);
+      else logger.info(line);
+    }
 
     const http = server;
     let closing: Promise<void> | undefined;
@@ -134,15 +147,29 @@ export async function startServer(
         if ("closeAllConnections" in http) http.closeAllConnections();
         await database.close();
         await proxy?.restore();
+        await tracing?.shutdown().catch((error: unknown) =>
+          logger.warn("Flushing the traces failed", {
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
       })();
       return closing;
     };
-    return { url, config, auth, services, app, close };
+    return {
+      url,
+      config,
+      auth,
+      services,
+      app,
+      close,
+      ...(tracing ? { tracing } : {}),
+    };
   } catch (error) {
     server?.close();
     await engine.worker.stop().catch(() => {});
     await database.close().catch(() => {});
     await proxy?.restore();
+    await tracing?.shutdown().catch(() => {});
     throw error;
   }
 }

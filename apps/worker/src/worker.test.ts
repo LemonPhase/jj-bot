@@ -109,10 +109,41 @@ describe.skipIf(!postgresUrl)(
       expect(
         view.artifacts.map((artifact: { name: string }) => artifact.name),
       ).toContain("notes-grace.md");
+      // The API embeds no worker: it is ready on the separate worker's heartbeat.
       const ready = await fetch(`${server.url}/health/ready`);
+      expect(ready.status).toBe(200);
       expect(((await ready.json()) as any).checks.worker).toEqual({
         ok: true,
+        reason: "a worker's heartbeat is fresh",
         embedded: false,
+        workers: 1,
+        lastSeenSecondsAgo: expect.any(Number),
+      });
+      // The worker logs JSON lines, and its runs' lines carry their ids.
+      const lines = output
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line));
+      const finished = lines.filter(
+        (line) => line.msg === "Session run finished",
+      );
+      expect(finished.length).toBeGreaterThan(0);
+      for (const line of finished)
+        expect(line).toMatchObject({
+          taskId: task.id,
+          sessionId: expect.stringMatching(/^ses/),
+          runId: expect.stringMatching(/^run/),
+        });
+
+      // Stopped, it removes its heartbeat, so the API is no longer ready.
+      const exited = new Promise((resolve) => worker?.once("exit", resolve));
+      worker.kill("SIGTERM");
+      await exited;
+      const after = await fetch(`${server.url}/health/ready`);
+      expect(after.status).toBe(503);
+      expect(((await after.json()) as any).checks.worker).toMatchObject({
+        ok: false,
+        reason: "no worker has a heartbeat",
       });
     }, 90_000);
   },
