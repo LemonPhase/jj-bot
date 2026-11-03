@@ -4,7 +4,7 @@ import type { Tracer } from "@opentelemetry/api";
 import type { EngineConfig } from "./config";
 import type { Logger } from "./observability/logger";
 import type { EngineMetrics } from "./observability/metrics";
-import type { DriverRegistry, ModelCatalog } from "./ports";
+import type { DriverRegistry, McpDiscoverer, ModelCatalog } from "./ports";
 import type { Redactor, Secret } from "./redact";
 import type { SecretStore } from "./secrets/store";
 
@@ -17,6 +17,8 @@ export interface EngineContext {
   config: EngineConfig;
   drivers: DriverRegistry;
   models: ModelCatalog;
+  /** Tests MCP server configurations; absent, this server runs no MCP server. */
+  mcp?: McpDiscoverer;
   /** Timestamps the engine writes (records, cancellation); events use the database clock. */
   clock: () => Date;
   ids: (kind: IdKind) => string;

@@ -23,6 +23,7 @@ import type { ChatResponder, RunExecutor } from "../ports";
 import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
+import { runDiscoveryJob } from "./mcp-discovery";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
 import { TaskSandboxes } from "./sandboxes";
@@ -129,7 +130,9 @@ export function createWorker(
       () =>
         (job.kind === "session.run"
           ? runSessionJob(deps, executor, job, control)
-          : runChatJob(deps, chat, job, control)
+          : job.kind === "mcp.discover"
+            ? runDiscoveryJob(deps, job, control)
+            : runChatJob(deps, chat, job, control)
         ).catch((error: unknown) => {
           ctx.logger.error(`Job ${job.id} (${job.kind}) failed unexpectedly`, {
             error: errorMessage(error),

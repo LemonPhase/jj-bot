@@ -5,7 +5,9 @@
 // whichever is stored first. A value replaced or removed is retired in the
 // same transaction: kept sealed, for redaction alone.
 import {
+  type McpServer,
   type ModelsView,
+  mcpServersSchema,
   type ProviderInfo,
   type PutSecretCommand,
   putSecretCommandSchema,
@@ -201,8 +203,35 @@ export async function putSecret(
 }
 
 /**
+ * A profile's MCP servers with every one that uses `name` disabled: a stdio
+ * server whose `secretEnv` sets a variable from it, or a remote one whose
+ * `secretHeaders` send it. Undefined when none does.
+ */
+function disableServersUsing(
+  stored: unknown,
+  name: string,
+): McpServer[] | undefined {
+  const parsed = mcpServersSchema.safeParse(stored ?? []);
+  if (!parsed.success) return undefined;
+  let changed = false;
+  const servers = parsed.data.map((server) => {
+    const uses =
+      server.transport === "stdio"
+        ? Object.values(server.secretEnv).includes(name)
+        : Object.values(server.secretHeaders).some(
+            (header) => header.secret === name,
+          );
+    if (!uses || !server.enabled) return server;
+    changed = true;
+    return { ...server, enabled: false };
+  });
+  return changed ? servers : undefined;
+}
+
+/**
  * `DELETE /api/secrets/:name`: removes the secret and, in the same
- * transaction, every profile's grant of it. Its value is retired.
+ * transaction, every profile's grant of it, and disables every MCP server
+ * that uses it. Its value is retired.
  */
 export async function deleteSecret(
   ctx: EngineContext,
@@ -217,22 +246,32 @@ export async function deleteSecret(
     if (deleted.length === 0) throw notFound("Secret", name);
     for (const row of deleted) await retire(ctx, tx, row);
     const profiles = await tx
-      .select({ id: runtimeProfiles.id, secrets: runtimeProfiles.secrets })
+      .select({
+        id: runtimeProfiles.id,
+        secrets: runtimeProfiles.secrets,
+        mcpServers: runtimeProfiles.mcpServers,
+      })
       .from(runtimeProfiles);
-    const granting = profiles.filter(
-      (profile) =>
-        Array.isArray(profile.secrets) && profile.secrets.includes(name),
-    );
-    for (const profile of granting)
+    let changed = 0;
+    for (const profile of profiles) {
+      const granted =
+        Array.isArray(profile.secrets) && profile.secrets.includes(name);
+      const servers = disableServersUsing(profile.mcpServers, name);
+      if (!granted && !servers) continue;
+      changed += 1;
       await tx
         .update(runtimeProfiles)
         .set({
-          secrets: profile.secrets.filter((granted) => granted !== name),
+          ...(granted
+            ? { secrets: profile.secrets.filter((entry) => entry !== name) }
+            : {}),
+          ...(servers ? { mcpServers: servers } : {}),
           updatedAt: ctx.clock(),
         })
         .where(eq(runtimeProfiles.id, profile.id));
+    }
     await hint(tx, { type: "secrets.changed" });
-    if (granting.length > 0) await hint(tx, { type: "profiles.changed" });
+    if (changed > 0) await hint(tx, { type: "profiles.changed" });
   });
   await ctx.secretStore.refresh();
 }
@@ -313,23 +352,24 @@ export async function deleteProviderKey(
 }
 
 /**
- * The values a sandbox acquired with this profile receives: its granted
- * secrets. Throws, naming the secret, when one cannot be used, so the run
- * fails visibly instead of running without it.
+ * The stored values of the sandbox secrets `names`, by name. Throws, after
+ * `label` (what uses them) and naming the secret, when one is not stored,
+ * cannot be read, or holds a server secret, and `remedy` says what else the
+ * user can do. Never names a value.
  */
-export async function grantedSecrets(
+async function sandboxSecretValues(
   ctx: EngineContext,
-  profile: { name: string; secrets: readonly string[] },
+  names: readonly string[],
+  label: string,
+  remedy: string,
 ): Promise<Record<string, string>> {
-  if (profile.secrets.length === 0) return {};
-  const { values, missing, unreadable } = await ctx.secretStore.sandboxValues(
-    profile.secrets,
-  );
-  const label = `Runtime profile "${profile.name}" grants`;
+  if (names.length === 0) return {};
+  const { values, missing, unreadable } =
+    await ctx.secretStore.sandboxValues(names);
   const list = (names: string[]) => names.join(", ");
   if (missing.length > 0)
     throw new Error(
-      `${label} ${list(missing)}, which ${missing.length === 1 ? "is" : "are"} not stored. Store ${missing.length === 1 ? "it" : "them"} in Settings → Secrets, or remove the grant.`,
+      `${label} ${list(missing)}, which ${missing.length === 1 ? "is" : "are"} not stored. Store ${missing.length === 1 ? "it" : "them"} in Settings → Secrets, ${remedy}.`,
     );
   if (unreadable.length > 0)
     throw new Error(
@@ -337,7 +377,7 @@ export async function grantedSecrets(
         ctx.secretStore.available
           ? "the current JJ_SECRET_KEY cannot decrypt"
           : "cannot be read: JJ_SECRET_KEY is not set"
-      }. Store ${unreadable.length === 1 ? "it" : "them"} again in Settings → Secrets, or remove the grant.`,
+      }. Store ${unreadable.length === 1 ? "it" : "them"} again in Settings → Secrets, ${remedy}.`,
     );
   await ctx.secretStore.refresh();
   const server = await serverValues(ctx);
@@ -347,4 +387,48 @@ export async function grantedSecrets(
         `The sandbox secret ${name} cannot be used: ${SERVER_SECRET_REFUSAL} Store another value for ${name}.`,
       );
   return values;
+}
+
+/**
+ * The values a sandbox acquired with this profile receives: its granted
+ * secrets. Throws, naming the secret, when one cannot be used, so the run
+ * fails visibly instead of running without it.
+ */
+export function grantedSecrets(
+  ctx: EngineContext,
+  profile: { name: string; secrets: readonly string[] },
+): Promise<Record<string, string>> {
+  return sandboxSecretValues(
+    ctx,
+    profile.secrets,
+    `Runtime profile "${profile.name}" grants`,
+    "or remove the grant",
+  );
+}
+
+/**
+ * The headers a remote MCP server's `secretHeaders` send, with their stored
+ * values; the worker sends them, and they never enter a sandbox. Throws,
+ * naming the secret, when one cannot be used.
+ */
+export async function secretHeaderValues(
+  ctx: EngineContext,
+  server: {
+    name: string;
+    secretHeaders: Record<string, { secret: string; prefix: string }>;
+  },
+): Promise<Record<string, { prefix: string; value: string }>> {
+  const headers = Object.entries(server.secretHeaders);
+  const values = await sandboxSecretValues(
+    ctx,
+    [...new Set(headers.map(([, header]) => header.secret))],
+    `MCP server ${server.name} sends`,
+    `or change its secretHeaders`,
+  );
+  return Object.fromEntries(
+    headers.map(([name, header]) => [
+      name,
+      { prefix: header.prefix, value: values[header.secret] as string },
+    ]),
+  );
 }

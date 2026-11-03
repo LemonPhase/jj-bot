@@ -13,6 +13,8 @@ import {
   type CreateRuntimeProfileCommand,
   type CreateTaskCommand,
   type DecideApprovalCommand,
+  type McpDiscovery,
+  type McpToolSnapshot,
   type ModelsView,
   type PostTaskMessageCommand,
   type PutSecretCommand,
@@ -22,6 +24,7 @@ import {
   type SecretsView,
   type SendBotMessageCommand,
   type SendBotMessageResult,
+  type StartMcpDiscoveryCommand,
   type StopTaskCommand,
   type Task,
   type TaskEventPage,
@@ -46,6 +49,7 @@ import { createMetrics, type EngineMetrics } from "./observability/metrics";
 import type {
   ChatResponder,
   DriverRegistry,
+  McpDiscoverer,
   ModelCatalog,
   RunExecutor,
 } from "./ports";
@@ -60,6 +64,7 @@ import { decideApproval } from "./services/approvals";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
+import * as mcpService from "./services/mcp";
 import { postTaskMessage } from "./services/messages";
 import * as profileService from "./services/profiles";
 import * as secretService from "./services/secrets";
@@ -80,6 +85,12 @@ export interface EngineOptions {
   executor: RunExecutor;
   chat: ChatResponder;
   models: ModelCatalog;
+  /**
+   * Tests MCP server configurations (the runtime's `McpDiscoverer`).
+   * Omitted: this server runs no MCP server, and a profile asking for one is
+   * refused with MCP_UNAVAILABLE.
+   */
+  mcp?: McpDiscoverer;
   config?: EngineConfigInput;
   clock?: () => Date;
   ids?: (kind: IdKind) => string;
@@ -139,6 +150,17 @@ export interface Engine {
     ): Promise<{ profile: RuntimeProfile }>;
     /** PROFILE_IN_USE while a bot references it. */
     delete(profileId: string): Promise<void>;
+  };
+  mcp: {
+    /** `POST /api/runtime-profiles/:id/mcp-discoveries` (202): queues a test of a server configuration. */
+    startDiscovery(
+      profileId: string,
+      command: StartMcpDiscoveryCommand,
+    ): Promise<{ discovery: McpDiscovery }>;
+    /** `GET /api/mcp-discoveries/:id`. */
+    discovery(discoveryId: string): Promise<{ discovery: McpDiscovery }>;
+    /** `GET /api/mcp-snapshots/:id`. */
+    snapshot(snapshotId: string): Promise<{ snapshot: McpToolSnapshot }>;
   };
   /** `GET /api/sandbox-drivers`. */
   drivers(): Promise<{ drivers: SandboxDriverInfo[] }>;
@@ -229,6 +251,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     config: resolveConfig(options.config),
     drivers: options.drivers,
     models: options.models,
+    ...(options.mcp ? { mcp: options.mcp } : {}),
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger,
@@ -301,7 +324,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           streaming: true,
           verification: true,
           secretStore: store.available,
-          // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
+          // Profiles store MCP servers and discovery tests them, but no
+          // server reaches a session on this build, so bots cannot use one.
+          // Skills are refused.
           mcp: { stdio: false, remote: false },
           skills: false,
           drivers: drivers.map((info) => ({
@@ -335,6 +360,12 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       update: (profileId, command) =>
         profileService.updateProfile(ctx, profileId, command),
       delete: (profileId) => profileService.deleteProfile(ctx, profileId),
+    },
+    mcp: {
+      startDiscovery: (profileId, command) =>
+        mcpService.startDiscovery(ctx, profileId, command),
+      discovery: (discoveryId) => mcpService.getDiscovery(ctx, discoveryId),
+      snapshot: (snapshotId) => mcpService.getSnapshot(ctx, snapshotId),
     },
     drivers: async () => ({ drivers: await ctx.drivers.list() }),
     models: () => secretService.modelsView(ctx),

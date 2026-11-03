@@ -56,7 +56,11 @@ export function modelLabels(model: ModelRef): {
     : { provider: "unknown", model };
 }
 
-const JOB_KINDS: readonly JobKind[] = ["session.run", "chat.reply"];
+const JOB_KINDS: readonly JobKind[] = [
+  "session.run",
+  "chat.reply",
+  "mcp.discover",
+];
 
 export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
   const registry = new Registry();

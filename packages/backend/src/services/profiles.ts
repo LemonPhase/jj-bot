@@ -2,11 +2,9 @@
 // budgets. A spec the driver cannot enforce is refused with the driver's own
 // message (PROFILE_UNSUPPORTED); nothing is silently downgraded.
 import {
-  type ApprovalRule,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   createRuntimeProfileCommandSchema,
-  mcpRulesWithoutTool,
   profileBudgetsSchema,
   type RuntimeProfile,
   type RuntimeProfileStatus,
@@ -28,6 +26,7 @@ import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { profileSettings, toProfile } from "../records";
+import { checkMcpServers } from "./mcp";
 
 /** Validates a spec with its driver: PROFILE_UNSUPPORTED with the driver's message on refusal. */
 export function validateSpec(ctx: EngineContext, spec: unknown): SandboxSpec {
@@ -152,43 +151,15 @@ async function checkGrants(
 }
 
 /**
- * No MCP server or skill reaches a session on this server
- * (`capabilities.mcp` and `capabilities.skills` are false), so a profile
- * asking for one is refused instead of saved as if it worked. An empty list
- * is what every profile holds, and is accepted.
+ * No skill reaches a session on this server (`capabilities.skills` is
+ * false), so a profile granting one is refused instead of saved as if it
+ * worked. An empty list is what every profile holds, and is accepted.
  */
-function refuseMcpAndSkills(command: {
-  mcpServers?: readonly unknown[];
-  skills?: readonly unknown[];
-  approvals?: readonly ApprovalRule[];
-}): void {
-  if (command.mcpServers?.length)
-    throw new DomainError(
-      "MCP_UNAVAILABLE",
-      "mcpServers: this server does not run MCP servers (capabilities.mcp is off for stdio and remote servers). Remove them to save the profile.",
-    );
+function refuseSkills(command: { skills?: readonly unknown[] }): void {
   if (command.skills?.length)
     throw new DomainError(
       "MCP_UNAVAILABLE",
       "skills: this server has no skills library (capabilities.skills is off). Remove them to save the profile.",
-    );
-  // An exact MCP rule must name a tool of its server's pinned snapshot, and
-  // no profile holds a server here, so none does; `mcp__<server>__*` may.
-  // This checks the command's own `approvals` only. Once profiles hold
-  // servers (#29 step 4), check the merged profile instead: its rules
-  // against its servers and their pinned snapshots, also when a patch
-  // changes only `mcpServers`.
-  const rules = command.approvals ?? [];
-  const unknown = mcpRulesWithoutTool(rules, [], []);
-  if (unknown.length > 0)
-    throw new DomainError(
-      "VALIDATION_FAILED",
-      unknown
-        .map(
-          (index) =>
-            `approvals.${index}.tool: ${rules[index]?.tool} names no tool of its MCP server's pinned snapshot. Exact names hold only within a snapshot; mcp__<server>__* covers every tool of a server.`,
-        )
-        .join("; "),
     );
 }
 
@@ -206,12 +177,20 @@ export async function createProfile(
   input: CreateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(createRuntimeProfileCommandSchema, input);
-  refuseMcpAndSkills(command);
+  refuseSkills(command);
   const sandbox = validateSpec(ctx, input.sandbox);
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
   const row = await ctx.db.transaction(async (tx) => {
     await checkGrants(ctx, tx, command.secrets ?? [], sandbox);
+    await checkMcpServers(ctx, tx, {
+      profileId: id,
+      sandbox,
+      secrets: command.secrets ?? [],
+      mcpServers: command.mcpServers ?? [],
+      approvals: command.approvals ?? [],
+      changed: { sandbox: true, secrets: true, servers: true, approvals: true },
+    });
     if (command.isDefault) await clearDefault(tx, id);
     const [inserted] = await tx
       .insert(runtimeProfiles)
@@ -224,6 +203,7 @@ export async function createProfile(
         budgets: command.budgets ?? profileBudgetsSchema.parse({}),
         approvals: command.approvals ?? [],
         secrets: command.secrets ?? [],
+        mcpServers: command.mcpServers ?? [],
         isDefault: command.isDefault ?? false,
         createdAt: now,
         updatedAt: now,
@@ -269,19 +249,26 @@ export async function updateProfile(
   input: UpdateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(updateRuntimeProfileCommandSchema, input);
-  refuseMcpAndSkills(command);
-  const current = await profileRow(ctx.db, id);
-  const settings = profileSettings(current);
-  if (command.isDefault === false && current.isDefault)
-    throw new DomainError(
-      "CONFLICT",
-      "Make another profile the default instead of unsetting this one.",
-    );
-  const sandbox = command.sandbox
-    ? validateSpec(ctx, mergeSpec(settings.sandbox, command.sandbox))
-    : settings.sandbox;
-  const grants = command.secrets ?? settings.secrets;
+  refuseSkills(command);
   const row = await ctx.db.transaction(async (tx) => {
+    // Held to the end: saves of one profile, and discoveries pruning its
+    // snapshots, take their turns.
+    const [current] = await tx
+      .select()
+      .from(runtimeProfiles)
+      .where(eq(runtimeProfiles.id, id))
+      .for("no key update");
+    if (!current) throw notFound("Runtime profile", id);
+    const settings = profileSettings(current);
+    if (command.isDefault === false && current.isDefault)
+      throw new DomainError(
+        "CONFLICT",
+        "Make another profile the default instead of unsetting this one.",
+      );
+    const sandbox = command.sandbox
+      ? validateSpec(ctx, mergeSpec(settings.sandbox, command.sandbox))
+      : settings.sandbox;
+    const grants = command.secrets ?? settings.secrets;
     if (command.secrets !== undefined || command.sandbox)
       await checkGrants(
         ctx,
@@ -290,6 +277,19 @@ export async function updateProfile(
         sandbox,
         grants.filter((name) => !settings.secrets.includes(name)),
       );
+    await checkMcpServers(ctx, tx, {
+      profileId: id,
+      sandbox,
+      secrets: grants,
+      mcpServers: command.mcpServers ?? settings.mcpServers,
+      approvals: command.approvals ?? settings.approvals,
+      changed: {
+        sandbox: command.sandbox !== undefined,
+        secrets: command.secrets !== undefined,
+        servers: command.mcpServers !== undefined,
+        approvals: command.approvals !== undefined,
+      },
+    });
     if (command.isDefault) await clearDefault(tx, id);
     const [updated] = await tx
       .update(runtimeProfiles)
@@ -303,6 +303,9 @@ export async function updateProfile(
           ? { approvals: command.approvals }
           : {}),
         ...(command.secrets !== undefined ? { secrets: command.secrets } : {}),
+        ...(command.mcpServers !== undefined
+          ? { mcpServers: command.mcpServers }
+          : {}),
         ...(command.isDefault !== undefined
           ? { isDefault: command.isDefault }
           : {}),

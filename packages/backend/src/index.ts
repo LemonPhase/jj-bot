@@ -47,5 +47,6 @@ export {
   type SecretStoreOptions,
   type StoredProviderKey,
 } from "./secrets/store";
+export { MAX_KEPT_DISCOVERIES, mcpConfigHash } from "./services/mcp";
 export type { TaskStreamOptions, TaskSubscription } from "./services/stream";
 export type { Worker } from "./worker/worker";
