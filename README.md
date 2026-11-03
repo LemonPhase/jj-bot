@@ -10,7 +10,7 @@ With Docker Engine and Compose v2, from the repository root:
 cp .env.example .env    # then set one model provider key, such as OPENAI_API_KEY
 echo "JJ_SECRET_KEY=$(openssl rand -base64 32)" >> .env   # optional: enter keys and secrets in Settings
 docker compose up -d --build --wait
-docker compose logs app | grep "Open JJ Bot"
+docker compose logs app | grep -o 'Open JJ Bot: [^"]*'
 ```
 
 The second line is optional. It gives the server the master key that encrypts provider keys and sandbox secrets (such as a Git token) entered in Settings; with it, you can skip the provider key in `.env` and store one in Settings → Models. Keep a copy of the key apart from your database backups: stored values cannot be recovered without it.

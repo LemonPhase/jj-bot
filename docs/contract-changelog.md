@@ -48,7 +48,7 @@ rather than landing it and announcing it afterwards.
 
 **Action required (frontend):** none: Bot Studio checks a name with the contract's schema and shows
 the field error under the name, and the demo API applies the same schema.
-**Action required (backend):** none: create and rename refuse such a name, and migration 0011
+**Action required (backend):** none: create and rename refuse such a name, and migration 0012
 normalises the names stored before (each run of refused characters becomes one space, then the name
 is trimmed; an empty one becomes `Bot`; an active bot whose new name another active bot of its
 owner holds, ignoring case, takes the first free ` (2)`, ` (3)`, …, the oldest first, so names

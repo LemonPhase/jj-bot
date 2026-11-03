@@ -275,6 +275,11 @@ export interface ChatReplyInput {
   admitModelCall?(): Promise<string | undefined>;
   /** Each model call's usage as it finishes, failed replies included. */
   onUsage?(usage: Usage, model: ModelRef): Promise<void>;
+  /**
+   * The reply's model calls and tool calls as they start and finish, for its
+   * span and the tool-call metrics; nothing is stored from them.
+   */
+  onActivity?(event: ExecutorEvent): void;
 }
 
 export interface ChatReply {

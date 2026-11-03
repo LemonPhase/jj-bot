@@ -38,6 +38,7 @@ import {
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
+import { ActivityTrace, SPANS } from "../observability/tracing";
 import type { ChatResponder } from "../ports";
 import { activeBotRows, memoryText } from "../services/bots";
 import { conversationHistory } from "../services/chat";
@@ -58,6 +59,7 @@ import {
   fencedWrite,
   type JobControl,
   LeaseLostError,
+  outcomeLabel,
   type WorkerDeps,
 } from "./run-context";
 
@@ -233,6 +235,11 @@ export async function runChatJob(
     fencedWrite(ctx, job.lease, control, fn);
   let input: ChatInput | undefined;
   let redact: (text: string) => string = (text) => text;
+  /** The reply's span; none when there was nothing to answer. */
+  let activity: ActivityTrace | undefined;
+  let result = "error";
+  let errorCode: string | undefined;
+  const startedAt = performance.now();
   try {
     const [bot] = await ctx.db
       .select()
@@ -278,6 +285,16 @@ export async function runChatJob(
       input.kind === "user"
         ? chatTools({ ctx, write, bot, redact, everyone, state })
         : chatReadTools({ ctx, bot, redact, state });
+    const trace = new ActivityTrace(ctx.tracer, ctx.metrics, SPANS.chatReply, {
+      "jj.bot.id": botId,
+      "jj.job.id": job.id,
+      ...(input.kind === "update" ? { "jj.task.id": input.update.taskId } : {}),
+    });
+    trace.declareTools(tools.map((tool) => tool.name));
+    activity = trace;
+    ctx.logger.info("Chat reply started", {
+      answering: input.kind === "user" ? "messages" : "task update",
+    });
     // The waiting messages go last, after any reply stored while they waited.
     const waitingIds = new Set(
       input.kind === "user" ? input.waiting.map((message) => message.id) : [],
@@ -321,8 +338,11 @@ export async function runChatJob(
       },
       // Each call is recorded as it finishes, and only here: a reply that
       // fails, or whose update is overtaken, still counts every call it made.
-      onUsage: (used, model) =>
-        write((tx) => storeUsage(tx, ctx, botId, used, model)),
+      onUsage: (used, model) => {
+        ctx.metrics.modelCall(model, used);
+        return write((tx) => storeUsage(tx, ctx, botId, used, model));
+      },
+      onActivity: (event) => trace.observe(event),
     });
     if (control.reason) throw control.controller.signal.reason;
     const answered = input;
@@ -353,6 +373,7 @@ export async function runChatJob(
       await continueWithWaiting(tx, botId);
       await hint(tx, { type: "conversation.changed", botId });
     });
+    result = "ok";
   } catch (error) {
     if (control.fenced || error instanceof LeaseLostError) return;
     if (control.reason === "shutdown") {
@@ -365,6 +386,7 @@ export async function runChatJob(
       return;
     }
     const code = (error as { code?: unknown } | undefined)?.code;
+    if (typeof code === "string") errorCode = code;
     const reason =
       code === "spend_cap"
         ? `Not answered: ${errorMessage(error)}`
@@ -389,6 +411,25 @@ export async function runChatJob(
     }).catch((failure: unknown) => {
       if (!(failure instanceof LeaseLostError)) throw failure;
     });
+  } finally {
+    if (activity) {
+      const outcome = outcomeLabel(control.reason, result);
+      const seconds = (performance.now() - startedAt) / 1000;
+      activity.end(outcome, outcome === "error", {
+        ...(errorCode ? { "jj.error.code": errorCode } : {}),
+      });
+      const used = activity.usage;
+      ctx.logger.info("Chat reply finished", {
+        outcome,
+        ...(errorCode ? { errorCode } : {}),
+        durationMs: Math.round(seconds * 1000),
+        modelCalls: used.modelCalls,
+        toolCalls: used.toolCalls,
+        inputTokens: used.input,
+        outputTokens: used.output,
+        costUsd: used.cost,
+      });
+    }
   }
 }
 

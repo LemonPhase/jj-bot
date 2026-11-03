@@ -87,7 +87,7 @@ export function defaultAppearanceFor(seed: string): BotAppearance {
  * notes), where any of these could forge a line or hide what follows: every
  * control character (`\p{Cc}`, LF, CR, VT, FF and NEL among them), the line
  * and paragraph separators, bidirectional controls and zero-width characters.
- * Migration 0011 normalised the names stored before this rule.
+ * Migration 0012 normalised the names stored before this rule.
  */
 const NOT_IN_BOT_NAME =
   /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF]/u;

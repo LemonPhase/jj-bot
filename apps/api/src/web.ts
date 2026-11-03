@@ -1,5 +1,5 @@
 // The built web app (`apps/web/dist`), so one process serves everything in
-// production. `/api` and `/health` are never answered from here.
+// production. `/api`, `/health` and `/metrics` are never answered from here.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -10,7 +10,9 @@ export const isApiPath = (path: string) =>
   path === "/api" ||
   path.startsWith("/api/") ||
   path === "/health" ||
-  path.startsWith("/health/");
+  path.startsWith("/health/") ||
+  path === "/metrics" ||
+  path.startsWith("/metrics/");
 
 /** Static files from `root`, with long caching for Vite's hashed assets. */
 export function webStatic(root: string): MiddlewareHandler {

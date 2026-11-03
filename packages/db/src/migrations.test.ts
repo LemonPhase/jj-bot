@@ -234,15 +234,15 @@ describe.each(targets)("migrations on $name", (target) => {
   );
 
   it(
-    "0011 puts every bot name on one line and keeps active names unique",
+    "0012 puts every bot name on one line and keeps active names unique",
     async () => {
       const database = await databaseBefore(
         target,
-        "0011_single_line_bot_names",
+        "0012_single_line_bot_names",
       );
       const x55 = "x".repeat(55);
       const smiles = (count: number) => "\uD83D\uDE00".repeat(count);
-      // [id, owner, stored name, archived, name after 0011]; created in this order.
+      // [id, owner, stored name, archived, name after 0012]; created in this order.
       const seeded: [string, string, string, boolean, string][] = [
         ["bot_01", "local", `${x55} yyyy`, false, `${x55} yyyy`],
         ["bot_02", "local", "Lin\u2028\u2029Wei", false, "Lin Wei"],

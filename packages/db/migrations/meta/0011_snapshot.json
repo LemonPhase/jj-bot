@@ -1,5 +1,5 @@
 {
-  "id": "c9304b40-1976-46b4-b80a-c7c38b49dcbd",
+  "id": "d7f08503-7be6-4bec-926a-351cbd624dc6",
   "prevId": "f2688ac9-73d3-42b0-b6ae-06e12179b012",
   "version": "7",
   "dialect": "postgresql",
@@ -151,10 +151,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"approvals\".\"status\" = 'pending'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "approvals_task_idx": {
           "name": "approvals_task_idx",
@@ -173,37 +173,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "approvals_task_id_tasks_id_fk": {
           "name": "approvals_task_id_tasks_id_fk",
           "tableFrom": "approvals",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "approvals_session_id_sessions_id_fk": {
           "name": "approvals_session_id_sessions_id_fk",
           "tableFrom": "approvals",
-          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "approvals_session_call": {
           "name": "approvals_session_call",
-          "columns": ["session_id", "tool_call_id"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["session_id", "tool_call_id"]
         }
       },
       "policies": {},
@@ -318,20 +318,20 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "artifacts_task_id_tasks_id_fk": {
           "name": "artifacts_task_id_tasks_id_fk",
           "tableFrom": "artifacts",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -382,11 +382,11 @@
         "bot_memory_bot_id_bots_id_fk": {
           "name": "bot_memory_bot_id_bots_id_fk",
           "tableFrom": "bot_memory",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -491,16 +491,16 @@
             },
             {
               "expression": "lower(\"name\")",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"bots\".\"archived_at\" is null",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "bots_runtime_profile_idx": {
           "name": "bots_runtime_profile_idx",
@@ -513,20 +513,20 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "bots_runtime_profile_id_runtime_profiles_id_fk": {
           "name": "bots_runtime_profile_id_runtime_profiles_id_fk",
           "tableFrom": "bots",
-          "columnsFrom": ["runtime_profile_id"],
           "tableTo": "runtime_profiles",
+          "columnsFrom": ["runtime_profile_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -626,38 +626,38 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"chat_task_updates\".\"answered_at\" is null",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "chat_task_updates_bot_id_bots_id_fk": {
           "name": "chat_task_updates_bot_id_bots_id_fk",
           "tableFrom": "chat_task_updates",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "chat_task_updates_task_id_tasks_id_fk": {
           "name": "chat_task_updates_task_id_tasks_id_fk",
           "tableFrom": "chat_task_updates",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "chat_task_updates_task_event": {
           "name": "chat_task_updates_task_event",
-          "columns": ["task_id", "task_event_seq"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "task_event_seq"]
         }
       },
       "policies": {},
@@ -748,29 +748,29 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"conversation_messages\".\"role\" = 'user' and \"conversation_messages\".\"handled_at\" is null",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "conversation_messages_bot_id_bots_id_fk": {
           "name": "conversation_messages_bot_id_bots_id_fk",
           "tableFrom": "conversation_messages",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "conversation_messages_bot_sequence": {
           "name": "conversation_messages_bot_sequence",
-          "columns": ["bot_id", "sequence"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["bot_id", "sequence"]
         }
       },
       "policies": {},
@@ -934,10 +934,10 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"status\" = 'queued'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_running_lease_idx": {
           "name": "jobs_running_lease_idx",
@@ -950,10 +950,10 @@
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"status\" = 'running'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_task_idx": {
           "name": "jobs_task_idx",
@@ -966,9 +966,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "jobs_session_idx": {
           "name": "jobs_session_idx",
@@ -981,9 +981,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "jobs_bot_idx": {
           "name": "jobs_bot_idx",
@@ -996,9 +996,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "jobs_chat_reply_answering_idx": {
           "name": "jobs_chat_reply_answering_idx",
@@ -1011,16 +1011,16 @@
             },
             {
               "expression": "(\"payload\"->>'answering')",
-              "isExpression": true,
               "asc": true,
+              "isExpression": true,
               "nulls": "last"
             }
           ],
           "isUnique": false,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"kind\" = 'chat.reply'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_session_run_queued": {
           "name": "jobs_session_run_queued",
@@ -1033,10 +1033,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"kind\" = 'session.run' and \"jobs\".\"status\" = 'queued'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_session_run_running": {
           "name": "jobs_session_run_running",
@@ -1049,10 +1049,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"kind\" = 'session.run' and \"jobs\".\"status\" = 'running'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_chat_reply_queued": {
           "name": "jobs_chat_reply_queued",
@@ -1065,10 +1065,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"kind\" = 'chat.reply' and \"jobs\".\"status\" = 'queued'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         },
         "jobs_chat_reply_running": {
           "name": "jobs_chat_reply_running",
@@ -1081,39 +1081,39 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"jobs\".\"kind\" = 'chat.reply' and \"jobs\".\"status\" = 'running'",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "jobs_task_id_tasks_id_fk": {
           "name": "jobs_task_id_tasks_id_fk",
           "tableFrom": "jobs",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "jobs_session_id_sessions_id_fk": {
           "name": "jobs_session_id_sessions_id_fk",
           "tableFrom": "jobs",
-          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "jobs_bot_id_bots_id_fk": {
           "name": "jobs_bot_id_bots_id_fk",
           "tableFrom": "jobs",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1220,9 +1220,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1324,37 +1324,37 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "runs_session_id_sessions_id_fk": {
           "name": "runs_session_id_sessions_id_fk",
           "tableFrom": "runs",
-          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "runs_task_id_tasks_id_fk": {
           "name": "runs_task_id_tasks_id_fk",
           "tableFrom": "runs",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "runs_session_number": {
           "name": "runs_session_number",
-          "columns": ["session_id", "number"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["session_id", "number"]
         }
       },
       "policies": {},
@@ -1466,10 +1466,10 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"runtime_profiles\".\"is_default\"",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -1607,11 +1607,11 @@
         "session_entries_session_id_sessions_id_fk": {
           "name": "session_entries_session_id_sessions_id_fk",
           "tableFrom": "session_entries",
-          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -1704,9 +1704,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "session_inbox_task_idx": {
           "name": "session_inbox_task_idx",
@@ -1719,29 +1719,29 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "session_inbox_session_id_sessions_id_fk": {
           "name": "session_inbox_session_id_sessions_id_fk",
           "tableFrom": "session_inbox",
-          "columnsFrom": ["session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "session_inbox_task_id_tasks_id_fk": {
           "name": "session_inbox_task_id_tasks_id_fk",
           "tableFrom": "session_inbox",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1898,9 +1898,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "sessions_parent_idx": {
           "name": "sessions_parent_idx",
@@ -1913,9 +1913,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "sessions_bot_status_idx": {
           "name": "sessions_bot_status_idx",
@@ -1934,38 +1934,38 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "sessions_task_id_tasks_id_fk": {
           "name": "sessions_task_id_tasks_id_fk",
           "tableFrom": "sessions",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "sessions_bot_id_bots_id_fk": {
           "name": "sessions_bot_id_bots_id_fk",
           "tableFrom": "sessions",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "sessions_parent_session_id_sessions_id_fk": {
           "name": "sessions_parent_session_id_sessions_id_fk",
           "tableFrom": "sessions",
-          "columnsFrom": ["parent_session_id"],
           "tableTo": "sessions",
+          "columnsFrom": ["parent_session_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2066,19 +2066,19 @@
         "task_events_task_id_tasks_id_fk": {
           "name": "task_events_task_id_tasks_id_fk",
           "tableFrom": "task_events",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "task_events_task_sequence": {
           "name": "task_events_task_sequence",
-          "columns": ["task_id", "sequence"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "sequence"]
         }
       },
       "policies": {},
@@ -2145,11 +2145,11 @@
         "task_goal_versions_task_id_tasks_id_fk": {
           "name": "task_goal_versions_task_id_tasks_id_fk",
           "tableFrom": "task_goal_versions",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -2261,29 +2261,29 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"task_messages\".\"relayed_from_message_id\" is not null",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "task_messages_task_id_tasks_id_fk": {
           "name": "task_messages_task_id_tasks_id_fk",
           "tableFrom": "task_messages",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "task_messages_task_sequence": {
           "name": "task_messages_task_sequence",
-          "columns": ["task_id", "sequence"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "sequence"]
         }
       },
       "policies": {},
@@ -2342,29 +2342,29 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "task_participants_task_id_tasks_id_fk": {
           "name": "task_participants_task_id_tasks_id_fk",
           "tableFrom": "task_participants",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "task_participants_bot_id_bots_id_fk": {
           "name": "task_participants_bot_id_bots_id_fk",
           "tableFrom": "task_participants",
-          "columnsFrom": ["bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -2534,9 +2534,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "tasks_created_by_created_idx": {
           "name": "tasks_created_by_created_idx",
@@ -2555,9 +2555,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "tasks_created_from_message_unique": {
           "name": "tasks_created_from_message_unique",
@@ -2576,30 +2576,30 @@
             }
           ],
           "isUnique": true,
-          "with": {},
-          "method": "btree",
           "where": "\"tasks\".\"created_from_message_id\" is not null",
-          "concurrently": false
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
         "tasks_coordinator_bot_id_bots_id_fk": {
           "name": "tasks_coordinator_bot_id_bots_id_fk",
           "tableFrom": "tasks",
-          "columnsFrom": ["coordinator_bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["coordinator_bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "tasks_created_by_bot_id_bots_id_fk": {
           "name": "tasks_created_by_bot_id_bots_id_fk",
           "tableFrom": "tasks",
-          "columnsFrom": ["created_by_bot_id"],
           "tableTo": "bots",
+          "columnsFrom": ["created_by_bot_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2722,9 +2722,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "usage_bot_created_idx": {
           "name": "usage_bot_created_idx",
@@ -2743,9 +2743,9 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "usage_created_idx": {
           "name": "usage_created_idx",
@@ -2758,20 +2758,20 @@
             }
           ],
           "isUnique": false,
-          "with": {},
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "usage_task_id_tasks_id_fk": {
           "name": "usage_task_id_tasks_id_fk",
           "tableFrom": "usage",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2912,19 +2912,19 @@
         "verification_checks_task_id_tasks_id_fk": {
           "name": "verification_checks_task_id_tasks_id_fk",
           "tableFrom": "verification_checks",
-          "columnsFrom": ["task_id"],
           "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
           "columnsTo": ["id"],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "verification_checks_attempt_criterion": {
           "name": "verification_checks_attempt_criterion",
-          "columns": ["task_id", "goal_version", "attempt", "criterion_id"],
-          "nullsNotDistinct": false
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "goal_version", "attempt", "criterion_id"]
         }
       },
       "policies": {},
@@ -2943,14 +2943,47 @@
         }
       },
       "isRLSEnabled": false
+    },
+    "public.worker_heartbeats": {
+      "name": "worker_heartbeats",
+      "schema": "",
+      "columns": {
+        "worker_id": {
+          "name": "worker_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {},
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},
