@@ -1,0 +1,70 @@
+# Optional, with compose.yaml: the app reaches the Docker daemon through a
+# filtering socket proxy and never mounts the host's socket.
+#   docker compose -f compose.yaml -f compose.socket-proxy.yaml up -d --build --wait
+# or put COMPOSE_FILE=compose.yaml:compose.socket-proxy.yaml in .env, so every
+# docker compose command, scripts/backup.sh and scripts/restore.sh use both.
+# It combines with compose.image.yaml. What the proxy allows, and what it does
+# not protect against: docs/development.md, "Docker socket proxy".
+services:
+  docker-proxy:
+    # HAProxy in front of the socket, answering 403 to every Engine API
+    # section it is not told to allow. Pinned by digest.
+    image: tecnativa/docker-socket-proxy:v0.4.1@sha256:3400c429c5f9e1b21d62130fb93b16e2e772d4fb7695bd52fc2b743800b9fe9e
+    environment:
+      # The sections the docker driver calls, and no other: no swarm,
+      # services, tasks, nodes, system, info, events, build, commit, plugins,
+      # secrets, configs, auth, session, distribution or grpc.
+      CONTAINERS: "1"
+      EXEC: "1"
+      IMAGES: "1"
+      NETWORKS: "1"
+      VOLUMES: "1"
+      # Without it only GET passes: the driver creates, starts, copies into
+      # and removes (POST, PUT, DELETE).
+      POST: "1"
+      # The driver negotiates the API version through these two.
+      PING: "1"
+      VERSION: "1"
+      # On in the image by default; the driver never reads the event stream.
+      EVENTS: "0"
+      DISABLE_IPV6: "1"
+      # Requests are not logged; the driver names any call the proxy refuses.
+      LOG_LEVEL: warning
+    # The image's entrypoint renders /tmp/haproxy.cfg, then runs this. An
+    # exec's attach stream can be quiet for as long as its command runs, and
+    # a spawned process (a stdio MCP server) waits on its input between
+    # calls, so idle streams get 24 hours instead of the 10 minutes the
+    # image's config gives every connection.
+    command:
+      - sh
+      - -c
+      - sed -i '/^defaults$$/a\    timeout tunnel 24h' /tmp/haproxy.cfg && exec haproxy -W -db -f /tmp/haproxy.cfg
+    volumes:
+      # The one place the host's socket is mounted. Root-equivalent on the host.
+      - ${JJ_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:ro
+    networks: [docker-api]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  app:
+    depends_on:
+      docker-proxy:
+        condition: service_started
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      # Plain HTTP to a host that is not loopback, on a network that holds
+      # only the app and the proxy and reaches nothing beyond them.
+      JJ_DOCKER_ALLOW_INSECURE_TCP: "true"
+    # No socket: the proxy holds it, and the entrypoint joins no group.
+    volumes: !reset []
+    networks: [default, docker-api]
+
+networks:
+  docker-api:
+    internal: true
