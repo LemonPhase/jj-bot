@@ -101,7 +101,7 @@ The read tools change nothing, and their output is never a reply's text when its
 - A bot's chat replies run one at a time, each answering one input: the user's unanswered messages first, then the oldest update. An update, or a user message, that arrives during a reply is answered after it, by a reply that sees both.
 - The reply that answers an update marks it answered in the transaction that stores its message, so a crash or hand-off tells it once. If the reply fails (a model error or the budget), or its job keeps dying, the engine posts the update as a plain message with the task's card instead, so it is never lost. A user message whose reply failed is not answered again until the user writes more.
 
-The task card reads the live task summary: it shows the task's current status, not its status when the message was written, and a completed or failed task's result or error.
+The task card reads the live task summary: it shows the task's current status, not its status when the message was written, and a completed or failed task's result or error, or a waiting task's question. The summary of a task waiting for the user carries that question (`question`): the coordinator's last message to the user (a discussion message its root session posted with no recipients), redacted and clipped, derived from the task log and gone once the task continues or finishes.
 
 ## Visibility is separate from activation
 

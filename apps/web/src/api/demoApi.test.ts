@@ -657,6 +657,24 @@ describe("demo direct chat with tasks", () => {
     );
   });
 
+  it("gives a waiting task's summary its question, as the server does", async () => {
+    const api = demo();
+    const summaries = (await api.listTasks()).map((summary) =>
+      taskSummarySchema.parse(summary),
+    );
+    const waiting = summaries.find((summary) => summary.id === "task-103");
+    expect(waiting?.status).toBe("waiting");
+    expect(waiting?.question).toMatch(/^Before I plan this: should we keep/);
+    expect(
+      summaries.filter((summary) => summary.question !== undefined),
+    ).toHaveLength(1);
+    // It goes once the task continues.
+    await api.postTaskMessage("task-103", { text: "Keep a fallback." });
+    const continued = (await api.listTasks()).find((t) => t.id === "task-103");
+    expect(continued?.status).toBe("running");
+    expect(continued?.question).toBeUndefined();
+  });
+
   it("tells the question of a task that waits for the user", async () => {
     const api = demo({
       tasks: [

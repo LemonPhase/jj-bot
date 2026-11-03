@@ -5,7 +5,11 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ConversationView } from "@jj/contracts";
+import {
+  type ConversationView,
+  taskSummarySchema,
+  waitingQuestion,
+} from "@jj/contracts";
 import { chatTaskUpdates, conversationMessages, jobs } from "@jj/db";
 import { ModelRegistry, ChatResponder as PiChatResponder } from "@jj/runtime";
 import { and, eq, sql } from "drizzle-orm";
@@ -918,5 +922,49 @@ describe("direct chat on the scripted model", () => {
       ),
     );
     expect(linked).toEqual(new Set([taskId]));
+  });
+});
+
+describe("a waiting task's question", () => {
+  it("is in its summary while it waits for the user, and goes once it continues", async () => {
+    const engine = await engineOn();
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const adaId = team.byName[ada] as string;
+    engine.executor.brain(ada, (view) =>
+      said.heard(view, "blue")
+        ? completes("Painted it blue.")(view)
+        : { text: "Which colour,\n\nblue or green?" },
+    );
+    engine.chat.brain(ada, politeBrain);
+    const { task } = await engine.engine.tasks.create({
+      goal: "Paint the fence",
+      coordinatorBotId: adaId,
+    });
+    await untilTask(engine.engine, task.id, (v) => v.task.status === "waiting");
+    const summaryOf = async () =>
+      taskSummarySchema.parse(
+        (await engine.engine.tasks.list()).tasks.find((t) => t.id === task.id),
+      );
+    const waiting = await summaryOf();
+    expect(waiting.question).toBe("Which colour, blue or green?");
+    // The same rule as a client folds from the task view.
+    expect(waiting.question).toBe(
+      waitingQuestion(await engine.engine.tasks.get(task.id)),
+    );
+    expect(
+      (await engine.engine.bootstrap()).tasks.find((t) => t.id === task.id)
+        ?.question,
+    ).toBe("Which colour, blue or green?");
+
+    await engine.engine.tasks.postMessage(task.id, { text: "blue" });
+    await untilTask(
+      engine.engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    const done = await summaryOf();
+    expect(done.question).toBeUndefined();
+    expect("question" in done).toBe(false);
   });
 });

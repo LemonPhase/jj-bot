@@ -336,6 +336,54 @@ describe("direct chat", () => {
     expect(card.textContent).not.toContain("Open the task");
   });
 
+  it("shows a waiting task's question on its card, then its result once it continues", async () => {
+    window.history.replaceState(null, "", "/#/bots/bot-kite");
+    const api = renderApp(
+      createDemoApi({
+        autoplay: false,
+        replyMs: 40,
+        tasks: [
+          {
+            id: "task-ask",
+            goal: "Plan the rollout",
+            coordinatorBotId: "bot-kite",
+            participantBotIds: ["bot-kite"],
+            startedMinutesAgo: 1,
+            playedSteps: 0,
+            script: "ask",
+            autoplay: false,
+          },
+        ],
+      }),
+    );
+    await heading("Kite");
+    const log = await screen.findByRole("log", { name: "Messages with Kite" });
+    // The coordinator asks the user and the task waits: Kite tells the chat.
+    for (let step = 0; step < 2; step += 1)
+      await act(async () => {
+        await api.advanceDemoTask?.("task-ask");
+      });
+    const card = await within(log).findByRole("link", {
+      name: /Plan the rollout/,
+    });
+    await waitFor(() => expect(card.textContent).toContain("waiting · v1"));
+    expect(card.querySelector(".chat-task-card__excerpt")?.textContent).toMatch(
+      /^Question · Before I plan this: should we keep a fallback/,
+    );
+    // The user answers in the task; the card follows the task and loses the question.
+    await act(async () => {
+      await api.postTaskMessage("task-ask", { text: "Keep a fallback." });
+    });
+    for (let step = 0; step < 3; step += 1)
+      await act(async () => {
+        await api.advanceDemoTask?.("task-ask");
+      });
+    await waitFor(() => expect(card.textContent).toContain("done · v1"));
+    expect(card.querySelector(".chat-task-card__excerpt")?.textContent).toMatch(
+      /^Result · Demo result: noted your reply/,
+    );
+  });
+
   it("keeps a task card live, shows a finished task's result and the bot's update", async () => {
     window.history.replaceState(null, "", "/#/bots/bot-kite");
     const api = renderApp();

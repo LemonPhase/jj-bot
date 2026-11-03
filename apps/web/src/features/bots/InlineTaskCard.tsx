@@ -1,41 +1,36 @@
-import type { TaskSummary } from "@jj/contracts";
+import { questionExcerpt, type TaskSummary } from "@jj/contracts";
 import { Icon, StatusSquare } from "../../components/ui";
 import { statusTitle, statusTone, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { taskHref } from "../shell/router";
 
-/** Characters of a result or error the card shows; CSS clamps it to two lines. */
-const EXCERPT_CHARS = 240;
-
 /**
- * The outcome line of a finished task, from the summary the workspace keeps
- * current: its result once completed, its error once failed. Null for a task
- * still at work, waiting or stopped.
+ * The line under a card's title, from the summary the workspace keeps
+ * current: a completed task's result, a failed task's error, or the
+ * coordinator's question while the task waits for the user, on one line and
+ * clipped as the summary's question is (CSS clamps it to two lines). Null
+ * for a task at work or stopped.
  */
 export function taskExcerpt(
-  task: Pick<TaskSummary, "status" | "result" | "error">,
-): { label: "Result" | "Error"; text: string } | null {
+  task: Pick<TaskSummary, "status" | "result" | "error" | "question">,
+): { label: "Result" | "Error" | "Question"; text: string } | null {
   const outcome =
     task.status === "completed"
       ? { label: "Result" as const, text: task.result }
       : task.status === "failed"
         ? { label: "Error" as const, text: task.error }
-        : null;
-  const text = outcome?.text?.replace(/\s+/g, " ").trim();
-  if (!outcome || !text) return null;
-  return {
-    label: outcome.label,
-    text:
-      text.length > EXCERPT_CHARS
-        ? `${text.slice(0, EXCERPT_CHARS - 1).trimEnd()}…`
-        : text,
-  };
+        : task.status === "waiting"
+          ? { label: "Question" as const, text: task.question }
+          : null;
+  const text = outcome?.text ? questionExcerpt(outcome.text) : undefined;
+  return outcome && text ? { label: outcome.label, text } : null;
 }
 
 /**
  * The task a bot message is about (SPEC §4 inline task card): a link to
  * `#/tasks/:id` with the task's status square, title and status word, and
- * for a finished task the start of its result or error. It reads the live
+ * the start of a finished task's result or error or of a waiting task's
+ * question. It reads the live
  * task summary, so it shows the task's current status, not its status when
  * the message was written. Verification is off in Contracts 1.0, so the meta
  * shows the goal version where the design shows checks.

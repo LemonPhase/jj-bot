@@ -255,7 +255,27 @@ describe("task card excerpt", () => {
     ).toEqual({ label: "Error", text: "Ada failed: boom" });
   });
 
-  it("shows nothing while a task works, waits or was stopped, or has no outcome text", () => {
+  it("shows a waiting task's question", () => {
+    expect(
+      taskExcerpt({
+        status: "waiting",
+        result: null,
+        error: null,
+        question: "Which colour, blue or green?",
+      }),
+    ).toEqual({ label: "Question", text: "Which colour, blue or green?" });
+    // A question is only shown while the task waits.
+    expect(
+      taskExcerpt({
+        status: "running",
+        result: null,
+        error: null,
+        question: "Which colour?",
+      }),
+    ).toBeNull();
+  });
+
+  it("shows nothing while a task works or was stopped, waits without a question, or has no outcome text", () => {
     for (const status of ["queued", "running", "waiting", "cancelled"] as const)
       expect(taskExcerpt({ status, result: "x", error: "y" })).toBeNull();
     expect(

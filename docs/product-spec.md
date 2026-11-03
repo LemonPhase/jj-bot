@@ -31,7 +31,7 @@ Bots and tasks are many-to-many. A bot can work on many tasks and a task can inv
 
 Bot memories and private conversation histories are never implicitly merged, and no bot reads another session's transcript.
 
-When a task completes, fails or needs the user's answer, its coordinator tells the user in its direct chat, in its own words, with the task's card under the message. The card shows the task's current status and, once it has finished, the start of its result or error. A bot in chat can only look its tasks up while it tells such an update; acting on it (continuing or stopping the task) waits for the user. The update is never lost: if the bot cannot write it, the plain result is posted instead.
+When a task completes, fails or needs the user's answer, its coordinator tells the user in its direct chat, in its own words, with the task's card under the message. The card shows the task's current status and the start of its result or error once it has finished, or of the coordinator's question while it waits for the user. A bot in chat can only look its tasks up while it tells such an update; acting on it (continuing or stopping the task) waits for the user. The update is never lost: if the bot cannot write it, the plain result is posted instead.
 
 ## User control
 

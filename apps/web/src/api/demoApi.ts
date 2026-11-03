@@ -36,6 +36,7 @@ import {
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
   type WorkspaceHint,
+  waitingQuestion,
   z,
 } from "@jj/contracts";
 import {
@@ -279,14 +280,19 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       }),
     );
 
-  const summarize = ({ view }: TaskState): TaskSummary => ({
-    ...clone(view.task),
-    activeSessionCount: view.sessions.filter(
-      (s) => s.status === "queued" || s.status === "running",
-    ).length,
-    sessionCount: view.sessions.length,
-    usage: clone(view.usage.total),
-  });
+  // As services/views.ts `taskSummaries`: a waiting task carries its question.
+  const summarize = ({ view }: TaskState): TaskSummary => {
+    const question = waitingQuestion(view);
+    return {
+      ...clone(view.task),
+      activeSessionCount: view.sessions.filter(
+        (s) => s.status === "queued" || s.status === "running",
+      ).length,
+      sessionCount: view.sessions.length,
+      usage: clone(view.usage.total),
+      ...(question ? { question } : {}),
+    };
+  };
 
   const createTaskState = (task: Task, autoplayTask: boolean): TaskState => {
     const counters: Record<IdKind, number> = {
@@ -584,17 +590,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     if (task.status === previousStatus || !UPDATE_STATUSES.has(task.status))
       return;
     const botId = task.coordinatorBotId;
-    const question =
-      task.status === "waiting"
-        ? [...state.view.messages]
-            .reverse()
-            .find(
-              (message) =>
-                message.authorBotId === botId &&
-                message.intent === "discussion",
-            )?.text
-        : null;
-    const text = describeTask(task, question);
+    const text = describeTask(task, waitingQuestion(state.view));
     queueReply(botId, () =>
       appendMessage(botId, { role: "assistant", text, taskId: task.id }),
     );

@@ -299,17 +299,99 @@ export const stopTaskCommandSchema = z.object({
     .transform((reason) => reason || undefined),
 });
 
+/** Longest `TaskSummary.question`, in UTF-16 code units. */
+export const TASK_QUESTION_LIMIT = 240;
+
 /** The task summary without its cross-field refinement. */
 export const taskSummaryObjectSchema = taskObjectSchema.extend({
   activeSessionCount: z.number().int().nonnegative(),
   sessionCount: z.number().int().nonnegative(),
   usage: usageSchema,
+  /**
+   * Set only while the task is `waiting` for the user: the coordinator's
+   * last message to the user, on one line and clipped (`questionExcerpt`).
+   * Derived from the task log; absent once the task continues or finishes.
+   */
+  question: z.string().min(1).max(TASK_QUESTION_LIMIT).optional(),
 });
 
 /** A task as lists show it. */
 export const taskSummarySchema = taskSummaryObjectSchema.superRefine(
-  coordinatorParticipates,
+  (summary, context) => {
+    coordinatorParticipates(summary, context);
+    if (summary.question !== undefined && summary.status !== "waiting")
+      context.addIssue({
+        code: "custom",
+        path: ["question"],
+        message: "Only a waiting task has a question.",
+      });
+  },
 );
+
+/**
+ * `text` as a `TaskSummary.question`: on one line, cut near
+ * TASK_QUESTION_LIMIT (never inside a surrogate pair) with "…". Undefined
+ * for blank text.
+ */
+export function questionExcerpt(text: string): string | undefined {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line) return undefined;
+  if (line.length <= TASK_QUESTION_LIMIT) return line;
+  return `${line
+    .slice(0, TASK_QUESTION_LIMIT - 1)
+    .replace(/[\uD800-\uDBFF]$/, "")
+    .trimEnd()}…`;
+}
+
+/**
+ * Whether a task message is the coordinator talking to the user: a
+ * discussion message its root session posted with no recipients (as when it
+ * ends a turn to ask the user something).
+ */
+export function isCoordinatorToUser(
+  message: Pick<
+    TaskMessage,
+    "authorKind" | "authorBotId" | "sessionId" | "intent" | "recipientBotIds"
+  >,
+  task: Pick<Task, "coordinatorBotId">,
+  rootSessionId: string | undefined,
+): boolean {
+  return (
+    message.authorKind === "bot" &&
+    message.authorBotId === task.coordinatorBotId &&
+    message.intent === "discussion" &&
+    message.recipientBotIds.length === 0 &&
+    rootSessionId !== undefined &&
+    message.sessionId === rootSessionId
+  );
+}
+
+/**
+ * A summary's `question` from a task view: while the task waits, the
+ * coordinator's last message to the user (see `isCoordinatorToUser`).
+ */
+export function waitingQuestion(view: {
+  task: Pick<Task, "status" | "coordinatorBotId">;
+  sessions: readonly Pick<ExecutionSession, "id" | "parentSessionId">[];
+  messages: readonly Pick<
+    TaskMessage,
+    | "authorKind"
+    | "authorBotId"
+    | "sessionId"
+    | "intent"
+    | "recipientBotIds"
+    | "text"
+  >[];
+}): string | undefined {
+  if (view.task.status !== "waiting") return undefined;
+  const root = view.sessions.find((s) => s.parentSessionId === null)?.id;
+  for (let index = view.messages.length - 1; index >= 0; index--) {
+    const message = view.messages[index];
+    if (message && isCoordinatorToUser(message, view.task, root))
+      return questionExcerpt(message.text);
+  }
+  return undefined;
+}
 
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type FinishedTaskStatus = z.infer<typeof finishedTaskStatusSchema>;
