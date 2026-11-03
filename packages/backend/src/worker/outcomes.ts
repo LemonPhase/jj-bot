@@ -60,7 +60,7 @@ export interface CompletionRequest {
  * current plan passed at the attempt it records, and that attempt is its
  * goal version's latest. Read in the transaction that completes the task.
  */
-async function gatePassed(
+export async function gatePassed(
   tx: Tx,
   task: TaskRow,
   plan: VerificationPlan,

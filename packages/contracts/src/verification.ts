@@ -104,34 +104,67 @@ export const CHECK_SCHEMA_LIMIT = 20_000;
 const SCHEMA_DEPTH_LIMIT = 32;
 const REFERENCE_KEYS = new Set(["$ref", "$dynamicRef", "$recursiveRef"]);
 
+/** Keywords whose value maps names (properties, definitions) to schemas. */
+const NAME_MAPS = new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+  "dependentSchemas",
+]);
+/** Keywords whose value is data, not a schema. */
+const DATA_KEYWORDS = new Set(["enum", "const", "default", "examples"]);
+
 /**
- * Why a JSON Schema cannot be a criterion's, if it cannot: too large, nested
- * too deep, or using references (a schema that refers to itself, such as
- * `{"$ref": "#"}`, would recurse without end when checked).
+ * Why a JSON Schema cannot be a criterion's, if it cannot: larger than
+ * CHECK_SCHEMA_LIMIT, nested deeper than SCHEMA_DEPTH_LIMIT, or using a
+ * reference keyword (a schema that refers to itself, such as
+ * `{"$ref": "#"}`, would recurse without end when checked). A property, a
+ * definition or data that is merely named `$ref` is allowed. Walked without
+ * recursion, so a schema nested thousands of levels deep is refused, never a
+ * stack overflow.
  */
 function schemaShapeProblem(schema: unknown): string | undefined {
-  if (JSON.stringify(schema).length > CHECK_SCHEMA_LIMIT)
-    return `A JSON Schema may be at most ${CHECK_SCHEMA_LIMIT} characters.`;
-  const visit = (value: unknown, depth: number): string | undefined => {
+  type Kind = "schema" | "names" | "data";
+  const stack: { value: unknown; depth: number; kind: Kind }[] = [
+    { value: schema, depth: 0, kind: "schema" },
+  ];
+  let size = 0;
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    const { value, depth, kind } = next;
     if (depth > SCHEMA_DEPTH_LIMIT)
       return `A JSON Schema may nest at most ${SCHEMA_DEPTH_LIMIT} levels.`;
     if (Array.isArray(value)) {
-      for (const item of value) {
-        const problem = visit(item, depth + 1);
-        if (problem) return problem;
-      }
-      return undefined;
-    }
-    if (value && typeof value === "object")
+      size += 2;
+      for (const item of value)
+        stack.push({
+          value: item,
+          depth: depth + 1,
+          kind: kind === "data" ? "data" : "schema",
+        });
+    } else if (value && typeof value === "object") {
+      size += 2;
       for (const [key, item] of Object.entries(value)) {
-        if (REFERENCE_KEYS.has(key))
+        size += key.length + 3;
+        if (kind === "schema" && REFERENCE_KEYS.has(key))
           return `JSON Schema references (${key}) are not supported; write the schema out in full.`;
-        const problem = visit(item, depth + 1);
-        if (problem) return problem;
+        const child: Kind =
+          kind === "data"
+            ? "data"
+            : kind === "names"
+              ? "schema"
+              : NAME_MAPS.has(key)
+                ? "names"
+                : DATA_KEYWORDS.has(key)
+                  ? "data"
+                  : "schema";
+        stack.push({ value: item, depth: depth + 1, kind: child });
       }
-    return undefined;
-  };
-  return visit(schema, 0);
+    } else size += typeof value === "string" ? value.length + 2 : 8;
+    if (size > CHECK_SCHEMA_LIMIT)
+      return `A JSON Schema may be at most ${CHECK_SCHEMA_LIMIT} characters.`;
+  }
+  return undefined;
 }
 
 /** Field problems of a criterion's assertion, by field. Empty when it is well formed. */

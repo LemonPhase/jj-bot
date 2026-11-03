@@ -7,7 +7,7 @@ import {
   type VerificationPlan,
   verificationSummary,
 } from "@jj/contracts";
-import { runs, sessions, verificationChecks } from "@jj/db";
+import { runs, sessions, tasks, verificationChecks } from "@jj/db";
 import { LocalSandboxDriver } from "@jj/sandbox";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -25,6 +25,7 @@ import {
   untilTask,
 } from "./testing/harness";
 import { createTeam } from "./testing/scenarios";
+import { gatePassed } from "./worker/outcomes";
 
 let db: TestDatabase;
 const engines: TestEngine[] = [];
@@ -661,6 +662,67 @@ describe("verification gate", () => {
     expect(v4.task).toMatchObject({ goalVersion: 4, verificationPlan: null });
     expect(summaryOf(v4)).toBeUndefined();
     expect(isVerified(v4.task, summaryOf(v4))).toBe(false);
+  });
+
+  it("accepts only the completing run's own passing attempt, at the goal version's latest", async () => {
+    const { engine } = await setup({ start: false });
+    const team = await createTeam(engine, ["Ada"]);
+    const plan: VerificationPlan = [
+      { id: "one", description: "One", method: "command", command: "true" },
+      { id: "two", description: "Two", method: "command", command: "true" },
+    ];
+    const { task } = await engine.tasks.create({
+      goal: "Check the gate's own record",
+      coordinatorBotId: team.ids[0] as string,
+      verificationPlan: plan,
+    });
+    const at = new Date();
+    const row = (criterionId: string, attempt: number, passed: boolean) => ({
+      id: `chk_${criterionId}_${attempt}_${task.id}`,
+      taskId: task.id,
+      goalVersion: 1,
+      attempt,
+      position: criterionId === "one" ? 0 : 1,
+      criterionId,
+      method: "command" as const,
+      outcome: passed ? ("passed" as const) : ("failed" as const),
+      exitCode: passed ? 0 : 1,
+      interrupted: "no",
+      durationMs: 1,
+      detail: "observed",
+      startedAt: at,
+      finishedAt: at,
+    });
+    await db.database.db
+      .insert(verificationChecks)
+      .values([row("one", 1, true), row("two", 1, true)]);
+    const passed = (runId: string, verification?: object) =>
+      db.database.db.transaction(async (tx) => {
+        const [stored] = await tx
+          .select()
+          .from(tasks)
+          .where(eq(tasks.id, task.id));
+        return gatePassed(
+          tx,
+          stored as NonNullable<typeof stored>,
+          plan,
+          {
+            result: "done",
+            goalVersion: 1,
+            ...(verification ? { verification } : {}),
+          } as never,
+          runId,
+        );
+      });
+    expect(await passed("run_A", { attempt: 1, runId: "run_A" })).toBe(true);
+    // Another run's pass is stale, and no pass is no pass.
+    expect(await passed("run_B", { attempt: 1, runId: "run_A" })).toBe(false);
+    expect(await passed("run_A")).toBe(false);
+    // A later attempt supersedes it, even a failing one.
+    await db.database.db
+      .insert(verificationChecks)
+      .values([row("one", 2, false)]);
+    expect(await passed("run_A", { attempt: 1, runId: "run_A" })).toBe(false);
   });
 
   it("never completes a request the gate did not pass, wherever it came from", async () => {

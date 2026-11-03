@@ -207,6 +207,28 @@ describe("verification plans", () => {
     expect(
       json({ type: "string", description: "x".repeat(20_001) }).success,
     ).toBe(false);
+    // Nested thousands deep: a field error, never a stack overflow.
+    let abyss: Record<string, unknown> = { type: "string" };
+    for (let level = 0; level < 5000; level += 1)
+      abyss = { type: "array", items: abyss };
+    const refused = json(abyss);
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused.error?.issues)).toContain(
+      "may nest at most 32 levels",
+    );
+    // Only the keyword is refused: a property, a definition or data merely
+    // named $ref is fine.
+    expect(
+      json({
+        type: "object",
+        properties: { $ref: { type: "string" } },
+        required: ["$ref"],
+        examples: [{ $ref: "#" }],
+      }).success,
+    ).toBe(true);
+    expect(
+      json({ type: "object", properties: { a: { $ref: "#" } } }).success,
+    ).toBe(false);
   });
 
   it("compares plans whatever their key order", () => {

@@ -497,6 +497,21 @@ describe("tasks", () => {
       "VALIDATION_FAILED",
     );
     expect(JSON.stringify(plan.error.details)).toContain("verificationPlan");
+    // A schema nested thousands deep is a field error, not a server error.
+    // (Written as text: JSON.stringify of it would overflow here.)
+    const abyss = `${'{"type":"array","items":'.repeat(5000)}{"type":"string"}${"}".repeat(5000)}`;
+    const deep = expectError(
+      await t.call(
+        "POST",
+        "/api/tasks",
+        `{"goal":"Deep","coordinatorBotId":${JSON.stringify(bots.Ada)},"verificationPlan":[{"id":"deep","description":"Deep","method":"result","expect":"json","schema":${abyss}}]}`,
+      ),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(JSON.stringify(deep.error.details)).toContain(
+      "may nest at most 32 levels",
+    );
     expectError(
       await t.call("GET", "/api/tasks/task_missing"),
       404,

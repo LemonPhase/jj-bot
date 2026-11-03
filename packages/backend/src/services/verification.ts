@@ -11,7 +11,12 @@ import {
   type VerificationSummary,
   verificationSummary,
 } from "@jj/contracts";
-import { type Executor, type TaskRow, verificationChecks } from "@jj/db";
+import {
+  type Executor,
+  type TaskRow,
+  tasks as tasksTable,
+  verificationChecks,
+} from "@jj/db";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { planOf, toVerificationCheck } from "../records";
 
@@ -125,6 +130,14 @@ export async function latestOutcomes(
       outcome: verificationChecks.outcome,
     })
     .from(verificationChecks)
+    // Only each task's current goal version: earlier versions' rows never count.
+    .innerJoin(
+      tasksTable,
+      and(
+        eq(tasksTable.id, verificationChecks.taskId),
+        eq(tasksTable.goalVersion, verificationChecks.goalVersion),
+      ),
+    )
     .where(
       inArray(
         verificationChecks.taskId,
