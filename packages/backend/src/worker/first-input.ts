@@ -33,10 +33,15 @@ import { handoffNote } from "./handoff";
 import { briefPointer } from "./prompts";
 import { quoteClipped, quotedSize } from "./quote";
 
+// The bounds. The first input is resent, cached, with every model call of
+// the child session, and every delegation adds one, so it stays small next
+// to the fixed prefix (system prompt and tools, about 2,000 tokens a call)
+// however long the task runs; most delegations come nowhere near them.
+
 /**
- * Task log entries the index shows, newest kept. At most about 40 tokens
- * each, so the index stays under about 800 tokens however long the task;
- * the cap matches the newest undelivered messages a session keeps.
+ * Task log entries the index shows, newest kept. A line takes about 170
+ * characters (id, kind, author and recipients, preview), so the index stays
+ * under about 3,500 characters, roughly 1,000 tokens.
  */
 export const FIRST_INPUT_ENTRIES = 20;
 /** Characters of an entry's text in the index (`task_log` shows 160). */
@@ -45,7 +50,7 @@ export const FIRST_INPUT_PREVIEW_CHARS = 100;
 export const FIRST_INPUT_USER_MESSAGES = 10;
 /**
  * Characters the user's messages take at most, headers and quote prefixes
- * included: about 1,000 tokens, half the fixed prefix every call resends.
+ * included: roughly 1,000 tokens, room for a long request or several rules.
  */
 export const FIRST_INPUT_USER_CHARS = 4000;
 
