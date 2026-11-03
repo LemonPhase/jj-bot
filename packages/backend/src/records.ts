@@ -213,6 +213,15 @@ export function toArtifact(row: ArtifactMeta): Artifact {
     contentType: row.contentType,
     sizeBytes: row.sizeBytes,
     sha256: row.sha256,
+    upload:
+      row.uploadMessageId && row.uploadState
+        ? {
+            messageId: row.uploadMessageId,
+            state: row.uploadState,
+            placedAt: row.placedAt ? iso(row.placedAt) : null,
+            error: row.uploadError,
+          }
+        : null,
     createdAt: iso(row.createdAt),
   };
 }

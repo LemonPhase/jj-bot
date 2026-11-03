@@ -8,7 +8,9 @@
 // Session transcripts are never read here: they stay private to their session.
 
 import {
+  formatUploadSize,
   latestAttemptChecks,
+  type UploadState,
   type VerificationCheck,
   type VerificationPlan,
   type VerificationSummary,
@@ -16,6 +18,7 @@ import {
 } from "@jj/contracts";
 import {
   type AuthorKind,
+  artifacts,
   bots,
   type Executor,
   type MessageIntent,
@@ -36,6 +39,7 @@ import {
   gt,
   ilike,
   inArray,
+  isNotNull,
   lt,
   type SQL,
   sql,
@@ -55,15 +59,16 @@ export const isTaskLogKind = (value: unknown): value is TaskLogKind =>
 export type Redact = (text: string) => string;
 
 /**
- * An entry's kind, from the stored message. The user's messages are steering
- * and what a bot relayed from the user's direct chat; a brief is an
+ * An entry's kind, from the stored message. The user's messages are every
+ * message the user wrote (steering, an upload's announcement) and what a bot
+ * relayed from the user's direct chat; a brief is an
  * assignment; a report is a result (a worker's report or failure, the
  * coordinator's final result) or a system notice, which is always a failure;
  * everything else is a message. One SQL expression, so filtering and
  * labelling cannot disagree.
  */
 const kindColumn = sql<TaskLogKind>`case
-  when ${taskMessages.intent} = 'steering' or ${taskMessages.relayedFromMessageId} is not null then 'user'
+  when ${taskMessages.intent} = 'steering' or ${taskMessages.authorKind} = 'user' or ${taskMessages.relayedFromMessageId} is not null then 'user'
   when ${taskMessages.intent} = 'assignment' then 'brief'
   when ${taskMessages.intent} = 'result' or ${taskMessages.authorKind} = 'system' then 'report'
   else 'message' end`;
@@ -437,6 +442,13 @@ export interface TaskState {
   };
   /** Oldest first, each with its brief in full (the formatter shows its first line). */
   sessions: (SessionSummary & { brief: string })[];
+  /** The files the user uploaded, oldest first, with where each one stands. */
+  uploads: {
+    path: string;
+    sizeBytes: number;
+    state: UploadState;
+    error: string | null;
+  }[];
 }
 
 /** The task's sessions, oldest first, with bot and requester names. */
@@ -530,6 +542,23 @@ export async function readTaskState(
     sessions: (await sessionReports(exec, taskId)).map(
       ({ report: _, error: __, botId: ___, ...session }) => session,
     ),
+    uploads: (
+      await exec
+        .select({
+          path: artifacts.path,
+          sizeBytes: artifacts.sizeBytes,
+          state: artifacts.uploadState,
+          error: artifacts.uploadError,
+        })
+        .from(artifacts)
+        .where(
+          and(
+            eq(artifacts.taskId, taskId),
+            isNotNull(artifacts.uploadMessageId),
+          ),
+        )
+        .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
+    ).map((row) => ({ ...row, state: row.state ?? "pending" })),
   };
 }
 
@@ -596,6 +625,12 @@ export async function readBotReports(
   return { bot: member.name, reports };
 }
 
+const UPLOAD_STATE_TEXT: Record<UploadState, string> = {
+  pending: "waiting for the next run to place it",
+  placed: "in the workspace",
+  failed: "not placed",
+};
+
 const WAITING_FOR_TEXT = {
   user: "the user",
   delegations: "its delegations",
@@ -643,6 +678,15 @@ export function formatTaskState(state: TaskState, redact: Redact): string {
     lines.push(
       `- ${session.id} ${sessionLabel(session)}: ${statusText(session)}${session.role === "worker" ? `. Brief: ${briefSummary(redact(session.brief))}` : ""}`,
     );
+  if (state.uploads.length > 0) {
+    lines.push("", "Files the user uploaded, oldest first:");
+    for (const upload of state.uploads)
+      lines.push(
+        `- ${upload.path} (${formatUploadSize(upload.sizeBytes)}): ${UPLOAD_STATE_TEXT[upload.state]}${
+          upload.state === "failed" && upload.error ? `: ${upload.error}` : ""
+        }`,
+      );
+  }
   return redact(lines.join("\n"));
 }
 

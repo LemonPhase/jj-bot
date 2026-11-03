@@ -66,6 +66,7 @@ import {
   runningRun,
 } from "./runs";
 import { type SandboxHold, SandboxUnavailableError } from "./sandboxes";
+import { placeUploads } from "./uploads";
 
 /** Executor calls one job may make while new input keeps arriving. */
 const MAX_CONTINUATIONS = 20;
@@ -394,6 +395,12 @@ async function prepare(
       signal: rc.control.controller.signal,
       hooks: {
         ...runHooks(rc),
+        // Uploads reach the workspace before the boundary takes the inbox,
+        // so the notice that they are there comes with it.
+        drainInbox: async (turnEnded) => {
+          await placeUploads(rc, hold.sandbox);
+          return takeInbox(rc, turnEnded);
+        },
         reviewToolCall: (pending) => reviewCall(rc, pending),
         claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
       },
@@ -500,6 +507,13 @@ async function executeRun(
       return;
     }
     const { call, deadline } = prepared;
+    const held = hold;
+    // Pending uploads go into the workspace before every take of the inbox:
+    // before the run's first model call, and at each boundary after it.
+    const take = async (continuingOnly: boolean) => {
+      await placeUploads(rc, held.sandbox);
+      return takeInbox(rc, continuingOnly);
+    };
     // Each executor call takes the inbox, in order; input that arrives as a
     // call ends continues the run, even when it lands just before the
     // write-back. Where the turn has ended (a continuation, or a recovery
@@ -518,14 +532,14 @@ async function executeRun(
           calls === 1 && rc.reason === "recovery"
             ? await endedTurn(ctx.db, rc.session.id)
             : undefined;
-        inputs = await takeInbox(rc, calls > 1 || ended !== undefined);
+        inputs = await take(calls > 1 || ended !== undefined);
         outcome =
           ended === "engine" && inputs.length === 0
             ? { kind: "idle" }
             : await call(inputs);
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
-          inputs = await takeInbox(rc, true);
+          inputs = await take(true);
           if (inputs.length === 0) break;
           calls += 1;
           outcome = await call(inputs);
