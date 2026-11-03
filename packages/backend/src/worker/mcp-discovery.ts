@@ -193,11 +193,26 @@ async function finish(
   outcome: Outcome,
   durationMs: number,
 ) {
-  const [row] = await tx
-    .select()
+  // The profile first, as its deletion takes it before the discoveries it
+  // cascades to; the snapshot's foreign key needs it too.
+  const [discovery] = await tx
+    .select({ profileId: mcpDiscoveries.profileId })
     .from(mcpDiscoveries)
-    .where(eq(mcpDiscoveries.id, discoveryId))
-    .for("update");
+    .where(eq(mcpDiscoveries.id, discoveryId));
+  const [profile] = discovery
+    ? await tx
+        .select({ id: runtimeProfiles.id })
+        .from(runtimeProfiles)
+        .where(eq(runtimeProfiles.id, discovery.profileId))
+        .for("key share")
+    : [];
+  const [row] = profile
+    ? await tx
+        .select()
+        .from(mcpDiscoveries)
+        .where(eq(mcpDiscoveries.id, discoveryId))
+        .for("update")
+    : [];
   // Deleted with its profile, or pruned, while it ran: nothing to record.
   if (row?.status === "running") {
     let final = outcome;

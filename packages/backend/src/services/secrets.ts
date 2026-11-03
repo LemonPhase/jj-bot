@@ -239,6 +239,12 @@ export async function deleteSecret(
 ): Promise<void> {
   const name = secretName(rawName);
   await ctx.db.transaction(async (tx) => {
+    // Profiles before secrets, as a profile save takes them: a save holding
+    // its profile and waiting on this secret's row cannot meet this.
+    await tx
+      .select({ id: runtimeProfiles.id })
+      .from(runtimeProfiles)
+      .for("no key update");
     const deleted = await tx
       .delete(secrets)
       .where(rowOf(ctx, "sandbox", name))
