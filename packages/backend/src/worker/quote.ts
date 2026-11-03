@@ -8,8 +8,11 @@
 /** Starts every quoted line. */
 export const QUOTE = "> ";
 
-/** Line breaks a model may read as one: CRLF, CR, LF, NEL, LS and PS. */
-const LINE_BREAK = /\r\n?|\n|\u0085|\u2028|\u2029/;
+/**
+ * Line breaks a model may read as one: CRLF, CR, LF, VT, FF, NEL, LS and
+ * PS (the mandatory breaks of Unicode line breaking, UAX #14).
+ */
+const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/;
 
 /** `text` with every line break as "\n". */
 const normalizeBreaks = (text: string) =>

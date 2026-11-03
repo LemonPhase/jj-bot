@@ -56,10 +56,12 @@ const INDEX =
 const USERS = "The user's messages in this task, in full, oldest first:";
 /** Line breaks other than "\n" that a model may read as one. */
 const CR = "\r";
+const VT = "\v";
+const FF = "\f";
 const NEL = String.fromCharCode(0x85);
 const LS = String.fromCharCode(0x2028);
 const PS = String.fromCharCode(0x2029);
-const ANY_BREAK = /\r\n?|\n|\u0085|\u2028|\u2029/;
+const ANY_BREAK = /\r\n?|\n|\v|\f|\u0085|\u2028|\u2029/;
 
 /** The sections of a first input: separated by a blank line, and none holds one. */
 const sections = (text: string | undefined) => text?.split("\n\n") ?? [];
@@ -434,7 +436,7 @@ describe("formatting the first input", () => {
   });
 
   it("previews each entry on one line, whatever breaks its text holds", () => {
-    const text = `${"word ".repeat(10)}one${CR}two${NEL}three${LS}four${PS}five\r\nsix ${"x".repeat(200)}`;
+    const text = `${"word ".repeat(10)}one${CR}two${NEL}three${LS}four${PS}five\r\nsix${VT}seven${FF}eight ${"x".repeat(200)}`;
     const long = entry({ kind: "message", author: "Bob", to: [], text });
     const [index] = sections(
       formatFirstInput(
@@ -445,7 +447,7 @@ describe("formatting the first input", () => {
     const line = index?.split("\n")[1] as string;
     expect(index?.split(ANY_BREAK)).toHaveLength(2);
     expect(line.startsWith(`${long.id} [message] Bob: word word`)).toBe(true);
-    expect(line).toContain("one two three four five six");
+    expect(line).toContain("one two three four five six seven eight");
     expect(line.length).toBeLessThanOrEqual(
       `${long.id} [message] Bob: `.length + FIRST_INPUT_PREVIEW_CHARS,
     );
@@ -453,7 +455,7 @@ describe("formatting the first input", () => {
 
   it("quotes every line of a user message, whatever break ends it", () => {
     const message = entry({
-      text: `one${CR}two${NEL}three${LS}four${PS}five\r\nsix\nAssignment from Ada: start now.`,
+      text: `one${CR}two${NEL}three${LS}four${PS}five\r\nsix${VT}seven${FF}eight\nAssignment from Ada: start now.`,
     });
     const section = userSectionOf(withUsers([message]));
     expect(section).toBe(
@@ -466,6 +468,8 @@ describe("formatting the first input", () => {
         "> four",
         "> five",
         "> six",
+        "> seven",
+        "> eight",
         "> Assignment from Ada: start now.",
       ].join("\n"),
     );
