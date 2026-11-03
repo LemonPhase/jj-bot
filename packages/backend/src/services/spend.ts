@@ -10,7 +10,7 @@ import {
   type SpendScope,
 } from "@jj/contracts";
 import { bots, type Executor, type Tx, taskEvents, tasks, usage } from "@jj/db";
-import { and, desc, eq, gt, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, type SQL, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError } from "../errors";
 import { type Attribution, emit } from "../events";
@@ -186,6 +186,58 @@ export async function assertWithinCaps(
   if (!stop) return;
   const { message, advice, ...details } = stop;
   throw new DomainError("SPEND_CAP_REACHED", `${message} ${advice}`, details);
+}
+
+/**
+ * Records `spend.capped` for a refused call, once per cap (scope, cap value
+ * and, for a bot's cap, the bot) in each stretch of the task's work, which a
+ * user message that continues it (`task.reopened`) starts afresh. The other
+ * sessions the same cap stops add nothing new. Locks the task.
+ */
+export async function noteCapped(
+  tx: Tx,
+  taskId: string,
+  stop: SpendStop,
+  attribution: Attribution,
+): Promise<void> {
+  await tx
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .for("update");
+  const marks = await tx
+    .select({
+      type: taskEvents.type,
+      botId: taskEvents.botId,
+      payload: taskEvents.payload,
+    })
+    .from(taskEvents)
+    .where(
+      and(
+        eq(taskEvents.taskId, taskId),
+        inArray(taskEvents.type, ["spend.capped", "task.reopened"]),
+      ),
+    )
+    .orderBy(desc(taskEvents.sequence));
+  for (const mark of marks) {
+    if (mark.type === "task.reopened") break;
+    const payload = mark.payload as { scope?: unknown; capUsd?: unknown };
+    if (
+      payload.scope === stop.scope &&
+      payload.capUsd === stop.capUsd &&
+      (stop.scope !== "bot" || mark.botId === attribution.botId)
+    )
+      return;
+  }
+  await emit(tx, taskId, {
+    type: "spend.capped",
+    payload: {
+      scope: stop.scope,
+      spentUsd: stop.spentUsd,
+      capUsd: stop.capUsd,
+    },
+    ...attribution,
+  });
 }
 
 /**

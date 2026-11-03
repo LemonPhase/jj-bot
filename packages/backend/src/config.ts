@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import { MAX_SPEND_CAP_USD, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
 
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
@@ -115,9 +115,15 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
   config.outputCapBytes = clampOutputCap(config.outputCapBytes);
   if (
     config.maxUsdPerDay !== null &&
-    !(Number.isFinite(config.maxUsdPerDay) && config.maxUsdPerDay > 0)
+    !(
+      Number.isFinite(config.maxUsdPerDay) &&
+      config.maxUsdPerDay > 0 &&
+      config.maxUsdPerDay <= MAX_SPEND_CAP_USD
+    )
   )
-    throw new RangeError("maxUsdPerDay must be a positive number or null.");
+    throw new RangeError(
+      `maxUsdPerDay must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}, or null.`,
+    );
   for (const key of [
     "concurrency",
     "leaseMs",
@@ -164,8 +170,10 @@ export function configFromEnv(
     const raw = env[name]?.trim();
     if (!raw) return undefined;
     const value = Number(raw);
-    if (!Number.isFinite(value) || value <= 0)
-      throw new RangeError(`${name} must be a positive number of US dollars.`);
+    if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEND_CAP_USD)
+      throw new RangeError(
+        `${name} must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}.`,
+      );
     return value;
   };
   // PostgreSQL when DATABASE_URL is set, else PGlite at JJ_DATABASE_PATH,

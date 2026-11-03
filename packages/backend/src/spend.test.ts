@@ -141,6 +141,24 @@ describe("the task's spend cap", () => {
     ).toEqual([0.035, 0.055]);
   });
 
+  it("notes the soft threshold once per cap value, however many calls start past it", async () => {
+    const { engine, executor } = await setup();
+    const team = await createTeam(engine, ["Ada"]);
+    executor.brain(team.names[0] as string, tireless);
+    // $0.01 a call: the checks before calls 9 and 10 ($0.08, $0.09) are both
+    // past 80% of $0.095 and short of it.
+    const { task } = await engine.tasks.create({
+      goal: "Count forever.",
+      coordinatorBotId: team.ids[0] as string,
+      spendCapUsd: 0.095,
+    });
+    const view = await untilTask(engine, task.id, waitingForUser);
+    expect(modelCalls(view)).toBe(10);
+    const threshold = ofType(view, "spend.threshold");
+    expect(threshold).toHaveLength(1);
+    expect(threshold[0]?.payload.spentUsd).toBeCloseTo(0.08);
+  });
+
   it("takes the coordinator's profile cap, or the one the creator gives", async () => {
     const { engine } = await setup({ start: false });
     const profile = await profileWith(engine, { maxUsdPerTask: 1.5 });
@@ -221,6 +239,8 @@ describe("the task's spend cap", () => {
         ),
     );
     expect(view.task.status).toBe("waiting");
+    // Every session the cap stopped, one event.
+    expect(ofType(view, "spend.capped")).toHaveLength(1);
     // $0.06 crosses the cap; each of the three sessions may have had one call in flight.
     expect(modelCalls(view)).toBeGreaterThanOrEqual(6);
     expect(modelCalls(view)).toBeLessThanOrEqual(8);
@@ -307,6 +327,60 @@ describe("a bot's daily spend cap", () => {
     await expect(
       engine.bots.sendMessage(worker.id, { text: "Hi" }),
     ).rejects.toMatchObject({ code: "SPEND_CAP_REACHED" });
+  });
+
+  it("refuses a delegation to a bot at its cap up front, starting no session", async () => {
+    const { engine, executor } = await setup();
+    const profile = await profileWith(engine, { maxUsdPerBotPerDay: 0.01 });
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const { bot: penny } = await engine.bots.create({
+      name: `Spent${Date.now()}`,
+      runtimeProfileId: profile.id,
+    });
+    await db.database.db.insert(usage).values({
+      id: `use_spent_${Date.now()}`,
+      botId: penny.id,
+      model: FAKE_MODEL,
+      costUsd: 0.01,
+    });
+    executor.brain(ada, (view) => {
+      if (said.turns(view) === 0)
+        return {
+          calls: [
+            { name: "delegate", args: { bot: penny.name, brief: "Count." } },
+          ],
+        };
+      const refusal = said.results(view).at(-1);
+      if (refusal?.name === "delegate")
+        return {
+          calls: [
+            {
+              name: "complete_task",
+              args: { result: `Refused: ${refusal.text}` },
+            },
+          ],
+        };
+      return { text: "Done." };
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Delegate the counting.",
+      coordinatorBotId: team.ids[0] as string,
+      participantBotIds: [penny.id],
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (next) => next.task.status === "completed",
+    );
+    expect(view.sessions).toHaveLength(1);
+    expect(view.task.result).toContain(
+      `${penny.name} reached its daily spend cap: $0.01 of $0.01 in the last 24 hours. ${penny.name} cannot start this work now`,
+    );
+    const delegated = ofType(view, "tool.finished").find(
+      (event) => event.payload.tool === "delegate",
+    );
+    expect(delegated?.payload.ok).toBe(false);
   });
 
   it("fails a chat reply that reaches the worker after the cap, and records the usage of failed replies", async () => {

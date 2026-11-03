@@ -140,6 +140,17 @@ describe("loadServerConfig", () => {
       ).toThrow(/JJ_DOCKER_EGRESS_SUBNET_POOL/);
   });
 
+  it("reads JJ_MAX_USD_PER_DAY, refusing what no cap can be", () => {
+    expect(loadServerConfig({}).engine.maxUsdPerDay).toBeUndefined();
+    expect(
+      loadServerConfig({ JJ_MAX_USD_PER_DAY: "12.5" }).engine.maxUsdPerDay,
+    ).toBe(12.5);
+    for (const value of ["0", "-1", "abc", "10001"])
+      expect(() => loadServerConfig({ JJ_MAX_USD_PER_DAY: value })).toThrow(
+        /JJ_MAX_USD_PER_DAY must be a positive number of US dollars, at most 10000/,
+      );
+  });
+
   it("passes a valid egress subnet pool to the docker driver, and none by default", () => {
     expect(loadServerConfig({}).dockerEgressSubnetPool).toBeUndefined();
     expect(

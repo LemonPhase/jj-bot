@@ -22,7 +22,12 @@ import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import type { Redactor } from "../redact";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
-import { noteThreshold, type SpendStop, spendStop } from "../services/spend";
+import {
+  noteCapped,
+  noteThreshold,
+  type SpendStop,
+  spendStop,
+} from "../services/spend";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import type { TaskSandboxes } from "./sandboxes";
 
@@ -342,15 +347,7 @@ async function admitModelCall(rc: RunContext): Promise<string | undefined> {
       return undefined;
     }
     rc.spendStop = stop;
-    await emit(tx, rc.task.id, {
-      type: "spend.capped",
-      payload: {
-        scope: stop.scope,
-        spentUsd: stop.spentUsd,
-        capUsd: stop.capUsd,
-      },
-      ...attribution,
-    });
+    await noteCapped(tx, rc.task.id, stop, attribution);
     return stop.message;
   });
 }

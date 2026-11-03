@@ -213,7 +213,7 @@ describe.each(targets)("migrations on $name", (target) => {
   );
 
   it(
-    "0006 caps existing tasks at the default and marks existing usage priced",
+    "0006 caps existing tasks at the default and marks past calls at no cost unpriced",
     async () => {
       const database = await databaseBefore(target, "0006_spend_caps");
       try {
@@ -226,8 +226,10 @@ describe.each(targets)("migrations on $name", (target) => {
             ('task_2', 'Done', 'Goal', 'bot_1', 'completed');
         `);
         await database.execute(sql`
-          insert into usage (id, task_id, bot_id, model, cost_usd)
-          values ('use_1', 'task_1', 'bot_1', 'openai/gpt', 0.25);
+          insert into usage (id, task_id, bot_id, model, input_tokens, cost_usd)
+          values ('use_1', 'task_1', 'bot_1', 'openai/gpt', 100, 0.25),
+            ('use_2', 'task_1', 'bot_1', 'free/model', 100, 0),
+            ('use_3', null, 'bot_1', 'openai/gpt', 0, 0);
         `);
 
         await database.upgrade();
@@ -239,8 +241,15 @@ describe.each(targets)("migrations on $name", (target) => {
           { id: "task_1", spend_cap_usd: 5 },
           { id: "task_2", spend_cap_usd: 5 },
         ]);
-        const usage = await database.execute(sql`select priced from usage`);
-        expect(usage.rows).toEqual([{ priced: true }]);
+        // Priced: a cost was recorded, or no tokens were used at all.
+        const usage = await database.execute(
+          sql`select id, priced from usage order by id`,
+        );
+        expect(usage.rows).toEqual([
+          { id: "use_1", priced: true },
+          { id: "use_2", priced: false },
+          { id: "use_3", priced: true },
+        ]);
       } finally {
         await database.close();
       }
