@@ -563,15 +563,18 @@ describe("MCP discovery", () => {
     await reset();
 
     const noClient = await setup({ mcp: false });
+    // One at a time: each refusal is awaited before the next starts.
     for (const attempt of [
-      noClient.engine.mcp.startDiscovery(noClient.profile.id, {
-        server: remote(),
-      }),
-      noClient.engine.profiles.update(noClient.profile.id, {
-        mcpServers: [remote()],
-      }),
+      () =>
+        noClient.engine.mcp.startDiscovery(noClient.profile.id, {
+          server: remote(),
+        }),
+      () =>
+        noClient.engine.profiles.update(noClient.profile.id, {
+          mcpServers: [remote()],
+        }),
     ])
-      expect((await failure(attempt)).code).toBe("MCP_UNAVAILABLE");
+      expect((await failure(attempt())).code).toBe("MCP_UNAVAILABLE");
   });
 
   it(
