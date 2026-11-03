@@ -289,22 +289,31 @@ function periodOf(value: string): number {
 }
 
 /**
- * Replaces each run of overlapping `[start, end)` spans of `text` with one
- * `REDACTED`. Spans that only touch are replaced one by one.
+ * Replaces each run of overlapping spans of `text` with one `REDACTED`: the
+ * span starting at `start` ends at `ends[start]` (0: none starts there).
+ * Spans that only touch are replaced one by one.
  */
-function replaceSpans(text: string, spans: [number, number][]): string {
-  spans.sort((a, b) => a[0] - b[0]);
+function replaceSpans(text: string, ends: Int32Array): string {
   let out = "";
   let kept = 0;
-  let index = 0;
-  while (index < spans.length) {
-    const [start, first] = spans[index] as [number, number];
-    let end = first;
-    for (index += 1; index < spans.length; index += 1) {
-      const [nextStart, nextEnd] = spans[index] as [number, number];
-      if (nextStart >= end) break;
-      end = Math.max(end, nextEnd);
+  // The run being merged: [start, end), none while start is -1.
+  let start = -1;
+  let end = 0;
+  for (let at = 0; at < text.length; at += 1) {
+    const next = ends[at] ?? 0;
+    if (next === 0) continue;
+    if (start >= 0 && at < end) {
+      if (next > end) end = next;
+      continue;
     }
+    if (start >= 0) {
+      out += `${text.slice(kept, start)}${REDACTED}`;
+      kept = end;
+    }
+    start = at;
+    end = next;
+  }
+  if (start >= 0) {
     out += `${text.slice(kept, start)}${REDACTED}`;
     kept = end;
   }
@@ -356,7 +365,13 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
   // overlapping ones are replaced as one: replacing one secret first would
   // leave the rest of another that overlaps it.
   const whole = (input: string) => {
-    const spans: [number, number][] = [];
+    // The furthest end of a span at each start: memory bounded by the text,
+    // however many occurrences it holds.
+    let ends: Int32Array | undefined;
+    const span = (start: number, end: number) => {
+      ends ??= new Int32Array(input.length);
+      if (end > (ends[start] ?? 0)) ends[start] = end;
+    };
     for (let index = 0; index < bare.length; index += 1) {
       const value = bare[index] as string;
       let at = input.indexOf(value);
@@ -370,7 +385,7 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
       while (at >= 0) {
         let end = at + value.length;
         if (tail) while (input.startsWith(tail, end)) end += period;
-        spans.push([at, end]);
+        span(at, end);
         // One that overlaps the last of the run less than a period.
         at = input.indexOf(value, end - value.length + 1);
       }
@@ -383,11 +398,11 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
         match = urlPattern.exec(input)
       ) {
         // The password alone: the `:` and `@` around it stay.
-        spans.push([match.index + 1, match.index + match[0].length - 1]);
+        span(match.index + 1, match.index + match[0].length - 1);
         urlPattern.lastIndex = match.index + 1;
       }
     }
-    return spans.length > 0 ? replaceSpans(input, spans) : input;
+    return ends ? replaceSpans(input, ends) : input;
   };
   // The spans a cut masks are found on the raw text, before anything is
   // replaced: a secret replaced first could hide the piece of another one
