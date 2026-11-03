@@ -96,6 +96,12 @@ const PROXY_MEMORY_BYTES = 256 * 1024 * 1024;
 const PROXY_NANO_CPUS = 500_000_000;
 /** How long a new egress proxy may take to start listening. */
 const PROXY_START_MS = 15_000;
+/**
+ * How long the engine may take to record the exit of a proxy whose start-up
+ * check failed. The check fails as soon as the proxy dies, and the engine
+ * reads it as running until it has handled the exit, a moment later.
+ */
+const PROXY_EXIT_RECORD_MS = 5_000;
 /** Keeps the bridge of an allowlist network without an address on the host. */
 const INHIBIT_IPV4 = "com.docker.network.bridge.inhibit_ipv4";
 /**
@@ -1708,8 +1714,21 @@ export class DockerSandboxDriver implements SandboxDriver {
       signal,
     );
     if (ready.exitCode !== 0) {
-      const late = exited(await inspectProxy().catch(() => ({})));
-      if (late) throw late;
+      // Running right after a failed check proves nothing: the engine may not
+      // have recorded the exit yet. Only a proxy still running once it had
+      // time to is one that did not start listening.
+      const recorded = Date.now() + PROXY_EXIT_RECORD_MS;
+      for (let pause = 25; ; pause = Math.min(pause * 2, 250)) {
+        const late = exited(
+          await inspectProxy().catch(() => {
+            signal?.throwIfAborted();
+            return {};
+          }),
+        );
+        if (late) throw late;
+        if (Date.now() >= recorded) break;
+        await withSignal(delay(pause), signal);
+      }
       throw new Error(
         `Egress proxy ${egress.proxyName} did not start listening (${needsNode})` +
           (ready.stderr.length > 0

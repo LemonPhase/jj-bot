@@ -1442,6 +1442,66 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         }
       });
 
+      it("waits for the engine to record a proxy's exit before saying it did not start listening", async () => {
+        // The engine reads a container as running until it has handled its
+        // exit, a moment after the process ended, and a dying proxy fails the
+        // start-up check within that moment. Here the proxy is killed as the
+        // check starts, and the first read after the check is a stale one.
+        const lagging = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+        });
+        const lagEngine = (lagging as unknown as { engine: DockerEngine })
+          .engine;
+        const json = lagEngine.json.bind(lagEngine);
+        const run = lagEngine.run.bind(lagEngine);
+        const isProxy = (name: string) => /-egress-[0-9a-f-]{36}$/.test(name);
+        let lastRunning: unknown;
+        let stale = false;
+        lagEngine.json = (async (
+          method: string,
+          path: string,
+          init?: Parameters<DockerEngine["json"]>[2],
+        ) => {
+          const read = /^\/containers\/([^/]+)\/json$/.exec(path)?.[1];
+          const proxyRead = method === "GET" && read && isProxy(read);
+          if (proxyRead && stale) {
+            stale = false;
+            return lastRunning;
+          }
+          const result = await json(method, path, init);
+          if (
+            proxyRead &&
+            (result as { State?: { Running?: boolean } }).State?.Running
+          )
+            lastRunning = result;
+          return result;
+        }) as DockerEngine["json"];
+        lagEngine.run = async (...args: Parameters<DockerEngine["run"]>) => {
+          const [container] = args;
+          if (isProxy(container) && lastRunning) {
+            await json("POST", `/containers/${container}/kill`);
+            await json("POST", `/containers/${container}/wait`);
+            stale = true;
+          }
+          return run(...args);
+        };
+        const taskId = `lagging-${Math.random().toString(36).slice(2)}`;
+        await expect(
+          lagging.acquire(
+            request(allowlist("example.com"), uniqueKey("lagging"), {
+              taskId,
+            }),
+          ),
+        ).rejects.toThrow(/exited as it started \(exit code 137\)/);
+        expect(stale).toBe(false);
+        expect(await ownedBy(taskId)).toEqual({
+          containers: [],
+          networks: [],
+        });
+      });
+
       it("explains that the egress proxy's image needs node, and leaves nothing behind", async () => {
         if (!engine) throw new Error("no engine");
         // An image with nothing in it: an empty archive, imported.
