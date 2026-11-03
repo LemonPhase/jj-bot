@@ -254,4 +254,66 @@ describe.skipIf(!health.ok)("docker driver", () => {
     expect(containerEnv).not.toBe("");
     expect(containerEnv).not.toContain(token);
   }, 120_000);
+
+  it("runs a plan's command checks in the task's container, not on the host", async () => {
+    process.env.JJ_ENGINE_TEST_SECRET = "host-only-value";
+    const docker = new DockerSandboxDriver({
+      namespace: `jj-engine-${runId}-v`,
+      labels,
+      killGraceMs: 300,
+    });
+    await current?.dispose();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([{ driver: docker, label: "Docker" }]),
+    });
+    const { engine, executor } = current;
+    await engine.profiles.create({
+      name: "Docker checks",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      isDefault: true,
+    });
+    const team = await createTeam(engine, ["Vera"]);
+    const [vera] = team.names as [string];
+    executor.brain(vera, (view) => {
+      const last = view.messages.at(-1);
+      if (last?.role === "tool" && last.name === "complete_task")
+        return { text: "Done." };
+      return said.turns(view) === 0
+        ? {
+            calls: [
+              { name: "bash", args: { command: "echo inside > out.txt" } },
+            ],
+          }
+        : { calls: [{ name: "complete_task", args: { result: "out.txt" } }] };
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Write out.txt in docker",
+      coordinatorBotId: team.byName[vera] as string,
+      verificationPlan: [
+        {
+          id: "container",
+          description: "Runs in the task container with the agent's file",
+          method: "command",
+          command:
+            'test -f /.dockerenv && test "$(pwd)" = /workspace && ! env | grep -q JJ_ENGINE_TEST_SECRET && cat out.txt',
+        },
+      ],
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "waiting",
+      "the checked docker task",
+      60_000,
+    );
+    expect(view.task.status).toBe("completed");
+    expect(view.verificationChecks).toMatchObject([
+      { outcome: "passed", exitCode: 0, output: "inside\n" },
+    ]);
+  }, 120_000);
 });

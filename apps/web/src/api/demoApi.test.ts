@@ -455,8 +455,9 @@ describe("demo API", () => {
       api.createTask({
         goal: "Check it",
         coordinatorBotId: "bot-kite",
+        // The demo runs no commands, so it reports no verification and refuses plans.
         verificationPlan: [
-          { id: "c", description: "d", method: "m", expectedEvidence: "e" },
+          { id: "c", description: "d", method: "command", command: "true" },
         ],
       }),
       "VERIFICATION_UNAVAILABLE",

@@ -71,7 +71,7 @@ const MOOD_HEADS: Record<Mood, string> = {
   idle: "online",
   thinking: "queued",
   working: "running",
-  verifying: "not used in 1.0",
+  verifying: "running checks",
   done: "completed",
   stuck: "failed",
 };
@@ -1133,7 +1133,7 @@ function SpritesSection() {
   return (
     <Section
       title="Sprites · 12 × 12 grid · moods"
-      note="Moods follow the System sheet's rule on every combination (bottom eye row 6). Working bobs; reduced motion stops it. Verifying exists but no 1.0 status maps to it."
+      note="Moods follow the System sheet's rule on every combination (bottom eye row 6). Working bobs; reduced motion stops it. Verifying is no status: a session shows it while it runs its task's verification checks."
     >
       <div className="gl__sprites">
         <MoodHeads />

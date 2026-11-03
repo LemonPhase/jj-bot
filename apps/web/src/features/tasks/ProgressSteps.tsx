@@ -25,7 +25,8 @@ import { useOrdinals, useSessionTools, useSessionTree } from "./useTaskModel";
  * order on one rail. Siblings that run side by side sit under "IN PARALLEL";
  * deeper delegations indent. The picked session (or, when none is, the
  * newest running one) opens into a card with its brief, tools and latest
- * activity or result. Verification is not shown: no task has a plan in 1.0.
+ * activity or result. A session running its task's verification checks
+ * shows the verifying mood; the evidence is in VerificationSection below.
  * Rows are memoised: an event re-renders only the rows it changed.
  */
 export function ProgressSteps({
@@ -55,8 +56,15 @@ export function ProgressSteps({
       .id ??
     null;
   const coordinator = getBot(task.coordinatorBotId);
+  const root = view.sessions.find(
+    (session) => session.parentSessionId === null,
+  );
   const coordinatorMood: Mood =
-    task.status === "running" ? "working" : moodForStatus(task);
+    root?.activity?.kind === "verifying"
+      ? "verifying"
+      : task.status === "running"
+        ? "working"
+        : moodForStatus(task);
 
   return (
     <ol className="progress" aria-label="Steps">
@@ -138,7 +146,7 @@ const StepRow = memo(function StepRow({
         </li>
       )}
       <li className="progress__step">
-        <SpriteTile bot={bot} mood={moodForStatus(session)} />
+        <SpriteTile bot={bot} mood={sessionMood(session)} />
         <div className="progress__body" style={style}>
           {open ? (
             <StepCard
@@ -164,6 +172,10 @@ const StepRow = memo(function StepRow({
     </Fragment>
   );
 });
+
+/** A session's sprite mood: verifying while it runs its task's checks. */
+const sessionMood = (session: ExecutionSession): Mood =>
+  session.activity?.kind === "verifying" ? "verifying" : moodForStatus(session);
 
 function SpriteTile({ bot, mood }: { bot: Bot | undefined; mood: Mood }) {
   return (

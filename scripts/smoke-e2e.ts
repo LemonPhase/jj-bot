@@ -6,8 +6,10 @@
 // sandbox. Either way it creates three bots, creates a task with all three,
 // follows its SSE stream until it completes, checks that two workers ran in
 // parallel and that the artifacts download intact, and stops a second task.
-// Then it chats with a fourth bot: a work request creates a task, the bot
-// tells its result in the chat, answers how it went, and a follow-up
+// Verification plans: a failing check is fixed and the task completes
+// verified, and a check that cannot pass leaves its task waiting.
+// Then it chats with another bot: a request for a file creates a task, the
+// bot tells its result in the chat, answers how it went, and a follow-up
 // continues the same task.
 //
 // JJ_SMOKE_RESTART_COMMAND (with JJ_SMOKE_BASE_URL) adds restart survival: a
@@ -30,9 +32,12 @@ import { type RunningServer, startServer } from "@jj/api/server";
 import {
   type Artifact,
   applyTaskEvent,
+  isVerified,
   type RuntimeProfile,
   type TaskEvent,
+  type TaskSummary,
   type TaskView,
+  verificationSummary,
 } from "@jj/contracts";
 import { ModelRegistry } from "@jj/runtime";
 
@@ -490,6 +495,7 @@ async function main(): Promise<boolean> {
         );
       },
     );
+    await verificationGate({ expectStatus, coordinatorBotId: bots.Ada });
 
     await directChat({
       expectStatus,
@@ -547,6 +553,132 @@ async function main(): Promise<boolean> {
   }
 }
 
+/**
+ * Verification plans: a task whose command check fails first completes,
+ * verified, once the coordinator fixes the work (the scripted model runs the
+ * fix the goal names); a task whose check cannot pass waits for the user and
+ * is never completed. On a real model only the first runs, and only its
+ * verified completion is checked.
+ */
+async function verificationGate(options: {
+  expectStatus: ExpectStatus;
+  coordinatorBotId: string;
+}) {
+  const { expectStatus, coordinatorBotId } = options;
+  const settled = async (taskId: string): Promise<TaskView> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const view: TaskView = await expectStatus(
+        "GET",
+        `/api/tasks/${taskId}`,
+        200,
+      );
+      if (view.task.status !== "queued" && view.task.status !== "running")
+        return view;
+      check(Date.now() < deadline, `the task is still ${view.task.status}`);
+      await sleep(100);
+    }
+  };
+  const checkEvents = async (taskId: string) =>
+    (
+      (await expectStatus(
+        "GET",
+        `/api/tasks/${taskId}/events?after=0`,
+        200,
+      )) as { events: TaskEvent[] }
+    ).events.flatMap((event) =>
+      event.type === "verification.checked" ? [event.payload.check] : [],
+    );
+
+  await step(
+    "verification: a failing check is fixed, re-run and the task completes verified",
+    async () => {
+      const { task } = await expectStatus("POST", "/api/tasks", 201, {
+        goal: "Write the word ready to checked.txt in the workspace. If a check fails, fix it with `printf ready > checked.txt`.",
+        title: "Checked file",
+        coordinatorBotId,
+        verificationPlan: [
+          {
+            id: "ready",
+            description: "checked.txt says ready",
+            method: "command",
+            command: "grep -q ready checked.txt",
+          },
+          {
+            id: "file",
+            description: "checked.txt exists",
+            method: "file",
+            path: "checked.txt",
+            expect: "contains",
+            value: "ready",
+          },
+        ],
+      });
+      const view = await settled(task.id);
+      check(
+        view.task.status === "completed",
+        `status ${view.task.status}: ${view.task.error ?? ""}`,
+      );
+      const summary = verificationSummary(view.task, view.verificationChecks);
+      check(
+        isVerified(view.task, summary),
+        `not verified: ${JSON.stringify(summary)}`,
+      );
+      const checks = await checkEvents(task.id);
+      if (!realModel) {
+        check(
+          checks[0]?.outcome === "failed" && checks[0]?.exitCode !== 0,
+          `the first check did not fail: ${JSON.stringify(checks[0])}`,
+        );
+        check(
+          checks.at(-1)?.outcome === "passed" && checks.at(-1)?.attempt === 2,
+          `the last check: ${JSON.stringify(checks.at(-1))}`,
+        );
+      }
+      const { tasks } = await expectStatus("GET", "/api/tasks", 200);
+      const listed = (tasks as TaskSummary[]).find(
+        (entry) => entry.id === task.id,
+      );
+      check(
+        listed?.verification?.state === "passed",
+        `summary ${JSON.stringify(listed?.verification)}`,
+      );
+    },
+  );
+
+  if (realModel) return;
+  await step(
+    "verification: a check that cannot pass leaves the task waiting, unverified",
+    async () => {
+      const { task } = await expectStatus("POST", "/api/tasks", 201, {
+        goal: "Write a short note about penguins.",
+        title: "Never verified",
+        coordinatorBotId,
+        verificationPlan: [
+          {
+            id: "never",
+            description: "never-created.txt exists",
+            method: "command",
+            command: "test -f never-created.txt",
+          },
+        ],
+      });
+      const view = await settled(task.id);
+      check(view.task.status === "waiting", `status ${view.task.status}`);
+      check(view.task.result === null, "a result was recorded");
+      const summary = verificationSummary(view.task, view.verificationChecks);
+      check(
+        summary?.state === "failed" && !isVerified(view.task, summary),
+        `summary ${JSON.stringify(summary)}`,
+      );
+      check(
+        view.events.every((event) => event.type !== "task.finished"),
+        "the task finished",
+      );
+    },
+  );
+}
+
 interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -555,10 +687,10 @@ interface ChatMessage {
 }
 
 /**
- * Direct chat with a bot of its own: a work request creates one task, the bot
- * tells the user when it completes (an update with the task's card), answers
- * "how did it go?", and a follow-up continues the same task (reopened, same
- * coordinator session). On a real model only the structure is checked.
+ * Direct chat with a bot of its own: a request for a file creates one task,
+ * the bot tells the user when it completes (an update with the task's card),
+ * answers "how did it go?", and a follow-up continues the same task (reopened,
+ * same coordinator session). On a real model only the structure is checked.
  */
 async function directChat(options: {
   expectStatus: ExpectStatus;
@@ -617,9 +749,11 @@ async function directChat(options: {
   };
 
   const taskId = await step(
-    "direct chat: a work request creates one task",
+    "direct chat: a request for a file creates one task",
     async () => {
-      await say("Please write a short note about penguins.");
+      // A task is for work that needs commands or files (the chat prompt);
+      // a real model writes a plain note in the chat itself, without one.
+      await say("Please write a short note about penguins in penguins.md.");
       const messages = await replies(1);
       const taskId = messages.find((m) => m.role === "assistant")?.taskId;
       check(taskId, "the reply links no task");

@@ -75,7 +75,7 @@ Keys and credentials entered in settings are kept in the `secrets` table, encryp
 | RuntimeProfile    | Sandbox driver and spec, coding tools, budgets and spend caps; reports driver availability and isolation.          |
 | BotConversation   | Direct user-to-bot chat outside task execution.                                                                    |
 | ChatTaskUpdate    | A task event its coordinator's chat is told (completed, failed, waiting for the user) until a reply answers it.    |
-| Task              | Title, goal and goal version, coordinator, state, final result, stop request, spend cap.                           |
+| Task              | Title, goal and goal version, verification plan, coordinator, state, final result, stop request, spend cap.        |
 | TaskParticipation | Bot membership in a task.                                                                                          |
 | ExecutionSession  | Task, bot, parent session, role, brief, depth, goal version, status, what it waits for, result.                    |
 | SessionEntry      | One entry of a session's pi transcript: a pi message or a compaction checkpoint.                                   |
@@ -84,6 +84,7 @@ Keys and credentials entered in settings are kept in the `secrets` table, encryp
 | Message           | Attributed author, task or conversation, sequence, intent and recipients.                                          |
 | TaskEvent         | Ordered durable activity. The single source for chat, the execution graph and the audit trail.                     |
 | Artifact          | A workspace file or spilled tool output, credited to the run that wrote it, or task-level when no run can be.      |
+| VerificationCheck | One criterion of a plan evaluated once at one gate attempt of one goal version: outcome and evidence. Append-only. |
 | Usage             | Tokens and cost per model call (compaction summaries and chat replies included), attributed to session, run, bot.  |
 
 There is no separate assignment record: a delegated assignment is an execution session (see [Coordination](#coordination)). A bot's appearance is cosmetic and never affects execution. How artifact snapshots credit files is in the engine README.
@@ -146,13 +147,13 @@ Re-delegating to a bot that has already reported to the delegating session still
 
 When a child session finishes, its result is posted as a result message that activates the parent session. The parent resumes from its persisted transcript with the result in context, so it can react to each result as it arrives — re-delegate, correct, or follow up — rather than only after all work ends. A session that ends its turn is `waiting` until input arrives, and records what it waits for: the results of its open delegations, or the user. A waiting session holds no lease and no concurrency slot, so waiting parents cannot starve their children.
 
-The coordinator completes the task by calling `complete_task` with the consolidated result; ending a model turn is not completion. Input that reaches the coordinator after it called `complete_task` but before its run ended sets that completion aside, and the coordinator is told so with the input, so it calls `complete_task` again once it has dealt with it. A coordinator that ends its turn without calling it, usually to ask the user something, is waiting for the user, and once no work is active the task is `waiting`; the user's next message continues it. A completed or failed task continues the same way. Only a cancelled task, or one being stopped, is terminal. See [task continuation](task-continuation.md).
+The coordinator completes the task by calling `complete_task` with the consolidated result; ending a model turn is not completion. A task with a verification plan completes only when every check of its plan passes: the worker runs them in the task's sandbox once the coordinator's turn ends, delivers a failed or inconclusive attempt to the coordinator as a result it must act on, and leaves the task waiting for the user after the last attempt of a run (see [Verification](verification.md)). Input that reaches the coordinator after it called `complete_task` but before its run ended sets that completion aside, and the coordinator is told so with the input, so it calls `complete_task` again once it has dealt with it. A coordinator that ends its turn without calling it, usually to ask the user something, is waiting for the user, and once no work is active the task is `waiting`; the user's next message continues it. A completed or failed task continues the same way. Only a cancelled task, or one being stopped, is terminal. See [task continuation](task-continuation.md).
 
 Configurable limits cap sessions per task, delegation depth and concurrent execution. Excess concurrent runs queue. A delegation that would exceed the session or depth limit, that repeats one of the caller's open delegations exactly (same assignee and brief), or that follows `complete_task` in the same run, is refused, and the refusal returns to the model as the tool's error so it can adapt. The caller's open delegations are listed in each `delegate` result and in each result delivered to it, never in a tool description: tool definitions stay identical across a session's runs, since they lead the model's prompt cache. Cancelling a task cancels its open sessions.
 
 ## Steering and cancellation
 
-Steering is posted to the task chat and reaches the coordinator. Steering is injected into a running session at its next turn boundary rather than discarding its work. A change to the goal or its criteria increments the goal version, and work at an older version cannot complete the task.
+Steering is posted to the task chat and reaches the coordinator. Steering is injected into a running session at its next turn boundary rather than discarding its work. A change to the goal or its verification plan increments the goal version, and work or evidence at an older version cannot complete the task.
 
 Stop marks cancellation durably (`cancelRequestedAt`), prevents new launches and new messages, propagates to active sessions and their sandboxes, and records what actually stopped. Cancellation does not undo completed external effects, and a command that could not be interrupted is reported as such.
 
@@ -178,7 +179,7 @@ Usage is reported per task and per session in the task view, and per instance, b
 
 Persist before publishing. Each task event carries an event id, a per-task sequence allocated in the same transaction as the change it records, task id, optional bot, session and run ids, type, timestamp, causal reference and payload.
 
-An event that changes a task, session, message or artifact record carries the whole record after the change. A client therefore keeps a task view current by folding events onto it with the contract's pure `applyTaskEvent`, without refetching: a view at sequence n plus events n+1 to m equals the view at m. Other events are markers (goal changed, reopened, finished) and activity. Clients ignore event types they do not know.
+An event that changes a task, session, message or artifact record, or records a verification check, carries the whole record after the change. A client therefore keeps a task view current by folding events onto it with the contract's pure `applyTaskEvent`, without refetching: a view at sequence n plus events n+1 to m equals the view at m. Other events are markers (goal changed, reopened, finished) and activity. Clients ignore event types they do not know.
 
 Clients receive two streams:
 
@@ -193,7 +194,7 @@ A session's prompt carries the bot's persona and memory, the goal at the session
 
 Every task session, coordinator and workers alike, can also look up its task's shared record with four read-only tools, and its prompt says when to use them:
 
-- `task_state`: the goal and goal version, the task's status (with its result or error once it has one), and each session's id, bot, role, status and the first line of its brief.
+- `task_state`: the goal and goal version, the task's status (with its result or error once it has one), its verification plan with each criterion's latest outcome at the current goal version, and each session's id, bot, role, status and the first line of its brief.
 - `task_log`: the task log, shown oldest first, filtered by kind and by text (ignoring case), from the oldest or the newest entry and paged with `after`, `before` and `limit`; a page says how many matching entries lie before and after it. Each entry is one index line: its id, its kind, its author (→ recipients, or → everyone for a broadcast) and a clipped preview. An entry's id is the stored task message's id, so it never changes. Its kind is `user` (steering, or a message a bot relayed from the user's direct chat), `brief` (an assignment), `report` (a worker's report or failure, or the coordinator's result) or `message` (any other message, the coordinator's replies to the user included).
 - `read_entry`: one entry in full, by id.
 - `read_report`: a session's brief and its report (or result, or failure) in full, by session id, or by bot name for each of that bot's sessions on the task.

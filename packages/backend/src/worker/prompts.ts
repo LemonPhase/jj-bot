@@ -34,6 +34,11 @@ export interface SessionPromptInput {
   canDelegate: boolean;
   /** True on a recovery run: the session resumes after its worker stopped. */
   resumed?: boolean;
+  /**
+   * The coordinator's verification plan for the current goal version, as
+   * `describePlan` lines; absent without a plan. Workers see it with `task_state`.
+   */
+  verificationPlan?: string;
 }
 
 /** The read-only lookup tools every task session has, as the prompts name them. */
@@ -85,6 +90,14 @@ export function sessionPrompt(input: SessionPromptInput): string {
     "## Task",
     `Goal (version ${input.goalVersion}):`,
     input.goal.trim(),
+    ...(input.role === "coordinator" && input.verificationPlan
+      ? [
+          "",
+          "## Verification plan",
+          `The user set these checks for goal version ${input.goalVersion}. The task completes only when every one passes: after you call \`complete_task\`, the engine runs them in the workspace when your turn ends, and if any does not pass you get each outcome and must fix the work, then call \`complete_task\` again. Run the commands yourself before you complete. You cannot change the checks; if one seems wrong, ask the user.`,
+          input.verificationPlan,
+        ]
+      : []),
     "",
     "## Team",
     formatRoster(input.roster),

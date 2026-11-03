@@ -101,6 +101,8 @@ export interface RunContext {
   taskFinished: boolean;
   /** Replaces the server's secrets in what this run persists (see redact.ts). */
   redact: Redactor;
+  /** Verification gate runs in this run (gate.ts); capped by `maxVerificationAttempts`. */
+  verificationAttempts: number;
   /** The cap that refused this run's model call, once one did. */
   spendStop?: SpendStop;
 }
@@ -221,7 +223,13 @@ const labelName = (label: string) =>
       .slice(0, 60) || "output"
   }.txt`;
 
-async function spill(tx: Tx, rc: RunContext, text: string, label: string) {
+/** Stores text (already redacted) as an `output` artifact of the run; returns its id. */
+export async function spill(
+  tx: Tx,
+  rc: RunContext,
+  text: string,
+  label: string,
+) {
   const path = clip(label.trim() || "tool output", 200);
   const artifact = await storeArtifact(
     tx,

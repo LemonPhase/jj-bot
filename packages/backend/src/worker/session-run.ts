@@ -21,7 +21,7 @@ import { asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
 import type { RunExecutor, RunOutcome } from "../ports";
-import { profileSettings } from "../records";
+import { planOf, profileSettings } from "../records";
 import { memoryText } from "../services/bots";
 import { profileFor } from "../services/profiles";
 import { grantedSecrets } from "../services/secrets";
@@ -32,8 +32,10 @@ import {
   updateTask,
 } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
+import { describePlan } from "../services/verification";
 import { snapshotArtifacts } from "./artifacts";
 import { sessionTools, type Teammate } from "./collab-tools";
+import { runVerificationGate } from "./gate";
 import { claimHolder, heldByAnotherWorker } from "./holders";
 import { finishRun } from "./outcomes";
 import { sessionPrompt } from "./prompts";
@@ -272,6 +274,7 @@ async function startRun(
       startedAt: now,
       taskFinished: false,
       redact,
+      verificationAttempts: 0,
     };
     return {
       kind: "run",
@@ -326,7 +329,9 @@ async function prepare(
     rc.startedAt.getTime() +
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
-  return async (inputs: string[]): Promise<RunOutcome> => {
+  const call = async (inputs: string[]): Promise<RunOutcome> => {
+    // Rebuilt every call: a new goal version brings its own plan.
+    const plan = planOf(rc.task.verificationPlan);
     const outcome = await executor.run({
       sessionId: rc.session.id,
       runId: rc.run.id,
@@ -344,6 +349,7 @@ async function prepare(
           : { brief: rc.session.brief }),
         canDelegate: tools.some((tool) => tool.name === "delegate"),
         resumed: rc.reason === "recovery",
+        ...(plan ? { verificationPlan: describePlan(plan) } : {}),
       }),
       transcript: await loadTranscript(ctx, rc.session.id),
       inputs,
@@ -362,6 +368,7 @@ async function prepare(
     });
     return rc.control.reason ? { kind: "aborted", reason: "signal" } : outcome;
   };
+  return { call, deadline };
 }
 
 /** Runs one claimed `session.run` job to its outcome. */
@@ -380,7 +387,12 @@ export async function runSessionJob(
   const { rc } = start;
   let hold: SandboxHold | undefined;
   try {
-    let call: ((inputs: string[]) => Promise<RunOutcome>) | undefined;
+    let prepared:
+      | {
+          call: (inputs: string[]) => Promise<RunOutcome>;
+          deadline: Date;
+        }
+      | undefined;
     try {
       if (start.unavailable || !start.spec)
         throw new SandboxUnavailableError(
@@ -403,7 +415,7 @@ export async function runSessionJob(
       // secret is replaced or removed (or was changed after this run's
       // redactor was built): redact them in everything this run persists.
       if (hold.secrets.length > 0) rc.redact = await ctx.redactor(hold.secrets);
-      call = await prepare(rc, executor, hold);
+      prepared = await prepare(rc, executor, hold);
     } catch (error) {
       if (error instanceof LeaseLostError) return;
       // Nothing ran, so there is nothing to snapshot.
@@ -415,11 +427,13 @@ export async function runSessionJob(
       );
       return;
     }
+    const { call, deadline } = prepared;
     // Each executor call takes the inbox; input that arrives as a call ends
     // continues the run, even when it lands just before the write-back.
     for (let calls = 1; ; calls += 1) {
       let outcome: RunOutcome;
       let inputs: string[] = [];
+      let gateFailed = false;
       try {
         rc.claimed.clear();
         inputs = await takeInbox(
@@ -433,6 +447,21 @@ export async function runSessionJob(
           if (inputs.length === 0) break;
           calls += 1;
           outcome = await call(inputs);
+        }
+        // A completion of a task with a plan waits for its checks, run here
+        // on the workspace as the turn left it. A failure is delivered as a
+        // result, so the run goes on and the coordinator must react; gate
+        // attempts are capped separately from continuations.
+        if (
+          outcome.kind === "ended" ||
+          outcome.kind === "budget" ||
+          (outcome.kind === "idle" && rc.reason === "recovery")
+        ) {
+          const gate = await runVerificationGate(rc, hold, deadline);
+          if (gate === "failed") {
+            gateFailed = true;
+            outcome = { kind: "ended", finalText: "" };
+          }
         }
       } catch (error) {
         if (error instanceof LeaseLostError) return;
@@ -459,7 +488,7 @@ export async function runSessionJob(
       const next = await finishRun(
         rc,
         outcome,
-        calls < MAX_CONTINUATIONS,
+        calls < MAX_CONTINUATIONS || gateFailed,
         snapshotted,
       );
       if (next !== "continue") return;

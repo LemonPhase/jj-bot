@@ -45,11 +45,13 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 
 ## Settings and records
 
-| Term                | Meaning                                                                                                                                                                                |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Goal version**    | A number that increases each time a task's goal or acceptance criteria change. Work done for an older version cannot complete the task.                                                |
-| **Runtime profile** | Settings that decide how a bot executes: its sandbox driver and limits, its coding tools, its sandbox secrets, its budgets and its spend caps.                                         |
-| **Sandbox secret**  | A named value, such as a Git token, stored encrypted in settings and granted by a runtime profile. Commands in a sandbox acquired with that profile see it as an environment variable. |
-| **Spend cap**       | A limit on priced model spend: a task's own, a bot's over any 24 hours, or the server's. At it, no model call starts.                                                                  |
-| **Sandbox**         | Where agent commands and file access run, provided by a sandbox driver (`local` or `docker`). A task's sessions share one sandbox.                                                     |
-| **Artifact**        | A workspace file or a spilled tool output, stored with the task.                                                                                                                       |
+| Term                  | Meaning                                                                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Goal version**      | A number that increases each time a task's goal or acceptance criteria change. Work done for an older version cannot complete the task.                                                |
+| **Verification plan** | The user's acceptance criteria for a task: commands, file assertions and result assertions. A task with one completes only when every criterion passes.                                |
+| **Check**             | One criterion of a verification plan evaluated once, at one **gate attempt** of one goal version, with its outcome and evidence.                                                       |
+| **Runtime profile**   | Settings that decide how a bot executes: its sandbox driver and limits, its coding tools, its sandbox secrets, its budgets and its spend caps.                                         |
+| **Sandbox secret**    | A named value, such as a Git token, stored encrypted in settings and granted by a runtime profile. Commands in a sandbox acquired with that profile see it as an environment variable. |
+| **Spend cap**         | A limit on priced model spend: a task's own, a bot's over any 24 hours, or the server's. At it, no model call starts.                                                                  |
+| **Sandbox**           | Where agent commands and file access run, provided by a sandbox driver (`local` or `docker`). A task's sessions share one sandbox.                                                     |
+| **Artifact**          | A workspace file or a spilled tool output, stored with the task.                                                                                                                       |

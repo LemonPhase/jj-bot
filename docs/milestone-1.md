@@ -31,7 +31,7 @@ The milestone is met only when all of these are demonstrable together, through t
 
 A configurable team size means the domain and scheduler accept any participant list. It does not promise unlimited concurrency, budget or quality.
 
-Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory. The API rejects a task that carries a verification plan rather than accepting one it cannot enforce.
+Out of scope for this milestone: verification plans, multi-user accounts, remote sandbox drivers, messaging channels, scheduled or triggered tasks, Git hosting integration and retrieval-based memory.
 
 ## Demo task
 

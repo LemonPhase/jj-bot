@@ -1,5 +1,5 @@
 {
-  "id": "64f6297b-bb65-4fe8-b096-17d5bcde7fcc",
+  "id": "21bcfd6c-881b-4b73-ba70-1830a33b5a72",
   "prevId": "afdf96c9-f4ee-4321-b7ee-0f13ea4932f4",
   "version": "7",
   "dialect": "postgresql",
@@ -1111,13 +1111,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "secrets": {
-          "name": "secrets",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
         "is_default": {
           "name": "is_default",
           "type": "boolean",
@@ -1163,86 +1156,6 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.secrets": {
-      "name": "secrets",
-      "schema": "",
-      "columns": {
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "key_id": {
-          "name": "key_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "nonce": {
-          "name": "nonce",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ciphertext": {
-          "name": "ciphertext",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "hint": {
-          "name": "hint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "secrets_owner_id_kind_name_pk": {
-          "name": "secrets_owner_id_kind_name_pk",
-          "columns": ["owner_id", "kind", "name"]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "secrets_kind_check": {
-          "name": "secrets_kind_check",
-          "value": "\"secrets\".\"kind\" in ('provider', 'sandbox')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.session_entries": {
@@ -1800,6 +1713,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "verification_plan": {
+          "name": "verification_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "reason": {
           "name": "reason",
           "type": "text",
@@ -2149,6 +2068,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "verification_plan": {
+          "name": "verification_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sandbox_holder": {
           "name": "sandbox_holder",
           "type": "text",
@@ -2452,6 +2377,170 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.verification_checks": {
+      "name": "verification_checks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "goal_version": {
+          "name": "goal_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criterion_id": {
+          "name": "criterion_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exit_code": {
+          "name": "exit_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "interrupted": {
+          "name": "interrupted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output": {
+          "name": "output",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "truncated": {
+          "name": "truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "verification_checks_task_id_tasks_id_fk": {
+          "name": "verification_checks_task_id_tasks_id_fk",
+          "tableFrom": "verification_checks",
+          "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "verification_checks_attempt_criterion": {
+          "name": "verification_checks_attempt_criterion",
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "goal_version", "attempt", "criterion_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "verification_checks_method_check": {
+          "name": "verification_checks_method_check",
+          "value": "\"verification_checks\".\"method\" in ('command', 'file', 'result')"
+        },
+        "verification_checks_outcome_check": {
+          "name": "verification_checks_outcome_check",
+          "value": "\"verification_checks\".\"outcome\" in ('passed', 'failed', 'inconclusive')"
+        },
+        "verification_checks_command_pass_check": {
+          "name": "verification_checks_command_pass_check",
+          "value": "\"verification_checks\".\"method\" <> 'command' or \"verification_checks\".\"outcome\" <> 'passed' or (\"verification_checks\".\"exit_code\" = 0 and \"verification_checks\".\"interrupted\" = 'no')"
+        }
+      },
       "isRLSEnabled": false
     }
   },
