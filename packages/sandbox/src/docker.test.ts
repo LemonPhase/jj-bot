@@ -1,6 +1,7 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { existsSync } from "node:fs";
-import { get as httpGet } from "node:http";
+import { createServer as createHttpServer, get as httpGet } from "node:http";
+import type { AddressInfo } from "node:net";
 import { createConnection, createServer } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -29,6 +30,7 @@ import {
   DockerApiError,
   DockerEngine,
   DockerOutputLimitError,
+  DockerProxyRefusedError,
   isNotFound,
   parseDockerHost,
   StreamDemuxer,
@@ -434,6 +436,72 @@ describe("docker engine client", () => {
     expect(ipv6Interfaces("")).toEqual([]);
     expect(ipv6Interfaces(`${lo}\n`)).toEqual([]);
     expect(ipv6Interfaces(`${lo}\n${eth0}\n${eth0}\n`)).toEqual(["eth0"]);
+  });
+
+  it("names a call a socket proxy refuses, and keeps the daemon's own refusals as they are", async () => {
+    // What tecnativa/docker-socket-proxy answers a call it does not allow.
+    const proxyRefusal =
+      "<html><body><h1>403 Forbidden</h1>\nRequest forbidden by administrative rules.\n</body></html>\n";
+    const server = createHttpServer((request, response) => {
+      const path = request.url ?? "";
+      if (path === "/version") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        return response.end(JSON.stringify({ ApiVersion: "1.47" }));
+      }
+      if (path === "/_ping") return response.end("OK");
+      if (path.endsWith("/networks/create")) {
+        response.writeHead(403, { "Content-Type": "application/json" });
+        return response.end(
+          JSON.stringify({ message: "operation not permitted" }),
+        );
+      }
+      if (path.includes("/exec/")) {
+        response.writeHead(405, { "Content-Type": "text/plain" });
+        return response.end("method not allowed");
+      }
+      response.writeHead(403, {
+        "Content-Type": "text/html",
+        Connection: "close",
+      });
+      response.end(proxyRefusal);
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const { port } = server.address() as AddressInfo;
+    const proxied = new DockerEngine(
+      parseDockerHost(`tcp://127.0.0.1:${port}`),
+    );
+    try {
+      const refused = await proxied
+        .json("POST", "/containers/create", { body: {} })
+        .catch((error: unknown) => error);
+      expect(refused).toBeInstanceOf(DockerProxyRefusedError);
+      expect(refused).toMatchObject({
+        status: 403,
+        method: "POST",
+        path: "/containers/create",
+      });
+      expect((refused as Error).message).toBe(
+        `tcp://127.0.0.1:${port} refused POST /containers/create (HTTP 403) without a Docker Engine error: a socket proxy in front of the daemon does not allow this call. ` +
+          "The docker driver needs the Engine API's containers, exec, images, networks and volumes endpoints, with POST, PUT and DELETE (docs/development.md, Docker socket proxy).",
+      );
+      await expect(
+        proxied.startExec("abc", () => {}, Buffer.alloc(0)),
+      ).rejects.toThrow(
+        "refused POST /exec/abc/start (HTTP 405) without a Docker Engine error",
+      );
+      // The daemon's own 403 is its message, not a proxy's refusal.
+      const daemon = await proxied
+        .json("POST", "/networks/create", { body: {} })
+        .catch((error: unknown) => error);
+      expect(daemon).toBeInstanceOf(DockerApiError);
+      expect(daemon).not.toBeInstanceOf(DockerProxyRefusedError);
+      expect((daemon as Error).message).toBe("operation not permitted");
+    } finally {
+      proxied.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("reports an unreachable daemon as unhealthy", async () => {

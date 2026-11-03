@@ -673,6 +673,10 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     prepareRequest: async (request) => {
       await flush();
       latestContext = request.context;
+      // Stopped between turns (a draining worker stops a run at its next
+      // turn boundary): no model call starts, so none is admitted, reported
+      // or sent (the stand-in answer below).
+      if (signal.aborted) return undefined;
       let update: { context: AgentContext } | undefined;
       if (
         compactor &&
@@ -797,9 +801,10 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     ];
   };
   const providerStream = retryingStreamFn(spec.streamFn, spec.retry);
-  // A call the gate refused is answered here, so it never reaches the provider.
+  // A call the gate refused, or one due after the run was stopped, is
+  // answered here, so it never reaches the provider.
   const retrying: StreamFn = async (model, request, options) =>
-    spec.gate?.refusal !== undefined
+    spec.gate?.refusal !== undefined || signal.aborted
       ? streamOf(refusedAnswer(resolved.model))
       : providerStream(model, request, options);
   // With compaction on, a response the provider cut short for lack of room

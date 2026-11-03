@@ -33,7 +33,7 @@ import {
 } from "../services/spend";
 import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
-import { isContinuing } from "./runs";
+import { hasContinuingInput, isContinuing } from "./runs";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */
@@ -42,6 +42,11 @@ export type AbortReason = "cancel" | "shutdown" | "lease-lost" | "crash";
 export class JobControl {
   readonly controller = new AbortController();
   reason?: AbortReason;
+  /**
+   * Set while the worker drains (worker.ts): a session run stops at its next
+   * turn boundary (`stopAtBoundary`); a chat reply runs on to its end.
+   */
+  draining = false;
 
   abort(reason: AbortReason) {
     // A crash or a lost lease overrides a softer reason: nothing may be written.
@@ -77,6 +82,18 @@ export function outcomeLabel(
     default:
       return outcome;
   }
+}
+
+/**
+ * At a turn boundary, with everything before it persisted: while the worker
+ * drains, the run stops here instead of starting another model call, handed
+ * back as a stop hands it back (`shutdown`), so the next worker resumes it
+ * from this turn. True when it stopped.
+ */
+export function stopAtBoundary(control: JobControl): boolean {
+  if (!control.draining) return false;
+  control.abort("shutdown");
+  return true;
 }
 
 /** The lease is gone (reclaimed or finished elsewhere); the run stops without writing. */
@@ -482,7 +499,19 @@ export function runHooks(rc: RunContext): RunHooks {
     // it is taken only with input that continues the run anyway, and
     // otherwise waits for the session's next run (or, if the session
     // finishes first, goes to its parent with its result: outcomes.ts).
-    drainInbox: (turnEnded) => takeInbox(rc, turnEnded),
+    // A draining worker stops the run at this boundary, unless the model
+    // ended its turn and no input waits that would continue the run: that
+    // run ends as it would have. Input taken here would start another model
+    // call, so nothing is taken; it waits for the next run.
+    drainInbox: async (turnEnded) => {
+      if (!rc.control.draining) return takeInbox(rc, turnEnded);
+      if (
+        !turnEnded ||
+        (await hasContinuingInput(rc.deps.ctx.db, rc.session.id))
+      )
+        stopAtBoundary(rc.control);
+      return [];
+    },
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
     admitModelCall: () => admitModelCall(rc),

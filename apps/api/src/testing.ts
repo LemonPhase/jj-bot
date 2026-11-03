@@ -68,6 +68,7 @@ export async function testApp(options: TestAppOptions = {}): Promise<TestApp> {
       dockerNamespace: "jj-sandbox",
       dockerAllowInsecureTcp: false,
       enableScripted: true,
+      drainTimeoutMs: 0,
       ...(options.secretKeys ? { secretKeys: options.secretKeys } : {}),
       engine: {
         pollIntervalMs: 25,
