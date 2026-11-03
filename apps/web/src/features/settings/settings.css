@@ -258,6 +258,35 @@
   white-space: nowrap;
 }
 
+/* ── Usage ─────────────────────────────────────────────────────────────── */
+.settings-spend {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-usage-caption {
+  padding-bottom: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  letter-spacing: var(--tracking-part);
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ink-muted);
+}
+
+.settings-usage-table thead th:nth-child(1) {
+  width: 28%;
+}
+
+.settings-usage-table thead th:nth-child(2) {
+  width: 30%;
+}
+
+.settings-usage-table thead th:nth-child(3) {
+  width: 24%;
+}
+
 /* ── Forms ─────────────────────────────────────────────────────────────── */
 .settings-form {
   display: flex;

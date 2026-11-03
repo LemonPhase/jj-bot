@@ -48,6 +48,7 @@ const task: Task = {
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  spendCapUsd: null,
   createdAt: at(0),
   updatedAt: at(0),
   finishedAt: null,

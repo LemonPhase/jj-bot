@@ -238,6 +238,27 @@
   color: var(--ink-muted);
 }
 
+.inspector-spend {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-2);
+}
+
+.inspector-spend--warning::before,
+.inspector-spend--reached::before {
+  content: "";
+  display: inline-block;
+  width: var(--status-square);
+  height: var(--status-square);
+  margin-right: 7px;
+  background: var(--status-verifying);
+}
+
+.inspector-spend--reached::before {
+  background: var(--status-failed);
+}
+
 .inspector-note {
   margin: 0;
   font-size: var(--fs-meta);

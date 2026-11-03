@@ -623,4 +623,23 @@ describe("demo API", () => {
     expect(long.length).toBeLessThanOrEqual(61);
     expect(long.endsWith("…")).toBe(true);
   });
+
+  it("changes a task's spend cap as the server does, and reports usage", async () => {
+    const api = demo();
+    const [summary] = await api.listTasks();
+    const taskId = summary?.id as string;
+    expect(summary?.spendCapUsd).toBe(5);
+    const task = await api.updateTask(taskId, { spendCapUsd: 1.5 });
+    expect(task.spendCapUsd).toBe(1.5);
+    expect((await api.getTask(taskId)).task.spendCapUsd).toBe(1.5);
+    await expect(api.updateTask(taskId, {})).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+    });
+    const report = await api.getUsage();
+    expect(report.instance.last30d.modelCalls).toBeGreaterThan(0);
+    expect(report.bots.length).toBeGreaterThan(0);
+    expect(report.bots.every((bot) => bot.capUsdPerDay !== undefined)).toBe(
+      true,
+    );
+  });
 });

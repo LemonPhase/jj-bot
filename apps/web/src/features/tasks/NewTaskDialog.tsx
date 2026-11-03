@@ -1,3 +1,4 @@
+import { profileBudgetsSchema } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import {
   Avatar,
@@ -5,11 +6,14 @@ import {
   Chip,
   Dialog,
   ErrorBanner,
+  Input,
   SectionLabel,
   Select,
   Textarea,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
+import { formatCap } from "./format";
+import { readCapInput } from "./SpendControl";
 
 export interface NewTaskDialogProps {
   /** Preselected bots; the first coordinates. */
@@ -22,7 +26,7 @@ export interface NewTaskDialogProps {
  * number of other participants. On success the task opens.
  */
 export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
-  const { bots, createTask } = useWorkspace();
+  const { bots, profiles, createTask } = useWorkspace();
   const formId = useId();
   const pickLabelId = useId();
   const known = initialBotIds.filter((botId) =>
@@ -33,6 +37,17 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
     () => known[0] ?? bots[0]?.id ?? "",
   );
   const [others, setOthers] = useState<string[]>(() => known.slice(1));
+  /** Null until edited: the coordinator's profile's cap applies. */
+  const [capText, setCapText] = useState<string | null>(null);
+  const [capError, setCapError] = useState<string | null>(null);
+  // As the server picks it: the coordinator's profile, else the default one.
+  const coordinator = bots.find((bot) => bot.id === coordinatorId);
+  const profile = coordinator?.runtimeProfileId
+    ? profiles.find((entry) => entry.id === coordinator.runtimeProfileId)
+    : profiles.find((entry) => entry.isDefault);
+  const profileCap = (profile?.budgets ?? profileBudgetsSchema.parse({}))
+    .maxUsdPerTask;
+  const capValue = capText ?? (profileCap === null ? "" : String(profileCap));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const participants = [
@@ -51,10 +66,21 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!canStart) return;
+    const cap = readCapInput(capValue);
+    if (!cap.ok) {
+      setCapError(cap.error);
+      return;
+    }
+    setCapError(null);
     setBusy(true);
     setError(null);
     try {
-      await createTask({ goal: goal.trim(), participantBotIds: participants });
+      await createTask({
+        goal: goal.trim(),
+        participantBotIds: participants,
+        // An untouched field leaves the cap to the server (the profile's).
+        ...(capText !== null ? { spendCapUsd: cap.value } : {}),
+      });
       onClose();
     } catch (reason) {
       setError(
@@ -95,7 +121,12 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
           Create a bot first: a task needs at least a coordinator.
         </p>
       ) : (
-        <form id={formId} className="new-task-form" onSubmit={submit}>
+        <form
+          id={formId}
+          className="new-task-form"
+          onSubmit={submit}
+          noValidate
+        >
           <Textarea
             label="Goal"
             value={goal}
@@ -153,6 +184,22 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
               })}
             </div>
           </div>
+          <Input
+            label="Spend cap (USD)"
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={0}
+            placeholder="No cap"
+            hint={`No model call starts once the task's priced spend reaches it. Empty for no cap. ${
+              profileCap === null
+                ? "The coordinator's profile sets none."
+                : `The coordinator's profile sets ${formatCap(profileCap)}.`
+            }`}
+            error={capError ?? undefined}
+            value={capValue}
+            onChange={(event) => setCapText(event.target.value)}
+          />
           {error && <ErrorBanner word="Not started">{error}</ErrorBanner>}
         </form>
       )}

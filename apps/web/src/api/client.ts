@@ -32,6 +32,8 @@ import type {
   UpdateBotCommand,
   UpdateBotMemoryCommand,
   UpdateRuntimeProfileCommand,
+  UpdateTaskCommand,
+  UsageReport,
   WorkspaceHint,
 } from "@jj/contracts";
 
@@ -153,6 +155,8 @@ export interface JJApi {
   deleteProfile(profileId: string): Promise<void>;
   listDrivers(): Promise<SandboxDriverInfo[]>;
   getModels(): Promise<ModelsView>;
+  /** `GET /api/usage`: spend over rolling windows, per bot and per model, with the caps. */
+  getUsage(): Promise<UsageReport>;
 
   // Tasks
   listTasks(): Promise<TaskSummary[]>;
@@ -168,6 +172,8 @@ export interface JJApi {
     command: PostTaskMessageCommand,
   ): Promise<TaskMessage>;
   stopTask(taskId: string, command?: StopTaskCommand): Promise<Task>;
+  /** `PATCH /api/tasks/:id`: the task's spend cap (null for none). */
+  updateTask(taskId: string, command: UpdateTaskCommand): Promise<Task>;
   /**
    * The task snapshot, then every task event folded onto it with
    * `applyTaskEvent`. Resumes from the last sequence on reconnect, never

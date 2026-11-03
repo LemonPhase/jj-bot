@@ -3,17 +3,15 @@ import { useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
   Avatar,
-  Badge,
   Button,
   Dialog,
   ErrorBanner,
   StatusTag,
-  Tooltip,
 } from "../../components/ui";
 import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ScreenHeader } from "../shell/ScreenHeader";
-import { usageDetail, usageLine } from "./format";
+import { SpendControl } from "./SpendControl";
 import {
   botName,
   headingFor,
@@ -23,12 +21,12 @@ import {
 
 /**
  * The task header (SPEC §5.2): title, status · goal version and the current
- * goal on the left; participants, usage and Stop on the right.
+ * goal on the left; participants, usage and spend cap, and Stop on the right.
  */
 export function TaskHeader({ view }: { view: TaskView }) {
   const api = useApi();
   const { getBot, taskStreamState } = useWorkspace();
-  const { task, usage } = view;
+  const { task } = view;
   const { heading, goal } = headingFor(task);
   // Say so while the live event stream is down, instead of looking current.
   const reconnecting =
@@ -90,16 +88,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
               );
             })}
           </span>
-          <Tooltip
-            content={usageDetail(usage.total)}
-            focusable
-            placement="auto"
-          >
-            <Badge>
-              <span className="visually-hidden">Usage: </span>
-              {usageLine(usage.total)}
-            </Badge>
-          </Tooltip>
+          <SpendControl view={view} />
           <StopControl view={view} />
         </>
       }

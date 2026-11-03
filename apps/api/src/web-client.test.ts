@@ -201,7 +201,14 @@ describe("liveApi against the real server", () => {
     const task = await api.createTask({
       goal: "Something to stop",
       coordinatorBotId: ada.id,
+      spendCapUsd: 2,
     });
+    expect(task.spendCapUsd).toBe(2);
+    expect(
+      (await api.updateTask(task.id, { spendCapUsd: 3 })).spendCapUsd,
+    ).toBe(3);
+    const usage = await api.getUsage();
+    expect(usage.bots.some((bot) => bot.botId === ada.id)).toBe(true);
     const stopping = await api.stopTask(task.id, { reason: "Not needed" });
     expect(stopping.cancelRequestedAt === null).toBe(false);
     await until(
@@ -212,6 +219,9 @@ describe("liveApi against the real server", () => {
       api.postTaskMessage(task.id, { text: "Hello?" }),
     );
     expect(terminal).toMatchObject({ code: "TASK_TERMINAL", status: 409 });
+    expect(
+      await rejection(api.updateTask(task.id, { spendCapUsd: 4 })),
+    ).toMatchObject({ code: "TASK_TERMINAL", status: 409 });
     const unknown = await rejection(api.getTask("task_missing"));
     expect(unknown).toMatchObject({ code: "NOT_FOUND", status: 404 });
   });
