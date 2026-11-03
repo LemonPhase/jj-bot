@@ -1,7 +1,7 @@
 # JJ Bot in one command. Put one model provider key in .env
 # (`cp .env.example .env`), or a JJ_SECRET_KEY to enter keys in Settings,
 # run `docker compose up -d --build --wait`, then
-# open the link `docker compose logs app | grep "Open JJ Bot"` prints. Compose
+# open the link `docker compose logs app | grep -o 'Open JJ Bot: [^"]*'` prints. Compose
 # reads .env only to fill the variables below. `docker compose up -d postgres`
 # alone starts just the database for `npm run dev`. Details:
 # docs/development.md, "Docker Compose".
@@ -81,6 +81,23 @@ services:
       JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
       JJ_MAX_USD_PER_DAY: ${JJ_MAX_USD_PER_DAY:-}
       JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
+      # JSON lines by default; `pretty` for reading by eye.
+      JJ_LOG_LEVEL: ${JJ_LOG_LEVEL:-}
+      JJ_LOG_FORMAT: ${JJ_LOG_FORMAT:-}
+      # Traces over OTLP/HTTP, only when an endpoint is set (a collector on
+      # the host is host.docker.internal:4318).
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
+    # Healthy while GET /health/ready answers 200: the database, migrations
+    # at this build's level, the embedded worker polling and the docker
+    # driver available. `up --wait` waits for it. Same as the image's own.
+    healthcheck:
+      test: ["CMD", "jj-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     ports:
       # Loopback only. The token is required either way; publish wider only
       # behind HTTPS, so the token never crosses a network in the clear.
