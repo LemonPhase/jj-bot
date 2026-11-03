@@ -711,6 +711,7 @@ export class LocalSandboxDriver implements SandboxDriver {
     exposePort: false,
     snapshot: false,
     metrics: false,
+    spawn: false,
   };
   private rootPromise?: Promise<string>;
 

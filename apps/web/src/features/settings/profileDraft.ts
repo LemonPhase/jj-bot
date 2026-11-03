@@ -1,12 +1,14 @@
 import {
   APPROVAL_MATCH_LIMIT,
   type ApprovalRule,
+  type ApprovalRuleTool,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   DEFAULT_MAX_USD_PER_BOT_PER_DAY,
   DEFAULT_MAX_USD_PER_TASK,
   MAX_APPROVAL_RULES,
   MAX_SPEND_CAP_USD,
+  type McpServer,
   type RuntimeProfile,
   type SandboxSpecPatch,
   type ToolName,
@@ -24,8 +26,8 @@ import {
  * The runtime-profile form: its text draft, validation, the create command,
  * and the PATCH for an edit. The server deep-merges a PATCH onto the stored
  * profile (nested objects field by field; `tools`, `secrets`, `approvals`,
- * `sandbox.network`, `sandbox.env` and `sandbox.driverConfig` replaced
- * whole; a driver change
+ * `mcpServers`, `skills`, `sandbox.network`, `sandbox.env` and
+ * `sandbox.driverConfig` replaced whole; a driver change
  * drops the old image and driverConfig), so the patch carries only what
  * changed, at that granularity, and never a default.
  */
@@ -46,12 +48,17 @@ export interface ProfileDraft {
   maxUsdPerBotPerDay: string;
   /** Calls that wait for the user's approval; an empty match is every call of the tool. */
   approvals: readonly ApprovalRuleDraft[];
+  /** Carried as stored; the form does not edit them. */
+  mcpServers: readonly McpServer[];
+  /** Granted skills, by name. Carried as stored; the form does not edit them. */
+  skills: readonly string[];
   /** Create only: make the new profile the default. */
   isDefault: boolean;
 }
 
 export interface ApprovalRuleDraft {
-  tool: ToolName;
+  /** A coding tool, or an MCP tool selector the server stored. */
+  tool: ApprovalRuleTool;
   match: string;
 }
 
@@ -93,6 +100,8 @@ export interface DesiredProfile {
   secrets: string[];
   budgets: Record<BudgetKey, number> & Record<SpendCapKey, number | null>;
   approvals: ApprovalRule[];
+  mcpServers: McpServer[];
+  skills: string[];
   isDefault: boolean;
 }
 
@@ -114,6 +123,8 @@ export function newProfileDraft(
     maxUsdPerTask: String(SPEND_CAPS.maxUsdPerTask.default),
     maxUsdPerBotPerDay: String(SPEND_CAPS.maxUsdPerBotPerDay.default),
     approvals: [],
+    mcpServers: [],
+    skills: [],
     isDefault: false,
   };
 }
@@ -137,6 +148,8 @@ export function draftFromProfile(
       tool: rule.tool,
       match: rule.match ?? "",
     })),
+    mcpServers: [...profile.mcpServers],
+    skills: [...profile.skills],
     isDefault: profile.isDefault,
   };
 }
@@ -228,6 +241,8 @@ export function readProfileDraft(
       secrets: [...draft.secrets].sort(),
       budgets,
       approvals,
+      mcpServers: [...draft.mcpServers],
+      skills: [...draft.skills],
       isDefault: draft.isDefault,
     },
   };
@@ -245,6 +260,8 @@ export function createProfileCommand(
     budgets: value.budgets,
     ...(value.approvals.length > 0 ? { approvals: value.approvals } : {}),
     ...(value.secrets.length > 0 ? { secrets: value.secrets } : {}),
+    ...(value.mcpServers.length > 0 ? { mcpServers: value.mcpServers } : {}),
+    ...(value.skills.length > 0 ? { skills: value.skills } : {}),
     ...(value.isDefault ? { isDefault: true } : {}),
   };
 }
@@ -352,6 +369,9 @@ export function profilePatch(
   // Replaced whole, like `tools`.
   if (!sameJson(stored.approvals, desired.approvals))
     patch.approvals = desired.approvals;
+  if (!sameJson(stored.mcpServers, desired.mcpServers))
+    patch.mcpServers = desired.mcpServers;
+  if (!sameJson(stored.skills, desired.skills)) patch.skills = desired.skills;
 
   // The default moves by making another profile the default, never by unsetting it.
   if (desired.isDefault && !stored.isDefault) patch.isDefault = true;
