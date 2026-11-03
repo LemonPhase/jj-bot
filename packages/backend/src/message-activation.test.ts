@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
-import { runs } from "@jj/db";
+import { runs, sessionInbox } from "@jj/db";
 import {
   callTool,
   conversation,
@@ -18,8 +18,9 @@ import {
   say,
   textOf,
 } from "@jj/runtime/testing";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { RunOutcome } from "./ports";
 import { promptBot } from "./testing/fake-executor";
 import {
   fauxTeamEngine,
@@ -38,6 +39,7 @@ import {
   untilTask,
 } from "./testing/harness";
 import { createTeam } from "./testing/scenarios";
+import { PARK_AFTER_TURNS } from "./worker/parking";
 
 let db: TestDatabase;
 let current: TestEngine | undefined;
@@ -69,6 +71,63 @@ function held() {
   const point = gate();
   opened.push(point.open);
   return point;
+}
+
+/**
+ * A worker that dies after a run's last model call is saved, before the
+ * run's write-back: once `when` holds for a run's outcome. `restart` waits
+ * for the crash and starts the next worker on the same database and
+ * workspace. `signals` holds each bot's latest run signal.
+ */
+async function crashing(
+  when: (bot: string, outcome: RunOutcome) => boolean | Promise<boolean>,
+) {
+  const root = await mkdtemp(join(tmpdir(), "jj-crash-"));
+  roots.push(root);
+  const options = { workspaceRoot: root, config: { leaseMs: 1_000 } };
+  const signals: Record<string, AbortSignal> = {};
+  let crash: Promise<void> | undefined;
+  const first = await fauxTeamEngine(
+    db.database,
+    (inner) => ({
+      run: async (input) => {
+        const bot = promptBot(input.systemPrompt);
+        signals[bot] = input.signal;
+        const outcome = await inner.run(input);
+        if (!crash && (await when(bot, outcome))) {
+          crash = first.engine.worker.abandon();
+          await until(() => input.signal.aborted, { what: "the crash" });
+        }
+        return outcome;
+      },
+    }),
+    options,
+  );
+  current = first;
+  return {
+    first,
+    signals,
+    async restart() {
+      await until(() => crash !== undefined, {
+        what: "the crash",
+        timeoutMs: 20_000,
+      });
+      await crash;
+      const second = await fauxTeamEngine(db.database, undefined, options);
+      current = second;
+      return second;
+    },
+  };
+}
+
+/** `sessionId`'s runs, oldest first, as [reason, status]. */
+async function runsOf(sessionId: string | undefined) {
+  const rows = await db.database.db
+    .select()
+    .from(runs)
+    .where(eq(runs.sessionId, sessionId ?? ""))
+    .orderBy(asc(runs.number));
+  return rows.map((run) => [run.reason, run.status]);
 }
 
 describe("a message that arrives as the model ends its turn", () => {
@@ -437,33 +496,147 @@ describe("a message that arrives as the model ends its turn", () => {
   });
 });
 
+describe("a turn the engine ended before a crash", () => {
+  it("is not resumed when the engine parked it: the coordinator waits, and a waiting message rides along with the result", async () => {
+    let adaName = "";
+    let taskId = "";
+    let parkedAt = 0;
+    const parked = held();
+    // The worker dies once Ada's run parked her and Bob's message to her
+    // waits in her inbox.
+    const { first, restart, signals } = await crashing(async (bot, outcome) => {
+      if (bot !== adaName || outcome.kind !== "ended") return false;
+      parkedAt = calls[adaName] ?? 0;
+      parked.open();
+      await until(
+        async () =>
+          (
+            await db.database.db
+              .select({ id: sessionInbox.id })
+              .from(sessionInbox)
+              .where(
+                and(
+                  eq(
+                    sessionInbox.sessionId,
+                    rootOf(await first.engine.tasks.get(taskId))?.id ?? "",
+                  ),
+                  isNull(sessionInbox.deliveredAt),
+                ),
+              )
+          ).length > 0,
+        { what: "Bob's message to Ada" },
+      );
+      return true;
+    });
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    adaName = ada;
+    const calls = route(first.faux, {
+      [ada]: async (_context, n) =>
+        n === 0
+          ? callTool("delegate", { bot: bob, brief: "Write bob.txt." })
+          : callTool("task_state", {}),
+      [bob]: async (_context, n) => {
+        if (n === 0) {
+          await parked.opened;
+          return callTool("message", { to: ada, text: "FYI: lower case." });
+        }
+        // Cut off by the crash: never saved.
+        await until(() => signals[bob]?.aborted, { what: "the crash" });
+        return say("Unsaved.");
+      },
+    });
+    const { task } = await first.engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    taskId = task.id;
+
+    const second = await restart();
+    // Ada was parked after her delegation and PARK_AFTER_TURNS polls.
+    expect(parkedAt).toBe(1 + PARK_AFTER_TURNS);
+    const adaSaw: string[][] = [];
+    const resumed = route(second.faux, {
+      [ada]: async (context) => {
+        adaSaw.push(conversation(context).map((message) => textOf(message)));
+        return resultArrived(context, bob)
+          ? callTool("complete_task", { result: "Done." })
+          : callTool("task_state", {});
+      },
+      [bob]: async () => {
+        await until(
+          async () =>
+            rootOf(await second.engine.tasks.get(task.id))?.status ===
+            "waiting",
+          { what: "Ada to wait" },
+        );
+        return say("Bob's report.");
+      },
+    });
+    const done = await untilTask(
+      second.engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+      "the recovered task",
+      30_000,
+    );
+    expect(done.task.status).toBe("completed");
+    // Ada's recovery waited without a model call: her one call read the
+    // message, then the result that woke her.
+    expect(resumed[ada]).toBe(1);
+    expect(adaSaw[0]?.at(-2)).toBe(`Message from ${bob}:\nFYI: lower case.`);
+    expect(adaSaw[0]?.at(-1)).toMatch(/^Result from .+ \(session /);
+    expect(await runsOf(rootOf(done)?.id)).toEqual([
+      ["start", "failed"],
+      ["recovery", "waiting"],
+      ["wake", "completed"],
+    ]);
+  }, 60_000);
+
+  it("is not resumed when a completion ended the run: the task completes", async () => {
+    let adaName = "";
+    const { first, restart } = await crashing(
+      (bot, outcome) => bot === adaName && outcome.kind === "ended",
+    );
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    adaName = ada;
+    route(first.faux, {
+      [ada]: async () => callTool("complete_task", { result: "Done." }),
+    });
+    const { task } = await first.engine.tasks.create({
+      goal: "Say done",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+
+    const second = await restart();
+    const resumed = route(second.faux, {
+      [ada]: async () => say("Resumed after the crash."),
+    });
+    const done = await untilTask(
+      second.engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+      "the recovered task",
+      30_000,
+    );
+    expect(done.task).toMatchObject({ status: "completed", result: "Done." });
+    expect(resumed[ada]).toBeUndefined();
+    expect(await runsOf(rootOf(done)?.id)).toEqual([
+      ["start", "failed"],
+      ["recovery", "completed"],
+    ]);
+  }, 60_000);
+});
+
 describe("a message a worker finished without reading", () => {
   it("is not read after a crash either: the worker's report stands, and its parent gets the message", async () => {
-    const root = await mkdtemp(join(tmpdir(), "jj-unread-crash-"));
-    roots.push(root);
     let bobName = "";
-    let crash: Promise<void> | undefined;
-    // The worker dies once Bob's final model call is saved, before the
-    // run's write-back.
-    const first = await fauxTeamEngine(
-      db.database,
-      (inner) => ({
-        run: async (input) => {
-          const outcome = await inner.run(input);
-          if (
-            !crash &&
-            promptBot(input.systemPrompt) === bobName &&
-            outcome.kind === "ended"
-          ) {
-            crash = first.engine.worker.abandon();
-            await until(() => input.signal.aborted, { what: "the crash" });
-          }
-          return outcome;
-        },
-      }),
-      { workspaceRoot: root, config: { leaseMs: 1_000 } },
+    // The worker dies once Bob's final model call is saved.
+    const { first, restart } = await crashing(
+      (bot, outcome) => bot === bobName && outcome.kind === "ended",
     );
-    current = first;
     const team = await createTeam(first.engine, ["Ada", "Bob"]);
     const [ada, bob] = team.names as [string, string];
     bobName = bob;
@@ -498,14 +671,8 @@ describe("a message a worker finished without reading", () => {
       participantBotIds: team.ids,
     });
     taskId = task.id;
-    await until(() => crash !== undefined, { what: "the crash" });
-    await crash;
 
-    const second = await fauxTeamEngine(db.database, undefined, {
-      workspaceRoot: root,
-      config: { leaseMs: 1_000 },
-    });
-    current = second;
+    const second = await restart();
     const adaSaw: TranscriptContext[] = [];
     const calls = route(second.faux, {
       [ada]: async (context) => {
@@ -530,12 +697,7 @@ describe("a message a worker finished without reading", () => {
       (session) => session.parentSessionId !== null,
     );
     expect(bobSession?.result).toBe("Bob's report.");
-    const bobRuns = await db.database.db
-      .select()
-      .from(runs)
-      .where(eq(runs.sessionId, bobSession?.id as string))
-      .orderBy(asc(runs.number));
-    expect(bobRuns.map((run) => [run.reason, run.status])).toEqual([
+    expect(await runsOf(bobSession?.id)).toEqual([
       ["start", "failed"],
       ["recovery", "completed"],
     ]);

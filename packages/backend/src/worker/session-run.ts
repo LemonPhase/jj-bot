@@ -58,7 +58,7 @@ import {
 } from "./run-context";
 import {
   closeStaleRun,
-  endsWithAnswer,
+  endedTurn,
   hasContinuingInput,
   runningRun,
 } from "./runs";
@@ -455,23 +455,27 @@ export async function runSessionJob(
     const { call, deadline } = prepared;
     // Each executor call takes the inbox, in order; input that arrives as a
     // call ends continues the run, even when it lands just before the
-    // write-back. Where the model has ended its turn (a continuation, or a
-    // recovery whose transcript ends with its answer), the inbox is taken
-    // only when a brief, result or steering is in it, so a message alone
-    // never gives the model another turn: a recovery with none finishes the
-    // turn as the run would have (the executor is idle).
+    // write-back. Where the turn has ended (a continuation, or a recovery
+    // whose transcript ends with the model's answer or a turn the engine
+    // ended), the inbox is taken only when a brief, result or steering is in
+    // it, so a message alone never gives the model another turn. A recovery
+    // with none finishes the turn as the run would have: the executor is
+    // idle on an answer, and a turn the engine ended is not resumed at all.
     for (let calls = 1; ; calls += 1) {
       let outcome: RunOutcome;
       let inputs: string[] = [];
       let gateFailed = false;
       try {
         rc.claimed.clear();
-        const turnEnded =
-          calls > 1 ||
-          (rc.reason === "recovery" &&
-            (await endsWithAnswer(ctx.db, rc.session.id)));
-        inputs = await takeInbox(rc, turnEnded);
-        outcome = await call(inputs);
+        const ended =
+          calls === 1 && rc.reason === "recovery"
+            ? await endedTurn(ctx.db, rc.session.id)
+            : undefined;
+        inputs = await takeInbox(rc, calls > 1 || ended !== undefined);
+        outcome =
+          ended === "engine" && inputs.length === 0
+            ? { kind: "idle" }
+            : await call(inputs);
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
           inputs = await takeInbox(rc, true);
