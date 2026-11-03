@@ -71,9 +71,23 @@ export async function migrationsThrough(tag: string): Promise<string> {
 export async function seedPreviousRelease(
   location: DatabaseLocation,
 ): Promise<void> {
-  const folder = await migrationsThrough(PREVIOUS_RELEASE.migration);
   const fixture = await readFile(PREVIOUS_RELEASE.fixture, "utf8");
-  const script = `begin;\n${fixture}\ncommit;`;
+  await seedAt(location, PREVIOUS_RELEASE.migration, fixture);
+}
+
+/**
+ * Brings a new, empty database to the schema of migration `tag`, the way the
+ * build that shipped it migrated it, and runs the SQL `rows` on it, in one
+ * transaction: data written before the migrations after `tag`, which opening
+ * the database applies. The database is closed again when this resolves.
+ */
+export async function seedAt(
+  location: DatabaseLocation,
+  tag: string,
+  rows: string,
+): Promise<void> {
+  const folder = await migrationsThrough(tag);
+  const script = `begin;\n${rows}\ncommit;`;
   try {
     if (location.mode === "pglite") {
       const client = await PGlite.create(location.path);
