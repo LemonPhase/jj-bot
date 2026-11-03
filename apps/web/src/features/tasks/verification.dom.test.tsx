@@ -286,11 +286,15 @@ describe("checks editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add a check" }));
     fireEvent.click(screen.getByRole("button", { name: "Start task" }));
     // An empty check is refused in place, not sent.
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Say what it checks.",
+    );
     expect(createTask).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("What it checks"), {
       target: { value: "The tests pass" },
     });
+    // Editing clears the problem it answers.
+    expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.change(screen.getByLabelText("Command"), {
       target: { value: "npm test" },
     });

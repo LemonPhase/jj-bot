@@ -218,7 +218,11 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
               <div role="group" aria-labelledby={checksLabelId}>
                 <ChecksEditor
                   drafts={drafts}
-                  onChange={setDrafts}
+                  onChange={(next) => {
+                    // An edit answers the problems shown; submitting checks again.
+                    setDrafts(next);
+                    setCheckErrors({});
+                  }}
                   errors={checkErrors}
                   disabled={busy}
                 />

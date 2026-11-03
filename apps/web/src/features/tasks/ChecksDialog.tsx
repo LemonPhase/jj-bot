@@ -77,7 +77,10 @@ export function ChecksDialog({
       <form id={formId} className="new-task-form" onSubmit={submit}>
         <ChecksEditor
           drafts={drafts}
-          onChange={setDrafts}
+          onChange={(next) => {
+            setDrafts(next);
+            setErrors({});
+          }}
           errors={errors}
           disabled={busy}
         />
