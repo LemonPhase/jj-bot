@@ -2,6 +2,7 @@ import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import {
   type AcquireRequest,
+  assertSpawnRequest,
   assertSpecSupported,
   assertWorkspaceKey,
   type DriverCapabilities,
@@ -15,10 +16,13 @@ import {
   type SandboxDriver,
   type SandboxFs,
   SandboxPathError,
+  type SandboxProcess,
   SandboxReleasedError,
   SandboxRequestError,
   type SandboxSpec,
   type SandboxStat,
+  type SpawnExit,
+  type SpawnOptions,
   sandboxSpecSchema,
   type WorkspaceMode,
 } from "../contract";
@@ -31,6 +35,7 @@ import {
   directoryTar,
   type ExecOutput,
   isNotFound,
+  type OpenExec,
   parseDockerHost,
 } from "./docker-engine";
 import {
@@ -39,6 +44,7 @@ import {
   egressProxyEnv,
   sandboxProxyEnv,
 } from "./egress";
+import { OutputRelay, spawnShellArgs, stdinClosed } from "./spawn-support";
 
 /**
  * Container driver over the Docker Engine API. One container per acquired
@@ -70,6 +76,11 @@ import {
  * or keeps forking and exiting faster than a scan can read it, can escape
  * attribution. `release()` removes the container, which kills its whole PID
  * namespace, so commands interrupted by release report `"yes"`.
+ *
+ * Spawned processes (`spawn`) are execs too, with their own marker and stdin
+ * kept open on the hijacked attach connection. Not reading their output
+ * pauses that connection, so the daemon and then the process are held back;
+ * they are stopped like commands, and release ends them with the container.
  *
  * Network mode `allowlist`: per sandbox, an internal Docker network (no
  * route out, no address on the host, IPv6 off) and an egress proxy container
@@ -610,6 +621,12 @@ interface RunningCommand {
   done: Promise<void>;
 }
 
+/** A spawned process of a docker sandbox. */
+export interface DockerProcess extends SandboxProcess {
+  /** The Docker exec running it, for operators and tests. */
+  readonly execId: string;
+}
+
 /** A started egress proxy (`startEgress`). */
 interface EgressProxy {
   /** Its address on the sandbox's internal network. */
@@ -729,7 +746,8 @@ class DockerSandbox implements Sandbox {
     if (this.released) throw new SandboxReleasedError(this.id);
   }
 
-  private marker(kind: "c" | "h"): string {
+  /** `c` a command, `s` a spawned process, `h` a driver helper. */
+  private marker(kind: "c" | "s" | "h"): string {
     return `${kind}${++this.counter}-${randomBytes(9).toString("hex")}`;
   }
 
@@ -1178,6 +1196,176 @@ class DockerSandbox implements Sandbox {
     }
   }
 
+  /**
+   * A long-lived exec with stdin open on the hijacked connection. It is
+   * stopped like an interrupted command: by its marker, SIGTERM then
+   * SIGKILL, verified by scans; release removes the container, which ends it.
+   */
+  async spawn(
+    argv: readonly string[],
+    options: SpawnOptions = {},
+  ): Promise<DockerProcess> {
+    this.assertLive();
+    assertSpawnRequest(argv, options.env);
+    const cwd =
+      options.cwd === undefined
+        ? WORKSPACE_DIR
+        : await this.workingDirectory(options.cwd);
+    this.assertLive();
+    options.signal?.throwIfAborted();
+
+    const startedAt = Date.now();
+    const marker = this.marker("s");
+    // "pending": not started yet, so a stop means it never runs.
+    let phase: "pending" | "running" | "ended" = "pending";
+    let interruptReason: SpawnExit["interruptReason"];
+    let stopping: Promise<boolean> | undefined;
+    let stopSettledAt: number | undefined;
+    let stream: OpenExec | undefined;
+    let wantPaused = false;
+    let inputEnded = false;
+    let outputEnded = false;
+    const relay = new OutputRelay({
+      pause: () => {
+        wantPaused = true;
+        stream?.pause();
+      },
+      resume: () => {
+        wantPaused = false;
+        stream?.resume();
+      },
+    });
+
+    const beginStop = () => {
+      relay.discardUnheard();
+      const verification =
+        interruptReason === "release" && this.removal
+          ? this.removal
+          : this.stopCommand(marker);
+      stopping = verification.then((verified) => {
+        stopSettledAt = Date.now();
+        // A survivor that escaped attribution may still hold the stream open.
+        setTimeout(() => {
+          if (phase !== "ended") stream?.destroy();
+        }, DRAIN_MS).unref();
+        return verified;
+      });
+    };
+    const stop = (reason: NonNullable<SpawnExit["interruptReason"]>) => {
+      if (interruptReason !== undefined || phase === "ended") return;
+      interruptReason = reason;
+      if (phase === "running") beginStop();
+    };
+
+    let settle!: (exit: SpawnExit) => void;
+    const exited = new Promise<SpawnExit>((done) => {
+      settle = done;
+    });
+    const onAbort = () => stop("abort");
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    const running: RunningCommand = {
+      stop: (reason) =>
+        stop(reason as NonNullable<SpawnExit["interruptReason"]>),
+      done: exited.then(() => {}),
+    };
+    this.running.add(running);
+    const finish = (
+      exitCode: number | null,
+      interrupted: SpawnExit["interrupted"],
+    ) => {
+      phase = "ended";
+      options.signal?.removeEventListener("abort", onAbort);
+      this.running.delete(running);
+      settle({
+        exitCode,
+        interrupted,
+        ...(interruptReason ? { interruptReason } : {}),
+        durationMs: Date.now() - startedAt,
+      });
+    };
+
+    let execId: string;
+    let starting = false;
+    try {
+      execId = await this.engine.createExec(this.containerId, {
+        Cmd: ["/bin/sh", ...spawnShellArgs(argv)],
+        Env: this.environment(marker, options.env),
+        User: SANDBOX_USER,
+        WorkingDir: cwd,
+        AttachStdin: true,
+      });
+      this.assertLive();
+      // Created, not started: nothing has run.
+      options.signal?.throwIfAborted();
+      starting = true;
+      stream = await this.engine.openExec(execId, (name, chunk) =>
+        relay.push(chunk, name),
+      );
+    } catch (error) {
+      // A start that failed midway may have started the process; release
+      // ends it with the container.
+      const released = this.released && (await this.removal);
+      finish(null, !starting || released ? "yes" : "unknown");
+      if (this.released) throw new SandboxReleasedError(this.id);
+      throw error;
+    }
+    if (wantPaused) stream.pause();
+    phase = "running";
+    if (interruptReason !== undefined) beginStop();
+
+    const attached = stream;
+    void (async () => {
+      await attached.ended;
+      outputEnded = true;
+      attached.destroy();
+      // The output can close before the process exits; wait for the exit.
+      let exitCode: number | null = null;
+      try {
+        const state = await this.engine.waitExec(
+          execId,
+          () =>
+            this.released ||
+            (stopSettledAt !== undefined &&
+              Date.now() - stopSettledAt > EXIT_SETTLE_MS),
+        );
+        exitCode = state.Running ? null : state.ExitCode;
+      } catch {
+        // Released, or the daemon could not say: the exit code is unknown.
+      }
+      phase = "ended";
+      const verified = stopping ? await stopping : undefined;
+      finish(
+        exitCode,
+        verified === undefined ? "no" : verified ? "yes" : "unknown",
+      );
+    })();
+
+    // Started while release began: release ends it with the container.
+    if (this.released) throw new SandboxReleasedError(this.id);
+    return {
+      execId,
+      exited,
+      write: (data) => {
+        if (inputEnded || outputEnded || phase === "ended")
+          return Promise.reject(stdinClosed());
+        const bytes = typeof data === "string" ? Buffer.from(data) : data;
+        return new Promise((written, failed) => {
+          attached.write(bytes, (error) => (error ? failed(error) : written()));
+        });
+      },
+      endInput: () => {
+        if (inputEnded) return;
+        inputEnded = true;
+        attached.endInput();
+      },
+      onOutput: (listener) => relay.subscribe(listener),
+      kill: () => {
+        stop("kill");
+        return exited;
+      },
+    };
+  }
+
   release(options: { persist?: boolean } = {}): Promise<void> {
     this.releasing ??= this.shutdown(options.persist ?? false).catch(
       (error) => {
@@ -1254,7 +1442,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     exposePort: false,
     snapshot: false,
     metrics: false,
-    spawn: false,
+    spawn: true,
   };
   private readonly engine?: DockerEngine;
   private readonly endpointError?: Error;

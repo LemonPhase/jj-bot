@@ -16,6 +16,7 @@ import type {
   NetworkMode,
   Sandbox,
   SandboxDriver,
+  SandboxProcess,
   SandboxSpecInput,
   WorkspaceMode,
 } from "./contract";
@@ -25,6 +26,7 @@ import {
   SandboxPathError,
   SandboxReleasedError,
   SandboxRequestError,
+  SPAWN_HOLD_BYTES,
 } from "./contract";
 
 /**
@@ -32,8 +34,9 @@ import {
  * A driver that passes this is safe for the agent runtime to target; a driver
  * that cannot pass it must narrow its declared `capabilities` until it does.
  *
- * Commands assume a POSIX shell with coreutils-style `sleep`, `ln` and `cat`
- * in the image. Checks that need an optional tool (`setsid`, an HTTP client)
+ * Commands assume a POSIX shell with coreutils-style `sleep`, `ln`, `cat`,
+ * `dd`, `env`, `pwd`, `tr` and `grep` in the image. Checks that need an
+ * optional tool (`setsid`, an HTTP client)
  * skip that part, or the whole test with a note, when the tool is missing.
  *
  * @example
@@ -856,13 +859,455 @@ export function describeSandboxConformance(
         expect(typeof sandbox.metrics === "function").toBe(
           driver.capabilities.metrics,
         );
-        expect(
-          typeof (sandbox as { spawn?: unknown }).spawn === "function",
-        ).toBe(driver.capabilities.spawn);
+        expect(typeof sandbox.spawn === "function").toBe(
+          driver.capabilities.spawn,
+        );
+      },
+      testTimeout,
+    );
+
+    /**
+     * `spawn`, for drivers that declare it. Waits are event-driven with
+     * generous bounds; the only fixed pauses check that something does not
+     * happen.
+     */
+    const spawnOnly = (context: TestContext) => {
+      if (!driver.capabilities.spawn)
+        context.skip(`${name} does not declare spawn`);
+    };
+    const spawner = (sandbox: Sandbox) => {
+      const spawn = sandbox.spawn?.bind(sandbox);
+      if (!spawn) throw new Error(`${name} declares spawn but has none`);
+      return spawn;
+    };
+
+    it(
+      "round-trips stdin to stdout in a spawned process and keeps stderr separate",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        const cat = await spawn(["cat"]);
+        const echoed = capture(cat);
+        await cat.write("ping-1\n");
+        await echoed.until(() => echoed.stdout === "ping-1\n", "first echo");
+        await cat.write(Buffer.from("ping-2\n"));
+        await echoed.until(
+          () => echoed.stdout === "ping-1\nping-2\n",
+          "second echo",
+        );
+        cat.endInput();
+        cat.endInput();
+        expect(await cat.exited).toMatchObject({
+          exitCode: 0,
+          interrupted: "no",
+        });
+        expect((await cat.exited).interruptReason).toBeUndefined();
+        expect(echoed.stderr).toBe("");
+
+        const split = await spawn([
+          "sh",
+          "-c",
+          "echo to-out; echo to-err >&2; echo more-out; exit 3",
+        ]);
+        const streams = capture(split);
+        // Every chunk is delivered by the time `exited` settles.
+        expect((await split.exited).exitCode).toBe(3);
+        expect(streams.stdout).toBe("to-out\nmore-out\n");
+        expect(streams.stderr).toBe("to-err\n");
+      },
+      testTimeout,
+    );
+
+    it(
+      "settles a spawned process's exit with its code, and reports a missing command as 127",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        // Nobody listens: its output is held, and it still ends.
+        const quiet = await spawn(["sh", "-c", "echo unheard; exit 7"]);
+        expect(await quiet.exited).toMatchObject({
+          exitCode: 7,
+          interrupted: "no",
+        });
+        await expect(quiet.write("late\n")).rejects.toThrow();
+        quiet.endInput();
+        expect(await quiet.kill()).toEqual(await quiet.exited);
+
+        const missing = await spawn(["jj-conformance-no-such-command"]);
+        const output = capture(missing);
+        expect((await missing.exited).exitCode).toBe(127);
+        expect(output.stderr).toContain("jj-conformance-no-such-command");
+
+        const ended = await spawn(["cat"]);
+        ended.endInput();
+        await expect(ended.write("after end\n")).rejects.toThrow();
+        expect((await ended.exited).exitCode).toBe(0);
+      },
+      testTimeout,
+    );
+
+    it(
+      "gives a spawned process the environment exec gives a command, never the host's",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire(
+          { env: { JJ_DECLARED: "declared" } },
+          uniqueKey("conformance-spawn-env"),
+          { secrets: { JJ_SECRET: "injected" } },
+        );
+        const env = { JJ_PER_CALL: "per-call" };
+        const spawned = await spawner(sandbox)(["sh", "-c", "env"], { env });
+        const output = capture(spawned);
+        expect((await spawned.exited).exitCode).toBe(0);
+        const lines = output.stdout.split("\n");
+        expect(lines).toContain("JJ_DECLARED=declared");
+        expect(lines).toContain("JJ_SECRET=injected");
+        expect(lines).toContain("JJ_PER_CALL=per-call");
+        expect(output.stdout).not.toContain(HOST_SECRET);
+        const names = (text: string) =>
+          new Set(
+            text
+              .split("\n")
+              .filter((line) => line.includes("="))
+              .map((line) => line.split("=", 1)[0]),
+          );
+        for (const key of RUNNER_VARS)
+          expect([...names(output.stdout)], key).not.toContain(key);
+        // The same variables as a command's (proxy settings included), whatever their values.
+        const listed = await sandbox.exec("env", { env });
+        expect([...names(output.stdout)].sort()).toEqual(
+          [...names(listed.stdout)].sort(),
+        );
+        if (driver.capabilities.filesystemIsolation) {
+          const proc = await spawner(sandbox)([
+            "sh",
+            "-c",
+            "cat /proc/$PPID/environ /proc/1/environ 2>/dev/null | tr '\\0' '\\n'; true",
+          ]);
+          const leaked = capture(proc);
+          await proc.exited;
+          expect(leaked.stdout).not.toContain(HOST_SECRET);
+        }
+      },
+      testTimeout,
+    );
+
+    it(
+      "runs a spawned process in the workspace and refuses a cwd outside it",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        await sandbox.fs.mkdir("nested/dir");
+        const pwd = async (cwd?: string) => {
+          const spawned = await spawn(["pwd"], cwd ? { cwd } : {});
+          const output = capture(spawned);
+          await spawned.exited;
+          return output.stdout.trim();
+        };
+        expect(await pwd()).toBe(sandbox.workspaceDir);
+        expect((await pwd("nested/dir")).endsWith("nested/dir")).toBe(true);
+        expect(await pwd(`${sandbox.workspaceDir}/nested`)).toBe(
+          `${sandbox.workspaceDir}/nested`,
+        );
+        expect((await sandbox.exec("ln -s / out")).exitCode).toBe(0);
+        for (const cwd of ["../..", "/", "out", `${sandbox.workspaceDir}-evil`])
+          await expect(spawn(["pwd"], { cwd }), cwd).rejects.toThrow(
+            SandboxPathError,
+          );
+      },
+      testTimeout,
+    );
+
+    it(
+      "refuses a malformed spawn request",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        for (const argv of [[], [""], ["echo", "a\0b"]])
+          await expect(spawn(argv), JSON.stringify(argv)).rejects.toThrow(
+            SandboxRequestError,
+          );
+        await expect(spawn(["true"], { env: { "A=B": "x" } })).rejects.toThrow(
+          SandboxRequestError,
+        );
+        await expect(spawn(["true"], { env: { A: "x\0y" } })).rejects.toThrow(
+          SandboxRequestError,
+        );
+      },
+      testTimeout,
+    );
+
+    it(
+      "kill() sends SIGTERM first, so a process that handles it exits on its own terms",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawned = await spawner(sandbox)([
+          "sh",
+          "-c",
+          'trap "echo got-term; exit 0" TERM; echo ready; while :; do sleep 0.1; done',
+        ]);
+        const output = capture(spawned);
+        await output.until(() => output.stdout.includes("ready"), "ready");
+        const exit = await spawned.kill();
+        expect(exit.interruptReason).toBe("kill");
+        expect(["yes", "unknown"]).toContain(exit.interrupted);
+        expect(exit.exitCode).toBe(0);
+        expect(output.stdout).toContain("got-term");
+        expect(await spawned.exited).toEqual(exit);
+        expect(await spawned.kill()).toEqual(exit);
+      },
+      testTimeout,
+    );
+
+    it(
+      "kill() SIGKILLs a spawned process that ignores SIGTERM, with its descendants",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const tag = `tag-${Math.random().toString(36).slice(2)}`;
+        const spawned = await spawner(sandbox)(
+          [
+            "sh",
+            "-c",
+            `${backgroundHeartbeats(true, "-spawn")}\ntrap "" TERM; echo ready; while :; do echo x >> hb-spawn-main; sleep 0.1; done`,
+          ],
+          { env: { JJ_CONFORMANCE_SPAWN_TAG: tag } },
+        );
+        const output = capture(spawned);
+        await output.until(() => output.stdout.includes("ready"), "ready");
+        await waitForHeartbeat(sandbox, "hb-spawn-main");
+        await waitForHeartbeat(sandbox, "hb-group-spawn");
+        const exit = await spawned.kill();
+        expect(exit.interruptReason).toBe("kill");
+        expect(["yes", "unknown"]).toContain(exit.interrupted);
+        // The process itself is gone whatever the driver could verify.
+        await expectHeartbeatsStopped(sandbox, ["hb-spawn-main"]);
+        if (exit.interrupted === "yes") {
+          await expectHeartbeatsStopped(sandbox, heartbeatFiles("-spawn"));
+          expect(await taggedProcesses(sandbox, tag)).toEqual([]);
+        }
+      },
+      testTimeout,
+    );
+
+    it(
+      "never starts a spawned process whose signal is already aborted, and stops one on abort",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        const reason = new Error("aborted by conformance");
+        await expect(
+          spawn(["sh", "-c", "echo ran > spawn-aborted-marker"], {
+            signal: AbortSignal.abort(reason),
+          }),
+        ).rejects.toBe(reason);
+        await delay(300);
+        expect(await sandbox.fs.stat("spawn-aborted-marker")).toBeUndefined();
+
+        const controller = new AbortController();
+        const spawned = await spawn(
+          ["sh", "-c", "echo ready; while :; do sleep 0.1; done"],
+          { signal: controller.signal },
+        );
+        const output = capture(spawned);
+        await output.until(() => output.stdout.includes("ready"), "ready");
+        controller.abort();
+        const exit = await spawned.exited;
+        expect(exit.interruptReason).toBe("abort");
+        expect(["yes", "unknown"]).toContain(exit.interrupted);
+      },
+      testTimeout,
+    );
+
+    it(
+      "ends spawned processes and their descendants on release, and refuses spawn afterwards",
+      async (context) => {
+        spawnOnly(context);
+        const key = uniqueKey("conformance-spawn-release");
+        const first = await acquire({ workspace: "task" }, key);
+        const spawned = await spawner(first)([
+          "sh",
+          "-c",
+          `${backgroundHeartbeats(true, "-spawn-release")}\ntrap "" TERM; echo ready; while :; do echo x >> hb-spawn-release-main; sleep 0.1; done`,
+        ]);
+        const output = capture(spawned);
+        await output.until(() => output.stdout.includes("ready"), "ready");
+        await waitForHeartbeat(first, "hb-spawn-release-main");
+        await waitForHeartbeat(first, "hb-group-spawn-release");
+        await release(first);
+        const exit = await spawned.exited;
+        expect(exit.interruptReason).toBe("release");
+        expect(["yes", "unknown"]).toContain(exit.interrupted);
+        await expect(spawner(first)(["true"])).rejects.toThrow(
+          SandboxReleasedError,
+        );
+        const second = await acquire({ workspace: "task" }, key);
+        await expectHeartbeatsStopped(second, [
+          "hb-spawn-release-main",
+          ...heartbeatFiles("-spawn-release"),
+        ]);
+      },
+      testTimeout,
+    );
+
+    it(
+      "streams a spawned process's output as it is written, without holding it until exit",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const size = 8 * 1024 * 1024;
+        const spawned = await spawner(sandbox)([
+          "sh",
+          "-c",
+          `dd if=/dev/zero bs=65536 count=${size / 65536} 2>/dev/null; read line; echo "done-$line"`,
+        ]);
+        let bytes = 0;
+        let tail = "";
+        const reached = new Promise<void>((done) => {
+          spawned.onOutput((chunk, stream) => {
+            if (stream !== "stdout") return;
+            bytes += chunk.length;
+            tail = (tail + chunk.toString("latin1")).slice(-64);
+            if (bytes >= size) done();
+          });
+        });
+        let settled = false;
+        void spawned.exited.then(() => {
+          settled = true;
+        });
+        await within(reached, 60_000, () => `${bytes} of ${size} bytes`);
+        // Still waiting for its stdin line: the output streamed before the exit.
+        expect(settled).toBe(false);
+        expect(bytes).toBe(size);
+        await spawned.write("x\n");
+        expect((await spawned.exited).exitCode).toBe(0);
+        expect(tail.endsWith("done-x\n")).toBe(true);
+      },
+      Math.max(testTimeout, 90_000),
+    );
+
+    it(
+      "holds back output nobody listens to instead of buffering it without bound",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const size = 32 * SPAWN_HOLD_BYTES;
+        const spawned = await spawner(sandbox)([
+          "sh",
+          "-c",
+          `dd if=/dev/zero bs=65536 count=${size / 65536} 2>/dev/null; echo finished > spawn-flood-done`,
+        ]);
+        // Nobody reads, so the writer blocks once the hold and the pipes are full.
+        await delay(1_500);
+        expect(await sandbox.fs.stat("spawn-flood-done")).toBeUndefined();
+        let bytes = 0;
+        spawned.onOutput((chunk, stream) => {
+          if (stream === "stdout") bytes += chunk.length;
+        });
+        expect((await spawned.exited).exitCode).toBe(0);
+        // Held output reached the listener: nothing was dropped.
+        expect(bytes).toBe(size);
+        expect(await sandbox.fs.stat("spawn-flood-done")).toBeDefined();
+      },
+      Math.max(testTimeout, 90_000),
+    );
+
+    it(
+      "applies the sandbox's network policy to spawned processes",
+      async (context) => {
+        spawnOnly(context);
+        if (!driver.capabilities.networkModes.includes("none"))
+          context.skip(`${name} does not declare network mode "none"`);
+        const sandbox = await acquire({ network: { mode: "none" } });
+        const spawned = await spawner(sandbox)(["sh", "-c", EGRESS_PROBE]);
+        const output = capture(spawned);
+        await within(spawned.exited, 20_000, () => output.stdout);
+        if (output.stdout.includes("EGRESS_UNTESTED"))
+          context.skip("no node, curl, wget or nc in the sandbox image");
+        expect(output.stdout).toContain("EGRESS_BLOCKED");
+        expect(output.stdout).not.toContain("EGRESS_OPEN");
       },
       testTimeout,
     );
   });
+}
+
+/** Collects a spawned process's output as text, and waits for it to match. */
+function capture(spawned: SandboxProcess) {
+  const waiters = new Set<() => void>();
+  const output = {
+    stdout: "",
+    stderr: "",
+    /** Resolves once `predicate` holds; fails after `timeoutMs` with what arrived. */
+    until(predicate: () => boolean, label: string, timeoutMs = 20_000) {
+      if (predicate()) return Promise.resolve();
+      return new Promise<void>((resolve, reject) => {
+        const check = () => {
+          if (!predicate()) return;
+          clearTimeout(timer);
+          waiters.delete(check);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          waiters.delete(check);
+          reject(
+            new Error(
+              `timed out waiting for ${label}: ${JSON.stringify({ stdout: output.stdout, stderr: output.stderr }).slice(0, 500)}`,
+            ),
+          );
+        }, timeoutMs);
+        waiters.add(check);
+      });
+    },
+  };
+  spawned.onOutput((chunk, stream) => {
+    output[stream] += chunk.toString("utf8");
+    for (const check of [...waiters]) check();
+  });
+  return output;
+}
+
+/** `promise`, or a failure naming `progress()` after `timeoutMs`. */
+async function within<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  progress: () => string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error(`timed out after ${timeoutMs} ms: ${progress()}`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Processes that carry `JJ_CONFORMANCE_SPAWN_TAG=<tag>`, from a `/proc`
+ * scan inside the sandbox; empty where the sandbox has no `/proc`.
+ */
+async function taggedProcesses(
+  sandbox: Sandbox,
+  tag: string,
+): Promise<string[]> {
+  const result = await sandbox.exec(
+    `for f in /proc/[0-9]*/environ; do tr '\\0' '\\n' < "$f" 2>/dev/null | grep -qx 'JJ_CONFORMANCE_SPAWN_TAG=${tag}' && echo "$f"; done; true`,
+  );
+  return result.stdout.split("\n").filter((line) => line.trim() !== "");
 }
 
 /**

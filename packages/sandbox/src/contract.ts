@@ -236,12 +236,122 @@ export interface SandboxMetrics {
   costUsd?: number;
 }
 
+export type OutputStream = "stdout" | "stderr";
+
+/** Receives a spawned process's output as it is read. Must not throw: an exception is caught and dropped. */
+export type OutputListener = (chunk: Buffer, stream: OutputStream) => void;
+
+/**
+ * Most output a spawned process may have waiting while no listener is
+ * registered. Past it the driver stops reading, so a process that keeps
+ * writing blocks on its full pipe instead of growing the worker's memory.
+ */
+export const SPAWN_HOLD_BYTES = 1024 * 1024;
+
+export interface SpawnOptions {
+  /** Working directory, contained like `ExecOptions.cwd`: outside the workspace is `SandboxPathError`. */
+  cwd?: string;
+  /** Added to the sandbox environment for this process only, as `ExecOptions.env`. */
+  env?: Record<string, string>;
+  /**
+   * Aborting stops the process like `kill()`, with `interruptReason:
+   * "abort"`. If it is aborted before the process starts, `spawn` rejects
+   * with the signal's reason and nothing runs.
+   */
+  signal?: AbortSignal;
+}
+
+/** How a spawned process ended. */
+export interface SpawnExit {
+  /**
+   * Its exit status. A process ended by a signal reports 128 plus the
+   * signal's number, as POSIX shells do. Null when the driver could not
+   * learn it, such as for a process ended by release.
+   */
+  exitCode: number | null;
+  /**
+   * `no`: it exited by itself. `yes`: it was stopped, and the driver verified
+   * that none of its processes, descendants included, are still running.
+   * `unknown`: it was stopped, and the driver could not verify that.
+   */
+  interrupted: Interrupted;
+  /** Set whenever `interrupted` is not "no". */
+  interruptReason?: "kill" | "abort" | "release";
+  durationMs: number;
+}
+
+/**
+ * A long-lived process started by `Sandbox.spawn`, with its standard
+ * streams. It runs until it exits, `kill()`, its signal aborts or the sandbox
+ * is released; no timeout applies, and `limits.maxOutputBytes` does not cap
+ * its output, which is never collected.
+ */
+export interface SandboxProcess {
+  /**
+   * Writes to its stdin. Resolves once the data has been handed to the
+   * process's input, so a caller that awaits each write queues at most that
+   * write in the worker: a process that reads slowly slows its writer down.
+   * Rejects after `endInput()` or once its input has closed (it exited or
+   * closed stdin).
+   */
+  write(data: Buffer | string): Promise<void>;
+  /** Closes its stdin after pending writes, so it reads end-of-file. Idempotent. */
+  endInput(): void;
+  /**
+   * Registers an output listener and returns a function that removes it.
+   * Chunks are passed, in the order the process wrote each stream, to the
+   * listeners registered when they are read; the driver keeps no copy, so a
+   * caller that keeps output must bound it itself. Output read while no
+   * listener is registered is held, up to `SPAWN_HOLD_BYTES`, and passed to
+   * the listeners registered when the first one is, on a microtask (so
+   * listeners registered together all receive it); once that much is held,
+   * the driver stops reading until a listener registers. After `kill()`, an
+   * abort or release, output that nobody listens to is discarded instead, so
+   * the process can end.
+   */
+  onOutput(listener: OutputListener): () => void;
+  /**
+   * Settles once the process has exited and its stdout and stderr have
+   * closed, after every chunk read was passed to the listeners. Never
+   * rejects. A descendant that keeps stdout or stderr open delays it, as it
+   * delays `exec`; held output that nobody reads delays it too.
+   */
+  readonly exited: Promise<SpawnExit>;
+  /**
+   * Stops the process and its descendants: SIGTERM first, then SIGKILL for
+   * whatever is left after the driver's grace period. Resolves with
+   * `exited`'s value (`interruptReason: "kill"`), or with it unchanged when
+   * the process has already ended. Idempotent. Background processes it
+   * left after exiting by itself live until `release()`, as with `exec`.
+   */
+  kill(): Promise<SpawnExit>;
+}
+
 export interface Sandbox {
   readonly id: string;
   readonly driverId: string;
   /** Absolute workspace root as the agent sees it. Tool cwd is always this path. */
   readonly workspaceDir: string;
   exec(command: string, options?: ExecOptions): Promise<ExecResult>;
+  /**
+   * Starts a long-lived process, such as a stdio MCP server, and resolves
+   * once it runs. Present only when the driver declares `capabilities.spawn`.
+   *
+   * `argv` is run as given, with no shell parsing it: `argv[0]` is looked up
+   * on the sandbox's `PATH`. It gets exactly the environment `exec` gives a
+   * command (the sandbox's, spec `env`, secrets, then `options.env`), the
+   * same isolation and network policy, and a working directory inside the
+   * workspace. A command that cannot be found or run exits with 127 or 126,
+   * with the reason on stderr, as from a POSIX shell. `spawn` rejects with
+   * `SandboxRequestError` for an empty argv or a NUL in it or in `env`, with
+   * `SandboxPathError` for a cwd outside the workspace, with the signal's
+   * reason for an aborted signal, and with `SandboxReleasedError` once
+   * `release()` has begun.
+   */
+  spawn?(
+    argv: readonly string[],
+    options?: SpawnOptions,
+  ): Promise<SandboxProcess>;
   readonly fs: SandboxFs;
   /** Returns a reachable URL for a port inside the sandbox. Optional capability. */
   exposePort?(port: number): Promise<string>;
@@ -249,10 +359,11 @@ export interface Sandbox {
   snapshot?(): Promise<string>;
   metrics?(): Promise<SandboxMetrics>;
   /**
-   * Ends the sandbox. Stops every process it started, background ones
-   * included; commands still running resolve with `interruptReason:
-   * "release"`. Then discards an `ephemeral` workspace unless `persist` is
-   * set. Idempotent. Afterwards `exec` and every `fs` call reject with
+   * Ends the sandbox. Stops every process it started, background and spawned
+   * ones included; commands still running resolve, and spawned processes
+   * still running settle `exited`, with `interruptReason: "release"`. Then
+   * discards an `ephemeral` workspace unless `persist` is set. Idempotent.
+   * Afterwards `exec`, `spawn` and every `fs` call reject with
    * `SandboxReleasedError`.
    */
   release(options?: { persist?: boolean }): Promise<void>;
@@ -279,8 +390,9 @@ export interface DriverCapabilities {
   metrics: boolean;
   /**
    * Starts long-lived processes whose stdin, stdout and stderr stream while
-   * they run, such as stdio MCP servers. A driver that cannot stream them
-   * declares false, and nothing that needs it runs on its sandboxes.
+   * they run, such as stdio MCP servers: its sandboxes have `spawn`, and
+   * only then. A driver that cannot stream them declares false, and nothing
+   * that needs it runs on its sandboxes.
    */
   spawn: boolean;
 }
@@ -368,6 +480,37 @@ export function assertWorkspaceKey(key: unknown): string {
   throw new SandboxRequestError(
     `Invalid workspaceKey ${shown}: expected 1-128 characters of [A-Za-z0-9_-]`,
   );
+}
+
+/**
+ * Throws `SandboxRequestError` unless `argv` is a non-empty list of strings
+ * without NUL, starting with a non-empty one, and every `env` entry has a
+ * name without `=` or NUL and a value without NUL. Drivers call it first in
+ * `spawn`.
+ */
+export function assertSpawnRequest(
+  argv: unknown,
+  env: Record<string, string> = {},
+): asserts argv is readonly string[] {
+  if (
+    !Array.isArray(argv) ||
+    argv.length === 0 ||
+    argv.some((part) => typeof part !== "string" || part.includes("\0")) ||
+    argv[0] === ""
+  )
+    throw new SandboxRequestError(
+      "spawn needs a non-empty argv of strings without NUL, starting with the command",
+    );
+  for (const [name, value] of Object.entries(env)) {
+    if (!/^[^=\0]+$/.test(name))
+      throw new SandboxRequestError(
+        `Invalid environment variable name ${JSON.stringify(name)}`,
+      );
+    if (typeof value !== "string" || value.includes("\0"))
+      throw new SandboxRequestError(
+        `Invalid value for environment variable ${name}`,
+      );
+  }
 }
 
 /** Largest delay a Node timer represents; anything longer overflows and fires at once. */
