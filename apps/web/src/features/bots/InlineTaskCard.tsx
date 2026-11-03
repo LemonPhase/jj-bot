@@ -1,4 +1,5 @@
 import { questionExcerpt, type TaskSummary } from "@jj/contracts";
+import { useId } from "react";
 import { Icon, StatusSquare } from "../../components/ui";
 import { statusTitle, statusTone, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
@@ -30,18 +31,28 @@ export function taskExcerpt(
  * The task a bot message is about (SPEC §4 inline task card): a link to
  * `#/tasks/:id` with the task's status square, title and status word, and
  * the start of a finished task's result or error or of a waiting task's
- * question. It reads the live
- * task summary, so it shows the task's current status, not its status when
- * the message was written. Verification is off in Contracts 1.0, so the meta
- * shows the goal version where the design shows checks.
+ * question. It reads the live task summary, so it shows the task's current
+ * status, not its status when the message was written. The link is named by
+ * the title and status; the excerpt is its description. Verification is off
+ * in Contracts 1.0, so the meta shows the goal version where the design
+ * shows checks.
  */
 export function InlineTaskCard({ taskId }: { taskId: string }) {
   const { getTask } = useWorkspace();
+  const excerptId = useId();
   const task = getTask(taskId);
   const excerpt = task ? taskExcerpt(task) : null;
   return (
-    <a className="chat-task-card" href={taskHref(taskId)}>
-      <span className="visually-hidden">Task: </span>
+    <a
+      className="chat-task-card"
+      href={taskHref(taskId)}
+      aria-label={
+        task
+          ? `Task: ${task.title} ${statusWord(task)} · v${task.goalVersion}`
+          : "Task: Open the task"
+      }
+      aria-describedby={excerpt ? excerptId : undefined}
+    >
       {task ? (
         <span className="chat-task-card__body">
           <span className="chat-task-card__head">
@@ -52,7 +63,7 @@ export function InlineTaskCard({ taskId }: { taskId: string }) {
             </span>
           </span>
           {excerpt && (
-            <span className="chat-task-card__excerpt clamp2">
+            <span id={excerptId} className="chat-task-card__excerpt clamp2">
               {excerpt.label} · {excerpt.text}
             </span>
           )}

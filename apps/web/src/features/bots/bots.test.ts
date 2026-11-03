@@ -291,5 +291,13 @@ describe("task card excerpt", () => {
     });
     expect(excerpt?.text.length).toBeLessThanOrEqual(240);
     expect(excerpt?.text.endsWith("…")).toBe(true);
+    // Never through an emoji: no lone surrogate is left at the cut.
+    const emoji = taskExcerpt({
+      status: "failed",
+      result: null,
+      error: `${"x".repeat(238)}😀 and more`,
+    });
+    expect(emoji?.text).toBe(`${"x".repeat(238)}…`);
+    expect(emoji?.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });

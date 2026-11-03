@@ -367,6 +367,13 @@ describe("direct chat", () => {
       name: /Plan the rollout/,
     });
     await waitFor(() => expect(card.textContent).toContain("waiting · v1"));
+    // Named by its title and status, described by the excerpt.
+    expect(
+      within(log).getByRole("link", {
+        name: "Task: Plan the rollout waiting · v1",
+        description: /^Question · Before I plan this: should we keep/,
+      }),
+    ).toBe(card);
     expect(card.querySelector(".chat-task-card__excerpt")?.textContent).toMatch(
       /^Question · Before I plan this: should we keep a fallback/,
     );
