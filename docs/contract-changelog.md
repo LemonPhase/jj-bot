@@ -43,10 +43,13 @@ rather than landing it and announcing it afterwards.
   superseded snapshots were deleted, and `tool.finished` output and `model.finished` text dropped.
   For any cursor n, the kept events after n fold onto the view at n into the latest view, its
   records compared by id, so a stream resumed from any `Last-Event-ID` converges.
-- `eventBaseSchema.payloadArtifactId`, optional: the event's payload was over the server's cap;
-  its full payload is that `output` artifact, as JSON, and the event's payload keeps its shape
-  with each string over 4 KiB clipped and marked (`… [N more characters in the saved copy]`).
-  A client folds it, then refetches the view, whose records are whole.
+- `eventBaseSchema.payloadArtifactId`, optional: the event's payload was over the server's cap
+  and clipped; its full payload is that `output` artifact, as JSON, at `savedPayloadPath(type)`
+  (`<type> payload`; `savedPayloadType(artifact)` reads it back). Only what no record bounds is
+  clipped (tool output previews, error and stop texts, a held call's arguments), each string over
+  4 KiB within its field's limit and marked (`… [N more characters in the saved copy]`); record
+  snapshots are stored whole, over the cap too, and every stored payload parses with its type's
+  schema. A client folds a clipped event, then refetches the view, whose records are whole.
 - `EVENT_PAYLOAD_CAP_BYTES` = 1 MiB: the ceiling of the server's payload cap.
 - `bootstrapSchema.eventRetentionDays`, optional (absent from servers before 1.10.0): the server's
   `JJ_EVENT_RETENTION_DAYS`, 0 to 3650, 0 meaning never, so Settings → About can show it.

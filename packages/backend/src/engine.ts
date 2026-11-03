@@ -41,6 +41,7 @@ import {
 } from "@jj/contracts";
 import { type Database, type IdKind, queueDepth } from "@jj/db";
 import { type Tracer, trace } from "@opentelemetry/api";
+import { withCommitHooks } from "./commit-hooks";
 import { type EngineConfigInput, resolveConfig } from "./config";
 import { defaultIds, type EngineContext, type Logger } from "./context";
 import { errorMessage } from "./errors";
@@ -260,7 +261,8 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   let built = 0;
   let applied = 0;
   const ctx: EngineContext = {
-    db: options.db.db,
+    // Its transactions run their afterCommit hooks once they commit.
+    db: withCommitHooks(options.db.db),
     bus: options.db.bus,
     ...(options.db.mode ? { dbMode: options.db.mode } : {}),
     config: resolveConfig(options.config),

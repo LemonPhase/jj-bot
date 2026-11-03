@@ -3,6 +3,7 @@
 // transaction, so nothing is published before it is durable.
 import {
   activityFromEvent,
+  savedPayloadPath,
   type TaskEvent,
   type TaskEventOf,
   type TaskEventType,
@@ -17,8 +18,9 @@ import {
   type Tx,
 } from "@jj/db";
 import { eq } from "drizzle-orm";
+import { afterCommit } from "./commit-hooks";
 import type { EngineContext } from "./context";
-import { clipPayload, payloadBytes } from "./event-payloads";
+import { clippedPayload } from "./event-payloads";
 import { toTaskEvent } from "./records";
 import { storeArtifact } from "./services/artifacts";
 
@@ -40,9 +42,11 @@ export type EmitInput = {
  * Appends a task event and applies `activityFromEvent` to its session, so the
  * stored activity always equals what a client folds from the stream. Sends the
  * workspace hints the event implies. A payload whose JSON is over the cap
- * (`eventPayloadCapBytes`) is stored in full as an `output` artifact first,
- * attributed like the event, and the event keeps a clipped copy that names it
- * (`payloadArtifactId`).
+ * (`eventPayloadCapBytes`) and that has unbounded parts to clip is stored in
+ * full as an `output` artifact first, attributed like the event, and the
+ * event keeps a clipped copy, valid for its type, that names it
+ * (`payloadArtifactId`). Record snapshots, which their schemas bound, are
+ * stored whole whatever their size.
  */
 export async function emit(
   tx: Tx,
@@ -53,14 +57,18 @@ export async function emit(
   let payload = input.payload as Record<string, unknown>;
   let payloadArtifactId: string | null = null;
   const json = JSON.stringify(payload);
-  if (Buffer.byteLength(json, "utf8") > ctx.config.eventPayloadCapBytes) {
+  const clipped =
+    Buffer.byteLength(json, "utf8") > ctx.config.eventPayloadCapBytes
+      ? clippedPayload(input.type, payload, ctx.config.eventPayloadCapBytes)
+      : undefined;
+  if (clipped) {
     const artifact = await storeArtifact(
       tx,
       ctx,
       {
         taskId,
         kind: "output",
-        path: `${input.type} payload`,
+        path: savedPayloadPath(input.type),
         name: `${input.type}.json`,
         content: Buffer.from(json, "utf8"),
         contentType: "application/json",
@@ -72,15 +80,10 @@ export async function emit(
         causedBy: input.causedBy,
       },
     );
-    payload = clipPayload(payload, ctx.config.eventPayloadCapBytes);
+    payload = clipped;
     payloadArtifactId = artifact.id;
-    ctx.metrics.payloadSpilled(input.type);
-    if (payloadBytes(payload) > ctx.config.eventPayloadCapBytes)
-      ctx.logger.warn("An event payload is over the cap even clipped", {
-        taskId,
-        type: input.type,
-        bytes: payloadBytes(payload),
-      });
+    const { type } = input;
+    afterCommit(tx, () => ctx.metrics.payloadSpilled(type));
   }
   const row = await appendEvent(tx, {
     taskId,

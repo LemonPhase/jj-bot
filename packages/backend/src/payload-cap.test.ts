@@ -1,10 +1,16 @@
-// The event payload cap: a payload whose JSON is over it is stored in full as
-// an `output` artifact, the event keeps a clipped copy that names it, and the
-// records the view serves stay whole.
+// The event payload cap: in a payload over it, what no record bounds is
+// clipped and the whole payload saved as an `output` artifact the event names;
+// record snapshots are stored whole; every stored event, and the view, parse.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TaskEvent, TaskView } from "@jj/contracts";
+import {
+  type TaskEvent,
+  type TaskView,
+  taskEventSchema,
+  taskViewSchema,
+  type VerificationPlan,
+} from "@jj/contracts";
 import { ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import {
   fauxAssistantMessage,
@@ -76,8 +82,83 @@ const clippedText = (text: string) =>
   Buffer.byteLength(text, "utf8") < PAYLOAD_STRING_CLIP_BYTES + 100 &&
   text.endsWith("more characters in the saved copy]");
 
+/** A plan of 20 criteria, each within its limits, whose JSON is over 256 KiB. */
+function largePlan(): VerificationPlan {
+  const schema = {
+    type: "object",
+    properties: Object.fromEntries(
+      Array.from({ length: 300 }, (_, index) => [
+        `field_${String(index).padStart(3, "0")}`,
+        { type: "string", description: "A field of the record" },
+      ]),
+    ),
+  };
+  return [
+    ...Array.from({ length: 18 }, (_, index) => ({
+      id: `shape-${index}`,
+      description: "The result is the record",
+      method: "result" as const,
+      expect: "json" as const,
+      schema,
+    })),
+    // 4000 characters, 4200 bytes: a cut after 4 KiB plus a marker passes 4000.
+    {
+      id: "command",
+      description: "The long command passes",
+      method: "command" as const,
+      command: `${"echo ok; ".repeat(390)}${"中".repeat(100)}`,
+    },
+    // A regular expression of 2000 characters, 6 KB: cut, it no longer compiles.
+    {
+      id: "matches",
+      description: "The notes say it",
+      method: "file" as const,
+      path: "notes.md",
+      expect: "matches" as const,
+      value: `(${"中".repeat(1998)})`,
+    },
+  ];
+}
+
 describe("the event payload cap", () => {
-  it("spills an over-cap session.updated, keeps a clipped copy, and the view's records whole", async () => {
+  it("stores a task with a large plan so that every event, and the view, parse", async () => {
+    const test = await testEngine(db.database, { start: false });
+    engines.push(test);
+    const { engine } = test;
+    const team = await createTeam(engine, ["Ada"]);
+    const plan = largePlan();
+    expect(payloadBytes(plan)).toBeGreaterThan(256 * 1024);
+    const { task } = await engine.tasks.create({
+      goal: "Check the record",
+      coordinatorBotId: team.ids[0] as string,
+      verificationPlan: plan,
+    });
+    // The plan changes, so task.updated and task.goal_changed carry it too.
+    const changed = largePlan().map((criterion) => ({
+      ...criterion,
+      description: `${criterion.description}, again`,
+    }));
+    await engine.tasks.postMessage(task.id, {
+      text: "Check it again.",
+      verificationPlan: changed,
+      observedGoalVersion: 1,
+    });
+    const events = await allEvents(engine, task.id);
+    for (const event of events)
+      expect(
+        taskEventSchema.safeParse(JSON.parse(JSON.stringify(event))).success,
+        `${event.type} #${event.sequence}`,
+      ).toBe(true);
+    const view = taskViewSchema.safeParse(
+      JSON.parse(JSON.stringify(await engine.tasks.get(task.id))),
+    );
+    expect(view.success).toBe(true);
+    expect(view.data?.task.verificationPlan).toEqual(changed);
+    // A record snapshot is bounded by its schema: stored whole, never clipped.
+    expect(events.filter((event) => event.payloadArtifactId)).toEqual([]);
+  });
+
+  it("stores record snapshots whole over the cap, and spills the unbounded text of task.finished", async () => {
     const test = await testEngine(db.database, {
       config: { eventPayloadCapBytes: MIN_EVENT_PAYLOAD_CAP_BYTES },
     });
@@ -102,27 +183,33 @@ describe("the event payload cap", () => {
       (v) => v.task.status === "completed",
       "the long result",
     );
-    // The records are whole.
     expect(view.task.result).toBe(result);
     expect(view.sessions[0]?.result).toBe(result);
 
     const events = await allEvents(engine, task.id);
-    const finished = events.find(
+    for (const event of events)
+      expect(taskEventSchema.safeParse(event).success, event.type).toBe(true);
+    // The session's and the task's snapshots are whole, over the cap.
+    const completed = events.find(
       (event): event is Extract<TaskEvent, { type: "session.updated" }> =>
         event.type === "session.updated" &&
         event.payload.session.status === "completed",
     );
-    if (!finished) throw new Error("No session.updated completed the session.");
-    expect(payloadBytes(finished.payload)).toBeLessThan(
+    expect(completed?.payloadArtifactId).toBeUndefined();
+    expect(completed?.payload.session.result).toBe(result);
+    expect(payloadBytes(completed?.payload)).toBeGreaterThan(
       MIN_EVENT_PAYLOAD_CAP_BYTES,
     );
-    expect(clippedText(finished.payload.session.result as string)).toBe(true);
-    expect(finished.payload.session.id).toBe(view.sessions[0]?.id);
-    expect(finished.payload.previousStatus).toBe("running");
-    const full = await savedCopy(engine, finished);
-    expect(full).toEqual({
+    // task.finished's result is free text: clipped, its saved copy whole.
+    const finished = events.find(
+      (event): event is Extract<TaskEvent, { type: "task.finished" }> =>
+        event.type === "task.finished",
+    );
+    if (!finished) throw new Error("No task.finished.");
+    expect(clippedText(finished.payload.result as string)).toBe(true);
+    expect(await savedCopy(engine, finished)).toEqual({
       ...finished.payload,
-      session: { ...finished.payload.session, result },
+      result,
     });
     // Its artifact is announced before it, so a client folding it can link it.
     const announced = events.find(
@@ -131,23 +218,14 @@ describe("the event payload cap", () => {
         event.payload.artifact.id === finished.payloadArtifactId,
     );
     expect(announced?.sequence).toBe(finished.sequence - 1);
-    // Every over-cap event spilled: none is stored over the cap.
-    for (const event of events)
-      expect(payloadBytes(event.payload), event.type).toBeLessThan(
-        MIN_EVENT_PAYLOAD_CAP_BYTES,
-      );
-    const spilled = new Set(
-      events.flatMap((event) => (event.payloadArtifactId ? [event.type] : [])),
-    );
-    expect([...spilled].sort()).toEqual(
-      expect.arrayContaining([
-        "session.updated",
-        "task.finished",
-        "task.updated",
-      ]),
-    );
+    expect(
+      events
+        .filter((event) => event.payloadArtifactId)
+        .map((event) => event.type),
+    ).toEqual(["task.finished"]);
+    // Counted once its transaction committed.
     expect(await engine.metrics.text()).toMatch(
-      /jj_event_payloads_spilled_total\{type="session\.updated"\} [1-9]/,
+      /jj_event_payloads_spilled_total\{type="task\.finished"\} 1\b/,
     );
   });
 

@@ -1,27 +1,70 @@
-// Event payload limits. `emit` measures each payload's JSON; one over the
-// engine's cap is stored in full as an `output` artifact, and the event keeps
-// a clipped copy of the same shape: every string over 4 KiB keeps its start
-// and a marker. The engine reads back only short fields of events (types,
-// ids, tool names and summaries, outcomes, numbers), which clipping never
-// touches.
+// Event payload limits. `emit` measures each payload's JSON. Records (task,
+// session, message, artifact, approval and check snapshots, and the plans
+// they hold) are bounded by their contract schemas, so they are always stored
+// whole, over the cap too. What no record bounds (a tool's output preview,
+// the error and stop texts, a held call's arguments) is clipped in a payload
+// over the cap, and the full payload is saved as an `output` artifact. A
+// clipped payload must still parse with its type's contract schema; one that
+// would not is stored whole instead. The engine reads back only short fields
+// of events (types, ids, tool names and summaries, outcomes, numbers), which
+// clipping never touches.
+import {
+  type TaskEventType,
+  TOOL_OUTPUT_PREVIEW_LIMIT,
+  taskEventSchema,
+} from "@jj/contracts";
 
 /** Strings longer than this many UTF-8 bytes are clipped in a spilled payload. */
 export const PAYLOAD_STRING_CLIP_BYTES = 4 * 1024;
 
-/**
- * Free-form JSON inside payloads, which no schema bounds: a held call's
- * arguments and the JSON Schemas of verification criteria. When clipping
- * strings is not enough, these keep only their first entries (`*` is any
- * array index or key).
- */
-const FREE_FORM_PATHS: readonly (readonly string[])[] = [
-  ["approval", "args"],
-  ["task", "verificationPlan", "*", "schema"],
-  ["verificationPlan", "*", "schema"],
-];
+/** What a held call's arguments may keep once clipping their strings was not enough. */
+const FREE_FORM_BUDGET_BYTES = 16 * 1024;
 
-/** What a free-form value may keep once strings alone did not bring it under the cap. */
-const FREE_FORM_BUDGET_BYTES = 4 * 1024;
+/**
+ * Where a payload carries what no record bounds, and may be clipped: `text`,
+ * a string kept within `max` UTF-16 code units (its schema's measure) when
+ * the schema has one; `json`, free-form JSON whose strings are clipped and
+ * which keeps only its first entries when that is not enough. `*` is any
+ * array index. Every other part of every payload is stored as it is.
+ */
+export const CLIPPABLE: Readonly<
+  Partial<
+    Record<
+      TaskEventType,
+      readonly (
+        | { path: readonly string[]; kind: "text"; max?: number }
+        | { path: readonly string[]; kind: "json" }
+      )[]
+    >
+  >
+> = {
+  "tool.finished": [
+    { path: ["output"], kind: "text", max: TOOL_OUTPUT_PREVIEW_LIMIT },
+  ],
+  "run.finished": [{ path: ["error"], kind: "text" }],
+  "task.finished": [
+    { path: ["result"], kind: "text" },
+    { path: ["error"], kind: "text" },
+  ],
+  "cancellation.requested": [{ path: ["reason"], kind: "text" }],
+  "cancellation.completed": [
+    { path: ["stopped", "*", "command"], kind: "text" },
+  ],
+  "approval.requested": [{ path: ["approval", "args"], kind: "json" }],
+  "approval.updated": [{ path: ["approval", "args"], kind: "json" }],
+};
+
+const PAYLOAD_SCHEMAS = new Map(
+  taskEventSchema.options.map((option) => [
+    option.shape.type.value as TaskEventType,
+    option.shape.payload,
+  ]),
+);
+
+/** Whether `payload` parses with the contract's schema for events of `type`. */
+export function validPayload(type: TaskEventType, payload: unknown): boolean {
+  return PAYLOAD_SCHEMAS.get(type)?.safeParse(payload).success === true;
+}
 
 /** The size of a payload as stored and streamed: the UTF-8 bytes of its JSON. */
 export const payloadBytes = (payload: unknown): number =>
@@ -30,6 +73,16 @@ export const payloadBytes = (payload: unknown): number =>
 /** The marker a clipped string ends with. */
 export const clippedMarker = (left: number) =>
   `… [${left} more characters in the saved copy]`;
+
+/** At most `units` UTF-16 code units of `text`, cut between code points. */
+function headUnits(text: string, units: number): string {
+  let end = Math.max(0, Math.min(units, text.length));
+  // Never split a surrogate pair.
+  const last = text.charCodeAt(end - 1);
+  if (end > 0 && end < text.length && last >= 0xd800 && last <= 0xdbff)
+    end -= 1;
+  return text.slice(0, end);
+}
 
 /** At most `bytes` UTF-8 bytes of `text`, cut between code points. */
 function headBytes(text: string, bytes: number): string {
@@ -41,10 +94,23 @@ function headBytes(text: string, bytes: number): string {
   return buffer.subarray(0, end).toString("utf8");
 }
 
-function clipString(text: string, bytes: number): string {
-  if (Buffer.byteLength(text, "utf8") <= bytes) return text;
-  const kept = headBytes(text, bytes);
-  return `${kept}${clippedMarker(text.length - kept.length)}`;
+/**
+ * `text` with its start kept and a marker after it, at most `bytes` UTF-8
+ * bytes of the start and, with `max`, at most `max` code units in all.
+ */
+function clipString(text: string, bytes: number, max?: number): string {
+  if (
+    Buffer.byteLength(text, "utf8") <= bytes &&
+    (max === undefined || text.length <= max)
+  )
+    return text;
+  let kept = headBytes(text, bytes);
+  let marker = clippedMarker(text.length - kept.length);
+  if (max !== undefined && kept.length + marker.length > max) {
+    kept = headUnits(kept, max - marker.length);
+    marker = clippedMarker(text.length - kept.length);
+  }
+  return `${kept}${marker}`;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -66,9 +132,8 @@ function clipStrings(value: unknown, bytes: number): unknown {
 }
 
 /**
- * A JSON value within about `budget` bytes: arrays and objects keep their
- * first entries, strings their start. Only for free-form values, whose shape
- * no schema fixes.
+ * Free-form JSON within about `budget` bytes: arrays and objects keep their
+ * first entries, strings their start, and an object stays an object.
  */
 function shrink(
   value: unknown,
@@ -112,38 +177,42 @@ function atPath(
 ): unknown {
   const [head, ...rest] = path;
   if (head === undefined) return fn(value);
-  if (Array.isArray(value) && head === "*")
-    return value.map((item) => atPath(item, rest, fn));
-  if (!isObject(value)) return value;
   if (head === "*")
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        atPath(entry, rest, fn),
-      ]),
-    );
-  if (!(head in value)) return value;
+    return Array.isArray(value)
+      ? value.map((item) => atPath(item, rest, fn))
+      : value;
+  if (!isObject(value) || !(head in value)) return value;
   return { ...value, [head]: atPath(value[head], rest, fn) };
 }
 
 /**
- * The clipped copy an over-cap payload is stored as: the same shape, every
- * string over 4 KiB clipped and marked. When that is still over `capBytes`
- * (a held call's arguments that are mostly not strings, very large check
- * schemas), free-form values keep only their first 4 KiB of entries too.
+ * The clipped copy an over-cap payload of `type` is stored as, or undefined
+ * when it is stored whole: its type has nothing to clip (a record snapshot,
+ * whose schema bounds it), clipping changes nothing, or the clipped copy
+ * would not parse with the type's schema.
  */
-export function clipPayload<Payload extends Record<string, unknown>>(
+export function clippedPayload<Payload extends Record<string, unknown>>(
+  type: TaskEventType,
   payload: Payload,
   capBytes: number,
-): Payload {
-  const clipped = clipStrings(payload, PAYLOAD_STRING_CLIP_BYTES) as Payload;
-  if (payloadBytes(clipped) <= capBytes) return clipped;
-  let shrunk: unknown = clipped;
-  for (const path of FREE_FORM_PATHS)
-    shrunk = atPath(
-      shrunk,
-      path,
-      (found) => shrink(found, FREE_FORM_BUDGET_BYTES).value,
+): Payload | undefined {
+  const zones = CLIPPABLE[type];
+  if (!zones) return undefined;
+  let clipped: unknown = payload;
+  for (const zone of zones)
+    clipped = atPath(clipped, zone.path, (found) =>
+      zone.kind === "text"
+        ? typeof found === "string"
+          ? clipString(found, PAYLOAD_STRING_CLIP_BYTES, zone.max)
+          : found
+        : clipStrings(found, PAYLOAD_STRING_CLIP_BYTES),
     );
-  return shrunk as Payload;
+  if (payloadBytes(clipped) > capBytes)
+    for (const zone of zones)
+      if (zone.kind === "json")
+        clipped = atPath(clipped, zone.path, (found) =>
+          isObject(found) ? shrink(found, FREE_FORM_BUDGET_BYTES).value : found,
+        );
+  if (payloadBytes(clipped) >= payloadBytes(payload)) return undefined;
+  return validPayload(type, clipped) ? (clipped as Payload) : undefined;
 }

@@ -11,6 +11,7 @@ import { mcpServerEventSchema } from "./mcp";
 import {
   ACTIVITY_TEXT_LIMIT,
   type Activity,
+  type Artifact,
   addUsage,
   artifactSchema,
   type ExecutionSession,
@@ -49,10 +50,12 @@ export const TOOL_OUTPUT_PREVIEW_LIMIT = 64 * 1024;
 export const TASK_VIEW_EVENT_LIMIT = 500;
 
 /**
- * Ceiling of a stored event payload, in UTF-8 bytes of its JSON: the server's
- * cap (`JJ_EVENT_PAYLOAD_CAP_BYTES`) is at most this. A payload over the cap
- * is stored in full as an `output` artifact (`payloadArtifactId`), and the
- * event keeps its shape with each string over 4 KiB clipped and marked.
+ * Ceiling of the server's event payload cap (`JJ_EVENT_PAYLOAD_CAP_BYTES`),
+ * in UTF-8 bytes of a payload's JSON. In a payload over the cap, what no
+ * record bounds (a tool's output preview, error and stop texts, a held call's
+ * arguments) is clipped and the full payload saved as an `output` artifact
+ * (`payloadArtifactId`). Record snapshots, which their schemas bound, are
+ * stored whole. A stored payload always parses with its type's schema.
  */
 export const EVENT_PAYLOAD_CAP_BYTES = 1024 * 1024;
 
@@ -72,10 +75,11 @@ const eventBaseSchema = z.object({
   /** The event that caused this one, when there is one. */
   causedBy: idSchema.nullable(),
   /**
-   * Set when the payload was over the server's cap: the full payload is this
-   * `output` artifact, as JSON, and this payload keeps its shape with each
-   * string over 4 KiB clipped and marked. A client folds it, then refetches
-   * the view, whose records are whole.
+   * Set when the payload was over the server's cap and clipped: the full
+   * payload is this `output` artifact (`savedPayloadPath`), as JSON, and this
+   * payload keeps its shape, valid for its type, with each unbounded string
+   * over 4 KiB clipped and marked. A client folds it, then refetches the
+   * view, whose records are whole.
    */
   payloadArtifactId: idSchema.optional(),
 });
@@ -322,6 +326,25 @@ export const TASK_EVENT_TYPES: readonly TaskEventType[] =
   taskEventSchema.options.map((option) => option.shape.type.value);
 
 const knownEventTypes = new Set<string>(TASK_EVENT_TYPES);
+
+const SAVED_PAYLOAD_SUFFIX = " payload";
+
+/** The path of the `output` artifact saving an over-cap event's payload: `<type> payload`. */
+export const savedPayloadPath = (type: TaskEventType): string =>
+  `${type}${SAVED_PAYLOAD_SUFFIX}`;
+
+/** The event type whose payload an artifact saves, from its path; undefined for any other artifact. */
+export function savedPayloadType(
+  artifact: Pick<Artifact, "kind" | "path">,
+): TaskEventType | undefined {
+  if (
+    artifact.kind !== "output" ||
+    !artifact.path.endsWith(SAVED_PAYLOAD_SUFFIX)
+  )
+    return undefined;
+  const type = artifact.path.slice(0, -SAVED_PAYLOAD_SUFFIX.length);
+  return knownEventTypes.has(type) ? (type as TaskEventType) : undefined;
+}
 
 /**
  * An event of a type this contract version does not know. Clients ignore
