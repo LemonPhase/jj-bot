@@ -44,13 +44,17 @@ rather than landing it and announcing it afterwards.
 - `waitingForSchema` gains `approval`: a session waiting for the user's answer to the call it
   holds.
 - `approvalSchema`, `approvalStatusSchema` (`pending`, `approved`, `denied`, `expired`,
-  `cancelled`), `approvalOutcomeSchema` and `pendingApprovalSchema`.
+  `cancelled`), `approvalOutcomeSchema` (`ok`, `exitCode`, `interrupted`, and `refused` for an
+  approved call refused before it ran) and `pendingApprovalSchema` (with `shownInFull`: the
+  summary is the whole call, so a client may offer Approve from it). `pendingApprovalOf` and
+  `shownInFull` build them.
 - `taskSummarySchema.pendingApprovals` and `taskViewSchema.approvals`, both parsed as empty from
   servers before approvals; `applyTaskEvent` folds approvals into the view.
 - Events `approval.requested` and `approval.updated`, each carrying the whole record.
 - `decideApprovalCommandSchema` (`{ decision: "approve" | "deny", reason? }`, a reason only with a
   denial) for `POST /api/tasks/:taskId/approvals/:approvalId`, which answers `{ approval }`.
-- API error code `APPROVAL_NOT_PENDING` (409) for an approval answered, expired or cancelled.
+- API error code `APPROVAL_NOT_PENDING` (409) for an approval answered, expired or cancelled; a
+  stopping or stopped task answers `TASK_TERMINAL` (409).
 
 **Action required (frontend):** show held calls and answer them (task chat card, header badge,
 task list, chat task card); edit approval rules in the profile editor. Done in the same change.

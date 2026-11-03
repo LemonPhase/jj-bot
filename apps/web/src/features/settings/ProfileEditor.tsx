@@ -444,11 +444,12 @@ function ApprovalRules({
       <p className="ui-field__hint">
         A call that matches a rule waits for your approval in the task before it
         runs. The match is case-sensitive text found anywhere in the call: the
-        command for bash, the path for file tools; <code>*</code> stands for any
-        text, and an empty match asks before every call of the tool. Rules guide
-        a cooperative bot; they are not a security boundary, since a command can
-        reach the same effect another way (a script it wrote). The sandbox and
-        its network policy remain the boundary.
+        command for bash, the pattern and path for grep and find, the path for
+        the other file tools; <code>*</code> stands for any text, and an empty
+        match asks before every call of the tool. Rules guide a cooperative bot;
+        they are not a security boundary, since a command can reach the same
+        effect another way (a script it wrote). The sandbox and its network
+        policy remain the boundary.
       </p>
       {rules.length > 0 && (
         <div className="settings-approvals__preview">
