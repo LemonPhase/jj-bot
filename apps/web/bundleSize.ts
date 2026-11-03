@@ -8,18 +8,90 @@
  * (1000 bytes), raw and compressed with Node's zlib gzip and brotli defaults
  * (Vite's build log computes its gzip column slightly differently).
  *
- * The budget caps the initial JavaScript, with headroom above its size when
- * the budget was set. Over budget, the command fails: keep code the first
- * screen does not need out of the entry (`React.lazy`, `import()`), or raise
- * the budget on purpose and say why in the pull request.
+ * The command fails on either of two checks. The budget caps the initial
+ * JavaScript, with headroom above its size when the budget was set: keep code
+ * the first screen does not need out of the entry (`React.lazy`, `import()`),
+ * or raise the budget on purpose and say why in the pull request. And the
+ * modules in `LAZY_MODULES` stay out of the initial load whatever their size,
+ * so a static import that pulls one in fails even within the budget. The
+ * built code no longer names its modules, so the build lists each chunk's:
+ * `chunkModules`, a Vite plugin, writes them to `dist/.vite/modules.json`.
  */
 import { readdirSync, readFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { isAbsolute, join, posix, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import type { Plugin } from "vite";
 
 /** Bytes the initial JavaScript may weigh, raw and gzipped. */
 export const INITIAL_JS_BUDGET = { raw: 525_000, gzip: 162_000 } as const;
+
+/**
+ * Code that only some visits use, which must load on demand and never be in
+ * the initial load: module ids as `moduleName` spells them (a path under
+ * `apps/web`, or an npm package's name), each with what it is. The Bots
+ * screen, the one the app opens on, is in the entry.
+ */
+export const LAZY_MODULES: Readonly<Record<string, string>> = {
+  "src/api/demoApi.ts": "the demo data, used only without a backend",
+  "src/features/tasks/TasksScreen.tsx": "the Tasks screen",
+  "src/features/studio/StudioScreen.tsx": "Bot Studio",
+  "src/features/settings/SettingsScreen.tsx": "the Settings screen",
+  "src/features/office/Office3D.tsx": "the 3D office",
+  three: "Three.js, for the 3D office",
+};
+
+/** Where the build lists each chunk's modules, inside the build directory. */
+export const MODULES_FILE = ".vite/modules.json";
+
+/** Each JavaScript chunk's file and the modules whose code it carries. */
+export type ChunkModules = Record<string, string[]>;
+
+/**
+ * A module id as `MODULES_FILE` lists it: a dependency's npm package name
+ * (`three`, `@scope/name`), or a file's path relative to `root`, the Vite
+ * root (`src/main.tsx`), without a query or the virtual-module prefix.
+ */
+export function moduleName(id: string, root: string): string {
+  const path = id.replace(/^\0/, "").replace(/\?.*$/, "");
+  const posixPath = path.replaceAll("\\", "/");
+  const pkg = posixPath.match(/.*\/node_modules\/((?:@[^/]+\/)?[^/]+)/)?.[1];
+  if (pkg) return pkg;
+  return isAbsolute(path)
+    ? relative(root, path).replaceAll("\\", "/")
+    : posixPath;
+}
+
+/**
+ * The Vite plugin that writes `MODULES_FILE` into the build: for every
+ * JavaScript chunk, the modules that put code in it (those tree-shaken away
+ * left out), as `moduleName` spells them.
+ */
+export function chunkModules(): Plugin {
+  let root = "";
+  return {
+    name: "jj-chunk-modules",
+    apply: "build",
+    configResolved(config) {
+      root = config.root;
+    },
+    generateBundle(_options, bundle) {
+      const chunks: ChunkModules = {};
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        const ids = Object.entries(output.modules)
+          .filter(([, module]) => module.renderedLength > 0)
+          .map(([id]) => moduleName(id, root));
+        chunks[output.fileName] = [...new Set(ids)].sort();
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: MODULES_FILE,
+        source: `${JSON.stringify(chunks, null, 2)}\n`,
+      });
+    },
+  };
+}
 
 export type Budget = { raw: number; gzip: number };
 
@@ -99,6 +171,56 @@ export function measureBundle(dist: string): AssetSize[] {
       };
     })
     .sort((a, b) => Number(b.initial) - Number(a.initial) || b.raw - a.raw);
+}
+
+/** The build's `MODULES_FILE`; null when it has none. */
+export function readChunkModules(dist: string): ChunkModules | null {
+  try {
+    return JSON.parse(
+      readFileSync(join(dist, MODULES_FILE), "utf8"),
+    ) as ChunkModules;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
+ * Why code that must load on demand does not; empty when every module in
+ * `lazy` is in the build and none is in the initial load.
+ */
+export function notLazy(
+  sizes: AssetSize[],
+  chunks: ChunkModules | null,
+  lazy: Readonly<Record<string, string>> = LAZY_MODULES,
+): string[] {
+  if (!chunks)
+    return [
+      `Found no ${MODULES_FILE} in the build, so cannot tell what loads on demand: build with apps/web/vite.config.ts (npm run build -w @jj/web).`,
+    ];
+  const initial = sizes.filter((size) => size.initial && isJs(size));
+  // A list from another build than the one measured vouches for nothing.
+  const unlisted = initial.filter((size) => !Object.hasOwn(chunks, size.file));
+  if (unlisted.length > 0)
+    return [
+      `${MODULES_FILE} does not list ${unlisted.map((size) => size.file).join(", ")}: it is from another build. Rebuild the web app.`,
+    ];
+  const initialFiles = new Set(initial.map((size) => size.file));
+  return Object.entries(lazy).flatMap(([id, what]) => {
+    const files = Object.keys(chunks).filter((file) =>
+      chunks[file]?.includes(id),
+    );
+    if (files.length === 0)
+      return [
+        `${id} (${what}) is in no chunk of the build: if it moved or was renamed, update LAZY_MODULES in apps/web/bundleSize.ts.`,
+      ];
+    const eager = files.filter((file) => initialFiles.has(file));
+    return eager.length === 0
+      ? []
+      : [
+          `${id} (${what}) is in the initial load (${eager.join(", ")}) but must load on demand: a static import from the entry's module graph pulls it in. Import it with import() or React.lazy instead.`,
+        ];
+  });
 }
 
 type Totals = Pick<AssetSize, "raw" | "gzip" | "brotli">;
@@ -182,13 +304,23 @@ if (
   const dist = process.argv[2] ?? WEB_DIST;
   const sizes = measureBundle(dist);
   console.log(formatReport(sizes));
-  const problems = overBudget(sizes);
-  if (problems.length > 0) {
+  const eager = notLazy(sizes, readChunkModules(dist));
+  if (eager.length === 0)
+    console.log(
+      `On demand only (LAZY_MODULES), none in the initial load: ${Object.keys(LAZY_MODULES).join(", ")}.`,
+    );
+  const overSize = overBudget(sizes);
+  if (eager.length > 0 || overSize.length > 0) {
     console.error(
       [
         "",
-        ...problems,
-        "Load what the first screen does not need on demand, or raise INITIAL_JS_BUDGET in apps/web/bundleSize.ts and say why in the pull request.",
+        ...eager,
+        ...overSize,
+        ...(overSize.length > 0
+          ? [
+              "Load what the first screen does not need on demand, or raise INITIAL_JS_BUDGET in apps/web/bundleSize.ts and say why in the pull request.",
+            ]
+          : []),
       ].join("\n"),
     );
     process.exit(1);
