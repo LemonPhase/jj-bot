@@ -27,7 +27,7 @@ RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --no-build) # reuse apps/we
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --driver docker)
 ```
 
-It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`$TMPDIR/jj-verify/<id>`, `/tmp/jj-verify/<id>` without `TMPDIR`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, or readiness doesn't pass within 60 s, it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
+It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`$TMPDIR/jj-verify/<id>`, `/tmp/jj-verify/<id>` without `TMPDIR`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, readiness doesn't pass within 60 s or the launch is interrupted (Ctrl-C), it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
 
 Isolation, by construction:
 
@@ -95,7 +95,7 @@ Report the evidence path and the commit from `$RUN/commit`.
 .agents/skills/verify-jj-bot/scripts/stop.sh "$RUN"
 ```
 
-It closes the run's browser session, checks that the recorded pid still carries this run's `--jj-verify-run` tag, sends SIGTERM to the process group `launch.sh` started (the API hands running sessions back within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
+It closes the run's browser session, checks that the recorded pid still carries this run's `--jj-verify-run` tag, sends SIGTERM to the process group `launch.sh` started (the API hands running sessions back within 20 s), SIGKILLs only that group if it lingers, removes the run namespace's docker containers, networks and volumes, copies `server.log` into `evidence/` and deletes `$RUN/data` and `$RUN/sandbox`. It never kills by process name, and an interrupt cuts short only the step it hits, never the rest of the cleanup. `$RUN/evidence` survives; delete it yourself once the proof is reported. Run cleanup after every failed attempt too, so no instance or port is stranded.
 
 ## Helpers
 

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -30,9 +30,18 @@ export const test = base.extend<{ instance: Instance }>({
       throw new Error(
         "apps/web/dist is missing: build the web app first (npm run test:browser does)",
       );
-    const { stdout } = await exec(join(scripts, "launch.sh"), ["--no-build"], {
-      env: { ...process.env, JJ_VERIFY_ROOT: testInfo.outputPath("run") },
-    });
+    const root = testInfo.outputPath("run");
+    let stdout: string;
+    try {
+      ({ stdout } = await exec(join(scripts, "launch.sh"), ["--no-build"], {
+        env: { ...process.env, JJ_VERIFY_ROOT: root },
+      }));
+    } catch (error) {
+      // launch.sh stops a server it started when it fails or is interrupted;
+      // this also covers it being killed before it could.
+      await stopRuns(root);
+      throw error;
+    }
     const run = stdout.trim();
     const url = (await readFile(join(run, "url"), "utf8")).trim();
     try {
@@ -52,5 +61,13 @@ export const test = base.extend<{ instance: Instance }>({
     await use(instance.url);
   },
 });
+
+/** Stops every launch.sh run under `root` that recorded a server pid. */
+async function stopRuns(root: string) {
+  const runs = await readdir(root).catch(() => []);
+  for (const name of runs)
+    if (existsSync(join(root, name, "pid")))
+      await exec(join(scripts, "stop.sh"), [join(root, name)]).catch(() => {});
+}
 
 export { expect } from "@playwright/test";
