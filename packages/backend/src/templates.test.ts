@@ -621,6 +621,42 @@ describe("starting a template", () => {
     expect(await written()).toEqual(before);
   });
 
+  it("still answers TEMPLATE_UNUSABLE when a model is lost between the check and the insert", async () => {
+    const { engine } = await setup();
+    const team = await createTeam(engine, ["Racer"]);
+    const { template } = await engine.templates.create({
+      title: "Raced",
+      goal: "Run once.",
+      coordinatorBotId: team.ids[0] as string,
+    });
+    /** Answers the template's check, then loses its key before the task is created. */
+    class LosingModels extends FakeModels {
+      calls = 0;
+      override resolve(ref: string | null) {
+        this.calls += 1;
+        if (this.calls > 1) throw new Error("The provider's key was removed.");
+        return super.resolve(ref);
+      }
+    }
+    const models = new LosingModels();
+    const { engine: racing } = await setup({ models });
+    models.calls = 0;
+    const before = await written();
+    const error = await refusal(racing.templates.start(template.id, {}));
+    expect(models.calls).toBeGreaterThan(2);
+    expect(error.code).toBe("TEMPLATE_UNUSABLE");
+    expect(error.details).toEqual({
+      problems: [
+        {
+          kind: "model_not_configured",
+          botId: team.ids[0],
+          message: `${team.names[0]} cannot run: The provider's key was removed.`,
+        },
+      ],
+    });
+    expect(await written()).toEqual(before);
+  });
+
   it("answers SPEND_CAP_REACHED for a coordinator at its daily cap, writing nothing", async () => {
     const { engine } = await setup();
     const { profile } = await engine.profiles.create({

@@ -270,7 +270,9 @@ export async function deleteTemplate(
  * while the template has problems (TEMPLATE_UNUSABLE) or the goal with the
  * instructions is over the task limit (422); otherwise the task is created as
  * `createTask` creates it, which checks the bots, their models and the caps
- * again.
+ * again. A bot archived, or a model lost, between the two checks still
+ * answers TEMPLATE_UNUSABLE: a refusal of `createTask` is read against the
+ * problems derived again then.
  */
 export async function startTemplate(
   ctx: EngineContext,
@@ -279,16 +281,7 @@ export async function startTemplate(
 ): Promise<{ task: Task }> {
   const command = parseCommand(startTemplateCommandSchema, input);
   const row = await templateRow(ctx.db, templateId);
-  const [template] = await withProblems(ctx, ctx.db, [row]);
-  if (!template) throw notFound("Task template", templateId);
-  if (template.problems.length > 0)
-    throw new DomainError(
-      "TEMPLATE_UNUSABLE",
-      `"${template.title}" cannot start: ${template.problems
-        .map(describeTemplateProblem)
-        .join(" ")}`,
-      { problems: template.problems },
-    );
+  const template = await usableTemplate(ctx, row);
   if (templateGoalTooLong(template.goal, command.instructions)) {
     const length = templateRunGoal(template.goal, command.instructions).length;
     throw new DomainError(
@@ -298,7 +291,36 @@ export async function startTemplate(
       422,
     );
   }
-  return createTask(ctx, templateTaskCommand(template, command), {
-    templateId: template.id,
-  });
+  try {
+    return await createTask(ctx, templateTaskCommand(template, command), {
+      templateId: template.id,
+    });
+  } catch (error) {
+    // The bots or models changed since the check: say why as a template's problems.
+    if (
+      error instanceof DomainError &&
+      (error.code === "VALIDATION_FAILED" ||
+        error.code === "MODEL_NOT_CONFIGURED")
+    )
+      await usableTemplate(ctx, row);
+    throw error;
+  }
+}
+
+/** The template with its problems now; TEMPLATE_UNUSABLE when it has any. */
+async function usableTemplate(
+  ctx: EngineContext,
+  row: TaskTemplateRow,
+): Promise<TaskTemplate> {
+  const [template] = await withProblems(ctx, ctx.db, [row]);
+  if (!template) throw notFound("Task template", row.id);
+  if (template.problems.length > 0)
+    throw new DomainError(
+      "TEMPLATE_UNUSABLE",
+      `"${template.title}" cannot start: ${template.problems
+        .map(describeTemplateProblem)
+        .join(" ")}`,
+      { problems: template.problems },
+    );
+  return template;
 }
