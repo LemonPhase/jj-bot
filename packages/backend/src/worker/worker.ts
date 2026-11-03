@@ -40,8 +40,10 @@ export interface Worker {
    */
   stop(): Promise<void>;
   /**
-   * Stops at once without writing anything, as a crash would: leases are left
-   * to expire and another worker reclaims the runs. For tests and fatal exits.
+   * Stops at once, as a crash would: every run is fenced first, so none starts
+   * a new write (one already open, and a claim pass in flight, still commit),
+   * leases are left to expire and another worker reclaims the runs. For tests
+   * and fatal exits.
    */
   abandon(): Promise<void>;
   /** Jobs currently running in this worker. */
@@ -304,8 +306,8 @@ export function createWorker(
     if (!started) return;
     stopping = true;
     crashing = reason === "crash";
-    // A crash writes nothing from its first moment: fence every run before
-    // waiting on anything below, which a busy database can hold for seconds.
+    // A crash fences every run before waiting on anything below, which a busy
+    // database can hold for seconds, so no run starts a new write meanwhile.
     if (crashing) abortWhere(() => true, reason);
     started = false;
     lastPollAt = null;

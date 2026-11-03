@@ -152,7 +152,7 @@ describe("recovery", () => {
     ).toBe("one\n");
   });
 
-  it("writes nothing once a crash begins, not even while the worker still winds down", async () => {
+  it("starts no new write once a crash begins, not even while the worker still winds down", async () => {
     const first = await worker();
     const team = await createTeam(first.engine, ["Ada"]);
     const [ada] = team.names as [string];
@@ -168,7 +168,7 @@ describe("recovery", () => {
     await first.executor.gate("hold").reached;
     const before = (await first.engine.tasks.events(task.id)).cursor;
     // The call returns just after the crash begins, before the worker has
-    // finished stopping: as after a real crash, none of it may be written.
+    // finished stopping: none of what the run writes next may land.
     const crash = first.engine.worker.abandon();
     first.executor.gate("hold").open();
     await crash;
