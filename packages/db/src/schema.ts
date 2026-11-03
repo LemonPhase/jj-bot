@@ -712,10 +712,11 @@ export type InstanceSettingRow = typeof instanceSettings.$inferSelect;
 
 /**
  * Values entered through settings: provider keys (`name` is the provider id)
- * and sandbox secrets (`name` is the variable). Only ciphertext is stored:
+ * and sandbox secrets (`name` is the variable), stored as ciphertext:
  * AES-256-GCM under a key derived from the server's `JJ_SECRET_KEY`, which
- * is never stored, so the database alone reveals no value. `key_id` names
- * the key that sealed the row; `hint` is the value's last four characters.
+ * is never stored, so the database alone reveals no value beyond its length
+ * and `hint`, the value's last four characters. `key_id` names the key that
+ * sealed the row.
  */
 export const secrets = pgTable(
   "secrets",

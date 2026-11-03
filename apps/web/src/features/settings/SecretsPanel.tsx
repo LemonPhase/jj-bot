@@ -74,6 +74,11 @@ export function SecretsPanel({ drivers }: { drivers: DriversState }) {
         with <code className="settings-code">[redacted]</code> in task history.
         Model keys never enter a sandbox.
       </p>
+      <p className="settings-warning">
+        Files are not redacted: a command that writes a granted secret to a file
+        (<code className="settings-code">env &gt; env.txt</code>) leaves it in
+        the task's workspace and in the file artifacts taken from it.
+      </p>
       {unisolated && (
         <p className="settings-warning">
           This server has an unisolated driver (local). Commands on an

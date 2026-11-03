@@ -11,9 +11,10 @@ export function StoreNotice({ what }: { what: string }) {
         <strong>To store {what} here, give the server a secret key.</strong>{" "}
         Stored values are encrypted with{" "}
         <code className="settings-code">JJ_SECRET_KEY</code>, which only the
-        server's environment holds, so the database alone reveals none of them.
-        Run this where the server's <code className="settings-code">.env</code>{" "}
-        is, then restart the server:
+        server's environment holds, so the database alone reveals none of them
+        (only their last four characters and length). Run this where the
+        server's <code className="settings-code">.env</code> is, then restart
+        the server:
       </p>
       <pre className="settings-command">
         <code>{ENABLE_STORE_COMMAND}</code>

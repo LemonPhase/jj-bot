@@ -146,7 +146,14 @@ describe("Settings → Secrets", () => {
   it("stores a secret write-only: the value is sent once, cleared, and never shown", async () => {
     const { api, putSecret } = storeApi({ store: true });
     renderWith(api, "secrets");
-    fireEvent.click(await screen.findByRole("button", { name: "New secret" }));
+    expect(
+      await screen.findByText(/^Files are not redacted: a command that writes/),
+    ).toBeDefined();
+    // The header's button; the empty list offers the same one.
+    const [create] = await screen.findAllByRole("button", {
+      name: "New secret",
+    });
+    fireEvent.click(create as HTMLElement);
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "github_token" },
     });
