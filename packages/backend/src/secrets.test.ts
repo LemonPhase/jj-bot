@@ -76,7 +76,7 @@ async function recordingDriver() {
       return inner.acquire(request);
     },
   };
-  return { driver, requests };
+  return { driver, requests, root };
 }
 
 async function rejection(promise: Promise<unknown>): Promise<DomainError> {
@@ -826,5 +826,167 @@ describe("granting a secret while it is removed", () => {
       for (const name of granted) expect(stored).toContain(name);
       await engine.profiles.update(profile.id, { secrets: [] });
     }
+  });
+});
+
+describe("files named with a granted secret", () => {
+  it("are stored, served and announced with the name redacted, credited to the run that wrote them", async () => {
+    const recording = await recordingDriver();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([
+        { driver: recording.driver, label: "Local (unisolated)" },
+      ]),
+      secretStore: store(),
+    });
+    const { engine, executor } = current;
+    await engine.secrets.put("GH_TOKEN", { value: TOKEN });
+    const { profile } = await engine.profiles.create({
+      name: uniqueProfile("Names"),
+      sandbox: { driver: "local", network: { mode: "open" } },
+      secrets: ["GH_TOKEN"],
+    });
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    await engine.bots.update(team.byName[ada] as string, {
+      runtimeProfileId: profile.id,
+    });
+    executor.brain(ada, (view) => {
+      switch (said.turns(view)) {
+        case 0:
+          return {
+            calls: [
+              {
+                name: "write",
+                args: { path: `out-${TOKEN}.md`, content: "# hello\n" },
+              },
+            ],
+          };
+        case 1:
+          return {
+            calls: [
+              {
+                name: "bash",
+                args: { command: 'printf data > "name-$GH_TOKEN.txt"' },
+              },
+            ],
+          };
+        default:
+          return lastResult(view)?.name === "complete_task"
+            ? { text: "done" }
+            : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+      }
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Name files after the token",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(view.task.status).toBe("completed");
+    const files = view.artifacts.filter((artifact) => artifact.kind === "file");
+    const written = files.find((a) => a.path === `out-${REDACTED}.md`);
+    const touched = files.find((a) => a.path === `name-${REDACTED}.txt`);
+    expect(written).toMatchObject({
+      name: `out-${REDACTED}.md`,
+      // From the real path, not the redacted one.
+      contentType: "text/markdown; charset=utf-8",
+      // The write tool's event names the redacted path too: it credits the run.
+      sessionId: view.sessions[0]?.id,
+      runId: expect.any(String),
+    });
+    expect(touched).toMatchObject({
+      name: `name-${REDACTED}.txt`,
+      contentType: expect.stringMatching(/^text\/plain/),
+    });
+    // Download by id still serves the file's own content.
+    const content = async (id: string) =>
+      Buffer.from(
+        (await engine.tasks.artifactContent(task.id, id)).content,
+      ).toString();
+    expect(await content(written?.id ?? "")).toBe("# hello\n");
+    expect(await content(touched?.id ?? "")).toBe("data");
+    for (const text of await persisted(engine, view))
+      expect(text).not.toContain(TOKEN);
+  });
+});
+
+describe("a value another sandbox of this worker still holds", () => {
+  it("is redacted in every task, not only the one it was injected into", async () => {
+    const recording = await recordingDriver();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([
+        { driver: recording.driver, label: "Local (unisolated)" },
+      ]),
+      secretStore: store(),
+    });
+    const { engine, executor } = current;
+    // Outside every workspace: on local, tasks share the host's files.
+    const shared = join(recording.root, "shared.txt");
+    await engine.secrets.put("GH_TOKEN", { value: TOKEN });
+    const { profile: granting } = await engine.profiles.create({
+      name: uniqueProfile("Holds"),
+      sandbox: { driver: "local", network: { mode: "open" } },
+      secrets: ["GH_TOKEN"],
+    });
+    const { profile: plain } = await engine.profiles.create({
+      name: uniqueProfile("Plain"),
+      sandbox: { driver: "local", network: { mode: "open" } },
+    });
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    await engine.bots.update(team.byName[ada] as string, {
+      runtimeProfileId: granting.id,
+    });
+    await engine.bots.update(team.byName[bob] as string, {
+      runtimeProfileId: plain.id,
+    });
+    executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? {
+            calls: [
+              {
+                name: "bash",
+                args: { command: `printf %s "$GH_TOKEN" > ${shared}` },
+              },
+            ],
+          }
+        : { text: "Wrote it; waiting." },
+    );
+    executor.brain(bob, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "bash", args: { command: `cat ${shared}` } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : {
+              calls: [
+                {
+                  name: "complete_task",
+                  args: { result: `read ${lastResult(view)?.text ?? ""}` },
+                },
+              ],
+            },
+    );
+    const { task: holding } = await engine.tasks.create({
+      goal: "Write the token to a shared file",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    // Its sandbox stays held while it waits.
+    await untilTask(engine, holding.id, (v) => v.task.status === "waiting");
+    await engine.secrets.put("GH_TOKEN", { value: `${TOKEN}-rotated` });
+    const { task: reading } = await engine.tasks.create({
+      goal: "Read the shared file",
+      coordinatorBotId: team.byName[bob] as string,
+    });
+    const view = await untilTask(
+      engine,
+      reading.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(view.task.result).toBe(`read ${REDACTED}`);
+    for (const text of await persisted(engine, view))
+      expect(text).not.toContain(TOKEN);
   });
 });

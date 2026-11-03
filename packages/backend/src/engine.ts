@@ -210,11 +210,13 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       return createRedactor([
         ...(await secrets()),
         ...store.values(),
+        ...ctx.heldSecrets(),
         ...extra,
       ]);
     },
     secretStore: store,
     serverSecrets: secrets,
+    heldSecrets: () => [],
   };
   for (const name of tooShortToRedact(await secrets()))
     ctx.logger.warn(

@@ -22,6 +22,7 @@ import type { Attribution } from "../events";
 import {
   type ChangedFile,
   changedFiles,
+  contentTypeOf,
   hasArtifact,
   sha256,
   storeArtifact,
@@ -239,15 +240,21 @@ async function credits(
  * scan reaches back (its start less the skew, at the latest). An older file
  * that the call failed to write, or has not written yet, is stored now.
  */
-function leftToTeammate(who: Credits, file: ChangedFile): boolean {
-  const start = who.active.get(file.path);
+function leftToTeammate(
+  who: Credits,
+  file: ChangedFile,
+  path: string,
+): boolean {
+  const start = who.active.get(path);
   return start !== undefined && file.modifiedAt >= start - SNAPSHOT_SKEW_MS;
 }
 
 /**
  * Stores the files changed since the earliest covered run started, one
  * transaction each, until `maxFilesPerRun` new artifacts (files already
- * stored or left to a running teammate do not count).
+ * stored or left to a running teammate do not count). A file's path and name
+ * are stored redacted, like the tool events whose paths credit it; its
+ * content, and the content type its real path gives, are kept as they are.
  */
 async function recordChanges(
   ctx: EngineContext,
@@ -255,6 +262,7 @@ async function recordChanges(
   taskId: string,
   sandbox: Sandbox,
   covered: PendingRun[],
+  redact: (text: string) => string,
   self?: string,
 ): Promise<void> {
   const from = Math.min(...covered.map((run) => run.startedAt.getTime()));
@@ -274,33 +282,36 @@ async function recordChanges(
     const known = who ?? (await write(look));
     who = known;
     const digest = sha256(file.content);
+    // As stored and as the tool events name it.
+    const path = redact(file.path);
     const added = await write(async (tx) => {
       // The task lock first: two snapshots of one file cannot both store it,
       // and no event can land while this decides.
       await lockTask(tx, taskId);
-      if (await hasArtifact(tx, taskId, file.path, digest)) return false;
+      if (await hasArtifact(tx, taskId, path, digest)) return false;
       let current = known;
       // Read after `known` was looked up, a file no one is credited with may
       // come from a write or edit call that started since: look again.
       if (
-        !current.credit.has(file.path) &&
-        !leftToTeammate(current, file) &&
+        !current.credit.has(path) &&
+        !leftToTeammate(current, file, path) &&
         (await fileCallStartedSince(tx, taskId, current.seen))
       ) {
         current = await look(tx);
         who = current;
       }
-      const credit = current.credit.get(file.path);
+      const credit = current.credit.get(path);
       // A running teammate's own snapshot stores and credits it.
-      if (!credit && leftToTeammate(current, file)) return false;
+      if (!credit && leftToTeammate(current, file, path)) return false;
       await storeArtifact(
         tx,
         ctx,
         {
           taskId,
           kind: "file",
-          path: file.path,
-          name: file.path.split("/").pop() || file.path,
+          path,
+          name: path.split("/").pop() || path,
+          contentType: contentTypeOf(file.path, file.content),
           content: file.content,
         },
         credit ?? TASK_LEVEL,
@@ -335,6 +346,7 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
     rc.task.id,
     hold.sandbox,
     [...earlier, { id: rc.run.id, startedAt: rc.startedAt }],
+    (text) => rc.redact(text),
     rc.run.id,
   );
   if (earlier.length > 0) await write((tx) => clearPending(tx, earlier));
@@ -343,13 +355,15 @@ export async function snapshotArtifacts(rc: RunContext, hold: SandboxHold) {
 /**
  * The task finished: records, from the sandbox about to be released, the
  * files of its finished runs still pending (sessions handed back or cut off
- * that never ran again), and clears their flags.
+ * that never ran again), and clears their flags. `redact` covers the values
+ * the sandbox was started with.
  */
 export async function snapshotFinishedTask(
   ctx: EngineContext,
   write: Write,
   taskId: string,
   sandbox: Sandbox,
+  redact: (text: string) => string,
 ): Promise<void> {
   const pending = await write((tx) =>
     tx
@@ -364,7 +378,7 @@ export async function snapshotFinishedTask(
       ),
   );
   if (pending.length === 0) return;
-  await recordChanges(ctx, write, taskId, sandbox, pending);
+  await recordChanges(ctx, write, taskId, sandbox, pending, redact);
   await write((tx) => clearPending(tx, pending));
 }
 

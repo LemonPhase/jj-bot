@@ -63,6 +63,13 @@ const dbStatuses =
     return new Map(rows.map((row) => [row.id, row.status]));
   };
 
+/** The values a sandbox was started with, as secrets to redact. */
+const injected = (entry: Entry): Secret[] =>
+  Object.entries(entry.secrets).map(([name, value]) => ({
+    name: `the sandbox secret ${name}`,
+    value,
+  }));
+
 /** Waits for `promise`, rejecting early when `signal` aborts. */
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -97,6 +104,7 @@ export class TaskSandboxes {
   private readonly onFinished?: (
     taskId: string,
     sandbox: Sandbox,
+    secrets: Secret[],
   ) => Promise<void>;
 
   constructor(
@@ -105,13 +113,29 @@ export class TaskSandboxes {
       statuses?: TaskStatusLookup;
       /** Called when a sandbox is released (its holder record is cleared). */
       onRelease?: (taskId: string, spec: SandboxSpec) => void;
-      /** Runs before the sandbox of a finished task is released (a final snapshot). */
-      onFinished?: (taskId: string, sandbox: Sandbox) => Promise<void>;
+      /**
+       * Runs before the sandbox of a finished task is released (a final
+       * snapshot), with the values the sandbox was started with.
+       */
+      onFinished?: (
+        taskId: string,
+        sandbox: Sandbox,
+        secrets: Secret[],
+      ) => Promise<void>;
     } = {},
   ) {
     this.statuses = options.statuses ?? dbStatuses(ctx);
     this.onRelease = options.onRelease;
     this.onFinished = options.onFinished;
+  }
+
+  /**
+   * The values injected into every sandbox this worker holds. Any of them
+   * can reach another task's output (on `local`, through a shared file), so
+   * every redactor of this worker covers them while they are held.
+   */
+  heldSecrets(): Secret[] {
+    return [...this.entries.values()].flatMap((entry) => injected(entry));
   }
 
   /** Tasks whose ephemeral sandbox this worker holds live. */
@@ -216,10 +240,7 @@ export class TaskSandboxes {
     return {
       sandbox,
       spec: held.spec,
-      secrets: Object.entries(held.secrets).map(([name, value]) => ({
-        name: `the sandbox secret ${name}`,
-        value,
-      })),
+      secrets: injected(held),
       done: () => {
         if (released) return;
         released = true;
@@ -303,11 +324,12 @@ export class TaskSandboxes {
     const done = entry.acquiring
       .then(async (sandbox) => {
         if (finished && this.onFinished)
-          await this.onFinished(taskId, sandbox).catch((error: unknown) =>
-            this.ctx.logger.warn(
-              `The final artifact snapshot of ${taskId} failed`,
-              { error: errorMessage(error) },
-            ),
+          await this.onFinished(taskId, sandbox, injected(entry)).catch(
+            (error: unknown) =>
+              this.ctx.logger.warn(
+                `The final artifact snapshot of ${taskId} failed`,
+                { error: errorMessage(error) },
+              ),
           );
         await sandbox.release();
       })

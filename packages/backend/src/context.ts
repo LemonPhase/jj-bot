@@ -52,6 +52,13 @@ export interface EngineContext {
    * token, the database password and the master key. Not the stored ones.
    */
   serverSecrets: () => Promise<readonly Secret[]>;
+  /**
+   * The values injected into the sandboxes this process's worker holds,
+   * which `redactor` always covers: a replaced or removed secret's old value
+   * can still come out of a sandbox, and reach another task through a
+   * shared file. Set by the worker; empty without one.
+   */
+  heldSecrets: () => readonly Secret[];
 }
 
 export const defaultIds = (kind: IdKind) => newId(kind);
