@@ -348,6 +348,8 @@ async function prepare(
   const call = async (inputs: string[]): Promise<RunOutcome> => {
     // Rebuilt every call: a new goal version brings its own plan.
     const plan = planOf(rc.task.verificationPlan);
+    // The prompt below gives the model the task's goal as it is now.
+    rc.goalVersionSeen = rc.task.goalVersion;
     const decided = await runDecision(rc);
     const outcome = await executor.run({
       sessionId: rc.session.id,

@@ -114,9 +114,11 @@ function updateText(row: ApprovalRow, botName: string): string {
 /**
  * Records a pending approval for a call a run holds, and tells the task's
  * coordinator chat. Call it with the task locked; the session's partial
- * unique index refuses a second pending one. A call made at an older goal
- * version than the task's (the goal changed while the run was making it)
- * is recorded already expired: it never waits, and never runs.
+ * unique index refuses a second pending one. `goalVersion` is the task's
+ * goal version as the run's model last read it, and the approval is bound
+ * to it: a call made at an older version than the task's (the goal changed
+ * while the run was making it) is recorded already expired, so it never
+ * waits and never runs.
  */
 export async function requestApproval(
   tx: Tx,
@@ -124,6 +126,8 @@ export async function requestApproval(
   input: {
     task: TaskRow;
     session: SessionRow;
+    /** The task's goal version as the run's model last read it. */
+    goalVersion: number;
     runId: string;
     botName: string;
     call: PendingToolCall;
@@ -132,7 +136,7 @@ export async function requestApproval(
   },
 ): Promise<ApprovalRow> {
   const { task, session, call } = input;
-  const stale = task.goalVersion > session.goalVersion;
+  const stale = task.goalVersion > input.goalVersion;
   const now = ctx.clock();
   const [row] = await tx
     .insert(approvals)
@@ -148,7 +152,7 @@ export async function requestApproval(
       args: input.redact(call.args) as JsonObject,
       rule: input.rule as JsonObject,
       text: clip(input.redact(call.text), 2_000),
-      goalVersion: session.goalVersion,
+      goalVersion: input.goalVersion,
       createdAt: now,
       ...(stale
         ? {
@@ -161,16 +165,6 @@ export async function requestApproval(
     })
     .returning();
   if (!row) throw new Error("The approval insert returned no row.");
-  if (stale) {
-    await emit(tx, task.id, {
-      type: "approval.requested",
-      payload: { approval: toApproval(row) },
-      botId: row.botId,
-      sessionId: row.sessionId,
-      runId: row.runId,
-    });
-    return row;
-  }
   await emit(tx, task.id, {
     type: "approval.requested",
     payload: { approval: toApproval(row) },
@@ -178,6 +172,8 @@ export async function requestApproval(
     sessionId: row.sessionId,
     runId: row.runId,
   });
+  // An expired one waits for nobody: the chat is not told.
+  if (stale) return row;
   await recordTaskUpdate(
     tx,
     ctx,

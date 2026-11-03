@@ -49,6 +49,7 @@ export async function reviewCall(
     const row = await requestApproval(tx, rc.deps.ctx, {
       task,
       session: rc.session,
+      goalVersion: rc.goalVersionSeen ?? rc.task.goalVersion,
       runId: rc.run.id,
       botName: rc.bot.name,
       call,

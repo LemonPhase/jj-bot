@@ -765,6 +765,73 @@ describe("approvals", () => {
     ).rejects.toMatchObject({ code: "APPROVAL_NOT_PENDING" });
   });
 
+  it("lets a delegated worker's call made after a goal change wait for approval", async () => {
+    const root = await workspace();
+    let workerName = "";
+    const seen: string[] = [];
+    // One faux model for both bots: the worker starts on its assignment.
+    const step: Step = (context) => {
+      const messages = conversation(context);
+      if (textOf(messages[0]).startsWith("Assignment from")) {
+        const results = messages.filter((m) => m.role === "toolResult");
+        if (results.length > 0) seen.push(textOf(results.at(-1)));
+        // It pushes until a push has run (its output is the line count).
+        if (results.some((m) => textOf(m) === "1")) return say("Pushed.");
+        if (results.length >= 4) return say("Gave up.");
+        return callTool("bash", { command: PUSH });
+      }
+      const delegated = messages.some(
+        (m) => m.role === "toolResult" && m.toolName === "delegate",
+      );
+      return delegated
+        ? say("Waiting.")
+        : callTool("delegate", { bot: workerName, brief: "Push the work." });
+    };
+    const { engine } = await start(
+      root,
+      Array.from({ length: 40 }, () => step),
+    );
+    const lead = await createTeam(engine, ["Lead"]);
+    const worker = await guardedBot(engine, "Rex");
+    workerName = worker.name;
+    const { task } = await engine.tasks.create({
+      goal: "Push the work",
+      coordinatorBotId: lead.ids[0] as string,
+      participantBotIds: [worker.id],
+    });
+    const first = await untilTask(
+      engine,
+      task.id,
+      (v) => pending(v) !== undefined,
+      "the worker's held call",
+    );
+    // The user changes the goal while the worker's call waits: it expires,
+    // and the worker, woken, calls again after seeing the new goal.
+    await engine.tasks.postMessage(task.id, {
+      text: "Push to the release branch instead.",
+      goal: "Push the work to release",
+      observedGoalVersion: 1,
+    });
+    const retried = await untilTask(
+      engine,
+      task.id,
+      (v) =>
+        v.approvals.some(
+          (a) => a.id !== pending(first)?.id && a.status === "pending",
+        ) || seen.length >= 4,
+      "the worker's retried call",
+    );
+    expect(retried.task.goalVersion).toBe(2);
+    expect(retried.approvals[0]).toMatchObject({ status: "expired" });
+    const again = pending(retried);
+    expect(again).toMatchObject({ botId: worker.id, goalVersion: 2 });
+    await engine.tasks.decideApproval(task.id, (again as Approval).id, {
+      decision: "approve",
+    });
+    await untilTask(engine, task.id, () => seen.includes("1"), "the push");
+    expect(await pushes(root, task.id)).toBe(1);
+  });
+
   it("expires a call approved for the old goal before it ran", async () => {
     const root = await workspace();
     const first = await start(root, [callTool("bash", { command: PUSH })]);

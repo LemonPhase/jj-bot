@@ -113,6 +113,13 @@ export interface RunContext {
   heldApprovalId?: string;
   /** The held call whose decision this run applies, while its result is not stored. */
   decisionCallId?: string;
+  /**
+   * The task's goal version as this run's model last read it: when its
+   * prompt was built for an executor call, or when steering that carries a
+   * goal change reached a coordinator. A call made at an older version than
+   * the task's is never held.
+   */
+  goalVersionSeen?: number;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -196,7 +203,7 @@ export async function takeInbox(
     if (
       rc.session.parentSessionId === null &&
       rc.task.goalVersion > rc.session.goalVersion
-    )
+    ) {
       rc.session = await updateSession(
         tx,
         rc.deps.ctx,
@@ -204,6 +211,9 @@ export async function takeInbox(
         { goalVersion: rc.task.goalVersion },
         attributionOf(rc),
       );
+      // The steering it is handed carries the goal change.
+      rc.goalVersionSeen = rc.task.goalVersion;
+    }
     const texts = fresh.map((item) => item.text);
     return setAside ? [COMPLETION_SET_ASIDE, ...texts] : texts;
   });
