@@ -566,6 +566,31 @@ describe("demo API", () => {
       (await api.listProfiles()).filter((p) => p.isDefault).map((p) => p.id),
     ).toEqual([profile.id]);
     await rejects(api.deleteProfile("profile-local"), "PROFILE_IN_USE");
+    expect(profile).toMatchObject({ mcpServers: [], skills: [] });
+  });
+
+  it("refuses MCP servers and skills, which the demo cannot run", async () => {
+    const api = demo();
+    expect((await api.bootstrap()).capabilities).toMatchObject({
+      mcp: { stdio: false, remote: false },
+      skills: false,
+    });
+    const before = await api.listProfiles();
+    await rejects(
+      api.createProfile({
+        name: "With MCP",
+        sandbox: { driver: "docker", network: { mode: "open" } },
+        mcpServers: [
+          { name: "docs", transport: "http", url: "https://mcp.example.com" },
+        ],
+      }),
+      "MCP_UNAVAILABLE",
+    );
+    await rejects(
+      api.updateProfile("profile-docker", { skills: ["pdf-tools"] }),
+      "MCP_UNAVAILABLE",
+    );
+    expect(await api.listProfiles()).toEqual(before);
   });
 
   it("keeps a reopened seeded task moving on its own", async () => {

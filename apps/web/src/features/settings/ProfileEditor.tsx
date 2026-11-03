@@ -1,4 +1,5 @@
 import {
+  type ApprovalRuleTool,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
   describeApprovalRule,
@@ -377,10 +378,17 @@ export function ProfileEditor({
   );
 }
 
-const TOOL_OPTIONS: SelectOption<ToolName>[] = CODING_TOOLS.map((tool) => ({
-  value: tool,
-  label: tool,
-}));
+const TOOL_OPTIONS: SelectOption<ApprovalRuleTool>[] = CODING_TOOLS.map(
+  (tool) => ({ value: tool, label: tool }),
+);
+
+/** The coding tools, plus a rule's own tool when it names an MCP tool, so the row shows what it holds. */
+const toolOptions = (
+  tool: ApprovalRuleTool,
+): SelectOption<ApprovalRuleTool>[] =>
+  TOOL_OPTIONS.some((option) => option.value === tool)
+    ? TOOL_OPTIONS
+    : [...TOOL_OPTIONS, { value: tool, label: tool }];
 
 /**
  * The profile's approval rules: calls of its bots that wait for the user's
@@ -423,7 +431,7 @@ function ApprovalRules({
               <Select
                 label={`Rule ${index + 1} tool`}
                 value={rule.tool}
-                options={TOOL_OPTIONS}
+                options={toolOptions(rule.tool)}
                 onChange={(tool) => update(index, { tool })}
               />
               <Input

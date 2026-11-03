@@ -149,6 +149,28 @@ async function checkGrants(
     );
 }
 
+/**
+ * No MCP server or skill reaches a session on this server
+ * (`capabilities.mcp` and `capabilities.skills` are false), so a profile
+ * asking for one is refused instead of saved as if it worked. An empty list
+ * is what every profile holds, and is accepted.
+ */
+function refuseMcpAndSkills(command: {
+  mcpServers?: readonly unknown[];
+  skills?: readonly unknown[];
+}): void {
+  if (command.mcpServers?.length)
+    throw new DomainError(
+      "MCP_UNAVAILABLE",
+      "mcpServers: this server does not run MCP servers (capabilities.mcp is off for stdio and remote servers). Remove them to save the profile.",
+    );
+  if (command.skills?.length)
+    throw new DomainError(
+      "MCP_UNAVAILABLE",
+      "skills: this server has no skills library (capabilities.skills is off). Remove them to save the profile.",
+    );
+}
+
 async function clearDefault(tx: Tx, except: string) {
   await tx
     .update(runtimeProfiles)
@@ -163,6 +185,7 @@ export async function createProfile(
   input: CreateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(createRuntimeProfileCommandSchema, input);
+  refuseMcpAndSkills(command);
   const sandbox = validateSpec(ctx, input.sandbox);
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
@@ -225,6 +248,7 @@ export async function updateProfile(
   input: UpdateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(updateRuntimeProfileCommandSchema, input);
+  refuseMcpAndSkills(command);
   const current = await profileRow(ctx.db, id);
   const settings = profileSettings(current);
   if (command.isDefault === false && current.isDefault)
