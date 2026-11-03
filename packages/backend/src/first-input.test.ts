@@ -53,7 +53,11 @@ const settled = (view: TaskView) =>
 
 const INDEX =
   "The task log so far, oldest first (`read_entry` with an entry's id shows it in full):";
-const USERS = "The user's messages in this task, in full, oldest first:";
+/** Ends the user's messages' heading, whatever it shows. */
+const FRAMING =
+  " (the user wrote to the coordinator; your brief says which part of the work is yours):";
+const USERS = `The user's messages in this task, in full, oldest first${FRAMING}`;
+const isUserSection = (section: string) => section.startsWith("The user's ");
 /** Line breaks other than "\n" that a model may read as one. */
 const CR = "\r";
 const VT = "\v";
@@ -262,7 +266,7 @@ describe("a child session's first input", () => {
     expect(
       view.messages.some(
         (message) =>
-          message.text.includes(INDEX) || message.text.includes(USERS),
+          message.text.includes(INDEX) || message.text.includes(FRAMING),
       ),
     ).toBe(false);
   });
@@ -351,7 +355,7 @@ describe("the first input's bounds", () => {
       users.length - FIRST_INPUT_USER_MESSAGES
     ] as string;
     expect(userLines.slice(0, 2)).toEqual([
-      USERS,
+      `The user's newest ${FIRST_INPUT_USER_MESSAGES} messages in this task, in full, oldest first${FRAMING}`,
       `(${users.length - FIRST_INPUT_USER_MESSAGES} earlier user messages — use \`task_log\` with kind "user" and before "${oldestShown}" to list them.)`,
     ]);
     const shown = users.slice(-FIRST_INPUT_USER_MESSAGES);
@@ -403,7 +407,7 @@ describe("formatting the first input", () => {
       redact,
     );
   const userSectionOf = (text: string) =>
-    sections(text).find((section) => section.startsWith(USERS)) ?? "";
+    sections(text).find(isUserSection) ?? "";
 
   it("leaves out empty sections, and puts the note right before the pointer", () => {
     const empty = page([]);
@@ -485,6 +489,9 @@ describe("formatting the first input", () => {
     const section = userSectionOf(withUsers(messages, 2));
     const lines = section.split("\n");
     // Two fit; the three before them, and the two before the page, do not.
+    expect(lines[0]).toBe(
+      `The user's newest 2 messages in this task, in full, oldest first${FRAMING}`,
+    );
     expect(lines[1]).toBe(
       `(5 earlier user messages — use \`task_log\` with kind "user" and before "${messages[3]?.id}" to list them.)`,
     );
@@ -500,11 +507,45 @@ describe("formatting the first input", () => {
     expect(blocks.length).toBeLessThanOrEqual(FIRST_INPUT_USER_CHARS);
   });
 
+  it("counts each message's header and line breaks against the budget", () => {
+    // Two messages whose quotes take 1,990 characters each: both fit the
+    // budget on their own, but not once their headers are counted.
+    const messages = [0, 1].map((index) =>
+      entry({ text: `${index}${"q".repeat(1987)}` }),
+    );
+    for (const message of messages)
+      expect(`> ${message.text}`.length).toBe(1990);
+    const lines = userSectionOf(withUsers(messages)).split("\n");
+    expect(lines).toEqual([
+      `The user's newest message in this task, in full${FRAMING}`,
+      `(1 earlier user message — use \`task_log\` with kind "user" and before "${messages[1]?.id}" to list them.)`,
+      `${messages[1]?.id} [user] user → Ada:`,
+      `> ${messages[1]?.text}`,
+    ]);
+    // Shorter by their two headers and line breaks, both fit whole.
+    const header = `${messages[0]?.id} [user] user → Ada:`.length;
+    const both = [0, 1].map((index) =>
+      entry({ text: `${index}${"q".repeat(1987 - header - 1)}` }),
+    );
+    expect(sections(withUsers(both)).find(isUserSection)).toBe(
+      [
+        USERS,
+        ...both.flatMap((message) => [
+          `${message.id} [user] user → Ada:`,
+          `> ${message.text}`,
+        ]),
+      ].join("\n"),
+    );
+  });
+
   it("keeps the start and end of a newest user message too long for the budget, pointing at `read_entry`", () => {
     const older = entry({ text: "An older rule." });
     const text = `Start of the spec.\n${"z".repeat(3000)}\n${"w ".repeat(2000)}\nEnd of the spec.`;
     const newest = entry({ text });
     const lines = userSectionOf(withUsers([older, newest])).split("\n");
+    expect(lines[0]).toBe(
+      `The user's newest message in this task, clipped${FRAMING}`,
+    );
     expect(lines[1]).toBe(
       `(1 earlier user message — use \`task_log\` with kind "user" and before "${newest.id}" to list them.)`,
     );

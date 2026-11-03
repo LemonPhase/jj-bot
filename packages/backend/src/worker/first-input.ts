@@ -6,10 +6,12 @@
 // 1. the task log so far, as an index: the newest FIRST_INPUT_ENTRIES
 //    entries, one index line each, older ones collapsed into one line that
 //    points at `task_log`;
-// 2. the user's messages in the task in full, quoted: the newest that fit
+// 2. the user's messages in the task, quoted whole: the newest that fit
 //    FIRST_INPUT_USER_MESSAGES and FIRST_INPUT_USER_CHARS, older ones
 //    collapsed into one line that points at `task_log` (the newest alone,
-//    when too long, keeps its start and end and points at `read_entry`);
+//    when too long, keeps its start and end and points at `read_entry`).
+//    The heading says which of these it shows, and that the user wrote to
+//    the coordinator while the brief says what is this worker's;
 // 3. the handoff note (handoff.ts), when the bot has reported to the
 //    delegating session before;
 // 4. the pointer to the brief, which ends with "Start now."
@@ -84,7 +86,9 @@ function userSection(
 ): string | undefined {
   if (messages.entries.length === 0) return undefined;
   const blocks: string[] = [];
-  // Each block, and the line break after it, comes out of the budget.
+  let clipped = false;
+  // Each block, its header included, and the line break after it, comes out
+  // of the budget.
   let room = FIRST_INPUT_USER_CHARS;
   let index = messages.entries.length - 1;
   for (; index >= 0; index -= 1) {
@@ -102,18 +106,28 @@ function userSection(
     }
     if (blocks.length === 0) {
       // The newest alone is too long: keep its start and its end.
-      const clipped = `${entryHeader(entry, redact)} (clipped; \`read_entry\` shows it in full):`;
+      const header = `${entryHeader(entry, redact)} (clipped; \`read_entry\` shows it in full):`;
       blocks.unshift(
-        `${clipped}\n${quoteClipped(text, room - clipped.length - 1)}`,
+        `${header}\n${quoteClipped(text, room - header.length - 1)}`,
       );
+      clipped = true;
       index -= 1;
     }
     break;
   }
   const left = messages.earlier + index + 1;
   const oldest = messages.entries[index + 1] as TaskLogEntry;
+  // Says what is shown: all of them whole, only the newest, or the newest
+  // one clipped.
+  const extent = clipped
+    ? "The user's newest message in this task, clipped"
+    : left === 0
+      ? "The user's messages in this task, in full, oldest first"
+      : blocks.length === 1
+        ? "The user's newest message in this task, in full"
+        : `The user's newest ${blocks.length} messages in this task, in full, oldest first`;
   return [
-    "The user's messages in this task, in full, oldest first:",
+    `${extent} (the user wrote to the coordinator; your brief says which part of the work is yours):`,
     ...(left > 0
       ? [
           `(${plural(left, "earlier user message", "earlier user messages")} — use \`task_log\` with kind "user" and before "${oldest.id}" to list them.)`,
