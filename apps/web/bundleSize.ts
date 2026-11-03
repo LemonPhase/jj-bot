@@ -127,6 +127,9 @@ export function overBudget(
   budget: Budget = INITIAL_JS_BUDGET,
 ): string[] {
   const js = initialJs(sizes);
+  // An index.html this script cannot read must fail, not pass as 0 kB.
+  if (js.raw === 0)
+    return ["Found no initial JavaScript under assets/ from index.html."];
   return (["raw", "gzip"] as const)
     .filter((measure) => js[measure] > budget[measure])
     .map(

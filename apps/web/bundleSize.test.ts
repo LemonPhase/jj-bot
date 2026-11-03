@@ -106,4 +106,19 @@ describe("web bundle size", () => {
     expect(report).toMatch(/^lazy +assets\/Lazy-e5\.js +[\d.]+/m);
     expect(report).toContain("Initial JS budget: 600.0 kB raw, 200.0 kB gzip");
   });
+
+  it("fails when it finds no initial JavaScript, rather than passing at 0 kB", async () => {
+    const dist = await fakeDist({
+      // A script tag it cannot read: not a module script.
+      "index.html": '<script src="/assets/index-a1.js"></script>',
+      "assets/index-a1.js": "console.log(1);",
+    });
+    const sizes = measureBundle(dist);
+    expect(sizes.map(({ file, initial }) => [file, initial])).toEqual([
+      ["assets/index-a1.js", false],
+    ]);
+    expect(overBudget(sizes)).toEqual([
+      "Found no initial JavaScript under assets/ from index.html.",
+    ]);
+  });
 });
