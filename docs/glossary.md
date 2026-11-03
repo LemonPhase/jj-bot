@@ -16,31 +16,32 @@ The words JJ Bot's docs, code and issues use for its execution model. Use them e
 
 ## What a model sees
 
-| Term              | Meaning                                                                                                                                                     |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Model call**    | One request to the LLM. A run makes many: reason, call a tool, read its result, reason again.                                                               |
-| **Turn boundary** | The point between model calls where the engine can add new input to a running session.                                                                      |
-| **Context**       | Everything one model call receives: the system prompt, the tool definitions and the session's transcript.                                                   |
-| **System prompt** | Fixed instructions at the top of every model call of a session: the bot's persona and memory, the task goal, the team and the rules for its role.           |
-| **Transcript**    | A session's own history: its inputs, its replies, its tool calls and their outputs. It is private to the session and is sent in full with every model call. |
-| **Push**          | The engine puts something into a session's context without the bot asking: its first input, and inbox items delivered at later turn boundaries.             |
-| **Pull**          | The bot fetches something itself by calling a tool.                                                                                                         |
+| Term              | Meaning                                                                                                                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Model call**    | One request to the LLM. A run makes many: reason, call a tool, read its result, reason again.                                                                                      |
+| **Turn boundary** | The point between model calls where the engine can add new input to a running session.                                                                                             |
+| **Context**       | Everything one model call receives: the system prompt, the tool definitions and the session's transcript.                                                                          |
+| **System prompt** | Fixed instructions at the top of every model call of a session: the bot's persona and memory, the task goal, the team, the rules for its role and, for a child session, its brief. |
+| **Transcript**    | A session's own history: its inputs, its replies, its tool calls and their outputs. It is private to the session and is sent in full with every model call.                        |
+| **Push**          | The engine puts something into a session's context without the bot asking: its first input, and inbox items delivered at later turn boundaries.                                    |
+| **Pull**          | The bot fetches something itself by calling a tool.                                                                                                                                |
 
 ## How work and information move
 
-| Term             | Meaning                                                                                                                                                                      |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Inbox**        | A session's queue of incoming items. Each item is added to the session's transcript at its next turn boundary, or when it next runs.                                         |
-| **Inbox item**   | One of four kinds: a **brief**, a **result**, **steering** or a **message**.                                                                                                 |
-| **Brief**        | The assignment a child session starts from, written by the session that delegated it. It is the child's first input.                                                         |
-| **Report**       | A worker's final reply when it finishes its piece. It is delivered to its parent session as a **result**.                                                                    |
-| **Steering**     | A user message in a task. It goes to the coordinator only.                                                                                                                   |
-| **Message**      | Text one bot sends to a teammate, or to every active session in the task, with the `message` tool.                                                                           |
-| **Wake**         | Start a new run of a waiting session. Briefs, results and steering wake a session; a message never does, and it waits for the recipient's next run.                          |
-| **Task log**     | Every message of a task, stored once and in order: user messages, briefs, reports and teammate messages. The task chat in the UI shows it.                                   |
-| **Workspace**    | The task's shared folder of files. Every session in the task reads and writes it through its coding tools.                                                                   |
-| **Handoff note** | A note delivered with a brief when a bot gets more work from a session it reported to before: its last brief and report. It points to that work, rather than summarising it. |
-| **Task update**  | What a coordinator's direct chat is told when its task completes, fails or waits for the user: the input of one chat reply, which the bot writes in its own words.           |
+| Term             | Meaning                                                                                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Inbox**        | A session's queue of incoming items. Each item is added to the session's transcript at its next turn boundary, or when it next runs.                                                                           |
+| **Inbox item**   | One of four kinds: a **brief**, a **result**, **steering** or a **message**.                                                                                                                                   |
+| **Brief**        | The assignment a child session starts from, written by the session that delegated it. It sits in the child's system prompt; the child starts on its **first input**, which may carry a handoff note.           |
+| **First input**  | The inbox item a child session starts on, built by the engine when the delegation is made: an index of the task log so far, the user's messages, a handoff note when there is one, and a pointer to the brief. |
+| **Report**       | A worker's final reply when it finishes its piece. It is delivered to its parent session as a **result**.                                                                                                      |
+| **Steering**     | A user message in a task. It goes to the coordinator only.                                                                                                                                                     |
+| **Message**      | Text one bot sends to a teammate, or to every active session in the task, with the `message` tool.                                                                                                             |
+| **Wake**         | Start a new run of a waiting session. Briefs, results and steering wake a session; a message never does, and it waits for the recipient's next run.                                                            |
+| **Task log**     | Every message of a task, stored once and in order: user messages, briefs, reports and teammate messages. The task chat in the UI shows it.                                                                     |
+| **Workspace**    | The task's shared folder of files. Every session in the task reads and writes it through its coding tools.                                                                                                     |
+| **Handoff note** | A note delivered with a brief when a bot gets more work from a session it reported to before: its last brief and report. It points to that work, rather than summarising it.                                   |
+| **Task update**  | What a coordinator's direct chat is told when its task completes, fails or waits for the user: the input of one chat reply, which the bot writes in its own words.                                             |
 
 ## Settings and records
 

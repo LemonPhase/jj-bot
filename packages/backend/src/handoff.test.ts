@@ -82,7 +82,11 @@ const reportingWorker: Brain = (view) => ({
   text: `Did: ${briefOf(view.systemPrompt)}`,
 });
 
-/** Each of a bot's sessions, oldest first, with the inputs its first run started on. */
+/**
+ * Each of a bot's sessions, oldest first, with the inputs its first run
+ * started on, and the sections of its first input (they are separated by a
+ * blank line, and none holds one).
+ */
 async function sessionsOf(
   executor: FakeExecutor,
   taskId: string,
@@ -97,7 +101,12 @@ async function sessionsOf(
     .filter((row) => row.botId === botId)
     .map((row) => {
       const first = executor.inputs.find((input) => input.sessionId === row.id);
-      return { row, first: first?.inputs, prompt: first?.systemPrompt };
+      return {
+        row,
+        first: first?.inputs,
+        sections: first?.inputs[0]?.split("\n\n") ?? [],
+        prompt: first?.systemPrompt,
+      };
     });
 }
 
@@ -147,10 +156,14 @@ describe("the handoff note", () => {
       team.byName[bob] as string,
     );
     expect(first?.first).toEqual([briefPointer(ada)]);
-    expect(second?.first).toEqual([
-      `${note(ada, first?.row.id as string, briefs[0] as string, {
+    // The note comes after the task log and ahead of the pointer to the brief.
+    expect(second?.first).toHaveLength(1);
+    expect(second?.sections).toEqual([
+      expect.stringMatching(/^The task log so far/),
+      note(ada, first?.row.id as string, briefs[0] as string, {
         report: `Did: ${briefs[0]}`,
-      })}\n\n${briefPointer(ada)}`,
+      }),
+      briefPointer(ada),
     ]);
     // The note is only in the delivered inbox item: the prompt keeps the
     // brief as written, and so do the session and the task chat.
@@ -205,10 +218,11 @@ describe("the handoff note", () => {
       status: "failed",
       error: "The disk is full.",
     });
-    expect(second?.first).toEqual([
-      `${note(ada, first?.row.id as string, briefs[0] as string, {
+    expect(second?.sections.slice(1)).toEqual([
+      note(ada, first?.row.id as string, briefs[0] as string, {
         error: "The disk is full.",
-      })}\n\n${briefPointer(ada)}`,
+      }),
+      briefPointer(ada),
     ]);
     expect(second?.row).toMatchObject({
       status: "completed",
@@ -250,16 +264,21 @@ describe("the handoff note", () => {
       ...rounds,
     ]);
     const [forCy, a, b, c] = bobs;
-    expect(forCy?.first).toEqual([briefPointer(cy)]);
+    const noNote = (session: typeof forCy, requester: string) => {
+      expect(session?.sections.at(-1)).toBe(briefPointer(requester));
+      expect(session?.first?.[0]).not.toContain("Handoff note");
+    };
+    noNote(forCy, cy);
     // Bob's session for Cy has a different parent, so Ada's first delegation
     // to Bob has no note.
-    expect(a?.first).toEqual([briefPointer(ada)]);
+    noNote(a, ada);
     expect(b?.first?.[0]).toContain(`in session ${a?.row.id}, which completed`);
     // The third round points at the second only.
-    expect(c?.first).toEqual([
-      `${note(ada, b?.row.id as string, rounds[1] as string, {
+    expect(c?.sections.slice(-2)).toEqual([
+      note(ada, b?.row.id as string, rounds[1] as string, {
         report: `Did: ${rounds[1]}`,
-      })}\n\n${briefPointer(ada)}`,
+      }),
+      briefPointer(ada),
     ]);
   });
 
@@ -316,10 +335,12 @@ describe("the handoff note", () => {
       task.id,
       team.byName[bob] as string,
     );
-    expect(bobs.map((session) => session.first)).toEqual([
-      [briefPointer(ada)],
-      [briefPointer(ada)],
-    ]);
+    // The first starts on the pointer alone; the second also lists the
+    // first's brief in its task log, but has no note.
+    expect(bobs.map((session) => session.first?.length)).toEqual([1, 1]);
+    expect(bobs[0]?.first).toEqual([briefPointer(ada)]);
+    expect(bobs[1]?.sections.at(-1)).toBe(briefPointer(ada));
+    expect(bobs[1]?.first?.[0]).not.toContain("Handoff note");
   });
 });
 
