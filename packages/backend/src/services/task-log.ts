@@ -108,22 +108,15 @@ export interface TaskLogPage {
 /** No stored id or text holds a NUL, and the databases refuse one in a query. */
 export const hasNul = (text: string) => text.includes("\u0000");
 
-/**
- * `text` trimmed and cut to at most `max` characters, ending in `…` when cut
- * (never inside a surrogate pair). Line breaks are kept.
- */
-export function clipText(text: string, max: number): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= max) return trimmed;
-  return `${trimmed
+/** `text` on one line, cut near `max` characters (never inside a surrogate pair). */
+export function clipLine(text: string, max: number): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line.length <= max) return line;
+  return `${line
     .slice(0, max - 1)
     .replace(/[\uD800-\uDBFF]$/, "")
     .trimEnd()}…`;
 }
-
-/** `text` on one line, cut near `max` characters (never inside a surrogate pair). */
-export const clipLine = (text: string, max: number): string =>
-  clipText(text.replace(/\s+/g, " "), max);
 
 /** The first line of a brief, cut near 80 characters. */
 export const briefSummary = (brief: string): string =>

@@ -143,7 +143,7 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         // points at its latest earlier session (handoff.ts).
         const note = await handoffNote(
           tx,
-          task.id,
+          task,
           { parentSessionId: rc.session.id, botId: assignee.botId },
           rc.redact,
         );
