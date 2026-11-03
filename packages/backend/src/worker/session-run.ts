@@ -56,6 +56,7 @@ import {
   outcomeLabel,
   type RunContext,
   runHooks,
+  stopAtBoundary,
   takeInbox,
   type WorkerDeps,
 } from "./run-context";
@@ -355,6 +356,10 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   const call = async (inputs: string[]): Promise<RunOutcome> => {
+    // A call starts at a turn boundary: a draining worker stops the run here
+    // instead. The inputs stay in the inbox, undelivered, for the next run.
+    if (stopAtBoundary(rc.control))
+      return { kind: "aborted", reason: "signal" };
     // Rebuilt every call: a new goal version brings its own plan.
     const plan = planOf(rc.task.verificationPlan);
     // The prompt below gives the model the task's goal as it is now.
