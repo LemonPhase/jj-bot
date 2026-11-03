@@ -462,18 +462,31 @@ describe("verification gate", () => {
         },
       ],
     );
-    // The event loop keeps turning while the checks run.
+    // The event loop keeps turning while each check runs (never stalled for
+    // 1.5 s; an evaluation on this thread would hold it for its whole 2 s
+    // limit, this pattern for minutes). Shorter stalls are the embedded
+    // database, which runs on this thread too and which a busy host
+    // stretches; so the test waits on the task's status alone, not on a
+    // whole task view per look.
     let last = Date.now();
-    let longestGap = 0;
+    const gaps: { from: number; to: number }[] = [];
     const ticker = setInterval(() => {
       const now = Date.now();
-      longestGap = Math.max(longestGap, now - last);
+      gaps.push({ from: last, to: now });
       last = now;
     }, 20);
-    const started = Date.now();
     try {
-      const view = await untilTask(engine, task.id, status("waiting"));
-      expect(Date.now() - started).toBeLessThan(12_000);
+      await until(
+        async () => {
+          const [row] = await db.database.db
+            .select({ status: tasks.status })
+            .from(tasks)
+            .where(eq(tasks.id, task.id));
+          return row?.status === "waiting";
+        },
+        { timeoutMs: 25_000, what: "the task to wait" },
+      );
+      const view = await engine.tasks.get(task.id);
       expect(
         view.verificationChecks.map((check) => [
           check.criterionId,
@@ -491,10 +504,26 @@ describe("verification gate", () => {
       );
       // The API answered meanwhile and still does.
       expect((await engine.bootstrap()).capabilities.verification).toBe(true);
+      clearInterval(ticker);
+      const running = view.verificationChecks.map((check) => {
+        // Each ran until its 2 s limit stopped it (and not for the minutes
+        // the pattern would take): the limit, the allowance a thread a busy
+        // host keeps waiting gets, and its start.
+        expect(check.durationMs).toBeGreaterThanOrEqual(2_000);
+        expect(check.durationMs).toBeLessThan(10_000);
+        const from = Date.parse(check.startedAt);
+        return { from, to: from + check.durationMs };
+      });
+      const during = gaps
+        .filter((gap) =>
+          running.some((check) => gap.to > check.from && gap.from < check.to),
+        )
+        .map((gap) => gap.to - gap.from);
+      expect(during.length).toBeGreaterThan(0);
+      expect(Math.max(...during)).toBeLessThan(1_500);
     } finally {
       clearInterval(ticker);
     }
-    expect(longestGap).toBeLessThan(1_000);
   }, 30_000);
 
   it("never passes an attempt whose checks were all inconclusive", async () => {

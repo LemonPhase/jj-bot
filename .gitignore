@@ -13,3 +13,6 @@ test-results/
 
 # Agent worktrees
 .claude/worktrees/
+
+# Backups of the compose stack (scripts/backup.sh): they hold the database.
+backups/

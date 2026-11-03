@@ -18,6 +18,7 @@
     "drizzle-kit": "0.31.11"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   }
 }

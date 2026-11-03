@@ -126,6 +126,14 @@ export function databaseSetting(env: Env): DatabaseSetting {
   return { mode: "pglite", path: directory ? fromRoot(directory) : path };
 }
 
+/**
+ * The `docker` driver's namespace: `JJ_DOCKER_NAMESPACE`, default
+ * `jj-sandbox`. Its task workspaces are the volumes `<namespace>-task-<id>`.
+ */
+export function dockerNamespace(env: Env): string {
+  return text(env, "JJ_DOCKER_NAMESPACE") ?? "jj-sandbox";
+}
+
 function driverList(env: Env): SandboxDriverId[] {
   const raw = text(env, "JJ_SANDBOX_DRIVERS") ?? SANDBOX_DRIVER_IDS.join(",");
   const ids = raw
@@ -200,7 +208,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     drivers: driverList(env),
     // Outside any checkout by default, so a workspace never sits in a repository.
     ...(sandboxRoot ? { localRoot: fromRoot(sandboxRoot) } : {}),
-    dockerNamespace: text(env, "JJ_DOCKER_NAMESPACE") ?? "jj-sandbox",
+    dockerNamespace: dockerNamespace(env),
     dockerAllowInsecureTcp: flag(env, "JJ_DOCKER_ALLOW_INSECURE_TCP", false),
     ...(egressPool ? { dockerEgressSubnetPool: egressPool } : {}),
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),

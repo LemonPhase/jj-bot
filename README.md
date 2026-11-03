@@ -19,6 +19,10 @@ Open the logged link, `http://127.0.0.1:3001/?token=…`. The token is generated
 
 The stack is PostgreSQL and one app container (the API serving the web app, with the worker embedded); each task runs in its own sandbox container on the host's Docker daemon. The app mounts the host's Docker socket, which is root-equivalent on the host, and publishes its port on loopback only. `docker compose down` stops it, and `-v` also deletes the data and the token. See [Docker Compose](docs/development.md#docker-compose) for the details.
 
+### Backup, restore and upgrades
+
+`scripts/backup.sh` backs up the running stack (the database, which holds the stored artifacts, and the task workspaces) into `backups/`, and `scripts/restore.sh <dir>` restores one into an empty stack, refusing one that holds data unless given `--force`, then checks the result. To upgrade, back up, update the checkout and run `docker compose up -d --build --wait`: the app applies the new migrations when it starts. Migrations are forward-only, and an older build refuses a database a newer one wrote, so going back means restoring the backup. Backups never hold `JJ_SECRET_KEY`: keep it apart, or the stored keys and secrets restore unreadable (the restore check names them). See [Backup, restore and upgrades](docs/development.md#backup-restore-and-upgrades).
+
 ## Development
 
 `npm ci`, then `JJ_ENABLE_SCRIPTED_MODEL=true npm run dev`, runs the API and the web app on http://127.0.0.1:5173 with embedded PGlite and a keyless scripted test model, so nothing else is needed. `npm run verify` is the gate CI runs. [Development setup](docs/development.md) has the commands, configuration, endpoints and checks, and [CONTRIBUTING.md](CONTRIBUTING.md) the workflow. Never commit `.env`.
