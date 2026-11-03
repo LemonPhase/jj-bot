@@ -1,11 +1,28 @@
 // Live smoke test of the pi runtime: one real tool cycle (model -> bash in a
-// `local` sandbox -> model) with the model in JJ_SMOKE_MODEL (default
+// sandbox, `local` by default -> model) with the model in JJ_SMOKE_MODEL (default
 // openai/gpt-6-luna). Needs that provider's key in the environment or .env.
 // Prints the model, turns, tool calls and usage; exits non-zero on failure.
+//
+// The bash command is the model's, so on `local` it runs next to the key and
+// could read it from this process's environment. JJ_SMOKE_DRIVER=docker runs
+// it in a docker sandbox instead: isolated, without network, an ephemeral
+// workspace, on jj-sandbox:base-1 or JJ_SMOKE_SANDBOX_IMAGE, in a daemon
+// namespace of its own.
+//
+// JJ_SMOKE_MAX_USD caps its spend: no model call starts once the calls so far
+// cost that much (a call in flight finishes), and the run then fails as
+// stopped at the cap. JJ_SMOKE_REPORT=<path> also writes the result as JSON.
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addUsage, emptyUsage } from "@jj/contracts";
+import {
+  addUsage,
+  emptyUsage,
+  formatSpendAgainstCap,
+  MAX_SPEND_CAP_USD,
+} from "@jj/contracts";
 import {
   configureOutboundProxy,
   type ExecutorEvent,
@@ -13,11 +30,41 @@ import {
   ModelResolutionError,
   PiSessionExecutor,
 } from "@jj/runtime";
-import { LocalSandboxDriver } from "@jj/sandbox";
+import {
+  DockerSandboxDriver,
+  LocalSandboxDriver,
+  type SandboxDriver,
+} from "@jj/sandbox";
 
 // Provider SDKs use Node's fetch, which ignores HTTPS_PROXY on its own.
 const proxy = configureOutboundProxy(process.env);
 const ref = process.env.JJ_SMOKE_MODEL?.trim() || "openai/gpt-6-luna";
+const reportPath = process.env.JJ_SMOKE_REPORT?.trim() || undefined;
+const capRaw = process.env.JJ_SMOKE_MAX_USD?.trim();
+const capUsd = capRaw ? Number(capRaw) : undefined;
+if (
+  capUsd !== undefined &&
+  !(Number.isFinite(capUsd) && capUsd > 0 && capUsd <= MAX_SPEND_CAP_USD)
+) {
+  console.error(
+    `smoke:runtime: JJ_SMOKE_MAX_USD must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}.`,
+  );
+  process.exit(2);
+}
+const driverId = process.env.JJ_SMOKE_DRIVER?.trim() || "local";
+const sandboxImage = process.env.JJ_SMOKE_SANDBOX_IMAGE?.trim() || undefined;
+if (driverId !== "local" && driverId !== "docker") {
+  console.error(
+    `smoke:runtime: JJ_SMOKE_DRIVER is local or docker; got "${driverId}".`,
+  );
+  process.exit(2);
+}
+if (sandboxImage && driverId !== "docker") {
+  console.error(
+    "smoke:runtime: JJ_SMOKE_SANDBOX_IMAGE needs JJ_SMOKE_DRIVER=docker.",
+  );
+  process.exit(2);
+}
 const registry = new ModelRegistry({ env: process.env });
 
 let key: string | undefined;
@@ -43,21 +90,70 @@ if (!key) {
 const redact = (text: string) =>
   key ? text.split(key).join("[redacted]") : text;
 
+const events: ExecutorEvent[] = [];
+const started = Date.now();
+const usageSoFar = () =>
+  events.reduce(
+    (total, event) =>
+      event.type === "model.finished" ? addUsage(total, event.usage) : total,
+    emptyUsage(),
+  );
+/** Why a model call was refused at JJ_SMOKE_MAX_USD, once one was. */
+let capped: string | undefined;
+
+/** Prints the result and, with JJ_SMOKE_REPORT, writes it there. */
+function report(result: Record<string, unknown>) {
+  const text = redact(
+    JSON.stringify(
+      {
+        test: "runtime",
+        ...result,
+        model: ref,
+        driver: driverId,
+        capUsd: capUsd ?? null,
+        ...(capped ? { capped } : {}),
+        usage: usageSoFar(),
+        durationMs: Date.now() - started,
+      },
+      null,
+      2,
+    ),
+  );
+  console.info(text);
+  if (reportPath) writeFileSync(reportPath, `${text}\n`);
+}
+
 async function main(): Promise<boolean> {
   const root = await mkdtemp(join(tmpdir(), "jj-smoke-runtime-"));
-  const driver = new LocalSandboxDriver({ root });
-  const spec = driver.validateSpec({
-    driver: "local",
-    network: { mode: "open" },
-  });
+  const driver: SandboxDriver =
+    driverId === "docker"
+      ? new DockerSandboxDriver({
+          namespace: `jj-smoke-runtime-${randomBytes(4).toString("hex")}`,
+        })
+      : new LocalSandboxDriver({ root, env: {} });
+  const spec = driver.validateSpec(
+    driverId === "docker"
+      ? {
+          driver: "docker",
+          network: { mode: "none" },
+          workspace: "ephemeral",
+          ...(sandboxImage ? { image: sandboxImage } : {}),
+        }
+      : { driver: "local", network: { mode: "open" } },
+  );
+  if (driverId === "docker") {
+    const health = await driver.probe();
+    if (!health.ok)
+      throw new Error(`the docker driver is unavailable: ${health.detail}`);
+    if (!driver.capabilities.filesystemIsolation)
+      throw new Error("the docker driver does not isolate the filesystem");
+  }
   const sandbox = await driver.acquire({
     sessionId: "smoke",
     taskId: "smoke",
     spec,
     workspaceKey: "smoke",
   });
-  const events: ExecutorEvent[] = [];
-  const started = Date.now();
   try {
     const outcome = await new PiSessionExecutor({ models: registry }).run({
       sessionId: "smoke",
@@ -82,13 +178,16 @@ async function main(): Promise<boolean> {
         onTurnComplete: () => {},
         drainInbox: async () => [],
         spillOutput: async () => "smoke-artifact",
+        admitModelCall: async () => {
+          const spent = usageSoFar().costUsd;
+          if (capUsd === undefined || spent < capUsd) return undefined;
+          const shown = formatSpendAgainstCap(spent, capUsd);
+          capped = `The run reached JJ_SMOKE_MAX_USD: ${shown.spent} of ${shown.cap} spent.`;
+          return capped;
+        },
       },
     });
-    const usage = events.reduce(
-      (total, event) =>
-        event.type === "model.finished" ? addUsage(total, event.usage) : total,
-      emptyUsage(),
-    );
+    const usage = usageSoFar();
     const tools = events.flatMap((event) =>
       event.type === "tool.finished"
         ? [
@@ -111,27 +210,15 @@ async function main(): Promise<boolean> {
     const answered =
       outcome.kind === "ended" && outcome.finalText.includes("42");
     const passed = bashed && answered && usage.modelCalls >= 2;
-    console.info(
-      redact(
-        JSON.stringify(
-          {
-            test: "runtime",
-            status: passed ? "passed" : "failed",
-            model: ref,
-            proxy: proxy
-              ? { httpsProxy: proxy.httpsProxy, httpProxy: proxy.httpProxy }
-              : "none",
-            outcome,
-            turns: usage.modelCalls,
-            toolCalls: tools,
-            usage,
-            durationMs: Date.now() - started,
-          },
-          null,
-          2,
-        ),
-      ),
-    );
+    report({
+      status: passed ? "passed" : "failed",
+      proxy: proxy
+        ? { httpsProxy: proxy.httpsProxy, httpProxy: proxy.httpProxy }
+        : "none",
+      outcome,
+      turns: usage.modelCalls,
+      toolCalls: tools,
+    });
     return passed;
   } finally {
     await sandbox.release();
@@ -144,11 +231,12 @@ main().then(
     process.exitCode = passed ? 0 : 1;
   },
   (error: unknown) => {
-    console.error(
-      redact(
-        `smoke:runtime failed: ${error instanceof Error ? error.stack : String(error)}`,
-      ),
-    );
+    const detail = error instanceof Error ? error.stack : String(error);
+    console.error(redact(`smoke:runtime failed: ${detail}`));
+    report({
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    });
     process.exitCode = 1;
   },
 );
