@@ -178,6 +178,9 @@ function ProfileCard({
     `network ${sandbox.network.mode}`,
     `${sandbox.workspace} workspace`,
     `${profile.tools.length} of ${CODING_TOOLS.length} tools`,
+    profile.secrets.length > 0
+      ? `secrets ${profile.secrets.join(", ")}`
+      : "no secrets",
     `${profile.budgets.maxTurnsPerRun} turns · ${profile.budgets.maxRunMinutes} min`,
     profile.budgets.maxUsdPerTask === null
       ? "no task cap"
