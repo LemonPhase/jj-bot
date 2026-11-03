@@ -3,15 +3,20 @@ import {
   bootstrapSchema,
   botMemorySchema,
   botSchema,
+  COMMAND_TEXT_LIMIT,
   conversationViewSchema,
   modelsViewSchema,
+  PROFILE_SPEND_CAP,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
   type TaskEvent,
   type TaskView,
   taskEventSchema,
   taskSummarySchema,
+  taskTemplateSchema,
   taskViewSchema,
+  templateRunGoal,
+  templateTaskCommand,
   type WorkspaceHint,
 } from "@jj/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -838,5 +843,143 @@ describe("demo direct chat with tasks", () => {
     await vi.waitFor(async () =>
       expect((await api.getConversation("bot-kite")).replying).toBe(false),
     );
+  });
+});
+
+describe("demo task templates (as services/templates.ts)", () => {
+  it("seeds a template, and saves, edits and deletes others, hinting each change", async () => {
+    const api = demo();
+    const hints: WorkspaceHint[] = [];
+    api.subscribeHints((hint) => hints.push(hint));
+    const [seeded] = await api.listTemplates();
+    expect(taskTemplateSchema.parse(seeded)).toMatchObject({
+      title: "Weekly contract review",
+      coordinatorBotId: "bot-kite",
+      problems: [],
+    });
+
+    const created = await api.createTemplate({
+      title: "Release check",
+      goal: "Check the release.",
+      coordinatorBotId: "bot-moss",
+      participantBotIds: ["bot-vesper", "bot-juno"],
+      spendCapUsd: 3,
+    });
+    expect(created).toMatchObject({
+      participantBotIds: ["bot-moss", "bot-juno", "bot-vesper"],
+      spendCapUsd: 3,
+    });
+    const edited = await api.updateTemplate(created.id, {
+      spendCapUsd: PROFILE_SPEND_CAP,
+      participantBotIds: [],
+    });
+    expect("spendCapUsd" in edited).toBe(false);
+    expect(edited.participantBotIds).toEqual(["bot-moss"]);
+    expect(await api.getTemplate(created.id)).toEqual(edited);
+    expect((await api.listTemplates()).map((entry) => entry.id)).toEqual([
+      seeded?.id,
+      created.id,
+    ]);
+    await api.deleteTemplate(created.id);
+    await rejects(api.getTemplate(created.id), "NOT_FOUND");
+    await rejects(
+      api.createTemplate({
+        title: "",
+        goal: "x",
+        coordinatorBotId: "bot-moss",
+      }),
+      "VALIDATION_FAILED",
+    );
+    await rejects(
+      api.createTemplate({
+        title: "Ghost",
+        goal: "x",
+        coordinatorBotId: "bot-ghost",
+      }),
+      "VALIDATION_FAILED",
+    );
+    expect(
+      hints.filter((hint) => hint.type === "templates.changed"),
+    ).toHaveLength(3);
+  });
+
+  it("starts the same task createTask makes, with the instructions appended and templateId set", async () => {
+    const api = demo({ tasks: [] });
+    const [template] = await api.listTemplates();
+    if (!template) throw new Error("no seeded template");
+    const task = await api.startTemplate(template.id, {
+      instructions: "Only the API changes.",
+    });
+    expect(task).toMatchObject({
+      title: "Weekly contract review",
+      goal: templateRunGoal(template.goal, "Only the API changes."),
+      coordinatorBotId: "bot-kite",
+      participantBotIds: ["bot-kite", "bot-vesper"],
+      spendCapUsd: 5,
+      templateId: template.id,
+    });
+    const manual = await api.createTask(
+      templateTaskCommand(template, { instructions: "Only the API changes." }),
+    );
+    const { id: _a, createdAt: _b, updatedAt: _c, ...fromTemplate } = task;
+    const { id: _d, createdAt: _e, updatedAt: _f, ...fromForm } = manual;
+    expect({ ...fromTemplate, templateId: null }).toEqual(fromForm);
+    expect(
+      (await api.listTasks()).find((entry) => entry.id === task.id)?.templateId,
+    ).toBe(template.id);
+  });
+
+  it("lists an archived bot and unenforced checks as problems, and refuses to start, creating nothing", async () => {
+    const api = demo({ tasks: [] });
+    const [template] = await api.listTemplates();
+    if (!template) throw new Error("no seeded template");
+    await api.archiveBot("bot-vesper");
+    const withPlan = await api.createTemplate({
+      title: "Checked",
+      goal: "Write notes.md.",
+      coordinatorBotId: "bot-kite",
+      verificationPlan: [
+        {
+          id: "notes",
+          description: "notes.md exists",
+          method: "file",
+          path: "notes.md",
+          expect: "exists",
+        },
+      ],
+    });
+    expect(withPlan.problems).toEqual([{ kind: "verification_unavailable" }]);
+    const problems = [
+      { kind: "bot_archived", botId: "bot-vesper", name: "Vesper" },
+    ];
+    expect((await api.getTemplate(template.id)).problems).toEqual(problems);
+    const error = await api.startTemplate(template.id, {}).then(
+      () => null,
+      (reason: unknown) => reason as ApiError,
+    );
+    expect(error).toMatchObject({
+      code: "TEMPLATE_UNUSABLE",
+      status: 409,
+      details: { problems },
+    });
+    await rejects(api.startTemplate(withPlan.id, {}), "TEMPLATE_UNUSABLE");
+    expect(await api.listTasks()).toEqual([]);
+  });
+
+  it("answers 422 when the instructions push the goal over the task limit", async () => {
+    const api = demo({ tasks: [] });
+    const template = await api.createTemplate({
+      title: "Long",
+      goal: "g".repeat(COMMAND_TEXT_LIMIT - 10),
+      coordinatorBotId: "bot-kite",
+    });
+    const error = await api
+      .startTemplate(template.id, { instructions: "Too long now." })
+      .then(
+        () => null,
+        (reason: unknown) => reason as ApiError,
+      );
+    expect(error).toMatchObject({ code: "VALIDATION_FAILED", status: 422 });
+    expect(await api.listTasks()).toEqual([]);
   });
 });

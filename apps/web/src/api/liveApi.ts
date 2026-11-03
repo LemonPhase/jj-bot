@@ -15,6 +15,7 @@ import {
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
+  createTaskTemplateCommandSchema,
   decideApprovalCommandSchema,
   type ModelsView,
   modelsViewSchema,
@@ -26,16 +27,20 @@ import {
   secretsViewSchema,
   sendBotMessageCommandSchema,
   sendBotMessageResultSchema,
+  startTemplateCommandSchema,
   stopTaskCommandSchema,
   TASK_EVENT_TYPES,
   taskMessageSchema,
   taskSchema,
   taskSummarySchema,
+  taskTemplateListSchema,
+  taskTemplateResultSchema,
   taskViewSchema,
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
+  updateTaskTemplateCommandSchema,
   usageReportSchema,
   type WorkspaceHint,
   workspaceHintSchema,
@@ -517,6 +522,46 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           command(decideApprovalCommandSchema, cmd),
         )
       ).approval,
+    listTemplates: async () =>
+      (await request("GET", "/task-templates", taskTemplateListSchema))
+        .templates,
+    getTemplate: async (templateId) =>
+      (
+        await request(
+          "GET",
+          `/task-templates/${id(templateId)}`,
+          taskTemplateResultSchema,
+        )
+      ).template,
+    createTemplate: async (cmd) =>
+      (
+        await request(
+          "POST",
+          "/task-templates",
+          taskTemplateResultSchema,
+          command(createTaskTemplateCommandSchema, cmd),
+        )
+      ).template,
+    updateTemplate: async (templateId, cmd) =>
+      (
+        await request(
+          "PATCH",
+          `/task-templates/${id(templateId)}`,
+          taskTemplateResultSchema,
+          command(updateTaskTemplateCommandSchema, cmd),
+        )
+      ).template,
+    deleteTemplate: (templateId) =>
+      request("DELETE", `/task-templates/${id(templateId)}`, null),
+    startTemplate: async (templateId, cmd) =>
+      (
+        await request(
+          "POST",
+          `/task-templates/${id(templateId)}/tasks`,
+          RESPONSES.task,
+          command(startTemplateCommandSchema, cmd),
+        )
+      ).task,
     subscribeTask: (taskId, onView, streamOptions) =>
       followTask(taskId, getTask, openTaskEvents, onView, {
         retryMs,

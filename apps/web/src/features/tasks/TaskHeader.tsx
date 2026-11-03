@@ -12,6 +12,7 @@ import {
 import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ScreenHeader } from "../shell/ScreenHeader";
+import { useShell } from "../shell/ShellContext";
 import { pendingLabel, pendingOf } from "./approvals";
 import { SpendControl } from "./SpendControl";
 import {
@@ -29,8 +30,14 @@ import { ChecksButton, VerificationBadge } from "./VerificationSection";
  */
 export function TaskHeader({ view }: { view: TaskView }) {
   const api = useApi();
-  const { getBot, taskStreamState } = useWorkspace();
+  const { getBot, taskStreamState, templates } = useWorkspace();
+  const { openTemplateDialog } = useShell();
   const { task } = view;
+  const origin =
+    task.templateId === null
+      ? null
+      : (templates?.find((template) => template.id === task.templateId)
+          ?.title ?? null);
   const { heading, goal } = headingFor(task);
   const approvals = pendingLabel(pendingOf(view.approvals));
   // Say so while the live event stream is down, instead of looking current.
@@ -59,6 +66,11 @@ export function TaskHeader({ view }: { view: TaskView }) {
               </Badge>
             )}
             <VerificationBadge view={view} />
+            {task.templateId !== null && (
+              <span className="task-head__template">
+                {origin ? `From template ${origin}` : "From a deleted template"}
+              </span>
+            )}
             {reconnecting && (
               <span className="task-head__stream" role="status">
                 reconnecting…
@@ -104,6 +116,15 @@ export function TaskHeader({ view }: { view: TaskView }) {
           </span>
           <SpendControl view={view} />
           <ChecksButton view={view} />
+          {templates !== null && (
+            <Button
+              onClick={() =>
+                openTemplateDialog({ kind: "new", fromTaskId: task.id })
+              }
+            >
+              Save as template
+            </Button>
+          )}
           <StopControl view={view} />
         </>
       }

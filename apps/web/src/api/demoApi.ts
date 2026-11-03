@@ -13,17 +13,22 @@ import {
   applyTaskEvent,
   type Bot,
   type BotMemory,
+  COMMAND_TEXT_LIMIT,
   CONTRACT_VERSION,
   type ConversationMessage,
   type ConversationView,
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
+  createTaskTemplateCommandSchema,
   decideApprovalCommandSchema,
   defaultAppearanceFor,
+  describeTemplateProblem,
   emptyUsage,
   isFinishedStatus,
+  MAX_TASK_TEMPLATES,
   mcpRulesWithoutTool,
+  PROFILE_SPEND_CAP,
   pendingApprovalOf,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
@@ -31,20 +36,28 @@ import {
   type SandboxSpec,
   sandboxSpecSchema,
   sendBotMessageCommandSchema,
+  startTemplateCommandSchema,
   stopTaskCommandSchema,
   type Task,
   type TaskEvent,
   type TaskEventOf,
   type TaskEventType,
   type TaskSummary,
+  type TaskTemplate,
   type TaskView,
+  type TemplateProblem,
+  templateGoalTooLong,
+  templateRunGoal,
+  templateTaskCommand,
   type UsageReport,
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
+  updateTaskTemplateCommandSchema,
   type WorkspaceHint,
   waitingQuestion,
+  withCoordinator,
   z,
 } from "@jj/contracts";
 import {
@@ -61,6 +74,7 @@ import {
   DEMO_DRIVERS,
   DEMO_MODELS,
   DEMO_TASKS,
+  DEMO_TEMPLATES,
   type DemoTaskSeed,
   demoProfiles,
 } from "./demoFixtures";
@@ -472,7 +486,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   seedClock = null;
   for (const state of tasks.values()) schedule(state);
 
-  const createTask = (command: unknown): Task => {
+  const createTask = (command: unknown, templateId?: string): Task => {
     const parsed = validate(createTaskCommandSchema, command);
     // As services/tasks.ts `createTask`.
     if (parsed.verificationPlan)
@@ -494,7 +508,11 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         400,
       );
     const before = botState();
-    const state = newTask({ ...parsed, id: `task-${++taskCounter}` });
+    const state = newTask({
+      ...parsed,
+      id: `task-${++taskCounter}`,
+      templateId: templateId ?? null,
+    });
     state.steps = teamScript(state.host);
     notify({ type: "tasks.changed", taskId: state.view.task.id });
     if (botState() !== before) notify({ type: "bots.changed" });
@@ -894,6 +912,64 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   const activeBots = () =>
     [...bots.values()].filter((record) => !record.archived).map(derive);
 
+  // ── Task templates (as services/templates.ts) ────────────────────────────
+  type StoredTemplate = Omit<TaskTemplate, "problems">;
+  const templates = new Map<string, StoredTemplate>();
+  let templateCounter = 0;
+  for (const seed of DEMO_TEMPLATES)
+    templates.set(seed.id, {
+      id: seed.id,
+      title: seed.title,
+      goal: seed.goal,
+      coordinatorBotId: seed.coordinatorBotId,
+      participantBotIds: [...seed.participantBotIds],
+      verificationPlan: null,
+      createdAt: ago(seed.minutesAgo),
+      updatedAt: ago(seed.minutesAgo),
+    });
+
+  /** The coordinator first, then the others sorted, as the server stores them. */
+  const rosterOrder = (coordinatorBotId: string, botIds: string[]) => [
+    coordinatorBotId,
+    ...[...new Set(botIds)].filter((id) => id !== coordinatorBotId).sort(),
+  ];
+  const templateProblems = (template: StoredTemplate): TemplateProblem[] => {
+    const problems: TemplateProblem[] = [];
+    for (const botId of template.participantBotIds) {
+      const record = bots.get(botId);
+      if (!record || record.archived)
+        problems.push({
+          kind: "bot_archived",
+          botId,
+          name: record?.bot.name ?? botId,
+        });
+    }
+    // The demo enforces no plans (`DEMO_CAPABILITIES.verification`).
+    if (template.verificationPlan && !DEMO_CAPABILITIES.verification)
+      problems.push({ kind: "verification_unavailable" });
+    return problems;
+  };
+  const deriveTemplate = (template: StoredTemplate): TaskTemplate =>
+    clone({ ...template, problems: templateProblems(template) });
+  const getTemplateRecord = (templateId: string) => {
+    const template = templates.get(templateId);
+    if (!template) throw notFound("task template", templateId);
+    return template;
+  };
+  const assertActiveBots = (botIds: string[]) => {
+    const missing = botIds.filter((botId) => {
+      const record = bots.get(botId);
+      return !record || record.archived;
+    });
+    if (missing.length > 0)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `Unknown bot: ${missing.join(", ")}.`,
+        { botIds: missing },
+        400,
+      );
+  };
+
   return {
     mode: "demo",
     badge: demoBadge(options.reason),
@@ -1170,6 +1246,115 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           ? [{ model: "demo/sample", last30d: total }]
           : [],
       });
+    },
+
+    listTemplates: async () =>
+      [...templates.values()]
+        .sort(
+          (a, b) =>
+            a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+        )
+        .map(deriveTemplate),
+    getTemplate: async (templateId) =>
+      deriveTemplate(getTemplateRecord(templateId)),
+    createTemplate: async (command) => {
+      const parsed = validate(createTaskTemplateCommandSchema, command);
+      assertActiveBots(parsed.participantBotIds);
+      if (templates.size >= MAX_TASK_TEMPLATES)
+        throw new ApiError(
+          "CONFLICT",
+          `This server keeps at most ${MAX_TASK_TEMPLATES} task templates; delete one before saving another.`,
+          { limit: MAX_TASK_TEMPLATES },
+          409,
+        );
+      const createdAt = now();
+      const template: StoredTemplate = {
+        id: `tmpl-${++templateCounter}`,
+        title: parsed.title,
+        goal: parsed.goal,
+        coordinatorBotId: parsed.coordinatorBotId,
+        participantBotIds: rosterOrder(
+          parsed.coordinatorBotId,
+          parsed.participantBotIds,
+        ),
+        verificationPlan: parsed.verificationPlan ?? null,
+        ...(parsed.spendCapUsd !== undefined
+          ? { spendCapUsd: parsed.spendCapUsd }
+          : {}),
+        createdAt,
+        updatedAt: createdAt,
+      };
+      templates.set(template.id, template);
+      notify({ type: "templates.changed" });
+      return deriveTemplate(template);
+    },
+    updateTemplate: async (templateId, command) => {
+      const current = getTemplateRecord(templateId);
+      const parsed = validate(updateTaskTemplateCommandSchema, command);
+      const roster = withCoordinator({
+        coordinatorBotId: parsed.coordinatorBotId ?? current.coordinatorBotId,
+        participantBotIds:
+          parsed.participantBotIds ?? current.participantBotIds,
+      });
+      assertActiveBots(roster.participantBotIds);
+      const { spendCapUsd: _cap, ...rest } = current;
+      const cap =
+        parsed.spendCapUsd === undefined
+          ? current.spendCapUsd !== undefined
+            ? { spendCapUsd: current.spendCapUsd }
+            : {}
+          : parsed.spendCapUsd === PROFILE_SPEND_CAP
+            ? {}
+            : { spendCapUsd: parsed.spendCapUsd };
+      const template: StoredTemplate = {
+        ...rest,
+        ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+        ...(parsed.goal !== undefined ? { goal: parsed.goal } : {}),
+        ...(parsed.verificationPlan !== undefined
+          ? { verificationPlan: parsed.verificationPlan }
+          : {}),
+        coordinatorBotId: roster.coordinatorBotId,
+        participantBotIds: rosterOrder(
+          roster.coordinatorBotId,
+          roster.participantBotIds,
+        ),
+        ...cap,
+        updatedAt: now(),
+      };
+      templates.set(templateId, template);
+      notify({ type: "templates.changed" });
+      return deriveTemplate(template);
+    },
+    deleteTemplate: async (templateId) => {
+      getTemplateRecord(templateId);
+      templates.delete(templateId);
+      notify({ type: "templates.changed" });
+    },
+    startTemplate: async (templateId, command) => {
+      const parsed = validate(startTemplateCommandSchema, command);
+      const template = deriveTemplate(getTemplateRecord(templateId));
+      if (template.problems.length > 0)
+        throw new ApiError(
+          "TEMPLATE_UNUSABLE",
+          `"${template.title}" cannot start: ${template.problems
+            .map(describeTemplateProblem)
+            .join(" ")}`,
+          { problems: template.problems },
+          409,
+        );
+      if (templateGoalTooLong(template.goal, parsed.instructions)) {
+        const length = templateRunGoal(
+          template.goal,
+          parsed.instructions,
+        ).length;
+        throw new ApiError(
+          "VALIDATION_FAILED",
+          `instructions: the goal with these instructions is ${length} characters, over the ${COMMAND_TEXT_LIMIT} a task takes; shorten them.`,
+          { length, limit: COMMAND_TEXT_LIMIT },
+          422,
+        );
+      }
+      return createTask(templateTaskCommand(template, parsed), templateId);
     },
 
     listTasks: async () =>
