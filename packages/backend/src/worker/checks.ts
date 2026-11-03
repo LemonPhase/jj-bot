@@ -38,7 +38,8 @@ export interface CheckEnv {
   redact: (text: string) => string;
 }
 
-const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
+const seconds = (ms: number) =>
+  ms < 1000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 100) / 10} s`;
 
 const clipLine = (text: string, max: number) => {
   const line = text.replace(/\s+/g, " ").trim();

@@ -226,6 +226,24 @@ function criterionOf(draft: CheckDraft, id: string): unknown {
   };
 }
 
+const EMPTY_FIELD: Record<string, string> = {
+  description: "Say what it checks.",
+  command: "Give the command to run.",
+  path: "Give the file's path in the workspace.",
+  value: "Give the text to look for.",
+};
+
+/** A draft's first problem, in the editor's words. */
+function draftProblem(
+  field: PropertyKey | undefined,
+  issue: { code: string; message: string } | undefined,
+): string {
+  const name = typeof field === "string" ? field : "";
+  if (issue?.code === "too_small" && EMPTY_FIELD[name])
+    return EMPTY_FIELD[name];
+  return issue?.message ?? "Fix this check.";
+}
+
 /**
  * The plan the drafts make, or each invalid draft's first problem by key.
  * New criteria get ids from their descriptions; kept ones keep theirs.
@@ -252,9 +270,7 @@ export function planFromDrafts(
     if (parsed.success) plan.push(parsed.data);
     else {
       const issue = parsed.error.issues[0];
-      const field = issue?.path[0];
-      errors[draft.key] =
-        `${field === "description" ? "Say what it checks" : field === "command" ? "Give the command" : field === "path" ? "Give a workspace path" : field === "value" ? "Give the value" : "Fix this check"}: ${issue?.message ?? "invalid"}`;
+      errors[draft.key] = draftProblem(issue?.path[0], issue);
     }
   });
   if (Object.keys(errors).length > 0) return { ok: false, errors };
