@@ -334,27 +334,20 @@ export function compactedAt(
 }
 
 /**
- * The saved copies of the view's events that were over the payload cap
- * (`payloadArtifactId`), by the record each carried: `message:<id>`,
- * `approval:<id>` or `session:<id>`. The newest event of a record wins.
+ * The saved copies of the view's approval events whose held call's
+ * arguments were over the payload cap (`payloadArtifactId`), by approval id;
+ * the newest event of an approval wins. Other records are never clipped.
  */
-export function savedCopies(
+export function savedApprovalCopies(
   view: Pick<TaskView, "events">,
 ): Map<string, string> {
   const copies = new Map<string, string>();
-  for (const event of view.events) {
-    if (!event.payloadArtifactId) continue;
-    const key =
-      event.type === "message.posted"
-        ? `message:${event.payload.message.id}`
-        : event.type === "approval.requested" ||
-            event.type === "approval.updated"
-          ? `approval:${event.payload.approval.id}`
-          : event.type === "session.created" || event.type === "session.updated"
-            ? `session:${event.payload.session.id}`
-            : undefined;
-    if (key) copies.set(key, event.payloadArtifactId);
-  }
+  for (const event of view.events)
+    if (
+      event.payloadArtifactId &&
+      (event.type === "approval.requested" || event.type === "approval.updated")
+    )
+      copies.set(event.payload.approval.id, event.payloadArtifactId);
   return copies;
 }
 
@@ -557,15 +550,15 @@ const noticeText = (event: TaskEvent): string | null => {
  * requests and the finish placed where they happened. Notices come from the
  * view's retained events, so very old ones may be missing; messages never are.
  * The user message posted after a `task.goal_changed` is marked as the new goal.
+ * Approvals are records, placed by when they were requested, so their place
+ * holds once compaction removed the event that requested them.
  */
 export function taskTimeline(view: TaskView): TimelineEntry[] {
   const postedAt = new Map<string, number>();
   const goalSetBy = new Map<string, number>();
   const notices: { sequence: number; entry: TimelineEntry }[] = [];
-  const approvals = new Map(
-    view.approvals.map((approval) => [approval.id, approval]),
-  );
-  const placed = new Set<string>();
+  // When each entry happened, to place approvals among them.
+  const happened = new Map<TimelineEntry, string>();
   // The server posts the user's message after `task.goal_changed` (and the
   // task reopening) in the same transaction, so the next user message is the
   // one that set the goal.
@@ -581,22 +574,10 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
       }
     }
     const text = noticeText(event);
-    if (text)
-      notices.push({
-        sequence: event.sequence,
-        entry: { kind: "notice", id: event.id, text },
-      });
-    // An approval shows where it was requested, as it is now.
-    const approval =
-      event.type === "approval.requested"
-        ? approvals.get(event.payload.approval.id)
-        : undefined;
-    if (approval && !placed.has(approval.id)) {
-      placed.add(approval.id);
-      notices.push({
-        sequence: event.sequence,
-        entry: { kind: "approval", approval },
-      });
+    if (text) {
+      const entry: TimelineEntry = { kind: "notice", id: event.id, text };
+      happened.set(entry, event.occurredAt);
+      notices.push({ sequence: event.sequence, entry });
     }
   }
 
@@ -608,26 +589,28 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
     if (at !== undefined)
       while (next < notices.length && (notices[next]?.sequence ?? 0) < at)
         entries.push((notices[next++] as (typeof notices)[number]).entry);
-    entries.push({
+    const entry: TimelineEntry = {
       kind: "message",
       message,
       goalVersion: goalSetBy.get(message.id) ?? null,
-    });
+    };
+    happened.set(entry, message.createdAt);
+    entries.push(entry);
   }
   for (; next < notices.length; next += 1)
     entries.push((notices[next] as (typeof notices)[number]).entry);
-  // Requested before the retained events: placed among messages by time.
-  for (const approval of view.approvals) {
-    if (placed.has(approval.id)) continue;
+  // Each approval, oldest first, before the first entry that happened after it.
+  const approvals = [...view.approvals].sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  );
+  for (const approval of approvals) {
     const at = entries.findIndex(
-      (entry) =>
-        entry.kind === "message" &&
-        entry.message.createdAt > approval.createdAt,
+      (entry) => (happened.get(entry) ?? "") > approval.createdAt,
     );
-    entries.splice(at === -1 ? entries.length : at, 0, {
-      kind: "approval",
-      approval,
-    });
+    const entry: TimelineEntry = { kind: "approval", approval };
+    happened.set(entry, approval.createdAt);
+    entries.splice(at === -1 ? entries.length : at, 0, entry);
   }
   return entries;
 }

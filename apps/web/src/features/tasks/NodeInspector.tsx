@@ -5,13 +5,7 @@ import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import { ArtifactRows, SavedCopy } from "./ArtifactList";
 import { usageDetail, usageLine } from "./format";
-import {
-  botName,
-  formatToolCall,
-  savedCopies,
-  TASK_NODE,
-  type ToolCall,
-} from "./taskModel";
+import { botName, formatToolCall, TASK_NODE, type ToolCall } from "./taskModel";
 import { useOrdinals, useSessionTools } from "./useTaskModel";
 
 /**
@@ -51,7 +45,6 @@ function SessionInspector({
   const ordinal = useOrdinals(view).get(session.id) ?? "s-?";
   const usage = view.usage.bySession[session.id];
   const files = view.artifacts.filter((a) => a.sessionId === session.id);
-  const saved = savedCopies(view).get(`session:${session.id}`);
   const large = tools.calls.filter((call) => call.savedCopy);
   return (
     <Card as="section" aria-label="Selected session" className="inspector">
@@ -101,11 +94,6 @@ function SessionInspector({
           </span>
         </Line>
       ))}
-      {saved && (
-        <Line label="Session">
-          <SavedCopy view={view} artifactId={saved} />
-        </Line>
-      )}
       <Line label="Usage">
         {usage ? (
           <span title={usageDetail(usage)}>{usageLine(usage)}</span>

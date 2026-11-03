@@ -36,7 +36,7 @@ import {
   botName,
   createMentionMatcher,
   type MentionSegment,
-  savedCopies,
+  savedApprovalCopies,
   statusAnnouncements,
   type TimelineEntry,
   taskTimeline,
@@ -70,7 +70,7 @@ export function TaskChat({ view }: { view: TaskView }) {
     [task.status, sessions],
   );
   const mention = useMemo(() => createMentionMatcher(bots), [bots]);
-  const copies = useMemo(() => savedCopies({ events }), [events]);
+  const copies = useMemo(() => savedApprovalCopies({ events }), [events]);
   const activityKey = lines
     .map((line) => `${line.session.id}:${line.text}`)
     .join("|");
@@ -133,10 +133,8 @@ export function TaskChat({ view }: { view: TaskView }) {
                 view={view}
                 savedCopy={
                   entry.kind === "approval"
-                    ? copies.get(`approval:${entry.approval.id}`)
-                    : entry.kind === "message"
-                      ? copies.get(`message:${entry.message.id}`)
-                      : undefined
+                    ? copies.get(entry.approval.id)
+                    : undefined
                 }
               />
             ))}

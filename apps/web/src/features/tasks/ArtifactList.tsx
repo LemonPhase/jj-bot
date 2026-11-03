@@ -1,4 +1,4 @@
-import type { Artifact, TaskView } from "@jj/contracts";
+import { type Artifact, savedPayloadType, type TaskView } from "@jj/contracts";
 import { useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import { Button, buttonClass, SectionLabel } from "../../components/ui";
@@ -31,12 +31,6 @@ export function ArtifactRows({
 }) {
   const { getBot } = useWorkspace();
   const ordinals = useOrdinals(view);
-  // Events over the payload cap, saved whole: not tool output.
-  const savedEvents = new Set(
-    view.events.flatMap((event) =>
-      event.payloadArtifactId ? [event.payloadArtifactId] : [],
-    ),
-  );
   return (
     <ul className="artifacts__list">
       {artifacts.map((artifact) => {
@@ -52,11 +46,7 @@ export function ArtifactRows({
               </span>
               <span className="artifact__meta clamp1">
                 {formatBytes(artifact.sizeBytes)} · {producer}
-                {artifact.kind !== "output"
-                  ? ""
-                  : savedEvents.has(artifact.id)
-                    ? " · saved event"
-                    : " · tool output"}
+                {outputLabel(artifact)}
               </span>
             </span>
             <ArtifactDownload taskId={view.task.id} artifact={artifact} />
@@ -65,6 +55,17 @@ export function ArtifactRows({
       })}
     </ul>
   );
+}
+
+/**
+ * What an `output` artifact holds: a tool's output, or the whole payload of
+ * an event over the payload cap, known by its path, so the label holds once
+ * compaction removed the event.
+ */
+export function outputLabel(artifact: Artifact): string {
+  if (artifact.kind !== "output") return "";
+  const type = savedPayloadType(artifact);
+  return type ? ` · saved ${type} event` : " · tool output";
 }
 
 /**
@@ -150,7 +151,7 @@ export function SavedCopy({
       <ArtifactDownload
         taskId={view.task.id}
         artifact={artifact}
-        text="Large: open the saved copy"
+        text="Large: download the saved copy"
       />
     </span>
   );

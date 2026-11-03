@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "../../test/dom";
 import {
+  type Approval,
   type Artifact,
   type ExecutionSession,
   emptyUsage,
@@ -16,10 +17,16 @@ import type { JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
 import { useWorkspace, WorkspaceProvider } from "../../state/WorkspaceContext";
 import { AboutPanel, retentionText } from "../settings/AboutPanel";
+import { ArtifactList, outputLabel } from "./ArtifactList";
 import { NodeInspector } from "./NodeInspector";
 import { CompactedNote, ProgressSteps } from "./ProgressSteps";
 import { TaskChat } from "./TaskChat";
-import { compactedAt, savedCopies, toolCallsBySession } from "./taskModel";
+import {
+  compactedAt,
+  savedApprovalCopies,
+  taskTimeline,
+  toolCallsBySession,
+} from "./taskModel";
 
 const at = (second: number) =>
   `2026-10-01T12:00:${String(second).padStart(2, "0")}.000Z`;
@@ -57,12 +64,41 @@ const saved: Artifact = {
   sessionId: "s-1",
   runId: "r-1",
   kind: "output",
-  path: "message.posted payload",
-  name: "message.posted.json",
+  path: "approval.requested payload",
+  name: "approval.requested.json",
   contentType: "application/json",
   sizeBytes: 300_000,
   sha256: "a".repeat(64),
   createdAt: at(6),
+};
+const held: Approval = {
+  id: "ap-1",
+  taskId: "task-1",
+  sessionId: "s-1",
+  runId: "r-1",
+  botId: "bot-1",
+  toolCallId: "call-big",
+  tool: "write",
+  summary: "big.txt",
+  args: {
+    path: "big.txt",
+    content: "x… [1048000 more characters in the saved copy]",
+  },
+  rule: { tool: "write" },
+  text: "",
+  goalVersion: 1,
+  status: "denied",
+  reason: "Too big",
+  outcome: null,
+  createdAt: at(7),
+  decidedAt: at(8),
+  startedAt: null,
+};
+const savedTool: Artifact = {
+  ...saved,
+  id: "art-tool",
+  path: "tool.finished payload",
+  name: "tool.finished.json",
 };
 const long: TaskMessage = {
   id: "m-1",
@@ -115,9 +151,11 @@ function compactedView(): TaskView {
       id: "e7",
       sequence: 7,
       occurredAt: at(7),
-      type: "message.posted",
+      type: "approval.requested",
       payloadArtifactId: "art-big",
-      payload: { message: long },
+      payload: {
+        approval: { ...held, status: "pending", reason: null, decidedAt: null },
+      },
     },
     {
       ...base,
@@ -130,7 +168,7 @@ function compactedView(): TaskView {
       type: "task.compacted",
       payload: { through: 8, removed: 12, stripped: 2 },
     },
-    finished(11, "new", { payloadArtifactId: "art-big" }),
+    finished(11, "new", { payloadArtifactId: "art-tool" }),
   ] as TaskEvent[];
   return {
     task: {
@@ -154,8 +192,8 @@ function compactedView(): TaskView {
     },
     sessions: [session],
     messages: [long],
-    artifacts: [saved],
-    approvals: [],
+    artifacts: [saved, savedTool],
+    approvals: [held],
     verificationChecks: [],
     usage: { total: emptyUsage(), bySession: {} },
     events,
@@ -194,9 +232,9 @@ describe("a compacted task", () => {
       calls.map((call) => [call.id, call.outputGone, call.savedCopy]),
     ).toEqual([
       ["old", true, null],
-      ["new", false, "art-big"],
+      ["new", false, "art-tool"],
     ]);
-    expect(savedCopies(view)).toEqual(new Map([["message:m-1", "art-big"]]));
+    expect(savedApprovalCopies(view)).toEqual(new Map([["ap-1", "art-big"]]));
   });
 
   it("says so above its steps, and its tool rows say the output was not kept", async () => {
@@ -234,16 +272,62 @@ describe("a compacted task", () => {
     });
     expect(
       within(log).getByRole("link", {
-        name: "Large: open the saved copy: message.posted.json",
+        name: "Large: download the saved copy: approval.requested.json",
       }),
     ).toBeTruthy();
     const inspector = screen.getByRole("region", { name: "Selected session" });
     expect(
       within(inspector).getByRole("link", {
-        name: "Large: open the saved copy: message.posted.json",
+        name: "Large: download the saved copy: tool.finished.json",
       }),
     ).toBeTruthy();
     expect(within(inspector).getByText(/output not kept/)).toBeTruthy();
+  });
+
+  it("labels a saved event's artifact by its path, once compaction removed the event too", async () => {
+    // The events that named them are gone: only the artifacts remain.
+    const view = { ...compactedView(), events: [] };
+    renderWithWorkspace(<ArtifactList view={view} />);
+    await screen.findByRole("heading", { name: "Artifacts · 2" });
+    expect(screen.getByText(/saved approval\.requested event/)).toBeTruthy();
+    expect(screen.getByText(/saved tool\.finished event/)).toBeTruthy();
+    expect(screen.queryByText(/tool output/)).toBeNull();
+    expect(outputLabel({ ...saved, path: "bash output: ls" })).toBe(
+      " · tool output",
+    );
+  });
+
+  it("places approvals by when they were requested, the event that did gone", () => {
+    const first: Approval = { ...held, id: "ap-a", createdAt: at(3) };
+    // Requested after the last message, before the task finished.
+    const second: Approval = { ...held, id: "ap-b", createdAt: at(12) };
+    const view: TaskView = {
+      ...compactedView(),
+      messages: [
+        { ...long, id: "m-a", sequence: 1, createdAt: at(1) },
+        { ...long, id: "m-b", sequence: 2, createdAt: at(10) },
+      ],
+      approvals: [second, first],
+      events: [
+        {
+          ...base,
+          id: "e20",
+          sequence: 20,
+          occurredAt: at(20),
+          type: "task.finished",
+          payload: { status: "completed", result: "Counted.", error: null },
+        },
+      ] as TaskEvent[],
+    };
+    expect(
+      taskTimeline(view).map((entry) =>
+        entry.kind === "message"
+          ? entry.message.id
+          : entry.kind === "approval"
+            ? entry.approval.id
+            : entry.text,
+      ),
+    ).toEqual(["m-a", "ap-a", "m-b", "ap-b", "Task done"]);
   });
 });
 
