@@ -429,6 +429,27 @@ describe("direct chat replies and spend", () => {
     expect(asked).toEqual([]);
     expect(await chatRows(bot.id)).toHaveLength(0);
   });
+
+  it("tells the chat which cap stopped a task that waits at it", async () => {
+    const { engine, executor, chat } = await setup();
+    const { bot } = await engine.bots.create({ name: `Halted${Date.now()}` });
+    executor.brain(bot.name, tireless);
+    const updates: string[] = [];
+    chat.brain(bot.name, (input) => {
+      updates.push(input.history.at(-1)?.text ?? "");
+      return { text: "It stopped at its cap." };
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Count forever.",
+      coordinatorBotId: bot.id,
+      spendCapUsd: 0.015,
+    });
+    await untilTask(engine, task.id, waitingForUser);
+    await until(() => updates.length > 0);
+    expect(updates[0]).toContain(
+      "Stopped: The task reached its spend cap: $0.02 of $0.015 spent.",
+    );
+  });
 });
 
 describe("the instance's daily spend cap", () => {

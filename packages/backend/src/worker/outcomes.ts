@@ -253,7 +253,8 @@ async function endTurn(
         },
         attribution,
       );
-    if (cap)
+    const stopped = cap ? `Stopped: ${cap.reason} ${cap.advice}` : undefined;
+    if (stopped)
       await postMessage(
         tx,
         ctx,
@@ -262,7 +263,7 @@ async function endTurn(
           authorKind: "system",
           sessionId: session.id,
           intent: "discussion",
-          text: `Stopped: ${cap.reason} ${cap.advice}`,
+          text: stopped,
         },
         attribution,
       );
@@ -277,7 +278,14 @@ async function endTurn(
     if (task.status !== "waiting") {
       await updateTask(tx, ctx, task, { status: "waiting" }, attribution);
       // A task that continues and waits again is a new event.
-      await recordTaskUpdate(tx, ctx, task, "waiting", text);
+      // Stopped at a cap, the chat is told the cap, after any text of the turn.
+      await recordTaskUpdate(
+        tx,
+        ctx,
+        task,
+        "waiting",
+        stopped ? [text.trim(), stopped].filter(Boolean).join("\n\n") : text,
+      );
     }
     return;
   }
