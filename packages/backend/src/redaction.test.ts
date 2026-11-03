@@ -224,6 +224,158 @@ describe("redactor", () => {
     expect(redact(MIDDLE, { end: true })).toBe(MIDDLE);
   });
 
+  it("masks a text cut at both ends that lies inside a database password", () => {
+    // A `matches` check's quote out of DATABASE_URL, which holds no colon
+    // or @ to frame the password.
+    const redact = createRedactor([
+      {
+        name: "the DATABASE_URL password",
+        value: "correct-horse-battery-staple",
+        inUrl: true,
+      },
+    ]);
+    for (const piece of [
+      "correct-horse-battery",
+      "horse-battery",
+      "correct-horse-battery-staple",
+    ])
+      expect(redact(piece, { start: true, end: true })).toBe(REDACTED);
+    // Up to three characters, as for any secret; and only cut at both ends.
+    expect(redact("cor", { start: true, end: true })).toBe("cor");
+    expect(redact("horse-battery", { end: true })).toBe("horse-battery");
+  });
+
+  it("masks a text cut at both ends inside a multi-byte secret, through the replacement characters a byte cut leaves", () => {
+    const secret = "pässwörd-😀-tokenvalue-123";
+    const redact = createRedactor([{ name: "PASSWORD", value: secret }]);
+    const bytes = Buffer.from(secret);
+    const emoji = Buffer.from(secret.slice(0, secret.indexOf("😀"))).length;
+    // Through the ä at the start, or into the emoji's four bytes at either end.
+    for (const [from, to] of [
+      [2, bytes.length - 2],
+      [emoji + 1, bytes.length - 3],
+      [emoji + 3, bytes.length - 1],
+      [1, emoji + 2],
+    ] as const) {
+      const piece = bytes.subarray(from, to).toString("utf8");
+      expect(piece).toContain("\uFFFD");
+      expect(redact(piece, { start: true, end: true })).toBe(REDACTED);
+    }
+    // Around a text that is no piece of a secret, they change nothing.
+    expect(redact("\uFFFDword\uFFFD", { start: true, end: true })).toBe(
+      "\uFFFDword\uFFFD",
+    );
+  });
+
+  it("replaces secrets that overlap as one, leaving no piece of either", () => {
+    const first = "AAAA1111BBBB2222CCCC";
+    const second = "CCCC3333DDDD4444EEEE";
+    const redact = createRedactor([
+      { name: "FIRST", value: first },
+      { name: "SECOND", value: second },
+    ]);
+    // The first's tail is the second's head.
+    expect(redact(`x AAAA1111BBBB2222CCCC3333DDDD4444EEEE y`)).toBe(
+      `x ${REDACTED} y`,
+    );
+    // Secrets that only touch are replaced one by one, as before.
+    expect(redact(`${first}${second}`)).toBe(`${REDACTED}${REDACTED}`);
+    // A secret overlapping itself: its border repeats.
+    const bordered = "abcdXXXXXXXXXXXXabcd";
+    expect(
+      createRedactor([{ name: "B", value: bordered }])(
+        `[abcdXXXXXXXXXXXXabcdXXXXXXXXXXXXabcd]`,
+      ),
+    ).toBe(`[${REDACTED}]`);
+    // A secret overlapping a database password, which keeps its @.
+    const both = createRedactor([
+      { name: "DB", value: "correct-horse-battery-staple", inUrl: true },
+      { name: "URL_HEAD", value: "postgres://app:correct-horse" },
+    ]);
+    expect(both("postgres://app:correct-horse-battery-staple@db/app")).toBe(
+      `${REDACTED}@db/app`,
+    );
+  });
+
+  it("replaces every occurrence of every secret, as a brute-force search finds them", () => {
+    let seed = 11;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const word = (length: number) =>
+      Array.from({ length }, () => "ab"[Math.floor(random() * 2)]).join("");
+    const pick = <T>(items: readonly T[]) =>
+      items[Math.floor(random() * items.length)] as T;
+    for (let round = 0; round < 2_000; round += 1) {
+      // Some repeat a short word, so their occurrences overlap one another.
+      const secrets = Array.from(
+        { length: 1 + Math.floor(random() * 3) },
+        () =>
+          random() < 0.5
+            ? word(16 + Math.floor(random() * 4))
+            : word(1 + Math.floor(random() * 4))
+                .repeat(20)
+                .slice(0, 16 + Math.floor(random() * 4)),
+      );
+      // Secrets, their pieces and filler, run together.
+      let text = "";
+      for (let part = Math.floor(random() * 6); part >= 0; part -= 1) {
+        const secret = pick(secrets);
+        const cut = Math.floor(random() * secret.length);
+        text += pick([
+          secret,
+          secret,
+          secret.slice(cut),
+          secret.slice(0, cut),
+          word(Math.floor(random() * 5)),
+        ]);
+      }
+      // Every character an occurrence covers; each run of overlapping ones
+      // becomes one replacement.
+      const spans = secrets
+        .flatMap((secret) =>
+          [...text.matchAll(new RegExp(`(?=${secret})`, "g"))].map(
+            (match): [number, number] => [
+              match.index,
+              match.index + secret.length,
+            ],
+          ),
+        )
+        .sort((a, b) => a[0] - b[0]);
+      let expected = "";
+      let kept = 0;
+      for (let index = 0; index < spans.length; ) {
+        const [start] = spans[index] as [number, number];
+        let end = (spans[index] as [number, number])[1];
+        for (
+          index += 1;
+          index < spans.length && (spans[index] as [number, number])[0] < end;
+          index += 1
+        )
+          end = Math.max(end, (spans[index] as [number, number])[1]);
+        expected += `${text.slice(kept, start)}${REDACTED}`;
+        kept = end;
+      }
+      expected += text.slice(kept);
+      const redact = createRedactor(
+        secrets.map((value, index) => ({ name: `S${index}`, value })),
+      );
+      expect(redact(text), JSON.stringify({ secrets, text })).toBe(expected);
+    }
+  });
+
+  it("finds overlapping occurrences in time linear in the text, however often a secret repeats", () => {
+    const redact = createRedactor([
+      { name: "RUN", value: "a".repeat(4000) },
+      { name: "PERIOD", value: "ab".repeat(8) },
+    ]);
+    const started = performance.now();
+    expect(redact("a".repeat(2_000_000))).toBe(REDACTED);
+    expect(redact(`x${"ab".repeat(1_000_000)}y`)).toBe(`x${REDACTED}y`);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
   it("masks no piece of a secret too short to redact", () => {
     const redact = createRedactor([{ name: "SHORT_KEY", value: "0123456789" }]);
     expect(redact("key 012345678", { end: true })).toBe("key 012345678");
