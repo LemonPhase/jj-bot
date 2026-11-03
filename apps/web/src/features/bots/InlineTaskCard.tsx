@@ -6,7 +6,13 @@ import {
 import { useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import { isApiError } from "../../api/client";
-import { Button, ErrorBanner, Icon, StatusSquare } from "../../components/ui";
+import {
+  Button,
+  buttonClass,
+  ErrorBanner,
+  Icon,
+  StatusSquare,
+} from "../../components/ui";
 import { statusTitle, statusTone, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { taskHref } from "../shell/router";
@@ -134,8 +140,10 @@ function TaskCardLink({
 
 /**
  * A call waiting for the user's approval, under the task's card: what it
- * runs, with Approve and Deny. Only the user answers; a reason for a denial
- * is given in the task chat.
+ * runs, with Approve and Deny. Approve is offered here only when the summary
+ * is the whole call; otherwise "Review in the task" opens the task, whose
+ * card shows all of it. Only the user answers; a reason for a denial is given
+ * in the task chat.
  */
 function ChatApproval({
   taskId,
@@ -171,6 +179,8 @@ function ChatApproval({
         <span>
           {name} asks to run {approval.tool}:{" "}
           <code className="chat-approval__call">{approval.summary}</code>
+          {!approval.shownInFull &&
+            " (shortened: the task shows the whole call)"}
         </span>
       </p>
       {answer ? (
@@ -179,15 +189,26 @@ function ChatApproval({
         </p>
       ) : (
         <div className="chat-approval__actions">
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={busy}
-            onClick={() => void decide("approve")}
-            aria-label={`Approve: ${approval.summary}`}
-          >
-            Approve
-          </Button>
+          {approval.shownInFull ? (
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={busy}
+              onClick={() => void decide("approve")}
+              aria-label={`Approve: ${approval.summary}`}
+            >
+              Approve
+            </Button>
+          ) : (
+            // The summary is not the whole call: approve it where all of it shows.
+            <a
+              className={buttonClass({ variant: "primary", size: "sm" })}
+              href={taskHref(taskId)}
+              aria-label={`Review in the task: ${approval.summary}`}
+            >
+              Review in the task
+            </a>
+          )}
           <Button
             size="sm"
             disabled={busy}

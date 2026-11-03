@@ -4,6 +4,7 @@
 import {
   addUsage,
   emptyUsage,
+  pendingApprovalOf,
   questionExcerpt,
   TASK_VIEW_EVENT_LIMIT,
   type TaskEvent,
@@ -286,11 +287,7 @@ export async function taskSummaries(
       ...(question ? { question } : {}),
       pendingApprovals: pending
         .filter((approval) => approval.taskId === row.id)
-        .map((approval) => {
-          const { id, sessionId, botId, tool, summary, createdAt } =
-            toApproval(approval);
-          return { id, sessionId, botId, tool, summary, createdAt };
-        }),
+        .map((approval) => pendingApprovalOf(toApproval(approval))),
       ...(verification ? { verification } : {}),
     };
   });

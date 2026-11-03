@@ -116,3 +116,54 @@ test("the coordinator's chat shows the held call on the task card, and Deny answ
     "shipped.txt",
   );
 });
+
+test("a held call too long to show in chat is reviewed and approved in the task", async ({
+  page,
+  request,
+}) => {
+  // Over the 300-character summary, so chat shows it shortened.
+  const long = `echo shipped > shipped.txt; ${"true; ".repeat(60)}# git push`;
+  const profile = await request.post("/api/runtime-profiles", {
+    data: {
+      name: "Guarded local",
+      sandbox: { driver: "local", network: { mode: "open" } },
+      approvals: [{ tool: "bash", match: "git push" }],
+    },
+  });
+  const { profile: created } = (await profile.json()) as {
+    profile: RuntimeProfile;
+  };
+  const bot = await request.post("/api/bots", {
+    data: { name: "Nova", runtimeProfileId: created.id },
+  });
+  const { bot: nova } = (await bot.json()) as { bot: Bot };
+  const response = await request.post("/api/tasks", {
+    data: {
+      goal: `Long release: run \`${long}\``,
+      title: "Long release",
+      coordinatorBotId: nova.id,
+    },
+  });
+  const { task } = (await response.json()) as { task: Task };
+
+  await page.goto(`/#/bots/${nova.id}`);
+  const log = page
+    .getByRole("main", { name: `Chat with ${nova.name}` })
+    .getByRole("log", { name: `Messages with ${nova.name}` });
+  const held = log.getByRole("list", {
+    name: "Calls in Long release waiting for your approval",
+  });
+  await expect(held).toContainText("the task shows the whole call");
+  // No Approve for a call the summary cuts short: review it in the task.
+  await expect(held.getByRole("button", { name: /^Approve:/ })).toHaveCount(0);
+  await held.getByRole("link", { name: /^Review in the task: / }).click();
+
+  const card = page
+    .getByRole("main", { name: "Task: Long release" })
+    .getByRole("article", { name: "Approval: Nova asks to run bash" });
+  await expect(card.getByLabel("The bash call")).toHaveText(long);
+  await card.getByRole("button", { name: "Approve" }).click();
+  await expect(card.getByText("ran · exit 0")).toBeVisible();
+  const after = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+  expect(after.approvals[0]?.outcome).toMatchObject({ ok: true, exitCode: 0 });
+});

@@ -76,15 +76,22 @@ export const approvalSchema = z.object({
   startedAt: timestampSchema.nullable(),
 });
 
-/** A pending approval as task summaries carry it. */
-export const pendingApprovalSchema = approvalSchema.pick({
-  id: true,
-  sessionId: true,
-  botId: true,
-  tool: true,
-  summary: true,
-  createdAt: true,
-});
+/**
+ * A pending approval as task summaries carry it. `shownInFull` is true when
+ * `summary` is the whole call (a bash command on one line within the summary
+ * limit), so a client may offer Approve from the summary alone; otherwise the
+ * whole call is on the task's approval card, and only it should offer Approve.
+ */
+export const pendingApprovalSchema = approvalSchema
+  .pick({
+    id: true,
+    sessionId: true,
+    botId: true,
+    tool: true,
+    summary: true,
+    createdAt: true,
+  })
+  .extend({ shownInFull: z.boolean().default(false) });
 
 /**
  * `POST /api/tasks/:taskId/approvals/:approvalId`. Only the user decides: no
@@ -186,6 +193,31 @@ export function describeApprovalRule(rule: ApprovalRule): string {
   return rule.match === undefined
     ? `every ${rule.tool} call`
     : `${rule.tool} calls matching \`${rule.match}\``;
+}
+
+/** True when the approval's summary is its whole call, exactly as it will run. */
+export function shownInFull(
+  approval: Pick<Approval, "tool" | "args" | "summary">,
+): boolean {
+  return (
+    approval.tool === "bash" &&
+    typeof approval.args.command === "string" &&
+    approval.args.command === approval.summary
+  );
+}
+
+/** The approval as task summaries carry it while it is pending. */
+export function pendingApprovalOf(approval: Approval): PendingApproval {
+  const { id, sessionId, botId, tool, summary, createdAt } = approval;
+  return {
+    id,
+    sessionId,
+    botId,
+    tool,
+    summary,
+    createdAt,
+    shownInFull: shownInFull(approval),
+  };
 }
 
 export type ApprovalStatus = z.infer<typeof approvalStatusSchema>;

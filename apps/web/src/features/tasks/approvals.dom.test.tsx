@@ -1,11 +1,25 @@
 // @vitest-environment jsdom
 import "../../test/dom";
-import { type Approval, emptyUsage, type TaskView } from "@jj/contracts";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  type Approval,
+  emptyUsage,
+  pendingApprovalOf,
+  type TaskView,
+} from "@jj/contracts";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ApiProvider } from "../../api/ApiContext";
 import type { JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
+import { useWorkspace, WorkspaceProvider } from "../../state/WorkspaceContext";
+import { InlineTaskCard } from "../bots/InlineTaskCard";
 import { ApprovalCard } from "./ApprovalCard";
 import {
   approvalCall,
@@ -324,5 +338,87 @@ describe("ApprovalCard", () => {
     expect(screen.getByText("ran · exit 0")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
+  });
+});
+
+describe("approvals on the chat's task card", () => {
+  function renderCard(pending: TaskView["approvals"]) {
+    const base = createDemoApi({ autoplay: false });
+    const task = view().task;
+    const api: JJApi = {
+      ...base,
+      bootstrap: async () => ({
+        ...(await base.bootstrap()),
+        tasks: [
+          {
+            ...task,
+            activeSessionCount: 0,
+            sessionCount: 1,
+            usage: emptyUsage(),
+            pendingApprovals: pending.map(pendingApprovalOf),
+          },
+        ],
+      }),
+    };
+    function Ready({ children }: { children: ReactNode }) {
+      const { loading } = useWorkspace();
+      return loading ? null : <>{children}</>;
+    }
+    render(
+      <ApiProvider api={api}>
+        <WorkspaceProvider>
+          <Ready>
+            <InlineTaskCard taskId={task.id} />
+          </Ready>
+        </WorkspaceProvider>
+      </ApiProvider>,
+    );
+  }
+
+  it("offers Approve only for a call its summary shows in full", async () => {
+    const long = `git push origin main && ${"echo step; ".repeat(40)}`;
+    renderCard([
+      approval(),
+      approval({
+        id: "ap-2",
+        sessionId: "s-2",
+        args: { command: long },
+        summary: `${long.slice(0, 299)}…`,
+      }),
+    ]);
+    const list = await screen.findByRole("list", {
+      name: "Calls in Ship waiting for your approval",
+    });
+    expect(
+      within(list).getByRole("button", {
+        name: "Approve: git push origin main",
+      }),
+    ).toBeTruthy();
+    // The shortened one: review it in the task, where the whole call shows.
+    const review = within(list).getByRole("link", {
+      name: /^Review in the task: git push origin main && echo step;/,
+    });
+    expect(review.getAttribute("href")).toBe("#/tasks/task-1");
+    expect(
+      within(list).getAllByRole("button", { name: /^Approve:/ }),
+    ).toHaveLength(1);
+    expect(
+      within(list).getAllByRole("button", { name: /^Deny:/ }),
+    ).toHaveLength(2);
+    expect(list.textContent).toContain("the task shows the whole call");
+  });
+
+  it("does not show a multi-line command as whole", () => {
+    const multi = approval({
+      args: { command: "cat > a <<'EOF'\ngit push\nEOF" },
+      summary: "cat > a <<'EOF' git push EOF",
+    });
+    expect(pendingApprovalOf(multi).shownInFull).toBe(false);
+    expect(pendingApprovalOf(approval()).shownInFull).toBe(true);
+    expect(
+      pendingApprovalOf(
+        approval({ tool: "write", args: { path: "a" }, summary: "a" }),
+      ).shownInFull,
+    ).toBe(false);
   });
 });

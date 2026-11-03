@@ -22,6 +22,7 @@ import {
   defaultAppearanceFor,
   emptyUsage,
   isFinishedStatus,
+  pendingApprovalOf,
   postTaskMessageCommandSchema,
   profileBudgetsSchema,
   type RuntimeProfile,
@@ -299,14 +300,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       ...(question ? { question } : {}),
       pendingApprovals: view.approvals
         .filter((approval) => approval.status === "pending")
-        .map(({ id, sessionId, botId, tool, summary, createdAt }) => ({
-          id,
-          sessionId,
-          botId,
-          tool,
-          summary,
-          createdAt,
-        })),
+        .map(pendingApprovalOf),
     };
   };
 
