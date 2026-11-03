@@ -4,8 +4,11 @@ import { readApiToken } from "./token";
 
 /**
  * The live backend when `/api/bootstrap` answers `mode: "backend"` with a
- * compatible contract; demo data otherwise, with the reason in the badge
- * tooltip. Add `?demo` to the URL to force demo data.
+ * compatible contract. Demo data, with the reason in the badge tooltip, only
+ * with `?demo` or when no JJ Bot backend is there at all (a static build, a
+ * scaffold API). An API that is unreachable (offline, a 5xx), asks for a
+ * token or speaks another contract rejects with the reason instead: demo
+ * data would pass for the user's workspace.
  *
  * The demo data is a chunk of its own, downloaded only when it is used, so
  * the live app never loads it. If that chunk cannot load either, this rejects
@@ -26,7 +29,12 @@ export async function resolveApi(
   if (new URLSearchParams(window.location.search).has("demo"))
     return demo("Opened with ?demo.");
   const probe = await probeBackend({ token });
-  return probe.ok
-    ? createLiveApi({ bootstrap: probe.bootstrap, models: probe.models, token })
-    : demo(probe.reason);
+  if (probe.ok)
+    return createLiveApi({
+      bootstrap: probe.bootstrap,
+      models: probe.models,
+      token,
+    });
+  if (!probe.demo) throw new Error(probe.reason);
+  return demo(probe.reason);
 }

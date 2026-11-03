@@ -14,6 +14,7 @@ The accepted stack and the constraint each layer must respect. See [Architecture
 | Contracts     | Zod schemas in `packages/contracts`                                                                | Versioned; every change gets a [changelog](contract-changelog.md) entry.                          |
 | Frontend      | React, TypeScript and Vite                                                                         | Renders server state; never fabricates execution or runs agent loops.                             |
 | Tooling       | npm workspaces, TypeScript, Biome, Vitest                                                          | `npm run verify` (alias `check`), which CI runs, is the merge gate.                               |
+| Observability | JSON lines from the engine's own logger; `@opentelemetry/api` spans; `@prometheus-io/client`       | Server-side only. Trace SDK and OTLP exporter loaded only with an endpoint. No content in labels. |
 
 ## Why pi
 

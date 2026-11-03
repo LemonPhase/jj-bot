@@ -336,6 +336,27 @@
   }
 }
 
+/* Phones: 16px gutters, and the About links as 44px targets. */
+@media (max-width: 759px) {
+  .bot-chat {
+    padding: 0 16px;
+  }
+
+  .bot-about__links {
+    gap: 0 var(--sp-7);
+  }
+
+  .bot-about__links .text-link,
+  .chat-task-card {
+    min-height: 44px;
+  }
+
+  .bot-inspector {
+    width: 100%;
+    border-left: 0;
+  }
+}
+
 /* The replying/working row's live region stays mounted; empty, it takes no gap. */
 .bot-chat__activity:empty {
   margin-top: calc(var(--sp-9) * -1);

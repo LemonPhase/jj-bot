@@ -225,7 +225,7 @@ export function PartPickers({
             ref={ref}
             type="button"
             className="studio-swatch"
-            style={{ background: COLOUR_RAMPS[colour].f }}
+            style={{ backgroundColor: COLOUR_RAMPS[colour].f }}
             aria-label={COLOUR_LABELS[colour]}
             {...item}
           />

@@ -4,33 +4,11 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-
-const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-
-function reducedMotionQuery(): MediaQueryList | null {
-  try {
-    return typeof window !== "undefined" &&
-      typeof window.matchMedia === "function"
-      ? window.matchMedia(REDUCED_MOTION)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function subscribeReducedMotion(listener: () => void): () => void {
-  const query = reducedMotionQuery();
-  query?.addEventListener("change", listener);
-  return () => query?.removeEventListener("change", listener);
-}
+import { useMediaQuery } from "../../lib/media";
 
 /** Whether the user asked for reduced motion; follows changes live. */
 export function useReducedMotion(): boolean {
-  return useSyncExternalStore(
-    subscribeReducedMotion,
-    () => reducedMotionQuery()?.matches ?? false,
-    () => false,
-  );
+  return useMediaQuery("(prefers-reduced-motion: reduce)");
 }
 
 function subscribeVisibility(listener: () => void): () => void {

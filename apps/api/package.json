@@ -6,10 +6,12 @@
   "exports": {
     "./server": "./src/server.ts",
     "./wiring": "./src/wiring.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./process": "./src/process.ts",
+    "./tracing": "./src/tracing.ts"
   },
   "scripts": {
-    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=dev.env --env-file-if-exists=../../.env src/index.ts",
     "start": "tsx --env-file-if-exists=../../.env src/index.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
@@ -20,6 +22,10 @@
     "@jj/db": "*",
     "@jj/runtime": "*",
     "@jj/sandbox": "*",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
+    "@opentelemetry/resources": "2.12.0",
+    "@opentelemetry/sdk-trace": "2.12.0",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.14",
     "tsx": "4.23.15"

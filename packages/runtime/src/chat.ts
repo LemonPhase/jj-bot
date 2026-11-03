@@ -9,7 +9,7 @@ import {
   ModelResolutionError,
   type ResolvedModel,
 } from "./models";
-import type { CollabTool, PiMessage } from "./types";
+import type { CollabTool, ExecutorEvent, PiMessage } from "./types";
 
 /**
  * Most model calls one chat reply may take. The deepest planned reply is a
@@ -46,6 +46,11 @@ export interface ChatReplyInput {
   admitModelCall?(): Promise<string | undefined>;
   /** Each model call's usage as it finishes, failed replies included; awaited. */
   onUsage?(usage: Usage, model: ModelRef): Promise<void>;
+  /**
+   * The reply's model calls and tool calls as they start and finish, as a
+   * run's `onEvent` sees them; for tracing and metrics, so nothing is stored.
+   */
+  onActivity?(event: ExecutorEvent): void;
 }
 
 export interface ChatReply {
@@ -162,6 +167,7 @@ export class ChatResponder {
       getSteering: async () => [],
       persist: async () => {},
       onEvent: async (event) => {
+        input.onActivity?.(event);
         if (event.type !== "model.finished") return;
         usage = addUsage(usage, event.usage);
         await input.onUsage?.(event.usage, event.model);

@@ -8,9 +8,11 @@
 import { isFinishedStatus, type TaskStatus } from "@jj/contracts";
 import { tasks } from "@jj/db";
 import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
+import type { Context } from "@opentelemetry/api";
 import { inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
+import { endSpan, SPANS, startSpan } from "../observability/tracing";
 import type { Secret } from "../redact";
 
 interface Entry {
@@ -161,7 +163,8 @@ export class TaskSandboxes {
    * The task's sandbox, starting it on first use. `signal` (the run's) stops
    * waiting; when no run waits any more the driver's acquire is aborted too.
    * `secrets` is read only when this starts the sandbox: its values go to the
-   * driver, which injects them into every command.
+   * driver, which injects them into every command. A start is traced under
+   * `trace` (the run's span) and timed by driver.
    */
   async acquire(
     taskId: string,
@@ -169,6 +172,7 @@ export class TaskSandboxes {
     spec: SandboxSpec,
     signal?: AbortSignal,
     secrets?: () => Promise<Record<string, string>>,
+    trace?: Context,
   ): Promise<SandboxHold> {
     signal?.throwIfAborted();
     let entry = this.entries.get(taskId);
@@ -189,14 +193,24 @@ export class TaskSandboxes {
         acquiring: (secrets ? secrets() : Promise.resolve({}))
           .then((values) => {
             created.secrets = values;
-            return driver.acquire({
+            return this.timed(
+              driver.id,
               taskId,
               sessionId,
-              spec,
-              workspaceKey: taskId,
-              signal: controller.signal,
-              ...(Object.keys(values).length > 0 ? { secrets: values } : {}),
-            });
+              controller,
+              trace,
+              () =>
+                driver.acquire({
+                  taskId,
+                  sessionId,
+                  spec,
+                  workspaceKey: taskId,
+                  signal: controller.signal,
+                  ...(Object.keys(values).length > 0
+                    ? { secrets: values }
+                    : {}),
+                }),
+            );
           })
           .then((sandbox) => {
             created.sandbox = sandbox;
@@ -250,6 +264,48 @@ export class TaskSandboxes {
           this.releaseEntry(taskId, held, true);
       },
     };
+  }
+
+  /**
+   * A driver's start as a `jj.sandbox.acquire` span and a sample of
+   * `jj_sandbox_acquire_duration_seconds`: `ok`, `error` (also counted in
+   * `jj_sandbox_acquire_failures_total`) or `aborted` when no run waited.
+   */
+  private async timed(
+    driver: string,
+    taskId: string,
+    sessionId: string,
+    controller: AbortController,
+    trace: Context | undefined,
+    start: () => Promise<Sandbox>,
+  ): Promise<Sandbox> {
+    const startedAt = performance.now();
+    const span = startSpan(
+      this.ctx.tracer,
+      SPANS.sandboxAcquire,
+      {
+        "jj.sandbox.driver": driver,
+        "jj.task.id": taskId,
+        "jj.session.id": sessionId,
+      },
+      trace,
+    );
+    const done = (outcome: string) => {
+      this.ctx.metrics.sandboxAcquire(
+        driver,
+        outcome,
+        (performance.now() - startedAt) / 1000,
+      );
+      endSpan(span, outcome, outcome === "error");
+    };
+    try {
+      const sandbox = await start();
+      done("ok");
+      return sandbox;
+    } catch (error) {
+      done(controller.signal.aborted ? "aborted" : "error");
+      throw error;
+    }
   }
 
   /** The task finished: release its sandbox once no run uses it. */
