@@ -10,6 +10,7 @@ import {
   remainingUsd,
   renderSummary,
   type SmokeReport,
+  smokeEnv,
   spent,
 } from "./smoke-nightly-summary";
 
@@ -256,5 +257,68 @@ describe("the nightly workflow", () => {
     expect(keysOf("permissions")).toEqual(["contents"]);
     expect(workflow).toMatch(/^permissions:\n {2}contents: read\n/m);
     expect(workflow.match(/secrets\.\w+/g)).toEqual(["secrets.OPENAI_API_KEY"]);
+  });
+
+  it("runs the live smokes on docker: the daemon checked and the sandbox image built first", () => {
+    const runs = [...workflow.matchAll(/^ {8}run: (.+)$/gm)].map(
+      (match) => match[1],
+    );
+    expect(runs).toEqual([
+      "npm ci",
+      "docker version",
+      "npm run sandbox:image",
+      "npm run smoke:nightly",
+    ]);
+    // The key's step runs the nightly script, whose smokes always get the
+    // docker driver (smokeEnv, below); nothing in the workflow overrides it.
+    expect(workflow).not.toMatch(/JJ_SMOKE_DRIVER|JJ_SANDBOX_DRIVERS/);
+  });
+});
+
+describe("smokeEnv", () => {
+  const run = { model: "openai/gpt-6-luna", reportPath: "/tmp/r.json" };
+
+  it("always selects the docker driver, whatever the environment says", () => {
+    for (const driver of [undefined, "local", "docker"]) {
+      const env = smokeEnv(
+        { OPENAI_API_KEY: "k", JJ_SMOKE_DRIVER: driver },
+        {},
+        run,
+      );
+      expect(env.JJ_SMOKE_DRIVER).toBe("docker");
+    }
+  });
+
+  it("drops remote, restart and stale cap settings, and keeps the nightly's own", () => {
+    const env = smokeEnv(
+      {
+        PATH: "/bin",
+        JJ_SMOKE_BASE_URL: "http://127.0.0.1:3001",
+        JJ_SMOKE_TOKEN: "t",
+        JJ_SMOKE_RESTART_COMMAND: "docker compose restart app",
+        JJ_SMOKE_UNREACHABLE: "app:3001",
+        JJ_MAX_USD_PER_DAY: "100",
+        JJ_SMOKE_MAX_USD: "100",
+        JJ_SMOKE_TASK_CAP_USD: "100",
+        JJ_SMOKE_SANDBOX_IMAGE: "elsewhere:1",
+      },
+      { JJ_MAX_USD_PER_DAY: "0.2", JJ_SMOKE_TASK_CAP_USD: "0.125" },
+      { ...run, sandboxImage: "jj-sandbox:local-fallback" },
+    );
+    expect(env).toEqual({
+      PATH: "/bin",
+      JJ_SMOKE_BASE_URL: undefined,
+      JJ_SMOKE_TOKEN: undefined,
+      JJ_SMOKE_RESTART_COMMAND: undefined,
+      JJ_SMOKE_UNREACHABLE: undefined,
+      JJ_SMOKE_MAX_USD: undefined,
+      JJ_MAX_USD_PER_DAY: "0.2",
+      JJ_SMOKE_TASK_CAP_USD: "0.125",
+      JJ_SMOKE_MODEL: "openai/gpt-6-luna",
+      JJ_SMOKE_REPORT: "/tmp/r.json",
+      JJ_SMOKE_DRIVER: "docker",
+      JJ_SMOKE_SANDBOX_IMAGE: "jj-sandbox:local-fallback",
+    });
+    expect(smokeEnv({}, {}, run).JJ_SMOKE_SANDBOX_IMAGE).toBeUndefined();
   });
 });

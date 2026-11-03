@@ -1,11 +1,18 @@
 // Live smoke test of the pi runtime: one real tool cycle (model -> bash in a
-// `local` sandbox -> model) with the model in JJ_SMOKE_MODEL (default
+// sandbox, `local` by default -> model) with the model in JJ_SMOKE_MODEL (default
 // openai/gpt-6-luna). Needs that provider's key in the environment or .env.
 // Prints the model, turns, tool calls and usage; exits non-zero on failure.
+//
+// The bash command is the model's, so on `local` it runs next to the key and
+// could read it from this process's environment. JJ_SMOKE_DRIVER=docker runs
+// it in a docker sandbox instead: isolated, without network, an ephemeral
+// workspace, on jj-sandbox:base-1 or JJ_SMOKE_SANDBOX_IMAGE, in a daemon
+// namespace of its own.
 //
 // JJ_SMOKE_MAX_USD caps its spend: no model call starts once the calls so far
 // cost that much (a call in flight finishes), and the run then fails as
 // stopped at the cap. JJ_SMOKE_REPORT=<path> also writes the result as JSON.
+import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -23,7 +30,11 @@ import {
   ModelResolutionError,
   PiSessionExecutor,
 } from "@jj/runtime";
-import { LocalSandboxDriver } from "@jj/sandbox";
+import {
+  DockerSandboxDriver,
+  LocalSandboxDriver,
+  type SandboxDriver,
+} from "@jj/sandbox";
 
 // Provider SDKs use Node's fetch, which ignores HTTPS_PROXY on its own.
 const proxy = configureOutboundProxy(process.env);
@@ -37,6 +48,20 @@ if (
 ) {
   console.error(
     `smoke:runtime: JJ_SMOKE_MAX_USD must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}.`,
+  );
+  process.exit(2);
+}
+const driverId = process.env.JJ_SMOKE_DRIVER?.trim() || "local";
+const sandboxImage = process.env.JJ_SMOKE_SANDBOX_IMAGE?.trim() || undefined;
+if (driverId !== "local" && driverId !== "docker") {
+  console.error(
+    `smoke:runtime: JJ_SMOKE_DRIVER is local or docker; got "${driverId}".`,
+  );
+  process.exit(2);
+}
+if (sandboxImage && driverId !== "docker") {
+  console.error(
+    "smoke:runtime: JJ_SMOKE_SANDBOX_IMAGE needs JJ_SMOKE_DRIVER=docker.",
   );
   process.exit(2);
 }
@@ -84,6 +109,7 @@ function report(result: Record<string, unknown>) {
         test: "runtime",
         ...result,
         model: ref,
+        driver: driverId,
         capUsd: capUsd ?? null,
         ...(capped ? { capped } : {}),
         usage: usageSoFar(),
@@ -99,11 +125,29 @@ function report(result: Record<string, unknown>) {
 
 async function main(): Promise<boolean> {
   const root = await mkdtemp(join(tmpdir(), "jj-smoke-runtime-"));
-  const driver = new LocalSandboxDriver({ root });
-  const spec = driver.validateSpec({
-    driver: "local",
-    network: { mode: "open" },
-  });
+  const driver: SandboxDriver =
+    driverId === "docker"
+      ? new DockerSandboxDriver({
+          namespace: `jj-smoke-runtime-${randomBytes(4).toString("hex")}`,
+        })
+      : new LocalSandboxDriver({ root, env: {} });
+  const spec = driver.validateSpec(
+    driverId === "docker"
+      ? {
+          driver: "docker",
+          network: { mode: "none" },
+          workspace: "ephemeral",
+          ...(sandboxImage ? { image: sandboxImage } : {}),
+        }
+      : { driver: "local", network: { mode: "open" } },
+  );
+  if (driverId === "docker") {
+    const health = await driver.probe();
+    if (!health.ok)
+      throw new Error(`the docker driver is unavailable: ${health.detail}`);
+    if (!driver.capabilities.filesystemIsolation)
+      throw new Error("the docker driver does not isolate the filesystem");
+  }
   const sandbox = await driver.acquire({
     sessionId: "smoke",
     taskId: "smoke",

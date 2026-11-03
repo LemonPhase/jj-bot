@@ -7,8 +7,11 @@
 //   JJ_NIGHTLY_MODEL         provider/model, default openai/gpt-6-luna
 //   JJ_NIGHTLY_MAX_USD       the run's cost cap in US dollars, default 0.25
 //   JJ_NIGHTLY_TASK_CAP_USD  each task's cap in smoke:e2e, default half the cost cap
+//   JJ_NIGHTLY_SANDBOX_IMAGE the docker sandbox image, default jj-sandbox:base-1
 //
-// smoke:runtime gets the whole cap (JJ_SMOKE_MAX_USD); smoke:e2e's server
+// Both smokes run the model's commands on the docker driver, never `local`,
+// so none runs next to the provider key: it needs a Docker daemon and the
+// image (`npm run sandbox:image`). smoke:runtime gets the whole cap (JJ_SMOKE_MAX_USD); smoke:e2e's server
 // gets what is left as JJ_MAX_USD_PER_DAY, and each of its tasks the task cap
 // (JJ_SMOKE_TASK_CAP_USD). Without the model's provider key the run is
 // skipped with a notice and exits 0; a model with no listed price is refused,
@@ -36,6 +39,7 @@ import {
   renderSummary,
   type SmokeExit,
   type SmokeReport,
+  smokeEnv,
   spent,
 } from "./smoke-nightly-summary";
 
@@ -79,6 +83,7 @@ const usdSetting = (name: string, fallback: number) => {
 const model = setting("JJ_NIGHTLY_MODEL") ?? "openai/gpt-6-luna";
 const capUsd = usdSetting("JJ_NIGHTLY_MAX_USD", 0.25);
 const taskCapUsd = usdSetting("JJ_NIGHTLY_TASK_CAP_USD", capUsd / 2);
+const sandboxImage = setting("JJ_NIGHTLY_SANDBOX_IMAGE");
 
 const registry = new ModelRegistry({ env: process.env });
 try {
@@ -113,8 +118,7 @@ const reports = mkdtempSync(join(tmpdir(), "jj-smoke-nightly-"));
 
 /**
  * Runs one smoke script with its output streamed, its report in `reports`,
- * and the environment the nightly gives it: none of the remote or restart
- * settings, so smoke:e2e always boots its own server.
+ * and the environment the nightly gives it (`smokeEnv`: the docker driver).
  */
 async function runSmoke(
   script: string,
@@ -122,19 +126,11 @@ async function runSmoke(
   timeoutMs: number,
 ): Promise<{ report: SmokeReport | undefined; exit: SmokeExit; ms: number }> {
   const reportPath = join(reports, `${script}.json`);
-  const childEnv: Record<string, string | undefined> = {
-    ...process.env,
-    JJ_SMOKE_BASE_URL: undefined,
-    JJ_SMOKE_TOKEN: undefined,
-    JJ_SMOKE_RESTART_COMMAND: undefined,
-    JJ_SMOKE_UNREACHABLE: undefined,
-    JJ_SMOKE_MAX_USD: undefined,
-    JJ_SMOKE_TASK_CAP_USD: undefined,
-    JJ_MAX_USD_PER_DAY: undefined,
-    ...env,
-    JJ_SMOKE_MODEL: model,
-    JJ_SMOKE_REPORT: reportPath,
-  };
+  const childEnv = smokeEnv(process.env, env, {
+    model,
+    reportPath,
+    ...(sandboxImage ? { sandboxImage } : {}),
+  });
   const begun = Date.now();
   const exit = await new Promise<SmokeExit>((resolve) => {
     const child = spawn(
@@ -170,17 +166,17 @@ async function runSmoke(
 
 const RUNTIME = [
   "smoke:runtime",
-  "one live tool cycle in a local sandbox",
+  "one live tool cycle in a docker sandbox",
 ] as const;
 const E2E = [
   "smoke:e2e",
-  "the whole server on the live model: delegation to two workers, stop, spend cap, verification, direct chat and its follow-up",
+  "the whole server on the live model and docker sandboxes: delegation to two workers, stop, spend cap, verification, direct chat and its follow-up",
 ] as const;
 
 const checks: CheckResult[] = [];
 try {
   console.log(
-    `smoke:nightly: ${model}, cost cap ${formatUsd(capUsd)}, each task capped at ${formatUsd(taskCapUsd)}`,
+    `smoke:nightly: ${model}, cost cap ${formatUsd(capUsd)}, each task capped at ${formatUsd(taskCapUsd)}, docker sandboxes on ${sandboxImage ?? "jj-sandbox:base-1"}`,
   );
   const runtime = await runSmoke(
     "smoke-runtime",

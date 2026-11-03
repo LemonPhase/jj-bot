@@ -49,11 +49,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The model's commands run on the docker driver, never `local`, so none
+      # runs next to the key: in containers on the runner's daemon, isolated
+      # and without network, on the sandbox base image built here.
+      - name: Check Docker daemon
+        run: docker version
+
+      - name: Build sandbox base image
+        run: npm run sandbox:image
+
       # Without the key the script skips with a notice and exits 0. The inputs
       # are empty on a scheduled run, and the script then uses its defaults.
       # The key reaches this step only, as an environment variable; nothing
       # prints it.
-      - name: Live smokes under the cost cap
+      - name: Live smokes under the cost cap, on docker
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           JJ_NIGHTLY_MODEL: ${{ inputs.model }}

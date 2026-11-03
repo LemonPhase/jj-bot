@@ -18,10 +18,16 @@
 // without repeating finished work, with the replayed stream rebuilding the
 // same view as a reload. Exits non-zero on any failure.
 //
+// JJ_SMOKE_DRIVER=docker boots the server on the docker driver alone instead
+// of local, in a daemon namespace of its own that it removes at the end; it
+// checks that the default profile is the isolated docker sandbox and runs it
+// without network (JJ_SMOKE_SANDBOX_IMAGE replaces the profile's image).
+// Model-written commands then never run next to the provider key.
+//
 // JJ_SMOKE_MODEL=<provider/model> runs the same flow against a real model
 // instead (its provider key must be set where the server runs); pull-request
 // CI never runs that mode, the nightly live run (scripts/smoke-nightly.ts)
-// does. JJ_SMOKE_TOKEN is the bearer token of a server at JJ_SMOKE_BASE_URL,
+// does, on docker. JJ_SMOKE_TOKEN is the bearer token of a server at JJ_SMOKE_BASE_URL,
 // when it has one.
 //
 // Spend: a spend cap that stops work no step expects to stop (the server's
@@ -65,7 +71,18 @@ const reportPath = setting("JJ_SMOKE_REPORT");
 const taskCapSetting = setting("JJ_SMOKE_TASK_CAP_USD");
 const taskCapUsd =
   taskCapSetting === undefined ? undefined : Number(taskCapSetting);
-const timeoutMs = realModel ? 10 * 60_000 : remoteUrl ? 120_000 : 60_000;
+/** The driver of the server the smoke boots: `local` (default) or `docker`. */
+const bootDriver = setting("JJ_SMOKE_DRIVER") ?? "local";
+/** The docker sandbox image of the server the smoke boots, instead of the profile's. */
+const sandboxImage = setting("JJ_SMOKE_SANDBOX_IMAGE");
+/** Tasks run in docker sandboxes: a deployed server's, or the booted one's. */
+const onDocker = Boolean(remoteUrl) || bootDriver === "docker";
+/**
+ * A namespace of its own on the daemon, so the booted server's worker reaps
+ * no other server's sandboxes, and the smoke removes its own at the end.
+ */
+const dockerNamespace = `jj-smoke-${randomBytes(4).toString("hex")}`;
+const timeoutMs = realModel ? 10 * 60_000 : onDocker ? 120_000 : 60_000;
 /** The slow command the restart lands on; it would outlast the whole check. */
 const SLOW_COMMAND = "sleep 300";
 /** Shows where commands run: the docker driver's sandbox user and workspace. */
@@ -87,6 +104,24 @@ const PROBE_COMMAND = `for t in ${unreachable.map((target) => target.replace(":"
 if (restartCommand && !remoteUrl) {
   console.error(
     "smoke:e2e: JJ_SMOKE_RESTART_COMMAND needs JJ_SMOKE_BASE_URL (a server it can restart).",
+  );
+  process.exit(2);
+}
+if (bootDriver !== "local" && bootDriver !== "docker") {
+  console.error(
+    `smoke:e2e: JJ_SMOKE_DRIVER is local or docker; got "${bootDriver}".`,
+  );
+  process.exit(2);
+}
+if (remoteUrl && (setting("JJ_SMOKE_DRIVER") || sandboxImage)) {
+  console.error(
+    "smoke:e2e: JJ_SMOKE_DRIVER and JJ_SMOKE_SANDBOX_IMAGE set up the server the smoke boots; one at JJ_SMOKE_BASE_URL must run docker already.",
+  );
+  process.exit(2);
+}
+if (sandboxImage && bootDriver !== "docker") {
+  console.error(
+    "smoke:e2e: JJ_SMOKE_SANDBOX_IMAGE needs JJ_SMOKE_DRIVER=docker.",
   );
   process.exit(2);
 }
@@ -220,14 +255,16 @@ async function serverUnderTest(dir: string): Promise<{
     DATABASE_URL: undefined,
     JJ_DATABASE_PATH: join(dir, "db"),
     JJ_EMBED_WORKER: "true",
-    JJ_SANDBOX_DRIVERS: "local",
+    // One driver, so the seeded default profile is that driver's.
+    JJ_SANDBOX_DRIVERS: bootDriver,
     JJ_SANDBOX_ROOT: join(dir, "sandbox"),
+    JJ_DOCKER_NAMESPACE: dockerNamespace,
     JJ_ENABLE_SCRIPTED_MODEL: realModel ? "false" : "true",
     // Pin the scripted model, so provider keys in the environment do not
     // change which model the keyless smoke runs.
     JJ_DEFAULT_MODEL: realModel ?? "scripted/team",
   };
-  const server = await step("boot the API (PGlite, local driver)", () =>
+  const server = await step(`boot the API (PGlite, ${bootDriver} driver)`, () =>
     startServer({ env }),
   );
   return { base: server.url, token, server };
@@ -337,12 +374,39 @@ async function main(): Promise<boolean> {
         },
       );
 
-    // Against a deployed server, bots run on the default profile, which must
-    // be the isolated docker sandbox.
-    const dockerProfile = remoteUrl
+    // On docker, bots run on the default profile, which must be the isolated
+    // docker sandbox; the booted server's has no network, which no task here
+    // needs (model calls are the server's, not the sandbox's).
+    const dockerProfile = onDocker
       ? await step(
-          "docker is the only driver and the default, isolated profile",
+          remoteUrl
+            ? "docker is the only driver and the default, isolated profile"
+            : "docker is the only driver and the default, isolated profile, without network",
           async () => {
+            if (!remoteUrl) {
+              const { profiles } = (await expectStatus(
+                "GET",
+                "/api/runtime-profiles",
+                200,
+              )) as { profiles: RuntimeProfile[] };
+              const seeded = profiles.find((entry) => entry.isDefault);
+              check(seeded, "no default runtime profile");
+              const { profile: updated } = (await expectStatus(
+                "PATCH",
+                `/api/runtime-profiles/${seeded.id}`,
+                200,
+                {
+                  sandbox: {
+                    network: { mode: "none" },
+                    ...(sandboxImage ? { image: sandboxImage } : {}),
+                  },
+                },
+              )) as { profile: RuntimeProfile };
+              check(
+                updated.sandbox.network.mode === "none",
+                `network ${JSON.stringify(updated.sandbox.network)}`,
+              );
+            }
             const { drivers } = await expectStatus(
               "GET",
               "/api/sandbox-drivers",
@@ -680,8 +744,34 @@ async function main(): Promise<boolean> {
     if (!usageReport && readUsage)
       usageReport = await readUsage().catch(() => undefined);
     await server?.close().catch(() => {});
+    if (server && bootDriver === "docker") removeDockerNamespace();
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Removes the booted server's sandbox containers, then its workspace
+ * volumes, which the driver keeps for the tasks (containers first, so no
+ * volume is in use).
+ */
+function removeDockerNamespace() {
+  const label = `label=jj.sandbox.namespace=${dockerNamespace}`;
+  const docker = (args: string[]) =>
+    spawnSync("docker", args, { encoding: "utf8", timeout: 60_000 });
+  const ids = (args: string[]) =>
+    (docker(args).stdout ?? "").split("\n").filter(Boolean);
+  const containers = ids(["ps", "-aq", "--filter", label]);
+  if (containers.length > 0) docker(["rm", "-f", ...containers]);
+  const volumes = ids(["volume", "ls", "-q", "--filter", label]);
+  if (volumes.length > 0) docker(["volume", "rm", ...volumes]);
+  const left = [
+    ...ids(["ps", "-aq", "--filter", label]),
+    ...ids(["volume", "ls", "-q", "--filter", label]),
+  ];
+  if (left.length > 0)
+    console.warn(
+      `smoke:e2e: could not remove ${left.length} container(s) or volume(s) labelled jj.sandbox.namespace=${dockerNamespace}`,
+    );
 }
 
 /**

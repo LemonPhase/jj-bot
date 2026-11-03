@@ -1,6 +1,35 @@
-// The nightly live run's results and their Markdown job summary
-// (scripts/smoke-nightly.ts). Pure: no process, file or network access.
+// The nightly live run's pure parts (scripts/smoke-nightly.ts): the
+// environment it hands each smoke, the results and their Markdown job
+// summary. No process, file or network access.
 import { formatSpendAgainstCap, formatUsd, type Usage } from "@jj/contracts";
+
+/**
+ * The environment of a nightly smoke. Always the docker driver: the commands
+ * a live model writes run in an isolated sandbox without network, never next
+ * to the provider key in this environment. None of the remote or restart
+ * settings, so smoke:e2e boots its own server, and only the nightly's caps.
+ */
+export function smokeEnv(
+  base: Readonly<Record<string, string | undefined>>,
+  settings: Readonly<Record<string, string>>,
+  run: { model: string; reportPath: string; sandboxImage?: string },
+): Record<string, string | undefined> {
+  return {
+    ...base,
+    JJ_SMOKE_BASE_URL: undefined,
+    JJ_SMOKE_TOKEN: undefined,
+    JJ_SMOKE_RESTART_COMMAND: undefined,
+    JJ_SMOKE_UNREACHABLE: undefined,
+    JJ_SMOKE_MAX_USD: undefined,
+    JJ_SMOKE_TASK_CAP_USD: undefined,
+    JJ_MAX_USD_PER_DAY: undefined,
+    ...settings,
+    JJ_SMOKE_MODEL: run.model,
+    JJ_SMOKE_REPORT: run.reportPath,
+    JJ_SMOKE_DRIVER: "docker",
+    JJ_SMOKE_SANDBOX_IMAGE: run.sandboxImage,
+  };
+}
 
 /** The fields of a smoke's JJ_SMOKE_REPORT that the summary reads. */
 export interface SmokeReport {
