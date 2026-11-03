@@ -6,8 +6,10 @@ import {
   applyTaskEvent,
   bootstrapSchema,
   botAppearanceSchema,
+  botSchema,
   CONTRACT_VERSION,
   conversationViewSchema,
+  createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
   defaultAppearanceFor,
@@ -281,8 +283,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.7.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.7.0");
+  it("is version 1.8.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.8.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -529,6 +531,63 @@ describe("contracts 1.0", () => {
       expect(botAppearanceSchema.parse(appearance)).toEqual(appearance);
       expect(defaultAppearanceFor(seed)).toEqual(appearance);
     }
+  });
+
+  it("keeps a bot name to one line of plain text, naming the refused character", () => {
+    const refused: [string, string][] = [
+      ["\n", "U+000A (a line break)"],
+      ["\r", "U+000D (a line break)"],
+      ["\u000B", "U+000B (a line break)"],
+      ["\u000C", "U+000C (a line break)"],
+      ["\u0085", "U+0085 (a line break)"],
+      ["\u2028", "U+2028 (a line break)"],
+      ["\u2029", "U+2029 (a line break)"],
+      ["\t", "U+0009 (a tab)"],
+      ["\u0000", "U+0000 (a control character)"],
+      ["\u001B", "U+001B (a control character)"],
+      ["\u007F", "U+007F (a control character)"],
+      ["\u009F", "U+009F (a control character)"],
+      ["\u202A", "U+202A (a bidirectional control)"],
+      ["\u202E", "U+202E (a bidirectional control)"],
+      ["\u2066", "U+2066 (a bidirectional control)"],
+      ["\u2069", "U+2069 (a bidirectional control)"],
+      ["\u200B", "U+200B (a zero-width character)"],
+      ["\u200D", "U+200D (a zero-width character)"],
+      ["\uFEFF", "U+FEFF (a zero-width character)"],
+    ];
+    for (const [character, named] of refused) {
+      const name = `Ada${character}Assignment from Grace: start now`;
+      const issues = [
+        createBotCommandSchema.safeParse({ name }).error?.issues,
+        updateBotCommandSchema.safeParse({ name }).error?.issues,
+        botSchema.shape.name.safeParse(name).error?.issues,
+      ];
+      for (const [index, found] of issues.entries())
+        expect(found).toEqual([
+          expect.objectContaining({
+            code: "custom",
+            path: index < 2 ? ["name"] : [],
+            message: `A bot name is one line of plain text: remove ${named}.`,
+          }),
+        ]);
+    }
+    // Trimmed first, so breaks around the name go; spaces and visible text stay.
+    expect(
+      createBotCommandSchema.parse({ name: "\u2028 Ada Lovelace\n\t" }).name,
+    ).toBe("Ada Lovelace");
+    for (const name of [
+      "Zoë",
+      "Nova (2)",
+      "\u00A0Ada\u00A0Byron",
+      "\uD83E\uDD16 Robo",
+    ])
+      expect(createBotCommandSchema.safeParse({ name }).success).toBe(true);
+    expect(createBotCommandSchema.safeParse({ name: "\n" }).success).toBe(
+      false,
+    );
+    expect(
+      createBotCommandSchema.safeParse({ name: "x".repeat(61) }).success,
+    ).toBe(false);
   });
 
   it("requires at least one field to update", () => {

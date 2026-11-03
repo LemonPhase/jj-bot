@@ -31,6 +31,29 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.8.0 — 2026-11-03 — Bot names are a single line
+
+**Changed by:** backend and frontend ([#100](https://github.com/LemonPhase/jj-bot/issues/100), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6607691571)) · **Compatibility:** tightens validation: a 1.7.0 writer that sends a multi-line name is now refused, and a 1.8.0 reader refuses a bot record with such a name, which a 1.8.0 server never sends
+
+- `botNameSchema` (bot records, `createBotCommandSchema` and `updateBotCommandSchema`): still
+  trimmed and 1 to 60 characters once trimmed, and now one line of plain text. It refuses every
+  control character (`\p{Cc}`, LF, CR, VT, FF and NEL among them), LS (U+2028) and PS (U+2029),
+  the bidirectional controls U+202A to U+202E and U+2066 to U+2069 and the zero-width characters
+  U+200B to U+200D and U+FEFF, because names appear unquoted in model-facing text (entry
+  headers, the team roster, `task_log` index lines and handoff notes), where a line break could
+  forge a line. A refused name is a `VALIDATION_FAILED` field error on `name` that names the
+  first refused character as `U+XXXX`, such as "A bot name is one line of plain text: remove
+  U+000A (a line break)." A break at either end is trimmed away like other surrounding
+  whitespace.
+
+**Action required (frontend):** none: Bot Studio checks a name with the contract's schema and shows
+the field error under the name, and the demo API applies the same schema.
+**Action required (backend):** none: create and rename refuse such a name, and migration 0011
+normalises the names stored before (each run of refused characters becomes one space, then the name
+is trimmed; an empty one becomes `Bot`; an active bot whose new name another active bot of its
+owner holds, ignoring case, takes the first free ` (2)`, ` (3)`, …, the oldest first, so names
+that were already valid never change). No read path rewrites a name.
+
 ## 1.7.0 — 2026-11-03 — MCP servers and skills per profile
 
 **Changed by:** backend and frontend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/29#issuecomment-6602672162)) · **Compatibility:** additive for writers; a 1.6.0 reader that parses profiles strictly cannot parse one holding an approval rule on an MCP tool (`approvalRuleSchema.tool` was the coding tools only)

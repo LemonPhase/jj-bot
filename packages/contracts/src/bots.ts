@@ -81,7 +81,46 @@ export function defaultAppearanceFor(seed: string): BotAppearance {
   };
 }
 
-const botNameSchema = z.string().trim().min(1).max(60);
+/**
+ * Characters a bot name never holds. Names appear unquoted in model-facing
+ * text (entry headers, the team roster, `task_log` index lines, handoff
+ * notes), where any of these could forge a line or hide what follows: every
+ * control character (`\p{Cc}`, LF, CR, VT, FF and NEL among them), the line
+ * and paragraph separators, bidirectional controls and zero-width characters.
+ * Migration 0011 normalised the names stored before this rule.
+ */
+const NOT_IN_BOT_NAME =
+  /[\p{Cc}\u2028\u2029\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF]/u;
+
+const LINE_BREAKS = /[\n\r\v\f\u0085\u2028\u2029]/;
+
+/** What a refused character is, for the field error. */
+function refusedKind(character: string): string {
+  if (LINE_BREAKS.test(character)) return "a line break";
+  if (character === "\t") return "a tab";
+  if (/[\u202A-\u202E\u2066-\u2069]/.test(character))
+    return "a bidirectional control";
+  if (/[\u200B-\u200D\uFEFF]/.test(character)) return "a zero-width character";
+  return "a control character";
+}
+
+const codePoint = (character: string) =>
+  `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`;
+
+/** One line of plain text, 1 to 60 characters once trimmed. */
+const botNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(60)
+  .superRefine((name, context) => {
+    const refused = NOT_IN_BOT_NAME.exec(name)?.[0];
+    if (refused !== undefined)
+      context.addIssue({
+        code: "custom",
+        message: `A bot name is one line of plain text: remove ${codePoint(refused)} (${refusedKind(refused)}).`,
+      });
+  });
 const botRoleSchema = z.string().trim().max(80);
 const botInstructionsSchema = z.string().trim().max(COMMAND_TEXT_LIMIT);
 
