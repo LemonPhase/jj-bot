@@ -7,7 +7,11 @@ const KEY = "sk-check-0123456789abcdefghijklmn";
 const redact = createRedactor([{ name: "OPENAI_API_KEY", value: KEY }]);
 
 /** A sandbox whose one command streams `chunks` and then reports `result`. */
-function printing(chunks: string[], result: Partial<ExecResult>): Sandbox {
+function printing(
+  chunks: string[],
+  result: Partial<ExecResult>,
+  file = `token=${KEY}\n`,
+): Sandbox {
   return {
     exec: async (_command: string, options?: ExecOptions) => {
       for (const chunk of chunks)
@@ -26,10 +30,10 @@ function printing(chunks: string[], result: Partial<ExecResult>): Sandbox {
       stat: async (path: string) => ({
         path,
         kind: "file",
-        size: 64,
+        size: Buffer.byteLength(file),
         modifiedAt: new Date(0).toISOString(),
       }),
-      read: async () => Buffer.from(`token=${KEY}\n`),
+      read: async () => Buffer.from(file),
     },
   } as unknown as Sandbox;
 }
@@ -145,6 +149,83 @@ describe("a check that quotes what a regular expression matched", () => {
       );
       expect(run.outcome).toBe("passed");
       expect(run.detail).toContain(`: "${REDACTED}".`);
+    }
+  });
+
+  it("masks a match that lies inside a database URL's password", async () => {
+    const password = "correct-horse-battery-staple";
+    const file = `DATABASE_URL=postgres://app:${password}@db:5432/app\n`;
+    const secrets = createRedactor([
+      { name: "the DATABASE_URL password", value: password, inUrl: true },
+    ]);
+    for (const [pattern, quoted] of [
+      ["\\w+-\\w+-\\w+", REDACTED],
+      ["horse-battery", REDACTED],
+      ["app:[^@]+", `app:${REDACTED}`],
+      ["[^:]+@db", `${REDACTED}@db`],
+    ]) {
+      const run = await runCheck(
+        {
+          id: "m",
+          description: "matches",
+          method: "file",
+          path: ".env",
+          expect: "matches",
+          value: pattern,
+        },
+        env(printing([], {}, file), { redact: secrets }),
+      );
+      expect(run.outcome).toBe("passed");
+      // The pattern is the user's own; the quote holds none of the password.
+      expect(run.detail).toBe(
+        `\`.env\` matches /${pattern}/ at line 1: ${JSON.stringify(quoted)}.`,
+      );
+    }
+  });
+});
+
+describe("a json check on a file that is not JSON", () => {
+  it("says where it fails, quoting nothing of the file", async () => {
+    for (const [file, detail] of [
+      [
+        `{"key": ${KEY}}`,
+        "`out.json` is not valid JSON: unexpected character at line 1, column 9.",
+      ],
+      [
+        `{"key": "x",\n "k2": ${KEY}}`,
+        "`out.json` is not valid JSON: unexpected character at line 2, column 8.",
+      ],
+      [
+        `${KEY}\n`,
+        "`out.json` is not valid JSON: unexpected character at line 1, column 1.",
+      ],
+      [
+        `{"key": "${KEY.slice(0, 12)}`,
+        "`out.json` is not valid JSON: it ends early, at line 1, column 22.",
+      ],
+      // A lone CR ends a line, as it does for JSON.parse.
+      [
+        "[1\r 2]",
+        "`out.json` is not valid JSON: unexpected character at line 2, column 2.",
+      ],
+    ]) {
+      const run = await runCheck(
+        {
+          id: "j",
+          description: "json",
+          method: "file",
+          path: "out.json",
+          expect: "json",
+        },
+        env(printing([], {}, file)),
+      );
+      expect(run.outcome).toBe("failed");
+      expect(run.detail).toBe(detail);
+      // The gate redacts the detail whole: no piece of the key may be left.
+      for (let at = 0; at + MIN_CUT_FRAGMENT_LENGTH <= KEY.length; at += 1)
+        expect(redact(run.detail)).not.toContain(
+          KEY.slice(at, at + MIN_CUT_FRAGMENT_LENGTH),
+        );
     }
   });
 });
