@@ -84,6 +84,45 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run smoke:e2e
 
+  browser:
+    # The web app in headless Chromium: `npm run test:browser` builds it and
+    # drives the main user paths, each test on an instance of its own (PGlite,
+    # the local driver and the scripted model).
+    name: Browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Headless runs use Chromium's headless shell, at the version the
+      # pinned @playwright/test expects, with its system libraries.
+      - name: Install Chromium
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: Browser tests
+        run: npm run test:browser
+
+      # A failed test's trace, screenshot and server log, and the HTML report.
+      - name: Upload failed tests' evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: browser-test-results
+          path: test-results/
+          retention-days: 14
+
   compose:
     # The product as `docker compose up` ships it: the app image, PostgreSQL and
     # the docker driver on the runner's daemon, driven over HTTP from outside.

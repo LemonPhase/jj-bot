@@ -22,10 +22,12 @@
     "smoke:runtime": "node --import tsx --env-file-if-exists=.env scripts/smoke-runtime.ts",
     "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base",
     "dev:worker": "npm run dev -w @jj/worker",
-    "smoke:e2e": "node --import tsx --env-file-if-exists=.env scripts/smoke-e2e.ts"
+    "smoke:e2e": "node --import tsx --env-file-if-exists=.env scripts/smoke-e2e.ts",
+    "test:browser": "npm run build -w @jj/web && playwright test -c apps/web/e2e"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.4",
+    "@playwright/test": "1.64.1",
     "@types/node": "24.10.1",
     "concurrently": "10.0.6",
     "tsx": "4.23.15",
