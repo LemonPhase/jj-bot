@@ -26,7 +26,11 @@ import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { MIN_BARE_SECRET_LENGTH, type Secret } from "../redact";
-import { retiredBefore } from "../secrets/store";
+import {
+  RETIRED_SECRET_DAYS,
+  RETIRED_VALUES_PER_NAME,
+  retiredBefore,
+} from "../secrets/store";
 
 /**
  * The secret among `secrets` that `value` would carry into a sandbox: one
@@ -52,8 +56,7 @@ export function overlappingSecret(
  * same whichever it is, current or retired, so it never says which, nor
  * how the value matched it.
  */
-export const SERVER_SECRET_REFUSAL =
-  "it holds, or is part of, a server secret: a model key (also one replaced or removed in the last 90 days), the API token, the database password or JJ_SECRET_KEY. None of them ever enters a sandbox.";
+export const SERVER_SECRET_REFUSAL = `it holds, or is part of, a server secret: a model key (the current one, or one of the ${RETIRED_VALUES_PER_NAME} a provider most recently replaced or removed, in the last ${RETIRED_SECRET_DAYS} days), the API token, the database password or JJ_SECRET_KEY. None of them ever enters a sandbox.`;
 
 const NO_KEY =
   "This server has no JJ_SECRET_KEY, so it cannot store keys or secrets. Generate one with `openssl rand -base64 32`, set it as JJ_SECRET_KEY in the server's environment (.env) and restart the server.";
