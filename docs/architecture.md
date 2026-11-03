@@ -101,7 +101,7 @@ Delegation creates a child **execution session** for the assignee bot. Its paren
 A child session starts on one inbox item, its **first input**, so it knows what the task already holds without the delegating bot relaying it. The engine builds it once, when the delegation is made, from the stored records, and puts its sections in this order, each left out when it has nothing to show:
 
 1. **The task log so far**, as an index: the newest 20 entries before the child's brief, one index line each (the `task_log` format, with a 100-character preview), oldest first. Older entries collapse into one `(N earlier entries — use task_log with before "<id>" …)` line.
-2. **The user's messages** in the task, in full: the newest ones that fit within 10 messages and 4,000 characters, each under its entry's id and author. Older ones collapse into one line that points at `task_log` with kind `user`. A newest message too long on its own keeps its start and its end around a line that counts the characters left out, and points at `read_entry`.
+2. **The user's messages** in the task, each whole under its entry's id and author: the newest ones that fit within 10 messages and 4,000 characters. Older ones collapse into one line that points at `task_log` with kind `user`. A newest message too long on its own keeps its start and its end around a line that counts the characters left out, and points at `read_entry`. The 4,000 characters are a deliberate bound on "in full": a request longer than that is one `read_entry` away. The heading says whether every message is shown whole, and that the user wrote to the coordinator while the brief says which part of the work is the child's.
 3. **The handoff note**, when the bot has reported to the delegating session before (below).
 4. **The pointer to the brief**, which is in the child's prompt, ending with the instruction to start.
 
@@ -138,7 +138,7 @@ Messages arrive whole; text is not streamed token by token. While a bot works, c
 
 ## Context and memory
 
-A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster, the shared workspace and, for a delegated session, its brief as the requester wrote it. Its inputs are what its inbox delivers. A delegated session starts on its first input (see [Coordination](#coordination)): an index of the task log so far and the user's messages in full, a handoff note when its bot has reported to the delegating session before, and a pointer to the brief in its prompt, so the brief is not sent twice. That is pushed; the rest of the task's record is pulled with the tools below.
+A session's prompt carries the bot's persona and memory, the goal at the session's goal version, the roster, the shared workspace and, for a delegated session, its brief as the requester wrote it. Its inputs are what its inbox delivers. A delegated session starts on its first input (see [Coordination](#coordination)): an index of the task log so far and the user's messages in full, a handoff note when its bot has reported to the delegating session before, and a pointer to the brief in its prompt, so the brief is not sent twice. That is pushed; the rest of the task's record is pulled with the tools below. The first input is the oldest input in the child's transcript, so compaction may summarise it like any other input; the brief, in the prompt, is never summarised.
 
 Every task session, coordinator and workers alike, can also look up its task's shared record with four read-only tools, and its prompt says when to use them:
 
