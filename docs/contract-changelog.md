@@ -47,10 +47,11 @@ bootstrap reports both false, and a profile asking for MCP servers or skills is 
   `exposure` and `toolExposure` (`direct` | `hidden`), `timeoutSec`, `askUnlessReadOnly` (default
   true for `http`, false for `stdio`) and `snapshotId`. `env` and `secretEnv` variables take any
   POSIX name except `JJ_*` (`mcpEnvNameSchema`); `secretEnv` values are sandbox secret names.
-  `cwd` has no empty, `.` or `..` part. The `url` and plain `headers` carry no credentials: no
-  user or password, no query parameter and no header named like a key, token, secret, password
-  or auth, and no `Authorization`, `Proxy-Authorization` or `Cookie` header (they go in
-  `secretHeaders`). A URL with control characters or backslashes is refused, and the URL is stored
+  `cwd` has no empty, `.` or `..` part. Credentials belong in `secretHeaders`; a check of names
+  refuses a `url` with a user or password or with a query, fragment or path `;` parameter (split
+  on `&` and `;`) named like a key, token, secret, password, auth, signature or code, and plain
+  `Authorization`, `Proxy-Authorization` and `Cookie` headers and any header named that way. It
+  checks names only: a secret under an unusual name, or in the path itself, is not detected. A URL with control characters or backslashes is refused, and the URL is stored
   normalized (`new URL(url).href`, punycode hosts). Headers the transport sets, `Accept` and
   `Content-Type` included, are refused, and header names ignore case. `mcpServersSchema` holds at
   most `MAX_MCP_SERVERS` = 8 with unique names.
