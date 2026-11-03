@@ -1,0 +1,261 @@
+// The nightly live-model acceptance run (.github/workflows/nightly-live.yml),
+// also run locally with `npm run smoke:nightly`: smoke:runtime, then the live
+// smoke:e2e, on a real model under a hard cost cap kept by the product's own
+// spend caps, then a Markdown summary of each check's result, cost and time,
+// appended to $GITHUB_STEP_SUMMARY when it is set and printed either way.
+//
+//   JJ_NIGHTLY_MODEL         provider/model, default openai/gpt-6-luna
+//   JJ_NIGHTLY_MAX_USD       the run's cost cap in US dollars, default 0.25
+//   JJ_NIGHTLY_TASK_CAP_USD  each task's cap in smoke:e2e, default half the cost cap
+//   JJ_NIGHTLY_SANDBOX_IMAGE the docker sandbox image, default jj-sandbox:base-1
+//
+// Both smokes run the model's commands on the docker driver, never `local`,
+// so none runs next to the provider key: it needs a Docker daemon and the
+// image (`npm run sandbox:image`). smoke:runtime gets the whole cap (JJ_SMOKE_MAX_USD); smoke:e2e's server
+// gets what is left as JJ_MAX_USD_PER_DAY, and each of its tasks the task cap
+// (JJ_SMOKE_TASK_CAP_USD). Without the model's provider key the run is
+// skipped with a notice and exits 0; a model with no listed price is refused,
+// since no spend cap could bound it. Exits 0 when every check passed or the
+// run was skipped, 1 when one failed or the cap stopped it, 2 for settings
+// that cannot work.
+import { spawn } from "node:child_process";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { formatUsd, MAX_SPEND_CAP_USD } from "@jj/contracts";
+import {
+  ModelRegistry,
+  ModelResolutionError,
+  parseModelRef,
+} from "@jj/runtime";
+import {
+  type CheckResult,
+  checkResult,
+  type NightlyOutcome,
+  notRun,
+  overallState,
+  remainingUsd,
+  renderSummary,
+  requireDocker,
+  type SmokeExit,
+  type SmokeReport,
+  smokeEnv,
+  spent,
+} from "./smoke-nightly-summary";
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+const setting = (name: string) => process.env[name]?.trim() || undefined;
+const inActions = process.env.GITHUB_ACTIONS === "true";
+const started = Date.now();
+
+/** A workflow command (annotation) in Actions; nothing locally. */
+function annotate(level: "notice" | "error", title: string, message: string) {
+  if (!inActions) return;
+  const escape = (text: string) =>
+    text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  console.log(`::${level} title=${escape(title)}::${escape(message)}`);
+}
+
+function publish(outcome: NightlyOutcome) {
+  const summary = renderSummary(outcome);
+  console.log(`\n${summary}`);
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (file) appendFileSync(file, summary);
+}
+
+function refuse(message: string): never {
+  console.error(`smoke:nightly: ${message}`);
+  annotate("error", "Nightly live run could not start", message);
+  process.exit(2);
+}
+
+const usdSetting = (name: string, fallback: number) => {
+  const raw = setting(name);
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  if (!(Number.isFinite(value) && value > 0 && value <= MAX_SPEND_CAP_USD))
+    refuse(
+      `${name} must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}; it is "${raw}".`,
+    );
+  return value;
+};
+
+const model = setting("JJ_NIGHTLY_MODEL") ?? "openai/gpt-6-luna";
+const capUsd = usdSetting("JJ_NIGHTLY_MAX_USD", 0.25);
+const taskCapUsd = usdSetting("JJ_NIGHTLY_TASK_CAP_USD", capUsd / 2);
+const sandboxImage = setting("JJ_NIGHTLY_SANDBOX_IMAGE");
+
+const registry = new ModelRegistry({ env: process.env });
+try {
+  const resolved = registry.resolve(model);
+  if (!(resolved.model.cost.input > 0 || resolved.model.cost.output > 0))
+    refuse(
+      `${model} has no listed price, so no spend cap could bound the run. Choose a priced model.`,
+    );
+} catch (error) {
+  if (!(error instanceof ModelResolutionError)) throw error;
+  if (error.code !== "unconfigured") refuse(error.message);
+  const provider = registry
+    .providers()
+    .find((entry) => entry.id === parseModelRef(model)?.provider);
+  const keys = provider?.envVars.join(" or ") ?? "the provider's key";
+  const note = `No ${keys} is set, so the live run was skipped. To enable it, add ${keys} as a repository Actions secret (docs/development.md, "Nightly live run").`;
+  console.log(`smoke:nightly: ${note}`);
+  annotate("notice", "Nightly live run skipped", note);
+  publish({
+    state: "skipped",
+    model,
+    capUsd,
+    taskCapUsd,
+    ms: Date.now() - started,
+    checks: [],
+    note,
+  });
+  process.exit(0);
+}
+
+const reports = mkdtempSync(join(tmpdir(), "jj-smoke-nightly-"));
+
+/**
+ * Runs one smoke script with its output streamed, its report in `reports`,
+ * and the environment the nightly gives it (`smokeEnv`: the docker driver).
+ */
+async function runSmoke(
+  script: string,
+  env: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ report: SmokeReport | undefined; exit: SmokeExit; ms: number }> {
+  const reportPath = join(reports, `${script}.json`);
+  const childEnv = smokeEnv(process.env, env, {
+    model,
+    reportPath,
+    ...(sandboxImage ? { sandboxImage } : {}),
+  });
+  const begun = Date.now();
+  const exit = await new Promise<SmokeExit>((resolve) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", join(root, "scripts", `${script}.ts`)],
+      { cwd: root, env: childEnv, stdio: "inherit" },
+    );
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      // smoke:e2e stops its server and removes its docker namespace first.
+      setTimeout(() => child.kill("SIGKILL"), 30_000).unref();
+    }, timeoutMs);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve(timedOut ? { code, timedOutAfterMs: timeoutMs } : { code });
+    });
+    // It never started: no exit follows.
+    child.on("error", (error) => {
+      console.error(`smoke:nightly: ${script} did not start: ${error.message}`);
+      clearTimeout(timer);
+      resolve({ code: null });
+    });
+  });
+  let report: SmokeReport | undefined;
+  try {
+    report = JSON.parse(readFileSync(reportPath, "utf8")) as SmokeReport;
+  } catch {
+    report = undefined;
+  }
+  return { report, exit, ms: Date.now() - begun };
+}
+
+const RUNTIME = [
+  "smoke:runtime",
+  "one live tool cycle in a docker sandbox",
+] as const;
+const E2E = [
+  "smoke:e2e",
+  "the whole server on the live model and docker sandboxes: delegation to two workers, stop, spend cap, verification, direct chat and its follow-up",
+] as const;
+
+const checks: CheckResult[] = [];
+try {
+  console.log(
+    `smoke:nightly: ${model}, cost cap ${formatUsd(capUsd)}, each task capped at ${formatUsd(taskCapUsd)}, docker sandboxes on ${sandboxImage ?? "jj-sandbox:base-1"}`,
+  );
+  const runtime = await runSmoke(
+    "smoke-runtime",
+    { JJ_SMOKE_MAX_USD: String(capUsd) },
+    5 * 60_000,
+  );
+  checks.push(
+    requireDocker(
+      checkResult(...RUNTIME, runtime.report, runtime.exit, runtime.ms),
+      runtime.report,
+    ),
+  );
+
+  const sofar = spent(checks);
+  const left = remainingUsd(capUsd, sofar.usd);
+  if (!sofar.known)
+    checks.push(
+      notRun(
+        ...E2E,
+        "smoke:runtime reported no spend, so the rest of the cap is unknown.",
+      ),
+    );
+  else if (left <= 0)
+    checks.push(
+      notRun(
+        ...E2E,
+        `smoke:runtime spent the whole ${formatUsd(capUsd)} cost cap.`,
+      ),
+    );
+  else {
+    console.log(
+      `smoke:nightly: smoke:e2e may spend ${formatUsd(left)} (JJ_MAX_USD_PER_DAY)`,
+    );
+    const e2e = await runSmoke(
+      "smoke-e2e",
+      {
+        JJ_MAX_USD_PER_DAY: String(left),
+        JJ_SMOKE_TASK_CAP_USD: String(taskCapUsd),
+      },
+      30 * 60_000,
+    );
+    checks.push(
+      requireDocker(
+        checkResult(...E2E, e2e.report, e2e.exit, e2e.ms),
+        e2e.report,
+      ),
+    );
+  }
+} finally {
+  rmSync(reports, { recursive: true, force: true });
+}
+
+const outcome: NightlyOutcome = {
+  state: overallState(checks),
+  model,
+  capUsd,
+  taskCapUsd,
+  ms: Date.now() - started,
+  checks,
+};
+publish(outcome);
+const total = spent(checks);
+const spend = `${total.known ? "" : "at least "}${formatUsd(total.usd)} of ${formatUsd(capUsd)}`;
+if (outcome.state === "capped") {
+  const stop = checks.find((entry) => entry.state === "capped");
+  annotate(
+    "error",
+    "Nightly live run stopped at its cost cap",
+    `${stop?.name}: ${stop?.detail ?? ""} Spent ${spend}.`,
+  );
+} else if (outcome.state === "failed") {
+  for (const entry of checks.filter((item) => item.state === "failed"))
+    annotate(
+      "error",
+      `Nightly live run: ${entry.name} failed`,
+      entry.detail ?? "",
+    );
+}
+console.log(`smoke:nightly: ${outcome.state}, spent ${spend}`);
+process.exit(outcome.state === "passed" ? 0 : 1);
