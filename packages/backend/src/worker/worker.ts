@@ -301,6 +301,9 @@ export function createWorker(
     if (!started) return;
     stopping = true;
     crashing = reason === "crash";
+    // A crash writes nothing from its first moment: fence every run before
+    // waiting on anything below, which a busy database can hold for seconds.
+    if (crashing) abortWhere(() => true, reason);
     started = false;
     lastPollAt = null;
     for (const timer of timers.splice(0)) clearInterval(timer);

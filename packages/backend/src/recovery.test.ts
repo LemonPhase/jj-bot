@@ -153,6 +153,35 @@ describe("recovery", () => {
     ).toBe("one\n");
   });
 
+  it("writes nothing once a crash begins, not even while the worker still winds down", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    first.executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "hold" } }] }
+        : { text: "must not be written" },
+    );
+    const { task } = await first.engine.tasks.create({
+      goal: "Crash mid-call",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    const before = (await first.engine.tasks.events(task.id)).cursor;
+    // The call returns just after the crash begins, before the worker has
+    // finished stopping: as after a real crash, none of it may be written.
+    const crash = first.engine.worker.abandon();
+    first.executor.gate("hold").open();
+    await crash;
+    const after = await first.engine.tasks.events(task.id, { after: before });
+    expect(after.events).toEqual([]);
+    const [run] = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id));
+    expect(run?.status).toBe("running");
+  });
+
   it("hands running work to the next worker on a graceful stop", async () => {
     const first = await worker();
     const team = await createTeam(first.engine, ["Ada"]);
