@@ -48,6 +48,7 @@ const task: Task = {
   cancelReason: null,
   cancelRequestedAt: null,
   verificationPlan: plan,
+  spendCapUsd: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: at,
@@ -309,6 +310,7 @@ describe("verificationSummary and isVerified", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
       costUsd: 0,
+      unpricedCalls: 0,
     };
     const summary = {
       ...task,
@@ -344,6 +346,7 @@ describe("applyTaskEvent and verification checks", () => {
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
         costUsd: 0,
+        unpricedCalls: 0,
       },
       bySession: {},
     },

@@ -59,7 +59,8 @@ export const FAKE_USAGE: Usage = {
   outputTokens: 5,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
-  costUsd: 0.25,
+  costUsd: 0.01,
+  unpricedCalls: 0,
 };
 export const INTERRUPTED_RESULT =
   "Interrupted by a restart; the outcome is unknown. Check the workspace before retrying.";
@@ -185,6 +186,15 @@ export class FakeExecutor implements RunExecutor {
     let lastText = "";
     for (let turn = 0; turn < input.budgets.maxTurns; turn += 1) {
       if (input.signal.aborted) return { kind: "aborted", reason: "signal" };
+      // Like the runtime: a refused call is never made and ends the run.
+      const refusal = await hooks.admitModelCall?.();
+      if (refusal !== undefined)
+        return {
+          kind: "budget",
+          limit: "spend",
+          reason: refusal,
+          finalText: lastText,
+        };
       await hooks.onEvent({ type: "model.started", model: FAKE_MODEL });
       const decision = await brain({
         bot,
@@ -244,7 +254,7 @@ export class FakeExecutor implements RunExecutor {
       if (endRun) return { kind: "ended", finalText: text };
       await this.drain(input, messages);
     }
-    return { kind: "budget", finalText: lastText };
+    return { kind: "budget", limit: "turns", finalText: lastText };
   }
 
   private async drain(input: RunInput, messages: FakeMessage[]) {

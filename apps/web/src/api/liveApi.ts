@@ -30,6 +30,8 @@ import {
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
+  updateTaskCommandSchema,
+  usageReportSchema,
   type WorkspaceHint,
   workspaceHintSchema,
   z,
@@ -428,6 +430,7 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
     listDrivers: async () =>
       (await request("GET", "/sandbox-drivers", RESPONSES.drivers)).drivers,
     getModels: () => request("GET", "/models", modelsViewSchema),
+    getUsage: () => request("GET", "/usage", usageReportSchema),
 
     listTasks: async () =>
       (await request("GET", "/tasks", RESPONSES.tasks)).tasks,
@@ -457,6 +460,15 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           `/tasks/${id(taskId)}/stop`,
           RESPONSES.task,
           command(stopTaskCommandSchema, cmd),
+        )
+      ).task,
+    updateTask: async (taskId, cmd) =>
+      (
+        await request(
+          "PATCH",
+          `/tasks/${id(taskId)}`,
+          RESPONSES.task,
+          command(updateTaskCommandSchema, cmd),
         )
       ).task,
     subscribeTask: (taskId, onView, streamOptions) =>

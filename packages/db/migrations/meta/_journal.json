@@ -47,8 +47,15 @@
     {
       "idx": 6,
       "version": "7",
-      "when": 1793676892797,
-      "tag": "0006_verification_gates",
+      "when": 1793675376590,
+      "tag": "0006_spend_caps",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793679781772,
+      "tag": "0007_verification_gates",
       "breakpoints": true
     }
   ]

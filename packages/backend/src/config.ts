@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import { MAX_SPEND_CAP_USD, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
 
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
@@ -27,6 +27,11 @@ export interface EngineConfig {
   maxDelegationDepth: number;
   /** `JJ_TASKS_PER_BOT_PER_HOUR`: tasks a bot may create from direct chat per hour. */
   tasksPerBotPerHour: number;
+  /**
+   * `JJ_MAX_USD_PER_DAY`: what the whole instance may spend on models with a
+   * listed price in any rolling 24 hours, chat included; null for no cap.
+   */
+  maxUsdPerDay: number | null;
   /** `JJ_OUTPUT_CAP_BYTES`, clamped to the contract's preview limit. */
   outputCapBytes: number;
   /** Goal versions a task may reach; a further change answers GOAL_VERSION_BUDGET. */
@@ -95,6 +100,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     maxSessionsPerTask: 16,
     maxDelegationDepth: 3,
     tasksPerBotPerHour: 10,
+    maxUsdPerDay: null,
     outputCapBytes: TOOL_OUTPUT_PREVIEW_LIMIT,
     maxGoalVersions: 20,
     maxVerificationAttempts: 3,
@@ -114,6 +120,17 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     },
   };
   config.outputCapBytes = clampOutputCap(config.outputCapBytes);
+  if (
+    config.maxUsdPerDay !== null &&
+    !(
+      Number.isFinite(config.maxUsdPerDay) &&
+      config.maxUsdPerDay > 0 &&
+      config.maxUsdPerDay <= MAX_SPEND_CAP_USD
+    )
+  )
+    throw new RangeError(
+      `maxUsdPerDay must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}, or null.`,
+    );
   for (const key of [
     "concurrency",
     "leaseMs",
@@ -157,6 +174,16 @@ export function configFromEnv(
       throw new RangeError(`${name} must be a positive integer.`);
     return value;
   };
+  const usd = (name: string) => {
+    const raw = env[name]?.trim();
+    if (!raw) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEND_CAP_USD)
+      throw new RangeError(
+        `${name} must be a positive number of US dollars, at most ${MAX_SPEND_CAP_USD}.`,
+      );
+    return value;
+  };
   // PostgreSQL when DATABASE_URL is set, else PGlite at JJ_DATABASE_PATH,
   // where `memory://` keeps nothing across restarts.
   const inMemory =
@@ -167,6 +194,7 @@ export function configFromEnv(
     maxSessionsPerTask: int("JJ_MAX_SESSIONS_PER_TASK"),
     maxDelegationDepth: int("JJ_MAX_DELEGATION_DEPTH"),
     tasksPerBotPerHour: int("JJ_TASKS_PER_BOT_PER_HOUR"),
+    maxUsdPerDay: usd("JJ_MAX_USD_PER_DAY"),
     outputCapBytes: int("JJ_OUTPUT_CAP_BYTES"),
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),

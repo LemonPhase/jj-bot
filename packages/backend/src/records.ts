@@ -90,6 +90,7 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     cancelReason: row.cancelReason,
     cancelRequestedAt: isoOrNull(row.cancelRequestedAt),
     verificationPlan: planOf(row.verificationPlan),
+    spendCapUsd: row.spendCapUsd,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     finishedAt: isoOrNull(row.finishedAt),

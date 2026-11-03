@@ -36,3 +36,4 @@ Each feature file starts with an H1 and one paragraph describing the user-visibl
 - [Stop a task](stop-task.md): stop a running task and prove its work stopped.
 - [Verification checks](verification.md): give a task checks, watch a failing one fixed and passed, one that cannot pass, and edit them as a new goal version.
 - [Settings](settings.md): models, runtime profiles and sandbox drivers.
+- [Spend caps](spend-caps.md): a task stopped at its cap and continued, a bot at its daily cap, and usage reporting.

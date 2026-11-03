@@ -1,9 +1,12 @@
 import { z } from "zod";
 import {
   COMMAND_TEXT_LIMIT,
+  hasSomeField,
   idListSchema,
   idSchema,
   RECORD_TEXT_LIMIT,
+  SOME_FIELD_REQUIRED,
+  spendCapUsdSchema,
   timestampSchema,
 } from "./common";
 import {
@@ -113,6 +116,14 @@ export const taskObjectSchema = z.object({
    * null for none. Parsed as null from events stored before plans existed.
    */
   verificationPlan: verificationPlanSchema.nullable().default(null),
+  /**
+   * The task's spend cap in US dollars, null for none. Set from the
+   * coordinator's profile (`budgets.maxUsdPerTask`) when the task is created,
+   * changed with `PATCH /api/tasks/:taskId`. No model call starts once the
+   * task's priced spend reaches it; the task then waits for the user. Parsed
+   * as null from events stored before caps existed.
+   */
+  spendCapUsd: spendCapUsdSchema.nullable().default(null),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   finishedAt: timestampSchema.nullable(),
@@ -211,6 +222,12 @@ export const artifactSchema = z.object({
 
 const tokenCountSchema = z.number().int().nonnegative();
 
+/**
+ * Tokens and cost of model calls. `costUsd` is computed from the model
+ * catalog's listed price; `unpricedCalls` counts the calls on models with no
+ * listed price, whose cost is unknown and not in `costUsd` (spend caps cannot
+ * bound them). Parsed as 0 from events stored before it existed.
+ */
 export const usageSchema = z.object({
   modelCalls: tokenCountSchema,
   inputTokens: tokenCountSchema,
@@ -218,6 +235,7 @@ export const usageSchema = z.object({
   cacheReadTokens: tokenCountSchema,
   cacheWriteTokens: tokenCountSchema,
   costUsd: z.number().nonnegative(),
+  unpricedCalls: tokenCountSchema.default(0),
 });
 
 export const emptyUsage = (): Usage => ({
@@ -227,6 +245,7 @@ export const emptyUsage = (): Usage => ({
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   costUsd: 0,
+  unpricedCalls: 0,
 });
 
 export const addUsage = (a: Usage, b: Usage): Usage => ({
@@ -236,6 +255,7 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
   cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
   cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
   costUsd: a.costUsd + b.costUsd,
+  unpricedCalls: a.unpricedCalls + b.unpricedCalls,
 });
 
 /** The create-task command before participant normalization. */
@@ -246,6 +266,8 @@ export const createTaskCommandObjectSchema = z.object({
   participantBotIds: idListSchema.default([]),
   /** The user's plan; omitted or null for none. Refused while `capabilities.verification` is false. */
   verificationPlan: verificationPlanSchema.nullable().optional(),
+  /** Omitted: the coordinator's profile's `budgets.maxUsdPerTask`. Null: no cap. */
+  spendCapUsd: spendCapUsdSchema.nullable().optional(),
 });
 
 /** `POST /api/tasks`. The coordinator is added to the participants when missing. */
@@ -309,6 +331,24 @@ export const stopTaskCommandSchema = z.object({
 
 /** Longest `TaskSummary.question`, in UTF-16 code units. */
 export const TASK_QUESTION_LIMIT = 240;
+
+/** The task update command without its at-least-one-field refinement. */
+export const updateTaskCommandObjectSchema = z
+  .object({
+    /** The new spend cap (null for none). It may be below what the task has spent: no further call starts. */
+    spendCapUsd: spendCapUsdSchema.nullable(),
+  })
+  .partial();
+
+/**
+ * `PATCH /api/tasks/:taskId`. Changing the cap does not continue a task that
+ * stopped at it; a user message does. A cancelled task, or one with
+ * `cancelRequestedAt` set, answers 409 TASK_TERMINAL.
+ */
+export const updateTaskCommandSchema = updateTaskCommandObjectSchema.refine(
+  hasSomeField,
+  SOME_FIELD_REQUIRED,
+);
 
 /** The task summary without its cross-field refinement. */
 export const taskSummaryObjectSchema = taskObjectSchema.extend({
@@ -435,4 +475,5 @@ export type PostTaskMessageCommand = z.input<
   typeof postTaskMessageCommandSchema
 >;
 export type StopTaskCommand = z.input<typeof stopTaskCommandSchema>;
+export type UpdateTaskCommand = z.input<typeof updateTaskCommandSchema>;
 export type TaskSummary = z.infer<typeof taskSummarySchema>;

@@ -4,15 +4,17 @@ import { ScreenHeader } from "../shell/ScreenHeader";
 import { DriversPanel } from "./DriversPanel";
 import { ModelsPanel } from "./ModelsPanel";
 import { ProfilesPanel } from "./ProfilesPanel";
+import { UsagePanel } from "./UsagePanel";
 import { useDrivers } from "./useDrivers";
 import "./settings.css";
 
-type Section = "models" | "profiles" | "drivers";
+type Section = "models" | "profiles" | "drivers" | "usage";
 
 const SECTIONS: readonly { value: Section; label: string }[] = [
   { value: "models", label: "Models" },
   { value: "profiles", label: "Runtime profiles" },
   { value: "drivers", label: "Drivers" },
+  { value: "usage", label: "Usage" },
 ];
 
 const SECTION_KEY = "jj.settings.section";
@@ -41,7 +43,8 @@ function useSection(): [Section, (section: Section) => void] {
 
 /**
  * `#/settings` (frontend brief, "Settings"; not in the design, built in the
- * same language): models and providers, runtime profiles, sandbox drivers.
+ * same language): models and providers, runtime profiles, sandbox drivers,
+ * and usage with the spend caps.
  * Keys never pass through here: providers are enabled by server env vars.
  */
 export function SettingsScreen() {
@@ -54,7 +57,7 @@ export function SettingsScreen() {
           <>
             <h1 className="screen-title">Settings</h1>
             <span className="settings-subtitle">
-              Models, runtime profiles and sandbox drivers
+              Models, runtime profiles, sandbox drivers and usage
             </span>
           </>
         }
@@ -73,6 +76,7 @@ export function SettingsScreen() {
           {section === "models" && <ModelsPanel />}
           {section === "profiles" && <ProfilesPanel drivers={drivers} />}
           {section === "drivers" && <DriversPanel drivers={drivers} />}
+          {section === "usage" && <UsagePanel />}
         </TabPanel>
       </div>
     </main>

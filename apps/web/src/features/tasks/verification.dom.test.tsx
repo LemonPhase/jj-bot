@@ -91,6 +91,7 @@ function viewOf(
       cancelReason: null,
       cancelRequestedAt: null,
       verificationPlan: taskPlan,
+      spendCapUsd: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: status === "completed" ? at : null,

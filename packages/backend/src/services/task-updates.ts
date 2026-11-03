@@ -178,63 +178,84 @@ function statusNow(update: PendingUpdate): string {
   return update.status === "waiting" ? "waiting for the user" : update.status;
 }
 
-const HAPPENED: Record<TaskUpdateEvent, string> = {
+/**
+ * What an update tells: its event, or `capped` for a task that waits because
+ * a spend cap stopped it (its text carries the engine's `Stopped: …` line).
+ */
+type UpdateKind = TaskUpdateEvent | "capped";
+
+const CAP_STOP = /^Stopped: .*spend cap/m;
+
+const kindOf = (update: PendingUpdate): UpdateKind =>
+  update.event === "waiting" && CAP_STOP.test(update.text)
+    ? "capped"
+    : update.event;
+
+const HAPPENED: Record<UpdateKind, string> = {
   completed: "completed",
   failed: "failed",
   waiting: "is waiting for the user: you asked them something in the task",
+  capped: "is waiting for the user: a spend cap stopped it",
 };
 
-const BODY: Record<TaskUpdateEvent, string> = {
+const BODY: Record<UpdateKind, string> = {
   completed: "Result",
   failed: "Error",
   waiting: "Your question",
+  capped: "Why it stopped",
 };
 
-const NEXT: Record<TaskUpdateEvent, string> = {
+const NEXT: Record<UpdateKind, string> = {
   completed:
     "Tell the user how it went, in your own words and briefly; the task's card is shown under your message.",
   failed:
     "Tell the user what went wrong, in your own words and briefly; the task's card is shown under your message.",
   waiting:
     "Ask the user, in your own words and briefly; the task's card is shown under your message. When they answer, you can pass it on with `send_to_task`.",
+  capped:
+    "Tell the user which cap stopped it and what lets it go on, in your own words and briefly; the task's card is shown under your message.",
 };
 
 /** The input of the reply that tells the user about an update. */
 export function updateInput(update: PendingUpdate, redact: Redact): string {
+  const kind = kindOf(update);
   return redact(
     [
-      `${UPDATE_MARKER} This comes from JJ Bot, not from the user: a task you coordinate ${HAPPENED[update.event]}.`,
+      `${UPDATE_MARKER} This comes from JJ Bot, not from the user: a task you coordinate ${HAPPENED[kind]}.`,
       `Task: ${update.taskId} ${JSON.stringify(update.title)}`,
       update.status === update.event && !update.cancelRequestedAt
         ? `Status now: ${statusNow(update)}.`
         : `Status now: ${statusNow(update)}; it has moved on since this update.`,
-      `${BODY[update.event]}, as the task recorded it:`,
+      `${BODY[kind]}, as the task recorded it:`,
       update.text,
       "",
-      `${NEXT[update.event]} In this reply you can only look things up (\`list_tasks\`, \`get_task\`, \`read_task_log\`); if something should happen next, suggest it and let the user decide.`,
+      `${NEXT[kind]} In this reply you can only look things up (\`list_tasks\`, \`get_task\`, \`read_task_log\`); if something should happen next, suggest it and let the user decide.`,
     ].join("\n"),
   );
 }
 
-const PLAIN: Record<TaskUpdateEvent, string> = {
+const PLAIN: Record<UpdateKind, string> = {
   completed: "completed",
   failed: "failed",
   waiting: "is waiting for your answer",
+  capped: "stopped at a spend cap and is waiting for you",
 };
 
-const PLAIN_BODY: Record<TaskUpdateEvent, string> = {
+const PLAIN_BODY: Record<UpdateKind, string> = {
   completed: "Result",
   failed: "Error",
   waiting: "Question",
+  capped: "Why it stopped",
 };
 
 /** The message the engine posts when the bot's reply to an update fails. */
 export function fallbackText(update: PendingUpdate, redact: Redact): string {
+  const kind = kindOf(update);
   return redact(
     [
-      `Task ${JSON.stringify(update.title)} ${PLAIN[update.event]}.`,
+      `Task ${JSON.stringify(update.title)} ${PLAIN[kind]}.`,
       "",
-      `${PLAIN_BODY[update.event]}:`,
+      `${PLAIN_BODY[kind]}:`,
       update.text,
       "",
       "(Posted automatically: the reply to this update failed.)",

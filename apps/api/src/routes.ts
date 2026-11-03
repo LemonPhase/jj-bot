@@ -94,6 +94,7 @@ export function apiRoutes({
   });
   api.get("/sandbox-drivers", async (c) => c.json(await engine.drivers()));
   api.get("/models", (c) => c.json(engine.models()));
+  api.get("/usage", async (c) => c.json(await engine.usage()));
 
   // Tasks
   api.get("/tasks", async (c) => c.json(await engine.tasks.list()));
@@ -102,6 +103,9 @@ export function apiRoutes({
   );
   api.get("/tasks/:id", async (c) =>
     c.json(await engine.tasks.get(idParam(c, "id"))),
+  );
+  api.patch("/tasks/:id", async (c) =>
+    c.json(await engine.tasks.update(idParam(c, "id"), await command(c))),
   );
   api.post("/tasks/:id/messages", async (c) =>
     c.json(

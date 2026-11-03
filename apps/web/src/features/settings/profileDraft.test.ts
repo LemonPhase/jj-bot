@@ -56,7 +56,12 @@ const stored: RuntimeProfile = {
     env: { NODE_ENV: "test" },
   }),
   tools: [...CODING_TOOLS],
-  budgets: { maxTurnsPerRun: 60, maxRunMinutes: 30 },
+  budgets: {
+    maxTurnsPerRun: 60,
+    maxRunMinutes: 30,
+    maxUsdPerTask: 5,
+    maxUsdPerBotPerDay: null,
+  },
   isDefault: false,
   status: { driverAvailable: true, isolated: true },
   createdAt: "2026-10-01T00:00:00.000Z",
@@ -84,11 +89,14 @@ describe("profile drafts", () => {
     const draft = {
       ...newProfileDraft("docker", dockerFields),
       maxTurnsPerRun: "0",
+      maxUsdPerTask: "-2",
       spec: { ...newProfileDraft("docker", dockerFields).spec, image: " " },
     };
     expect(readProfileDraft(draft, dockerFields).errors).toEqual({
       name: "Give the profile a name.",
       maxTurnsPerRun: "Enter a whole number from 1 to 500.",
+      maxUsdPerTask:
+        "Enter an amount above 0 and at most 10000, or leave it empty for no cap.",
     });
   });
 
@@ -109,7 +117,12 @@ describe("profile drafts", () => {
         workspace: "task",
       },
       tools: ["read", "ls"],
-      budgets: { maxTurnsPerRun: 60, maxRunMinutes: 30 },
+      budgets: {
+        maxTurnsPerRun: 60,
+        maxRunMinutes: 30,
+        maxUsdPerTask: 5,
+        maxUsdPerBotPerDay: 20,
+      },
       isDefault: true,
     });
     expect(createRuntimeProfileCommandSchema.safeParse(command).success).toBe(
@@ -121,6 +134,23 @@ describe("profile drafts", () => {
 describe("profilePatch (PATCH sends only changed fields)", () => {
   it("is null when nothing changed", () => {
     expect(patchFor((draft) => draft)).toEqual({ patch: null, errors: {} });
+  });
+
+  it("shows no cap as an empty input, and sends a changed or cleared cap", () => {
+    const draft = draftFromProfile(stored, dockerFields);
+    expect(draft.maxUsdPerTask).toBe("5");
+    expect(draft.maxUsdPerBotPerDay).toBe("");
+    const { patch } = patchFor((current) => ({
+      ...current,
+      maxUsdPerTask: "",
+      maxUsdPerBotPerDay: "12.5",
+    }));
+    expect(patch).toEqual({
+      budgets: { maxUsdPerTask: null, maxUsdPerBotPerDay: 12.5 },
+    });
+    expect(updateRuntimeProfileCommandSchema.safeParse(patch).success).toBe(
+      true,
+    );
   });
 
   it("sends changed scalars and merged objects key by key", () => {

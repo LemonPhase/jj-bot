@@ -88,6 +88,12 @@ async function gatePassed(
 
 const BUDGET_NOTE = "\n\n(Stopped at the turn budget.)";
 
+/** A turn a spend cap ended: what was reached, and what lets the work go on. */
+interface CapStop {
+  reason: string;
+  advice: string;
+}
+
 async function botName(tx: Tx, botId: string) {
   const [row] = await tx
     .select({ name: bots.name })
@@ -188,15 +194,20 @@ export async function failSessionTx(
   return { taskFinished: true };
 }
 
-/** The session ended its turn: wait for delegations, report to the parent, or finish/wait the task. */
+/**
+ * The session ended its turn: wait for delegations, report to the parent, or
+ * finish/wait the task. `cap` is set when a spend cap ended it: a worker's
+ * result says so, and a coordinator left waiting for the user posts a system
+ * message with the cap and what lets the task go on.
+ */
 async function endTurn(
   tx: Tx,
   rc: RunContext,
   task: TaskRow,
   session: SessionRow,
-  finalText: string,
+  text: string,
+  cap?: CapStop,
 ) {
-  let text = finalText;
   const { ctx } = rc.deps;
   const attribution = attributionOf(rc);
   if ((await openChildren(tx, session)).length > 0) {
@@ -290,31 +301,48 @@ async function endTurn(
       rc.taskFinished = true;
       return;
     }
-    // An unverified completion is not the coordinator's answer to the user:
-    // its last words ("done") would mislead, so the engine says what holds.
-    if (unverified)
-      text = `Not completed: the verification checks have not all passed for goal version ${task.goalVersion}.`;
-    await postMessage(
-      tx,
-      ctx,
-      unverified
+    // A turn that ends without the coordinator's own answer to the user gets
+    // a system message saying what holds: a spend cap stopped it, or its
+    // completion did not pass verification (its last words, "done", would
+    // mislead, so they are not posted).
+    const held = unverified
+      ? {
+          text: `Not completed: the verification checks have not all passed for goal version ${task.goalVersion}.`,
+          replaces: true,
+        }
+      : cap
         ? {
-            taskId: task.id,
-            authorKind: "system",
-            sessionId: session.id,
-            intent: "notification",
-            text,
+            text: `Stopped: ${cap.reason} ${cap.advice}`,
+            replaces: !text.trim(),
           }
-        : {
-            taskId: task.id,
-            authorKind: "bot",
-            authorBotId: session.botId,
-            sessionId: session.id,
-            intent: "discussion",
-            text,
-          },
-      attribution,
-    );
+        : undefined;
+    if (!held?.replaces)
+      await postMessage(
+        tx,
+        ctx,
+        {
+          taskId: task.id,
+          authorKind: "bot",
+          authorBotId: session.botId,
+          sessionId: session.id,
+          intent: "discussion",
+          text,
+        },
+        attribution,
+      );
+    if (held)
+      await postMessage(
+        tx,
+        ctx,
+        {
+          taskId: task.id,
+          authorKind: "system",
+          sessionId: session.id,
+          intent: "discussion",
+          text: held.text,
+        },
+        attribution,
+      );
     await updateSession(
       tx,
       ctx,
@@ -326,7 +354,18 @@ async function endTurn(
     if (task.status !== "waiting") {
       await updateTask(tx, ctx, task, { status: "waiting" }, attribution);
       // A task that continues and waits again is a new event.
-      await recordTaskUpdate(tx, ctx, task, "waiting", text);
+      // Held, the chat is told what holds, after any text of the turn it posted.
+      await recordTaskUpdate(
+        tx,
+        ctx,
+        task,
+        "waiting",
+        held
+          ? [held.replaces ? "" : text.trim(), held.text]
+              .filter(Boolean)
+              .join("\n\n")
+          : text,
+      );
     }
     return;
   }
@@ -340,7 +379,9 @@ async function endTurn(
       authorBotId: session.botId,
       sessionId: session.id,
       intent: "result",
-      text,
+      text: cap
+        ? `${text}\n\n(Stopped before finishing: ${cap.reason})`.trim()
+        : text,
       recipientBotIds: parent ? [parent.botId] : [],
     },
     attribution,
@@ -500,6 +541,13 @@ export async function finishRun(
           (await lastAssistantText(tx, session.id)) ?? "",
         );
       else await restorePrevious(tx, rc, session);
+    } else if (outcome.kind === "budget" && outcome.limit === "spend") {
+      const reason =
+        rc.spendStop?.message ?? outcome.reason ?? "A spend cap was reached.";
+      await endTurn(tx, rc, task, session, outcome.finalText, {
+        reason,
+        advice: rc.spendStop?.advice ?? "Raise the spend cap to continue.",
+      });
     } else if (outcome.kind === "ended" || outcome.kind === "budget")
       await endTurn(
         tx,

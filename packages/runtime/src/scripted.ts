@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   type AssistantMessage,
   type AssistantMessageEventStream,
+  calculateCost,
   createAssistantMessageEventStream,
   createFauxCore,
   createProvider,
@@ -55,11 +56,23 @@ import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-option
  * back as the start of the conversation, so its rules hold after compaction.
  *
  * It is always labelled "Scripted test model" and never poses as a real model.
+ * Its `team` model lists no price, so its calls are unpriced. `team-priced`
+ * answers the same way at a fictional price (SCRIPTED_FICTIONAL_PRICE), so
+ * spend caps can be exercised without a real model; its name says so.
  */
 export const SCRIPTED_PROVIDER_ID = "scripted";
 export const SCRIPTED_MODEL_ID = "team";
 export const SCRIPTED_MODEL_REF = `${SCRIPTED_PROVIDER_ID}/${SCRIPTED_MODEL_ID}`;
 export const SCRIPTED_MODEL_NAME = "Scripted test model";
+export const SCRIPTED_PRICED_MODEL_ID = "team-priced";
+export const SCRIPTED_PRICED_MODEL_REF = `${SCRIPTED_PROVIDER_ID}/${SCRIPTED_PRICED_MODEL_ID}`;
+/** US dollars per million tokens, made up for tests and demos. */
+export const SCRIPTED_FICTIONAL_PRICE = {
+  input: 1,
+  output: 4,
+  cacheRead: 0.1,
+  cacheWrite: 1.25,
+};
 
 interface PlannedCall {
   name: string;
@@ -94,6 +107,15 @@ export function createScriptedProvider(
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow,
+        maxTokens: MAX_OUTPUT_TOKENS,
+      },
+      {
+        id: SCRIPTED_PRICED_MODEL_ID,
+        name: `${SCRIPTED_MODEL_NAME} (fictional price)`,
+        reasoning: false,
+        input: ["text"],
+        cost: SCRIPTED_FICTIONAL_PRICE,
         contextWindow,
         maxTokens: MAX_OUTPUT_TOKENS,
       },
@@ -145,8 +167,9 @@ export function createScriptedProvider(
     ]);
     // No prompt cache: the faux core would count uncached tokens both as
     // input and as cache writes, overstating the context the usage reports.
-    return withCutUsage(
+    return withUsage(
       core.stream(model, context, { ...options, cacheRetention: "none" }),
+      model,
       () => cutAt,
     );
   };
@@ -211,35 +234,37 @@ function cutToLimit(
 }
 
 /**
- * A provider reports the limit it cut an answer at as its output tokens; the
- * faux core counts only the content left. A cut answer (`cutAt()` set) is
- * reported with that many output tokens.
+ * The answer's usage as a provider reports it. A provider reports the limit
+ * it cut an answer at as its output tokens; the faux core counts only the
+ * content left, so a cut answer (`cutAt()` set) is reported with that many.
+ * The faux core prices nothing; a model with a price gets its cost here.
  */
-function withCutUsage(
+function withUsage(
   inner: AssistantMessageEventStream,
+  model: Model<string>,
   cutAt: () => number | undefined,
 ): AssistantMessageEventStream {
+  const priced = model.cost.input > 0 || model.cost.output > 0;
   const outer = createAssistantMessageEventStream();
   void (async () => {
     for await (const event of inner) {
       const output = cutAt();
-      if (
-        event.type !== "done" ||
-        event.reason !== "length" ||
-        output === undefined
-      ) {
+      const cut =
+        event.type === "done" &&
+        event.reason === "length" &&
+        output !== undefined;
+      if (event.type !== "done" || (!cut && !priced)) {
         outer.push(event);
         continue;
       }
-      const { usage } = event.message;
-      const message: AssistantMessage = {
-        ...event.message,
-        usage: {
-          ...usage,
-          output,
-          totalTokens: usage.totalTokens - usage.output + output,
-        },
-      };
+      const usage = { ...event.message.usage };
+      if (cut && output !== undefined) {
+        usage.totalTokens = usage.totalTokens - usage.output + output;
+        usage.output = output;
+      }
+      usage.cost = { ...usage.cost };
+      if (priced) calculateCost(model, usage);
+      const message: AssistantMessage = { ...event.message, usage };
       outer.push({ ...event, message });
       outer.end(message);
       return;

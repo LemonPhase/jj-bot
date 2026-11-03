@@ -116,6 +116,33 @@
   display: inline-flex;
 }
 
+/* The usage badge is a button: it opens the spend cap dialog. */
+.task-spend {
+  cursor: pointer;
+  background: none;
+}
+
+.task-spend:hover:not([aria-disabled="true"]) {
+  border-color: var(--ink-muted);
+}
+
+.task-spend[aria-disabled="true"] {
+  cursor: default;
+}
+
+.task-spend--warning {
+  border-color: var(--status-verifying);
+}
+
+.task-spend--reached {
+  border-color: var(--status-failed);
+  color: var(--ink-2);
+}
+
+.task-spend__reached {
+  color: var(--status-failed-ink);
+}
+
 /* ── Notices and failures ──────────────────────────────────────────────── */
 .task-main__notice,
 .task-chat__error {

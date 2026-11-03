@@ -52,19 +52,19 @@ The docker driver enforces three network modes. `none` leaves a sandbox only loo
 
 ## Runtime profiles
 
-A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), the coding tools it grants, and budgets (model calls per run and minutes per run). Collaboration tools come with a session's place in the task, not with a profile: `delegate` and `message` when the task has teammates (`delegate` only while the session's depth is below the delegation limit), `complete_task` for the coordinator alone, and the read-only lookup tools (`task_state`, `task_log`, `read_entry`, `read_report`; see [Context and memory](#context-and-memory)) for every session. Users create and edit profiles in settings; a bot references one, or uses the default profile. The profile is the single place where isolation and spending are configured. The API reports each profile's status from its driver: whether the driver is available, and whether it isolates the filesystem. A profile without filesystem isolation is labelled unisolated. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tools and budgets still apply to its sessions.
+A runtime profile is the user-facing record that decides how a bot executes: the sandbox driver and spec (image, resources, network policy, workspace lifetime), the coding tools it grants, budgets (model calls per run and minutes per run) and spend caps (per task, and per bot over any 24 hours; see [Spend caps](#spend-caps)). Collaboration tools come with a session's place in the task, not with a profile: `delegate` and `message` when the task has teammates (`delegate` only while the session's depth is below the delegation limit), `complete_task` for the coordinator alone, and the read-only lookup tools (`task_state`, `task_log`, `read_entry`, `read_report`; see [Context and memory](#context-and-memory)) for every session. Users create and edit profiles in settings; a bot references one, or uses the default profile. The profile is the single place where isolation and spending are configured. The API reports each profile's status from its driver: whether the driver is available, and whether it isolates the filesystem. A profile without filesystem isolation is labelled unisolated. Within a task, the shared sandbox uses the coordinator's profile, while each bot's own tools and budgets still apply to its sessions.
 
-On first boot, with no profiles stored, the server seeds one profile per registered driver, each with every coding tool and the default budgets (60 model calls and 30 minutes per run): **Docker sandbox** (`jj-sandbox:base-1`, network `open`, `task` workspace, 2 CPUs, 2048 MB, 512 processes) and **Local (unisolated)** (network `open`, `task` workspace). Docker is the default when its daemon answers at that boot; otherwise local is, when registered.
+On first boot, with no profiles stored, the server seeds one profile per registered driver, each with every coding tool and the default budgets (60 model calls and 30 minutes per run, $5 per task and $20 per bot per 24 hours): **Docker sandbox** (`jj-sandbox:base-1`, network `open`, `task` workspace, 2 CPUs, 2048 MB, 512 processes) and **Local (unisolated)** (network `open`, `task` workspace). Docker is the default when its daemon answers at that boot; otherwise local is, when registered.
 
 ## Domain records
 
 | Record            | Responsibility                                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Bot               | Identity, role, instructions, model choice, runtime profile, appearance, memory.                                   |
-| RuntimeProfile    | Sandbox driver and spec, coding tools, budgets; reports driver availability and isolation.                         |
+| RuntimeProfile    | Sandbox driver and spec, coding tools, budgets and spend caps; reports driver availability and isolation.          |
 | BotConversation   | Direct user-to-bot chat outside task execution.                                                                    |
 | ChatTaskUpdate    | A task event its coordinator's chat is told (completed, failed, waiting for the user) until a reply answers it.    |
-| Task              | Title, goal and goal version, verification plan, coordinator, state, final result, stop request.                   |
+| Task              | Title, goal and goal version, verification plan, coordinator, state, final result, stop request, spend cap.        |
 | TaskParticipation | Bot membership in a task.                                                                                          |
 | ExecutionSession  | Task, bot, parent session, role, brief, depth, goal version, status, what it waits for, result.                    |
 | SessionEntry      | One entry of a session's pi transcript: a pi message or a compaction checkpoint.                                   |
@@ -74,7 +74,7 @@ On first boot, with no profiles stored, the server seeds one profile per registe
 | TaskEvent         | Ordered durable activity. The single source for chat, the execution graph and the audit trail.                     |
 | Artifact          | A workspace file or spilled tool output, credited to the run that wrote it, or task-level when no run can be.      |
 | VerificationCheck | One criterion of a plan evaluated once at one gate attempt of one goal version: outcome and evidence. Append-only. |
-| Usage             | Tokens and cost per model call, compaction summaries included, attributed to session and run.                      |
+| Usage             | Tokens and cost per model call (compaction summaries and chat replies included), attributed to session, run, bot.  |
 
 There is no separate assignment record: a delegated assignment is an execution session (see [Coordination](#coordination)). A bot's appearance is cosmetic and never affects execution. How artifact snapshots credit files is in the engine README.
 
@@ -145,6 +145,24 @@ Configurable limits cap sessions per task, delegation depth and concurrent execu
 Steering is posted to the task chat and reaches the coordinator. Steering is injected into a running session at its next turn boundary rather than discarding its work. A change to the goal or its verification plan increments the goal version, and work or evidence at an older version cannot complete the task.
 
 Stop marks cancellation durably (`cancelRequestedAt`), prevents new launches and new messages, propagates to active sessions and their sandboxes, and records what actually stopped. Cancellation does not undo completed external effects, and a command that could not be interrupted is reported as such.
+
+## Spend caps
+
+No model call starts once a cap it falls under is reached. Three caps apply, all over the priced spend recorded in `usage`:
+
+- **The task's own** (`task.spendCapUsd`): copied from the coordinator's profile (`budgets.maxUsdPerTask`, default $5) when the task is created, or given by the creator, and changed with `PATCH /api/tasks/:taskId`. Null means no cap.
+- **Each bot's, over any rolling 24 hours** (its own profile's `budgets.maxUsdPerBotPerDay`, default $20): task sessions and direct chat together.
+- **The instance's, over any rolling 24 hours** (`JJ_MAX_USD_PER_DAY`, unset by default): everything.
+
+Stored profiles without the cap keys take the defaults, so no install is unbounded unless a profile says so. One guard is asked before every model call: each turn of a session run, each compaction summary call, the retry after a context overflow and each call of a chat reply, to the user or to a task update. A refused call is never sent and reports no model events. A call in flight is counted when it finishes, so a task can pass its cap by the calls already running: at most one per running session.
+
+At a cap, the session's run ends like a run at its turn budget, and `spend.capped` records which cap stopped it and by how much: once per cap (its scope and value, and the bot for a bot's cap) in each stretch of the task's work, however many sessions it stops, until a user message continues the task. A worker reports what it has, its result marked as stopped at the cap; its parent reacts to it like any result, and is stopped by the same cap at its next call. A coordinator left with no open delegations waits for the user, and the engine posts a system message naming the cap and what lets the task go on, so the task is `waiting`, not `failed`: no delegation or transcript is lost. A bot's cap stops only that bot's sessions, and a delegation to a bot that could make no model call is refused up front with the cap, so no session starts only to stop. While a cap would refuse the next call, the API answers 409 `SPEND_CAP_REACHED` (with the scope, the spend and the cap) to a message that would continue the task, to a task whose coordinator is at its cap, and to a direct message to a bot at its cap. A chat reply the worker refuses fails visibly; a refused task update reply is told by the engine's plain fallback message instead, without a model call. A reply's calls are recorded as each one finishes, so one that fails, or whose update is overtaken, still counts every call it made. Raising or clearing a cap continues nothing: the user's next message does.
+
+At 80% of the task's cap (`SPEND_SOFT_THRESHOLD`) the engine records `spend.threshold` once per cap value and clients show the spend amber. It is the hook for approvals ([#87](https://github.com/LemonPhase/jj-bot/issues/87)): spend past it will need the user's approval.
+
+Amounts next to a cap are shown, in the engine's messages and in clients alike, with enough places that spend over a cap never reads as at or under it (`$4.996 of $5.00`). Costs come from the model catalog's listed prices. A model with no listed price (pi-ai prices it at zero) may be free or may not, so its calls are recorded as unpriced and counted in `Usage.unpricedCalls`, never as free. They are not refused, and no cap can bound them; clients say so wherever cost is shown. Calls stored before caps existed with tokens but no cost count as unpriced too. The turn and time budgets still apply.
+
+Usage is reported per task and per session in the task view, and per instance, bot (direct chat apart) and model over the last 24 hours, 7 days and 30 days by `GET /api/usage`, with the caps that apply.
 
 ## Events and streaming
 

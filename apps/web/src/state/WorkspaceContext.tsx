@@ -64,6 +64,8 @@ export interface NewTaskInput {
   participantBotIds: string[];
   /** The user's checks; the task completes only when every one passes. */
   verificationPlan?: VerificationPlan | null;
+  /** Omitted: the coordinator's profile's cap. Null: no cap. */
+  spendCapUsd?: number | null;
 }
 
 interface WorkspaceValue {
@@ -542,7 +544,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
         return true;
       },
-      createTask: async ({ goal, participantBotIds, verificationPlan }) => {
+      createTask: async ({
+        goal,
+        participantBotIds,
+        verificationPlan,
+        spendCapUsd,
+      }) => {
         const [coordinatorBotId] = participantBotIds;
         if (!coordinatorBotId)
           throw new Error("A task needs at least one bot.");
@@ -551,6 +558,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           coordinatorBotId,
           participantBotIds,
           ...(verificationPlan ? { verificationPlan } : {}),
+          ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
         });
         const verification = verificationSummary(task, []);
         setTasks((current) =>

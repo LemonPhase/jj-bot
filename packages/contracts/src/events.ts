@@ -1,6 +1,11 @@
 import type { Interrupted } from "@jj/sandbox/contract";
 import { z } from "zod";
-import { idSchema, modelRefSchema, timestampSchema } from "./common";
+import {
+  idSchema,
+  modelRefSchema,
+  spendCapUsdSchema,
+  timestampSchema,
+} from "./common";
 import {
   ACTIVITY_TEXT_LIMIT,
   type Activity,
@@ -17,6 +22,7 @@ import {
   taskStatusSchema,
   usageSchema,
 } from "./tasks";
+import { spendScopeSchema } from "./usage";
 import {
   checkOutcomeSchema,
   verificationCheckSchema,
@@ -206,6 +212,27 @@ export const taskEventSchema = z.discriminatedUnion("type", [
       passed: z.number().int().nonnegative(),
       failed: z.number().int().nonnegative(),
       inconclusive: z.number().int().nonnegative(),
+    }),
+  ),
+  /**
+   * Marker: a model call was refused at a spend cap and never sent; the
+   * session's run ends (a worker reports what it has, the coordinator waits
+   * for the user). Attributed to that session.
+   */
+  event(
+    "spend.capped",
+    z.object({
+      scope: spendScopeSchema,
+      spentUsd: z.number().nonnegative(),
+      capUsd: spendCapUsdSchema,
+    }),
+  ),
+  /** Marker: the task's priced spend passed SPEND_SOFT_THRESHOLD of its cap. Once per cap value. */
+  event(
+    "spend.threshold",
+    z.object({
+      spentUsd: z.number().nonnegative(),
+      capUsd: spendCapUsdSchema,
     }),
   ),
   event("cancellation.requested", z.object({ reason: z.string().nullable() })),

@@ -1,3 +1,4 @@
+import { profileBudgetsSchema } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
@@ -6,12 +7,15 @@ import {
   Chip,
   Dialog,
   ErrorBanner,
+  Input,
   SectionLabel,
   Select,
   Textarea,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
+import { formatCap } from "./format";
+import { readCapInput } from "./SpendControl";
 import { type CheckDraft, planFromDrafts } from "./verification";
 
 export interface NewTaskDialogProps {
@@ -26,7 +30,7 @@ export interface NewTaskDialogProps {
  * optional verification checks. On success the task opens.
  */
 export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
-  const { bots, createTask } = useWorkspace();
+  const { bots, profiles, createTask } = useWorkspace();
   const api = useApi();
   const formId = useId();
   const pickLabelId = useId();
@@ -41,6 +45,17 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
     () => known[0] ?? bots[0]?.id ?? "",
   );
   const [others, setOthers] = useState<string[]>(() => known.slice(1));
+  /** Null until edited: the coordinator's profile's cap applies. */
+  const [capText, setCapText] = useState<string | null>(null);
+  const [capError, setCapError] = useState<string | null>(null);
+  // As the server picks it: the coordinator's profile, else the default one.
+  const coordinator = bots.find((bot) => bot.id === coordinatorId);
+  const profile = coordinator?.runtimeProfileId
+    ? profiles.find((entry) => entry.id === coordinator.runtimeProfileId)
+    : profiles.find((entry) => entry.isDefault);
+  const profileCap = (profile?.budgets ?? profileBudgetsSchema.parse({}))
+    .maxUsdPerTask;
+  const capValue = capText ?? (profileCap === null ? "" : String(profileCap));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const participants = [
@@ -60,11 +75,12 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
     event.preventDefault();
     if (!canStart) return;
     const checks = planFromDrafts(drafts);
-    if (!checks.ok) {
-      setCheckErrors(checks.errors);
-      return;
-    }
-    setCheckErrors({});
+    const cap = readCapInput(capValue);
+    if (!checks.ok) setCheckErrors(checks.errors);
+    else setCheckErrors({});
+    if (!cap.ok) setCapError(cap.error);
+    else setCapError(null);
+    if (!checks.ok || !cap.ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -72,6 +88,8 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
         goal: goal.trim(),
         participantBotIds: participants,
         verificationPlan: checks.plan,
+        // An untouched field leaves the cap to the server (the profile's).
+        ...(capText !== null ? { spendCapUsd: cap.value } : {}),
       });
       onClose();
     } catch (reason) {
@@ -113,7 +131,12 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
           Create a bot first: a task needs at least a coordinator.
         </p>
       ) : (
-        <form id={formId} className="new-task-form" onSubmit={submit}>
+        <form
+          id={formId}
+          className="new-task-form"
+          onSubmit={submit}
+          noValidate
+        >
           <Textarea
             label="Goal"
             value={goal}
@@ -171,6 +194,22 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
               })}
             </div>
           </div>
+          <Input
+            label="Spend cap (USD)"
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={0}
+            placeholder="No cap"
+            hint={`No model call starts once the task's priced spend reaches it. Empty for no cap. ${
+              profileCap === null
+                ? "The coordinator's profile sets none."
+                : `The coordinator's profile sets ${formatCap(profileCap)}.`
+            }`}
+            error={capError ?? undefined}
+            value={capValue}
+            onChange={(event) => setCapText(event.target.value)}
+          />
           {api.capabilities.verification && (
             <div className="new-task-form__checks">
               <SectionLabel id={checksLabelId} tracking="part">
