@@ -63,6 +63,21 @@ const RETIRED_SECRET_MS = RETIRED_SECRET_DAYS * 24 * 60 * 60 * 1000;
 export const retiredBefore = (now: Date) =>
   new Date(now.getTime() - RETIRED_SECRET_MS);
 
+/**
+ * How many retired values a name keeps: the most recently retired. Every
+ * redactor covers each of them, at a cost per value on everything a run
+ * stores, so a name replaced often (a script rotating it hourly) must not
+ * add one per replacement for the whole retention period.
+ */
+export const RETIRED_VALUES_PER_NAME = 10;
+
+const newestFirst = (
+  a: Pick<RetiredSecretRow, "id" | "retiredAt">,
+  b: Pick<RetiredSecretRow, "id" | "retiredAt">,
+) =>
+  b.retiredAt.getTime() - a.retiredAt.getTime() ||
+  (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
 /** The value's last four characters, shown in settings in place of the value. */
 export const secretHint = (value: string) => value.slice(-4);
 
@@ -172,7 +187,8 @@ export class SecretStore {
    * Retires `row`'s value once `replacement` (none when it is removed)
    * takes its place: sealed again into `retired_secrets`, bound to that
    * table, retired `at`. A name keeps one row per value: retiring a value
-   * it already holds moves that row's time instead. Nothing is kept when the
+   * it already holds moves that row's time instead. It keeps at most
+   * `RETIRED_VALUES_PER_NAME` rows, the newest. Nothing is kept when the
    * value is unchanged, or no configured key opens it, so it was redacted
    * nowhere anyway.
    */
@@ -199,36 +215,47 @@ export class SecretStore {
     const [same, ...duplicates] = earlier.filter(
       (retired) => this.openRetired(retired) === value,
     );
-    if (same) {
+    if (same)
       await exec
         .update(retiredSecrets)
         .set({ retiredAt: at })
         .where(eq(retiredSecrets.id, same.id));
-      if (duplicates.length > 0)
-        await exec.delete(retiredSecrets).where(
-          inArray(
-            retiredSecrets.id,
-            duplicates.map((duplicate) => duplicate.id),
-          ),
-        );
-      return;
+    else {
+      const sealed = keyring.seal(value, this.retiredAad(row.kind, row.name));
+      await exec.insert(retiredSecrets).values({
+        id,
+        ownerId: row.ownerId,
+        kind: row.kind,
+        name: row.name,
+        keyId: sealed.keyId,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+        retiredAt: at,
+      });
     }
-    const sealed = keyring.seal(value, this.retiredAad(row.kind, row.name));
-    await exec.insert(retiredSecrets).values({
-      id,
-      ownerId: row.ownerId,
-      kind: row.kind,
-      name: row.name,
-      keyId: sealed.keyId,
-      nonce: sealed.nonce,
-      ciphertext: sealed.ciphertext,
-      retiredAt: at,
-    });
+    // The value just retired is the newest; the oldest others past the cap go.
+    const others = earlier
+      .filter((retired) => retired !== same && !duplicates.includes(retired))
+      .sort(newestFirst);
+    const dropped = [
+      ...duplicates,
+      ...others.slice(RETIRED_VALUES_PER_NAME - 1),
+    ];
+    if (dropped.length > 0)
+      await exec.delete(retiredSecrets).where(
+        inArray(
+          retiredSecrets.id,
+          dropped.map((retired) => retired.id),
+        ),
+      );
   }
 
-  /** Deletes the values retired before `before`. */
+  /**
+   * Deletes the values retired before `before`, and those of a name past its
+   * newest `RETIRED_VALUES_PER_NAME`.
+   */
   async purgeRetired(before: Date, exec: Executor = this.db): Promise<number> {
-    const deleted = await exec
+    const expired = await exec
       .delete(retiredSecrets)
       .where(
         and(
@@ -237,7 +264,33 @@ export class SecretStore {
         ),
       )
       .returning({ id: retiredSecrets.id });
-    return deleted.length;
+    const rows = await exec
+      .select({
+        id: retiredSecrets.id,
+        kind: retiredSecrets.kind,
+        name: retiredSecrets.name,
+        retiredAt: retiredSecrets.retiredAt,
+      })
+      .from(retiredSecrets)
+      .where(eq(retiredSecrets.ownerId, this.owner));
+    const byName = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const key = entryKey(row.kind, row.name);
+      const named = byName.get(key);
+      if (named) named.push(row);
+      else byName.set(key, [row]);
+    }
+    const excess = [...byName.values()].flatMap((named) =>
+      named.sort(newestFirst).slice(RETIRED_VALUES_PER_NAME),
+    );
+    if (excess.length > 0)
+      await exec.delete(retiredSecrets).where(
+        inArray(
+          retiredSecrets.id,
+          excess.map((row) => row.id),
+        ),
+      );
+    return expired.length + excess.length;
   }
 
   /**
