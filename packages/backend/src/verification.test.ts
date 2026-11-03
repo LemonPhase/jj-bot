@@ -25,7 +25,6 @@ import {
   untilTask,
 } from "./testing/harness";
 import { createTeam } from "./testing/scenarios";
-import { ISOLATED_TIME_LIMIT_MS } from "./worker/isolated";
 import { gatePassed } from "./worker/outcomes";
 
 let db: TestDatabase;
@@ -463,11 +462,12 @@ describe("verification gate", () => {
         },
       ],
     );
-    // The event loop keeps turning while the checks run: an evaluation on
-    // this thread would hold it for at least its whole 2 s limit (this
-    // pattern, for minutes). Shorter stalls are the embedded database, which
-    // runs on this thread too and which a busy host stretches; so the test
-    // waits on the task's status alone, not on a whole task view per look.
+    // The event loop keeps turning while each check runs (never stalled for
+    // 1.5 s; an evaluation on this thread would hold it for its whole 2 s
+    // limit, this pattern for minutes). Shorter stalls are the embedded
+    // database, which runs on this thread too and which a busy host
+    // stretches; so the test waits on the task's status alone, not on a
+    // whole task view per look.
     let last = Date.now();
     const gaps: { from: number; to: number }[] = [];
     const ticker = setInterval(() => {
@@ -520,7 +520,7 @@ describe("verification gate", () => {
         )
         .map((gap) => gap.to - gap.from);
       expect(during.length).toBeGreaterThan(0);
-      expect(Math.max(...during)).toBeLessThan(ISOLATED_TIME_LIMIT_MS);
+      expect(Math.max(...during)).toBeLessThan(1_500);
     } finally {
       clearInterval(ticker);
     }
