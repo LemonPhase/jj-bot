@@ -11,6 +11,7 @@ import {
   taskViewSchema,
   type VerificationPlan,
 } from "@jj/contracts";
+import type { Tx } from "@jj/db";
 import { ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import {
   fauxAssistantMessage,
@@ -21,6 +22,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { MIN_EVENT_PAYLOAD_CAP_BYTES } from "./config";
 import type { Engine } from "./engine";
 import { PAYLOAD_STRING_CLIP_BYTES, payloadBytes } from "./event-payloads";
+import { emit } from "./events";
 import { said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -227,6 +229,37 @@ describe("the event payload cap", () => {
     expect(await engine.metrics.text()).toMatch(
       /jj_event_payloads_spilled_total\{type="task\.finished"\} 1\b/,
     );
+  });
+
+  it("counts a spilled payload only once its transaction commits", async () => {
+    const test = await testEngine(db.database, {
+      start: false,
+      config: { eventPayloadCapBytes: MIN_EVENT_PAYLOAD_CAP_BYTES },
+    });
+    engines.push(test);
+    const { engine } = test;
+    const team = await createTeam(engine, ["Ada"]);
+    const { task } = await engine.tasks.create({
+      goal: "Fail loudly",
+      coordinatorBotId: team.ids[0] as string,
+    });
+    const ctx = engine.context;
+    const spill = (tx: Tx) =>
+      emit(tx, ctx, task.id, {
+        type: "run.finished",
+        payload: { outcome: "failed", error: "e".repeat(200_000) },
+      });
+    const spilled =
+      /jj_event_payloads_spilled_total\{type="run\.finished"\} (\d+)/;
+    await expect(
+      ctx.db.transaction(async (tx) => {
+        await spill(tx);
+        throw new Error("rolled back");
+      }),
+    ).rejects.toThrow("rolled back");
+    expect((await engine.metrics.text()).match(spilled)?.[1] ?? "0").toBe("0");
+    await ctx.db.transaction(spill);
+    expect((await engine.metrics.text()).match(spilled)?.[1]).toBe("1");
   });
 
   it("spills a held write with 1 MiB of arguments, while its approval keeps them whole", async () => {

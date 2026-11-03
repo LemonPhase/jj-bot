@@ -766,6 +766,127 @@ describe("the compaction pass", () => {
   );
 });
 
+describe("fold equivalence across passes", () => {
+  it("folds from any cursor of a log with verification, a goal change, steering and two passes", async () => {
+    const test = await setup();
+    const { engine, executor } = test;
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    const gate = executor.gate("steer");
+    executor.brain(ada, (view) => {
+      const results = said.results(view);
+      if (said.heard(view, "Once more"))
+        return {
+          calls: [{ name: "complete_task", args: { result: "Again." } }],
+        };
+      if (said.turns(view) === 0)
+        return { calls: [{ name: "gate", args: { name: "steer" } }] };
+      const completes = results.filter((r) => r.name === "complete_task");
+      const failures = said
+        .inputs(view)
+        .filter((text) => text.startsWith("Verification of goal version"));
+      // The first completion fails its check: done.txt is not written yet.
+      if (completes.length === 0)
+        return {
+          calls: [{ name: "complete_task", args: { result: "Done." } }],
+        };
+      if (failures.length > 0 && !results.some((r) => r.name === "bash"))
+        return {
+          calls: [{ name: "bash", args: { command: "echo ok > done.txt" } }],
+        };
+      return {
+        calls: [{ name: "complete_task", args: { result: "Done, checked." } }],
+      };
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Write done.txt",
+      coordinatorBotId: team.byName[ada] as string,
+      verificationPlan: [
+        {
+          id: "done",
+          description: "done.txt says ok",
+          method: "file",
+          path: "done.txt",
+          expect: "contains",
+          value: "ok",
+        },
+      ],
+    });
+    await gate.reached;
+    // Steering and a goal change reach the coordinator while it runs.
+    await engine.tasks.postMessage(task.id, { text: "Keep it short." });
+    await engine.tasks.postMessage(task.id, {
+      text: "New goal.",
+      goal: "Write done.txt, saying ok",
+      observedGoalVersion: 1,
+    });
+    gate.open();
+    await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed",
+      "the verified completion",
+    );
+    await untilSettled(task.id);
+    const first = await allEvents(engine, task.id);
+    for (const type of [
+      "steering.received",
+      "task.goal_changed",
+      "verification.started",
+      "verification.checked",
+      "verification.finished",
+    ])
+      expect(
+        first.some((event) => event.type === type),
+        type,
+      ).toBe(true);
+    expect(
+      first.some(
+        (event) =>
+          event.type === "verification.finished" &&
+          event.payload.outcome === "failed",
+      ),
+    ).toBe(true);
+
+    const one = await compactNow(engine);
+    const through = one.tasks.find((done) => done.taskId === task.id)?.through;
+    expect(through).toBe(first.at(-1)?.sequence);
+    await engine.tasks.postMessage(task.id, { text: "Once more, please." });
+    await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" && v.task.result === "Again.",
+      "the continuation",
+    );
+    await untilSettled(task.id);
+    // What a client could have seen: the first log, the marker, and every
+    // event since, none of them compacted yet.
+    const between = await allEvents(engine, task.id);
+    const seen = [
+      ...first,
+      ...between.filter((event) => event.sequence > (through as number)),
+    ];
+    const two = await compactNow(engine);
+    expect(two.tasks.map((done) => done.taskId)).toContain(task.id);
+    const kept = await allEvents(engine, task.id);
+    // Two passes keep what one pass over the whole log would, marker aside.
+    expect(kept.slice(0, -1)).toEqual(expectedAfter(seen));
+    expect(kept.at(-1)?.type).toBe("task.compacted");
+    const latest = records(await engine.tasks.get(task.id));
+    expect(latest.compactedThrough).toBeGreaterThan(through as number);
+    const last = seen.at(-1)?.sequence ?? 0;
+    const deleted = seen
+      .map((event) => event.sequence)
+      .filter((sequence) => !kept.some((event) => event.sequence === sequence));
+    for (const n of new Set([...cursors(last, 60), ...deleted])) {
+      const resumed = kept
+        .filter((event) => event.sequence > n)
+        .reduce(applyTaskEvent, viewAt(seen, n));
+      expect(records(resumed), `resumed after ${n}`).toEqual(latest);
+    }
+  });
+});
+
 describe("a compacted task", () => {
   it("continues to a verified completion, with spend dedupe, gate attempts and lookups unchanged", async () => {
     const test = await setup();
