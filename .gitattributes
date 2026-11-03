@@ -1,0 +1,3 @@
+# The CSP allows the inline script in index.html by its hash
+# (apps/api/src/headers.ts): a CRLF checkout would change it.
+apps/web/index.html text eol=lf
