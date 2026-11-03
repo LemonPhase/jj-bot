@@ -7,14 +7,16 @@ export class DomainError extends Error {
     readonly code: ApiErrorCode,
     message: string,
     readonly details?: unknown,
+    /** A status other than the code's, where the contract names one (`VALIDATION_FAILED` with 422). */
+    readonly statusOverride?: number,
   ) {
     super(message);
     this.name = "DomainError";
   }
 
-  /** The HTTP status for this code. */
+  /** The HTTP status for this refusal: its code's, unless the contract names another. */
   get status(): number {
-    return HTTP_STATUS[this.code];
+    return this.statusOverride ?? HTTP_STATUS[this.code];
   }
 }
 
@@ -35,6 +37,7 @@ export const HTTP_STATUS: Record<ApiErrorCode, number> = {
   SECRET_STORE_UNAVAILABLE: 409,
   MCP_UNAVAILABLE: 422,
   MCP_SNAPSHOT_MISMATCH: 409,
+  TEMPLATE_UNUSABLE: 409,
   UNAUTHORIZED: 401,
   INTERNAL: 500,
 };

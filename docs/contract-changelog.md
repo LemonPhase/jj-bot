@@ -31,7 +31,7 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.9.0 — 2026-11-03 — Event retention and payload limits
+## 1.10.0 — 2026-11-03 — Event retention and payload limits
 
 **Changed by:** backend and frontend ([#32](https://github.com/LemonPhase/jj-bot/issues/32), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/32#issuecomment-6613592061)) · **Compatibility:** additive; a compacted task's log has gaps in its sequences at or below `compactedThrough`, which a reader that assumed gap-free logs must allow
 
@@ -39,7 +39,7 @@ rather than landing it and announcing it afterwards.
   compacting a finished task's events at or below `through`. `applyTaskEvent` folds it into the
   view's `compactedThrough` (the larger of the two).
 - `taskViewSchema.compactedThrough` and `taskEventPageSchema.compactedThrough`: integers, default 0
-  (parsed as 0 from servers before 1.9.0). Events at or below it were compacted: activity and
+  (parsed as 0 from servers before 1.10.0). Events at or below it were compacted: activity and
   superseded snapshots were deleted, and `tool.finished` output and `model.finished` text dropped.
   For any cursor n, the kept events after n fold onto the view at n into the latest view, its
   records compared by id, so a stream resumed from any `Last-Event-ID` converges.
@@ -48,7 +48,7 @@ rather than landing it and announcing it afterwards.
   with each string over 4 KiB clipped and marked (`… [N more characters in the saved copy]`).
   A client folds it, then refetches the view, whose records are whole.
 - `EVENT_PAYLOAD_CAP_BYTES` = 1 MiB: the ceiling of the server's payload cap.
-- `bootstrapSchema.eventRetentionDays`, optional (absent from servers before 1.9.0): the server's
+- `bootstrapSchema.eventRetentionDays`, optional (absent from servers before 1.10.0): the server's
   `JJ_EVENT_RETENTION_DAYS`, 0 to 3650, 0 meaning never, so Settings → About can show it.
 
 **Action required (frontend):** none beyond this change: the web app reloads the view after a
@@ -57,8 +57,50 @@ tool rows "output not kept", links a spilled event's saved copy and shows the re
 Settings → About.
 **Action required (backend):** none beyond this change: the `maintenance.compact` job compacts
 finished tasks hourly, and `emit` spills payloads over `JJ_EVENT_PAYLOAD_CAP_BYTES`. Migration
-0013 adds `tasks.events_compacted_through`, `task_events.payload_artifact_id`, the finished-tasks
+0014 adds `tasks.events_compacted_through`, `task_events.payload_artifact_id`, the finished-tasks
 index and the job kind.
+## 1.9.0 — 2026-11-03 — Task templates
+
+**Changed by:** backend and frontend ([#91](https://github.com/LemonPhase/jj-bot/issues/91), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/91#issuecomment-6613485332)) · **Compatibility:** additive
+
+- New `templates.ts`. `taskTemplateSchema`: `id`, `title` (1–120 characters), `goal` (at most
+  `COMMAND_TEXT_LIMIT`), `coordinatorBotId` and `participantBotIds` (the coordinator included, the
+  same refinement as tasks, `coordinatorParticipates`), `verificationPlan` (null by default),
+  `spendCapUsd` (omitted: the coordinator's profile's `maxUsdPerTask` at start; null: no cap; the
+  `createTaskCommandSchema` semantics), `problems` (derived on read, empty by default) and
+  `createdAt`, `updatedAt`. `MAX_TASK_TEMPLATES` = 200.
+- `templateProblemSchema`, a union on `kind`: `bot_archived` (`botId`, `name`),
+  `model_not_configured` (`botId`, `message`) and `verification_unavailable`. An empty list means
+  the template can start now; spend caps are checked at start and are not problems.
+  `describeTemplateProblem` words one.
+- Commands: `createTaskTemplateCommandSchema` (the create-task fields with `title` required, and
+  the same coordinator transform, now the exported `withCoordinator`);
+  `updateTaskTemplateCommandSchema` (partial, at least one field; `participantBotIds` replaced
+  whole; `spendCapUsd` also takes `PROFILE_SPEND_CAP` = `"profile"` to go back to the profile's cap,
+  which a patch could not otherwise say); `startTemplateCommandSchema` (`instructions` of 1 to
+  `TEMPLATE_INSTRUCTIONS_LIMIT` = 4000 characters, `title`, `spendCapUsd`, all optional).
+- `templateRunGoal` appends a run's instructions to the goal under
+  `TEMPLATE_INSTRUCTIONS_HEADING` (`Instructions for this run:`); `templateTaskCommand` builds the
+  `CreateTaskCommand` a start makes; `templateGoalTooLong` says when the combined goal is over
+  `COMMAND_TEXT_LIMIT`, which a start answers with 422 `VALIDATION_FAILED`.
+- `taskObjectSchema.templateId` (and so tasks, summaries and `task.created`): the template a task
+  was started from, null otherwise and for records stored before 1.9.0.
+- Routes: `GET /api/task-templates` → `taskTemplateListSchema` (`{ templates }`, oldest first);
+  `POST` → 201 `taskTemplateResultSchema` (`{ template }`); `GET` and `PATCH
+  /api/task-templates/:id` → `{ template }`; `DELETE` → 204, leaving its tasks and their
+  `templateId` as they are; `POST /api/task-templates/:id/tasks` with `startTemplateCommandSchema` →
+  201 `{ task }`.
+- API error code `TEMPLATE_UNUSABLE` (409, `details` per `templateUnusableDetailsSchema`:
+  `{ problems }`), answered to a start while the template has any problem. Saves answer
+  `VALIDATION_FAILED` for an unknown or archived bot and `CONFLICT` past the limit; a start can
+  also answer `SPEND_CAP_REACHED` for a coordinator at its cap, as task creation does.
+- `workspaceHintSchema`: adds `templates.changed`, sent when a template is saved, changed or
+  deleted. Older clients ignore it.
+
+**Action required (frontend):** list, edit, delete and start templates, save a task as one, and
+show "From template X" on a task. Done in the same change, the demo included.
+**Action required (backend):** none beyond this change; a client built against 1.8.0 that parses
+tasks strictly must accept `templateId`.
 
 ## 1.8.0 — 2026-11-03 — Bot names and roles are a single line
 

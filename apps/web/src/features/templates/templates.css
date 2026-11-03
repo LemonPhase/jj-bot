@@ -1,0 +1,139 @@
+/* ── Templates section of the Tasks sidebar ────────────────────────────── */
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line-subtle);
+}
+
+.template-list__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-right: 4px;
+}
+
+.template-list__head .shell-list__label {
+  padding-bottom: 0;
+}
+
+.template-list__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.template-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+}
+
+.template-row:hover,
+.template-row:focus-within {
+  background: var(--bg-hover);
+}
+
+.template-row__title {
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-medium);
+  color: var(--ink);
+}
+
+.template-row__meta,
+.template-row__problem {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-muted);
+}
+
+.template-row__problem {
+  color: var(--status-failed-ink);
+}
+
+.template-row__mark {
+  display: inline-block;
+  margin-right: 6px;
+  font-weight: var(--fw-semibold);
+}
+
+.template-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ── Template editor and start dialog ──────────────────────────────────── */
+.template-editor__note {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--status-failed-ink);
+}
+
+.template-editor__cap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.template-editor__cap .ui-field {
+  align-self: stretch;
+}
+
+.template-editor__cap .ui-field__hint {
+  margin: 0;
+}
+
+.template-start__facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-3) var(--sp-6);
+  margin: 0;
+  font-size: var(--fs-small);
+}
+
+.template-start__facts dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-part);
+  color: var(--ink-muted);
+}
+
+.template-start__facts dd {
+  margin: 0;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.template-start__goal {
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+}
+
+.template-start__problems {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+
+/* ── Task header: where the task came from ─────────────────────────────── */
+.task-head__template {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-muted);
+}

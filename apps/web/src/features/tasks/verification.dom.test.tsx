@@ -22,6 +22,7 @@ import { ApiProvider } from "../../api/ApiContext";
 import type { JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
 import { useWorkspace, WorkspaceProvider } from "../../state/WorkspaceContext";
+import { TestShell } from "../../test/shell";
 import { InlineTaskCard } from "../bots/InlineTaskCard";
 import { NewTaskDialog } from "./NewTaskDialog";
 import { TaskHeader } from "./TaskHeader";
@@ -92,6 +93,7 @@ function viewOf(
       cancelRequestedAt: null,
       verificationPlan: taskPlan,
       spendCapUsd: null,
+      templateId: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: status === "completed" ? at : null,
@@ -137,7 +139,9 @@ function renderReady(
   render(
     <ApiProvider api={api}>
       <WorkspaceProvider>
-        <Ready>{ui}</Ready>
+        <TestShell>
+          <Ready>{ui}</Ready>
+        </TestShell>
       </WorkspaceProvider>
     </ApiProvider>,
   );

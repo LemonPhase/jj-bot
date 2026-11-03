@@ -70,6 +70,8 @@ export const API_ERROR_CODES = [
   "MCP_UNAVAILABLE",
   /** A server's pinned snapshot was discovered for another configuration: discover it again. */
   "MCP_SNAPSHOT_MISMATCH",
+  /** A task template cannot start now: `details.problems` (`templateUnusableDetailsSchema`) says why. */
+  "TEMPLATE_UNUSABLE",
   "UNAUTHORIZED",
   "INTERNAL",
 ] as const;
@@ -99,6 +101,8 @@ export const workspaceHintSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("profiles.changed") }),
   /** A sandbox secret or a stored provider key changed: refetch secrets and models. */
   z.object({ type: z.literal("secrets.changed") }),
+  /** A task template was saved, changed or deleted: refetch the templates. */
+  z.object({ type: z.literal("templates.changed") }),
 ]);
 
 export type Capabilities = z.infer<typeof capabilitiesSchema>;

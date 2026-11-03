@@ -62,6 +62,8 @@ export interface NewTaskInput {
   verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's `maxUsdPerTask`. Null: no cap. */
   spendCapUsd?: number | null;
+  /** The task template the user started the task from. */
+  templateId?: string | null;
 }
 
 /**
@@ -91,6 +93,7 @@ export async function createTaskTx(
       createdFromMessageId: input.createdFromMessageId ?? null,
       verificationPlan: input.verificationPlan ?? null,
       spendCapUsd,
+      templateId: input.templateId ?? null,
       createdAt: now,
       updatedAt: now,
     })
@@ -158,10 +161,14 @@ export function assertModel(
   }
 }
 
-/** `POST /api/tasks`. */
+/**
+ * `POST /api/tasks`, and the start of a task template (`templateId`), which
+ * makes the same task from the template's fields.
+ */
 export async function createTask(
   ctx: EngineContext,
   input: CreateTaskCommand,
+  options: { templateId?: string } = {},
 ): Promise<{ task: Task }> {
   const command = parseCommand(createTaskCommandSchema, input);
   const found = await ctx.db
@@ -181,7 +188,7 @@ export async function createTask(
     );
   for (const bot of found) assertModel(ctx, bot);
   const { task } = await ctx.db.transaction((tx) =>
-    createTaskTx(tx, ctx, command),
+    createTaskTx(tx, ctx, { ...command, templateId: options.templateId }),
   );
   return { task: toTask(task, command.participantBotIds) };
 }

@@ -6,6 +6,7 @@ import {
   bootstrapSchema,
   botMemorySchema,
   botSchema,
+  COMMAND_TEXT_LIMIT,
   conversationViewSchema,
   modelsViewSchema,
   runtimeProfileSchema,
@@ -15,7 +16,10 @@ import {
   taskMessageSchema,
   taskSchema,
   taskSummarySchema,
+  taskTemplateListSchema,
+  taskTemplateResultSchema,
   taskViewSchema,
+  templateUnusableDetailsSchema,
   usageReportSchema,
   z,
 } from "@jj/contracts";
@@ -134,7 +138,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.9.0",
+      contractVersion: "1.10.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -1056,6 +1060,166 @@ describe("artifacts", () => {
       ),
       404,
       "NOT_FOUND",
+    );
+  });
+});
+
+describe("task templates", () => {
+  it("creates, lists, reads, updates, starts and deletes a template", async () => {
+    const created = await t.call("POST", "/api/task-templates", {
+      title: "Release notes",
+      goal: "Write the release notes to notes.md.",
+      coordinatorBotId: bots.Ada,
+      participantBotIds: [bots.Grace],
+      spendCapUsd: 2,
+    });
+    expect(created.status).toBe(201);
+    const { template } = taskTemplateResultSchema.parse(created.body);
+    expect(template).toMatchObject({
+      title: "Release notes",
+      participantBotIds: [bots.Ada, bots.Grace],
+      spendCapUsd: 2,
+      problems: [],
+    });
+
+    const list = await t.call("GET", "/api/task-templates");
+    expect(list.status).toBe(200);
+    expect(
+      taskTemplateListSchema
+        .parse(list.body)
+        .templates.map((entry) => entry.id),
+    ).toContain(template.id);
+    const read = await t.call("GET", `/api/task-templates/${template.id}`);
+    expect(taskTemplateResultSchema.parse(read.body).template).toEqual(
+      template,
+    );
+
+    const patched = await t.call(
+      "PATCH",
+      `/api/task-templates/${template.id}`,
+      {
+        title: "Release notes v2",
+        spendCapUsd: "profile",
+      },
+    );
+    expect(patched.status).toBe(200);
+    const edited = taskTemplateResultSchema.parse(patched.body).template;
+    expect(edited.title).toBe("Release notes v2");
+    expect("spendCapUsd" in edited).toBe(false);
+
+    const started = await t.call(
+      "POST",
+      `/api/task-templates/${template.id}/tasks`,
+      { instructions: "Only the API changes." },
+    );
+    expect(started.status).toBe(201);
+    const task = taskSchema.parse(started.body.task);
+    expect(task).toMatchObject({
+      title: "Release notes v2",
+      goal: "Write the release notes to notes.md.\n\nInstructions for this run:\nOnly the API changes.",
+      templateId: template.id,
+      spendCapUsd: 5,
+    });
+    // It runs like any task.
+    const view = await untilTask(
+      t,
+      task.id,
+      (current) => current.task.status === "completed",
+    );
+    expect(view.task.templateId).toBe(template.id);
+    // A body is optional.
+    const bare = await t.app.request(
+      `/api/task-templates/${template.id}/tasks`,
+      { method: "POST", headers: { "Content-Type": "application/json" } },
+    );
+    expect(bare.status).toBe(201);
+
+    const deleted = await t.call(
+      "DELETE",
+      `/api/task-templates/${template.id}`,
+    );
+    expect(deleted.status).toBe(204);
+    expectError(
+      await t.call("GET", `/api/task-templates/${template.id}`),
+      404,
+      "NOT_FOUND",
+    );
+    expect(
+      (await t.call("GET", `/api/tasks/${task.id}`)).body.task,
+    ).toMatchObject({ templateId: template.id });
+  });
+
+  it("refuses invalid saves and starts, and an unusable template with its problems", async () => {
+    expectError(
+      await t.call("POST", "/api/task-templates", {
+        goal: "No title",
+        coordinatorBotId: bots.Ada,
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expectError(
+      await t.call("POST", "/api/task-templates", {
+        title: "Ghost",
+        goal: "Nobody",
+        coordinatorBotId: "bot_missing",
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expectError(
+      await t.call("POST", "/api/task-templates/tmpl_missing/tasks", {}),
+      404,
+      "NOT_FOUND",
+    );
+
+    const team = await createBots(t, ["Temp", "Gone"]);
+    const { body } = await t.call("POST", "/api/task-templates", {
+      title: "Needs Gone",
+      goal: "g".repeat(COMMAND_TEXT_LIMIT - 20),
+      coordinatorBotId: team.Temp,
+      participantBotIds: [team.Gone],
+    });
+    const id = body.template.id;
+    expectError(
+      await t.call("PATCH", `/api/task-templates/${id}`, {}),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expectError(
+      await t.call("POST", `/api/task-templates/${id}/tasks`, {
+        instructions: "x".repeat(4001),
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    // The goal with the instructions is over the limit: 422.
+    expectError(
+      await t.call("POST", `/api/task-templates/${id}/tasks`, {
+        instructions: "Too much to append.",
+      }),
+      422,
+      "VALIDATION_FAILED",
+    );
+
+    const tasksBefore = (await t.call("GET", "/api/tasks")).body.tasks.length;
+    expect((await t.call("DELETE", `/api/bots/${team.Gone}`)).status).toBe(204);
+    const listed = taskTemplateListSchema
+      .parse((await t.call("GET", "/api/task-templates")).body)
+      .templates.find((entry) => entry.id === id);
+    expect(listed?.problems).toEqual([
+      { kind: "bot_archived", botId: team.Gone, name: "Gone" },
+    ]);
+    const refused = expectError(
+      await t.call("POST", `/api/task-templates/${id}/tasks`, {}),
+      409,
+      "TEMPLATE_UNUSABLE",
+    );
+    expect(templateUnusableDetailsSchema.parse(refused.error.details)).toEqual({
+      problems: listed?.problems,
+    });
+    expect((await t.call("GET", "/api/tasks")).body.tasks).toHaveLength(
+      tasksBefore,
     );
   });
 });

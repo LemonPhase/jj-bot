@@ -178,6 +178,30 @@ export function apiRoutes({
       },
     });
   });
+  // Task templates (1.9.0)
+  api.get("/task-templates", async (c) =>
+    c.json(await engine.templates.list()),
+  );
+  api.post("/task-templates", async (c) =>
+    c.json(await engine.templates.create(await command(c)), 201),
+  );
+  api.get("/task-templates/:id", async (c) =>
+    c.json(await engine.templates.get(idParam(c, "id"))),
+  );
+  api.patch("/task-templates/:id", async (c) =>
+    c.json(await engine.templates.update(idParam(c, "id"), await command(c))),
+  );
+  api.delete("/task-templates/:id", async (c) => {
+    await engine.templates.delete(idParam(c, "id"));
+    return c.body(null, 204);
+  });
+  api.post("/task-templates/:id/tasks", async (c) =>
+    c.json(
+      await engine.templates.start(idParam(c, "id"), (await command(c)) ?? {}),
+      201,
+    ),
+  );
+
   api.get("/tasks/:id/artifacts/:artifactId/content", async (c) => {
     const { artifact, content } = await engine.tasks.artifactContent(
       idParam(c, "id"),

@@ -12,6 +12,7 @@ import {
   type CreateBotCommand,
   type CreateRuntimeProfileCommand,
   type CreateTaskCommand,
+  type CreateTaskTemplateCommand,
   type DecideApprovalCommand,
   type ModelsView,
   type PostTaskMessageCommand,
@@ -22,16 +23,19 @@ import {
   type SecretsView,
   type SendBotMessageCommand,
   type SendBotMessageResult,
+  type StartTemplateCommand,
   type StopTaskCommand,
   type Task,
   type TaskEventPage,
   type TaskMessage,
   type TaskSummary,
+  type TaskTemplate,
   type TaskView,
   type UpdateBotCommand,
   type UpdateBotMemoryCommand,
   type UpdateRuntimeProfileCommand,
   type UpdateTaskCommand,
+  type UpdateTaskTemplateCommand,
   type UsageReport,
   type WorkspaceHint,
 } from "@jj/contracts";
@@ -70,7 +74,9 @@ import {
   type TaskSubscription,
 } from "./services/stream";
 import { createTask, stopTask, updateTaskSettings } from "./services/tasks";
+import * as templateService from "./services/templates";
 import { usageReport } from "./services/usage";
+import { VERIFICATION_ENFORCED } from "./services/verification";
 import { eventPage, taskSummaries, taskView } from "./services/views";
 import { createWorker, type Worker } from "./worker/worker";
 
@@ -206,6 +212,27 @@ export interface Engine {
      */
     compactEvents(options?: { finishedBefore?: Date }): Promise<CompactionPass>;
   };
+  /** Task templates: saved task setups the user starts again. */
+  templates: {
+    /** `GET /api/task-templates`, oldest first, each with its problems now. */
+    list(): Promise<{ templates: TaskTemplate[] }>;
+    /** `POST /api/task-templates`: CONFLICT past MAX_TASK_TEMPLATES. */
+    create(
+      command: CreateTaskTemplateCommand,
+    ): Promise<{ template: TaskTemplate }>;
+    get(templateId: string): Promise<{ template: TaskTemplate }>;
+    update(
+      templateId: string,
+      command: UpdateTaskTemplateCommand,
+    ): Promise<{ template: TaskTemplate }>;
+    /** `DELETE /api/task-templates/:id`: its tasks keep their `templateId`. */
+    delete(templateId: string): Promise<void>;
+    /** `POST /api/task-templates/:id/tasks`: TEMPLATE_UNUSABLE while it has problems. */
+    start(
+      templateId: string,
+      command: StartTemplateCommand,
+    ): Promise<{ task: Task }>;
+  };
   worker: Worker;
   /** `GET /metrics`: the Prometheus metrics of this engine and its worker. */
   metrics: EngineMetrics;
@@ -309,7 +336,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           agentExecution: providers.some((provider) => provider.configured),
           persistence: ctx.config.persistence,
           streaming: true,
-          verification: true,
+          verification: VERIFICATION_ENFORCED,
           secretStore: store.available,
           // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
           mcp: { stdio: false, remote: false },
@@ -378,6 +405,16 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     },
     maintenance: {
       compactEvents: (options) => compactionPass(ctx, options),
+    },
+    templates: {
+      list: () => templateService.listTemplates(ctx),
+      create: (command) => templateService.createTemplate(ctx, command),
+      get: (templateId) => templateService.getTemplate(ctx, templateId),
+      update: (templateId, command) =>
+        templateService.updateTemplate(ctx, templateId, command),
+      delete: (templateId) => templateService.deleteTemplate(ctx, templateId),
+      start: (templateId, command) =>
+        templateService.startTemplate(ctx, templateId, command),
     },
     worker,
     metrics,

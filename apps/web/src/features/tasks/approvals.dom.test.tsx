@@ -70,6 +70,7 @@ const view = (patch: Partial<TaskView> = {}): TaskView => ({
     cancelReason: null,
     cancelRequestedAt: null,
     spendCapUsd: null,
+    templateId: null,
     verificationPlan: null,
     createdAt: at(1),
     updatedAt: at(1),
