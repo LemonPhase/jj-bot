@@ -92,6 +92,7 @@ function viewOf(
       cancelRequestedAt: null,
       verificationPlan: taskPlan,
       spendCapUsd: null,
+      templateId: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: status === "completed" ? at : null,

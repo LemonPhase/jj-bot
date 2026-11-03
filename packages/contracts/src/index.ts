@@ -20,5 +20,6 @@ export * from "./profiles";
 export * from "./secrets";
 export * from "./skills";
 export * from "./tasks";
+export * from "./templates";
 export * from "./usage";
 export * from "./verification";
