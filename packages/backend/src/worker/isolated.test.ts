@@ -184,6 +184,31 @@ describe("isolated evaluation", () => {
     expect(await until(() => liveIsolatedThreads() === 0, 2_000)).toBe(true);
   });
 
+  it("ends the check at the end of its allowance even when the thread never answers", async () => {
+    // Node answers on the thread itself; a thread the host does not run (or
+    // one blocked in a call) does not answer at all.
+    vi.spyOn(Worker.prototype, "cpuUsage").mockReturnValue(
+      new Promise(() => {}),
+    );
+    const started = Date.now();
+    const outcome = await Promise.race([
+      runIsolated(catastrophic, 200, 300),
+      new Promise<"still pending">((resolve) =>
+        setTimeout(() => resolve("still pending"), 5_000),
+      ),
+    ]);
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "busy",
+      message: expect.stringMatching(
+        /^the host was too busy to run it: it had 0 ms of processor time in \d+(\.\d)? s$/,
+      ),
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+    // The spinning thread is terminated, not left running.
+    expect(await until(() => liveIsolatedThreads() === 0, 2_000)).toBe(true);
+  });
+
   it("never throws, even for a value it cannot copy to its thread", async () => {
     const outcome = await runIsolated({
       kind: "schema",

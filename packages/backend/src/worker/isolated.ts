@@ -24,7 +24,8 @@ export const ISOLATED_TIME_LIMIT_MS = 2_000;
 export const ISOLATED_MIN_RUN_MS = 100;
 /**
  * How much longer than its limit a thread the host keeps waiting gets, before
- * it is stopped anyway: a check always ends, however busy the host.
+ * it is stopped anyway. The caller's own timers end the check then, whether or
+ * not the thread answers: a check always ends, however busy the host.
  */
 export const ISOLATED_WAIT_ALLOWANCE_MS = 3_000;
 /**
@@ -174,16 +175,33 @@ export function runIsolated(
       const lastMs = timeLimitMs + waitAllowanceMs;
       const cpuAtReady =
         typeof worker.cpuUsage === "function" ? readyCpu : null;
-      /** Processor time used since "ready"; where Node cannot tell, the time that passed. */
+      /**
+       * Processor time used since "ready"; where Node cannot tell, the time
+       * that passed. Node answers on the thread itself, which a busy host may
+       * not run: no answer by the end of the allowance counts as no time, so
+       * this thread's own timers still end the check there.
+       */
       const used = async () => {
         if (cpuAtReady === null) return performance.now() - readyAt;
+        let unanswered: ReturnType<typeof setTimeout> | undefined;
         try {
-          const usage = await worker.cpuUsage();
+          const usage = await Promise.race([
+            worker.cpuUsage(),
+            new Promise<undefined>((resolve) => {
+              unanswered = setTimeout(
+                () => resolve(undefined),
+                Math.max(0, lastMs - (performance.now() - readyAt)),
+              );
+            }),
+          ]);
+          if (!usage) return 0;
           return Math.max(0, usage.user + usage.system - cpuAtReady) / 1000;
         } catch {
           // The thread has stopped, so it runs no longer: its result, or its
           // exit, is on the way and settles the outcome.
           return 0;
+        } finally {
+          clearTimeout(unanswered);
         }
       };
       const check = async () => {
@@ -200,6 +218,9 @@ export function runIsolated(
             reason: "timeout",
             message: `it did not finish within ${timeLimitMs / 1000} s`,
           });
+        // A thread that just stopped reads as no time: its result may be in.
+        if (waited >= lastMs) await turn();
+        if (settled) return;
         if (waited >= lastMs)
           return finish({
             ok: false,
