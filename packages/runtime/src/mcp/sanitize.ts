@@ -310,6 +310,8 @@ interface Expansion {
   /** Characters of the expanded schema so far. */
   size: number;
   dangling: boolean;
+  /** A reference led back into one being expanded; it became `{}`. */
+  looped: boolean;
 }
 
 const expandedWalk = { expanded: true };
@@ -326,8 +328,12 @@ function expandRef(ref: string, state: Expansion): unknown {
     spend(state, done.size);
     return done.schema;
   }
-  if (state.open.has(ref))
-    throw new Refused("its input schema refers to itself");
+  // A loop cannot be written out: where it closes, any value is accepted.
+  if (state.open.has(ref)) {
+    state.looped = true;
+    spend(state, 2);
+    return {};
+  }
   const target = pointed(state.root, ref);
   if (target === undefined) {
     state.dangling = true;
@@ -346,9 +352,11 @@ function expandRef(ref: string, state: Expansion): unknown {
  * A reduced schema with every local reference replaced by what it names,
  * and `$defs` and `definitions` dropped, so the declared schema holds no
  * reference for a validator to follow. A reference beside other keywords
- * joins them under `allOf`. Refuses a loop, and stops as soon as the result
- * passes twice the size cap, so a small schema whose references multiply
- * (each definition naming the next twice) costs little to refuse.
+ * joins them under `allOf`. Where a reference leads back into one being
+ * expanded (a recursive schema), it becomes `{}`, any value. It stops as
+ * soon as the result passes twice the size cap, so a small schema whose
+ * references multiply (each definition naming the next twice) costs little
+ * to refuse.
  */
 function expand(node: unknown, state: Expansion): unknown {
   if (typeof node !== "object" || node === null || Array.isArray(node)) {
@@ -427,6 +435,7 @@ export function sanitizeInputSchema(input: Record<string, unknown>): {
     open: new Set(["#"]),
     size: 0,
     dangling: false,
+    looped: false,
   };
   const expanded = expand(reduced, state);
   const checked = schema(expanded, 1, {
@@ -438,6 +447,10 @@ export function sanitizeInputSchema(input: Record<string, unknown>): {
   const json = canonicalJson(checked);
   if (json === undefined || Buffer.byteLength(json) > MCP_SCHEMA_BYTES_LIMIT)
     throw tooLarge(expandedWalk);
+  if (state.looped)
+    walk.notes.add(
+      "accepts any value where its schema refers to itself, since a schema that loops cannot be declared",
+    );
   if (state.dangling)
     walk.notes.add(
       "a reference names nothing in the schema; no value is accepted there",
@@ -503,9 +516,10 @@ const warning = (text: string) => clip(text, WARNING_LIMIT).text;
  * name must have 1 to 128 characters and a tool listed twice keeps its
  * first entry, and the first MAX_MCP_SNAPSHOT_TOOLS by name are chosen. A
  * chosen tool is left out (with a warning) when its input schema is not an
- * object schema, refers to itself, or is larger than MCP_SCHEMA_BYTES_LIMIT
- * or deeper than MCP_SCHEMA_DEPTH_LIMIT once reduced and its references
- * expanded. Annotations are kept as the server's unverified hints.
+ * object schema, or is larger than MCP_SCHEMA_BYTES_LIMIT or deeper than
+ * MCP_SCHEMA_DEPTH_LIMIT once reduced and its references expanded (a
+ * reference into itself accepts any value, with a warning). Annotations are
+ * kept as the server's unverified hints.
  */
 export function sanitizeTools(
   server: string,

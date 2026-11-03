@@ -72,7 +72,9 @@ const KEY_SHAPES: [RegExp, string][] = [
 
 /**
  * Removes the given secrets, and anything shaped like a provider key or a
- * credential, from text bound for events, outcomes and logs.
+ * credential, from text bound for events, outcomes and logs. A secret
+ * shorter than 6 characters is not replaced: it is too likely to be an
+ * ordinary word, and replacing it would garble the text.
  */
 export function redactSecrets(
   text: string,

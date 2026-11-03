@@ -279,6 +279,16 @@ describe("SandboxStdioTransport", () => {
     expect(stubborn.process.killed).toBe(true);
   });
 
+  it("returns from a second close only once the process has stopped", async () => {
+    const { connection, process } = stdio({ tools: [] });
+    await connection.start();
+    const first = connection.close();
+    await connection.close();
+    expect(process.inputEnded).toBe(true);
+    expect(process.killed).toBe(true);
+    await first;
+  });
+
   it("reports a call that waited for a slot as not sent when the server exits first", async () => {
     const { connection, process, server } = stdio(
       { tools: [{ name: "work", call: () => new Promise(() => {}) }] },

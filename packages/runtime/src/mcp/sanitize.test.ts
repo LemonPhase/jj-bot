@@ -217,7 +217,7 @@ describe("sanitizeTools: hostile input schemas", () => {
     });
   });
 
-  it("refuses a schema whose references loop, which would fail every call", () => {
+  it("keeps a schema whose references loop, any value passing where it loops", () => {
     const { tools, warnings } = sanitizeTools("docs", [
       tool("self", {
         inputSchema: {
@@ -238,11 +238,26 @@ describe("sanitizeTools: hostile input schemas", () => {
         },
       }),
     ]);
-    expect(tools).toEqual([]);
+    // Validating a loop's reference threw on every call; expanded, a loop
+    // ends in {}, so the tool is kept and its schema is finite.
+    expect(
+      Object.fromEntries(tools.map((kept) => [kept.name, kept.inputSchema])),
+    ).toEqual({
+      mutual: {
+        type: "object",
+        properties: {
+          x: { type: "array", items: { anyOf: [{}, { type: "null" }] } },
+        },
+      },
+      root: { type: "object", allOf: [{}] },
+      self: { type: "object", properties: { x: {} } },
+    });
+    const note =
+      "accepts any value where its schema refers to itself, since a schema that loops cannot be declared";
     expect(warnings).toEqual([
-      "mutual: left out, since its input schema refers to itself.",
-      "root: left out, since its input schema refers to itself.",
-      "self: left out, since its input schema refers to itself.",
+      `mutual: ${note}.`,
+      `root: ${note}.`,
+      `self: ${note}.`,
     ]);
   });
 

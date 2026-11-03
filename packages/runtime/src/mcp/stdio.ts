@@ -69,6 +69,7 @@ export class SandboxStdioTransport
   private started = false;
   private closed = false;
   private closeEmitted = false;
+  private closing: Promise<void> | undefined;
   /** stdout received since the last newline: the first `lineBytes` of `line`. */
   private line = Buffer.alloc(0);
   private lineBytes = 0;
@@ -166,7 +167,13 @@ export class SandboxStdioTransport
     }
   }
 
-  async close(): Promise<void> {
+  /** Every call waits for the same close: none returns before the process is stopped. */
+  close(): Promise<void> {
+    this.closing ??= this.shutDown();
+    return this.closing;
+  }
+
+  private async shutDown(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     // Only a launch still under way: aborting a spawn's signal later kills
