@@ -283,6 +283,17 @@ describe.each(targets)("migrations on $name", (target) => {
             sql`update mcp_discoveries set status = 'lost' where id = 'mcpd_2'`,
           ),
         ).rejects.toThrow();
+        // A server has at most one test queued or running.
+        await expect(
+          database.execute(sql`
+            insert into mcp_discoveries (id, profile_id, server, config, config_hash, status)
+            values ('mcpd_3', 'prof_1', 'docs', '{}', 'hash', 'running');
+          `),
+        ).rejects.toThrow();
+        await database.execute(sql`
+          insert into mcp_discoveries (id, profile_id, server, config, config_hash, status)
+          values ('mcpd_4', 'prof_1', 'docs', '{}', 'hash', 'failed');
+        `);
         // A pruned snapshot leaves its discovery without one.
         await database.execute(
           sql`delete from mcp_tool_snapshots where id = 'mcps_1'`,

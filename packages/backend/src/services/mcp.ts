@@ -41,8 +41,11 @@ import { DomainError, notFound, parseCommand } from "../errors";
 import { wakeWorkers } from "../events";
 import { profileSettings, toMcpDiscovery, toMcpSnapshot } from "../records";
 
-/** Discoveries a profile keeps, the newest; older ones go with their unpinned snapshots. */
+/** Finished discoveries a profile keeps, the newest; older ones go with their unpinned snapshots. */
 export const MAX_KEPT_DISCOVERIES = 20;
+
+const FINISHED = ["succeeded", "failed"] as const;
+const ACTIVE = ["queued", "running"] as const;
 
 /** Why remote servers cannot run here, as the runtime words it. */
 const REMOTE_OFF =
@@ -51,12 +54,19 @@ const REMOTE_OFF =
 /**
  * SHA-256 of what runs, as canonical JSON: the transport and, for stdio,
  * the command, args, cwd, env and `secretEnv` (variable to secret name),
- * for http the URL, plain headers and `secretHeaders` (header to secret
- * name and prefix). Secret values never enter it. A snapshot pins the hash
- * of the configuration it was discovered with; the name, description,
- * exposure, timeouts and `enabled` do not change what runs.
+ * and the sandbox it runs in (the profile's driver, image, network policy
+ * and `sandbox.env`, which can change what the server lists); for http the
+ * URL, plain headers and `secretHeaders` (header to secret name and
+ * prefix), called by the worker whatever the sandbox. Secret values never
+ * enter it. A snapshot pins the hash of the configuration it was
+ * discovered with; the name, description, exposure, timeouts and `enabled`
+ * do not change what runs. A configuration whose canonical JSON passes the
+ * canonical limit (1 Mi characters) is refused rather than hashed.
  */
-export function mcpConfigHash(server: McpServer): string {
+export function mcpConfigHash(
+  server: McpServer,
+  sandbox: Pick<SandboxSpec, "driver" | "image" | "network" | "env">,
+): string {
   const runs =
     server.transport === "stdio"
       ? {
@@ -66,6 +76,12 @@ export function mcpConfigHash(server: McpServer): string {
           cwd: server.cwd ?? null,
           env: server.env,
           secretEnv: server.secretEnv,
+          sandbox: {
+            driver: sandbox.driver,
+            image: sandbox.image ?? null,
+            network: sandbox.network,
+            env: sandbox.env,
+          },
         }
       : {
           transport: "http",
@@ -73,7 +89,13 @@ export function mcpConfigHash(server: McpServer): string {
           headers: server.headers,
           secretHeaders: server.secretHeaders,
         };
-  return sha256Hex(canonicalJson(runs) ?? "");
+  const json = canonicalJson(runs);
+  if (json === undefined)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      `${server.name}: the configuration is too large to identify; use shorter args, env or headers.`,
+    );
+  return sha256Hex(json);
 }
 
 /** Where a server's problem is reported: `mcpServers.<i>` in a profile, `server` in a discovery. */
@@ -119,13 +141,19 @@ export function assertMcpRunnable(
   });
 }
 
-/** VALIDATION_FAILED for each stdio `secretEnv` secret the profile does not grant. */
+/**
+ * VALIDATION_FAILED for each stdio `secretEnv` secret the profile does not
+ * grant, on enabled servers: one disabled when its secret was removed keeps
+ * its reference, and is checked again when it is enabled.
+ */
 export function assertSecretEnvGranted(
   servers: readonly McpServer[],
   grants: readonly string[],
   at: At = inProfile,
 ): void {
-  const missing = ungrantedMcpSecrets(servers, grants);
+  const missing = ungrantedMcpSecrets(servers, grants).filter(
+    (entry) => servers[entry.index]?.enabled,
+  );
   if (missing.length > 0)
     throw new DomainError(
       "VALIDATION_FAILED",
@@ -139,8 +167,8 @@ export function assertSecretEnvGranted(
 }
 
 /**
- * VALIDATION_FAILED unless every secret a remote server's `secretHeaders`
- * names is stored. They are sandbox secrets, sent by the worker and never
+ * VALIDATION_FAILED unless every secret an enabled remote server's
+ * `secretHeaders` names is stored. They are sandbox secrets, sent by the worker and never
  * granted to a sandbox. The rows are locked for the transaction, so a
  * concurrent removal waits and then disables the server.
  */
@@ -151,7 +179,7 @@ export async function assertSecretHeadersStored(
   at: At = inProfile,
 ): Promise<void> {
   const wanted = servers.flatMap((server, index) =>
-    server.transport === "http"
+    server.transport === "http" && server.enabled
       ? Object.entries(server.secretHeaders).map(([header, { secret }]) => ({
           index,
           header,
@@ -191,13 +219,14 @@ export async function assertSecretHeadersStored(
 /**
  * The snapshots `servers` pin, each locked for the transaction.
  * MCP_SNAPSHOT_MISMATCH unless each exists, was discovered for this
- * profile and this server, and for the configuration the server has now
- * (`mcpConfigHash`).
+ * profile and this server, and for the configuration the server has now,
+ * in the profile's sandbox (`mcpConfigHash`).
  */
 export async function pinnedSnapshots(
   tx: Tx,
   profileId: string,
   servers: readonly McpServer[],
+  sandbox: SandboxSpec,
 ): Promise<McpToolSnapshot[]> {
   const ids = servers.flatMap((server) =>
     server.snapshotId === null ? [] : [server.snapshotId],
@@ -216,9 +245,9 @@ export async function pinnedSnapshots(
       return [
         `${where}: ${server.snapshotId} is not a snapshot of ${server.name} in this profile. Test the server and pin the snapshot it finds.`,
       ];
-    if (row.configHash !== mcpConfigHash(server))
+    if (row.configHash !== mcpConfigHash(server, sandbox))
       return [
-        `${where}: ${server.snapshotId} was discovered for another configuration of ${server.name}. Test the server again and pin the new snapshot.`,
+        `${where}: ${server.snapshotId} was discovered for another configuration of ${server.name}, or another sandbox. Test the server again and pin the new snapshot.`,
       ];
     return [];
   });
@@ -282,7 +311,9 @@ export interface McpSave {
  * (VALIDATION_FAILED), each pinned snapshot matches (MCP_SNAPSHOT_MISMATCH),
  * every exact MCP approval rule names a pinned tool, and the profile
  * declares at most MAX_MCP_DIRECT_TOOLS (VALIDATION_FAILED). A rule is
- * checked only when the save changes what it reads.
+ * checked only when the save changes what it reads; the secret rules skip
+ * disabled servers, so a server disabled with its secret's removal never
+ * stops a save.
  */
 export async function checkMcpServers(
   ctx: EngineContext,
@@ -295,23 +326,34 @@ export async function checkMcpServers(
   if (changed.servers || changed.secrets)
     assertSecretEnvGranted(servers, save.secrets);
   if (changed.servers) await assertSecretHeadersStored(ctx, tx, servers);
-  if (!changed.servers && !changed.approvals) return;
-  const snapshots = await pinnedSnapshots(tx, save.profileId, servers);
+  if (!changed.servers && !changed.approvals && !changed.sandbox) return;
+  const snapshots = await pinnedSnapshots(
+    tx,
+    save.profileId,
+    servers,
+    save.sandbox,
+  );
   assertMcpRulesKnown(save.approvals, servers, snapshots);
   if (changed.servers) assertDeclaredCap(servers, snapshots);
 }
 
 /**
- * Deletes the profile's discoveries past the newest MAX_KEPT_DISCOVERIES,
- * then its snapshots that neither its servers pin nor a kept discovery
- * holds. The caller holds the profile row, so no save pins a snapshot
- * while this runs.
+ * Deletes the profile's finished discoveries past the newest
+ * MAX_KEPT_DISCOVERIES (one still queued or running is never deleted: a
+ * client may be polling it and the worker running it), then its snapshots
+ * that neither its servers pin nor a kept discovery holds. The caller holds
+ * the profile row, so no save pins a snapshot while this runs.
  */
 async function prune(tx: Tx, profileId: string, pinned: readonly string[]) {
   const kept = tx
     .select({ id: mcpDiscoveries.id })
     .from(mcpDiscoveries)
-    .where(eq(mcpDiscoveries.profileId, profileId))
+    .where(
+      and(
+        eq(mcpDiscoveries.profileId, profileId),
+        inArray(mcpDiscoveries.status, FINISHED),
+      ),
+    )
     .orderBy(desc(mcpDiscoveries.createdAt), desc(mcpDiscoveries.id))
     .limit(MAX_KEPT_DISCOVERIES);
   await tx
@@ -319,6 +361,7 @@ async function prune(tx: Tx, profileId: string, pinned: readonly string[]) {
     .where(
       and(
         eq(mcpDiscoveries.profileId, profileId),
+        inArray(mcpDiscoveries.status, FINISHED),
         notInArray(mcpDiscoveries.id, kept),
       ),
     );
@@ -346,6 +389,8 @@ async function prune(tx: Tx, profileId: string, pinned: readonly string[]) {
  * sandbox spec and grants. It must be one this server can run, its
  * `secretEnv` secrets granted by the profile and its `secretHeaders`
  * secrets stored. The worker runs it; poll `GET /api/mcp-discoveries/:id`.
+ * A server of the profile has at most one discovery queued or running: a
+ * test while one is returns that one.
  */
 export async function startDiscovery(
   ctx: EngineContext,
@@ -364,6 +409,20 @@ export async function startDiscovery(
     assertMcpRunnable(ctx, [server], settings.sandbox, inDiscovery);
     assertSecretEnvGranted([server], settings.secrets, inDiscovery);
     await assertSecretHeadersStored(ctx, tx, [server], inDiscovery);
+    const configHash = mcpConfigHash(server, settings.sandbox);
+    // The profile row is held, so no other test of this server starts meanwhile.
+    const [active] = await tx
+      .select()
+      .from(mcpDiscoveries)
+      .where(
+        and(
+          eq(mcpDiscoveries.profileId, profileId),
+          eq(mcpDiscoveries.server, server.name),
+          inArray(mcpDiscoveries.status, ACTIVE),
+        ),
+      )
+      .limit(1);
+    if (active) return { discovery: toMcpDiscovery(active, undefined) };
     const id = ctx.ids("mcpDiscovery");
     const [inserted] = await tx
       .insert(mcpDiscoveries)
@@ -372,7 +431,7 @@ export async function startDiscovery(
         profileId,
         server: server.name,
         config: server,
-        configHash: mcpConfigHash(server),
+        configHash,
         createdAt: ctx.clock(),
       })
       .returning();

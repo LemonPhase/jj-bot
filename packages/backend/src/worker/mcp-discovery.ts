@@ -28,6 +28,7 @@ import { errorMessage } from "../errors";
 import type { McpDiscoverResult } from "../ports";
 import { profileSettings } from "../records";
 import type { Secret } from "../redact";
+import { mcpConfigHash } from "../services/mcp";
 import { grantedSecrets, secretHeaderValues } from "../services/secrets";
 import {
   fencedWrite,
@@ -38,8 +39,6 @@ import {
 
 /** The contract's caps on a discovery's `error` and `stderrTail`. */
 const TEXT_LIMIT = 2_000;
-/** How long the ephemeral sandbox may take to start (an image pull, say). */
-const ACQUIRE_TIMEOUT_MS = 5 * 60_000;
 
 const GIVEN_UP =
   "The worker testing this server stopped too many times; test it again.";
@@ -70,20 +69,42 @@ async function acquire(
       `Sandbox driver "${spec.driver}" is not installed on this server.`,
     );
   const ephemeral = driver.validateSpec({ ...spec, workspace: "ephemeral" });
+  const limitMs = ctx.config.discoveryAcquireMs;
+  const starting = driver.acquire({
+    taskId: discoveryId,
+    sessionId: discoveryId,
+    spec: ephemeral,
+    workspaceKey: discoveryId,
+    signal: AbortSignal.any([signal, AbortSignal.timeout(limitMs)]),
+    ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
+  });
+  // Bounded whether or not the driver heeds its signal: the job's slot is
+  // given back on time.
+  let timer: NodeJS.Timeout | undefined;
   try {
-    return await driver.acquire({
-      taskId: discoveryId,
-      sessionId: discoveryId,
-      spec: ephemeral,
-      workspaceKey: discoveryId,
-      signal: AbortSignal.any([
-        signal,
-        AbortSignal.timeout(ACQUIRE_TIMEOUT_MS),
-      ]),
-      ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
-    });
+    return await Promise.race([
+      starting,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `it did not start within ${Math.ceil(limitMs / 1000)} s`,
+              ),
+            ),
+          limitMs,
+        );
+      }),
+    ]);
   } catch (error) {
+    // One that starts after the wait ended is released at once.
+    void starting.then(
+      (late) => late.release().catch(() => {}),
+      () => {},
+    );
     throw new Error(`The sandbox could not start: ${errorMessage(error)}`);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -303,16 +324,25 @@ export async function runDiscoveryJob(
         await complete(tx, job.lease);
         return undefined;
       }
+      const parsed = mcpServerSchema.safeParse(row.config);
+      const settings = profileSettings(profile);
+      // What the snapshot will describe: the sandbox it runs in now.
+      let configHash = row.configHash;
+      if (parsed.success)
+        try {
+          configHash = mcpConfigHash(parsed.data, settings.sandbox);
+        } catch {
+          // Refused at the test's start already; kept as it was.
+        }
       await tx
         .update(mcpDiscoveries)
-        .set({ status: "running", startedAt: ctx.clock() })
+        .set({ status: "running", startedAt: ctx.clock(), configHash })
         .where(eq(mcpDiscoveries.id, row.id));
-      return { row, profile };
+      return { row, profile, parsed, settings };
     });
     if (!started || !discoveryId) return;
     const startedAt = performance.now();
-    const parsed = mcpServerSchema.safeParse(started.row.config);
-    const settings = profileSettings(started.profile);
+    const { parsed, settings } = started;
     ctx.logger.info("MCP discovery started", {
       discoveryId,
       server: started.row.server,

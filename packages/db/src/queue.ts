@@ -147,13 +147,15 @@ export async function enqueue(
  * attempts left are failed first and returned as `exhausted`. Jobs listed in
  * `running`, which the claimer is still running, are neither: their owner is
  * alive though its heartbeats fell behind the lease, and can still extend it.
+ * With `kinds`, only jobs of those kinds are claimed (exhausted jobs of every
+ * kind are still failed and returned).
  */
 export async function claim(
   exec: Executor,
   owner: string,
   limit: number,
   leaseMs: number,
-  options: { running?: readonly string[] } = {},
+  options: { running?: readonly string[]; kinds?: readonly JobKind[] } = {},
 ): Promise<ClaimResult> {
   if (!owner) throw new Error("A lease owner is required.");
   positiveInteger(limit, "Claim limit");
@@ -203,13 +205,16 @@ export async function claim(
     .select({ id: jobs.id })
     .from(jobs)
     .where(
-      or(
-        and(
-          eq(jobs.status, "queued"),
-          lte(jobs.runAfter, sql`now()`),
-          ...waitsForRun,
+      and(
+        options.kinds ? inArray(jobs.kind, [...options.kinds]) : undefined,
+        or(
+          and(
+            eq(jobs.status, "queued"),
+            lte(jobs.runAfter, sql`now()`),
+            ...waitsForRun,
+          ),
+          and(expired, sql`${jobs.attempts} < ${jobs.maxAttempts}`),
         ),
-        and(expired, sql`${jobs.attempts} < ${jobs.maxAttempts}`),
       ),
     )
     .orderBy(asc(jobs.runAfter), asc(jobs.id))

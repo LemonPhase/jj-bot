@@ -8,6 +8,7 @@ import {
   complete,
   enqueue,
   heartbeat,
+  type JobKind,
   pruneWorkerHeartbeats,
   recordWorkerHeartbeat,
   removeWorkerHeartbeat,
@@ -34,6 +35,11 @@ interface ActiveJob {
   control: JobControl;
   done: Promise<void>;
 }
+
+/** Jobs that every free slot may take. */
+const WORK_KINDS: readonly JobKind[] = ["session.run", "chat.reply"];
+/** Jobs that take at most `maxConcurrentDiscoveries` slots. */
+const DISCOVERY_KINDS: readonly JobKind[] = ["mcp.discover"];
 
 /** How often a polling worker records its heartbeat row (`worker_heartbeats`). */
 export const WORKER_HEARTBEAT_MS = 5_000;
@@ -191,37 +197,20 @@ export function createWorker(
       do {
         again = false;
         while (!stopping && active.size < ctx.config.concurrency) {
-          // Never its own runs: a stall that held their heartbeats past the
-          // lease leaves them alive, not abandoned.
-          const { jobs, exhausted } = await claim(
-            ctx.db,
-            ctx.config.workerId,
-            ctx.config.concurrency - active.size,
-            ctx.config.leaseMs,
-            { running: [...active.keys()] },
+          // Session runs and chat replies first; discoveries only into their
+          // own slots, so they never hold the ones runs and replies need.
+          const free = ctx.config.concurrency - active.size;
+          const work = await claimOf(free, WORK_KINDS);
+          const discovering = [...active.values()].filter(
+            (entry) => entry.job.kind === "mcp.discover",
+          ).length;
+          const slots = Math.min(
+            free - work,
+            ctx.config.maxConcurrentDiscoveries - discovering,
           );
-          for (const job of exhausted) {
-            const result = await handleExhausted(ctx, job).catch(
-              (error: unknown) => {
-                ctx.logger.error(`Recovering job ${job.id} failed`, {
-                  error: errorMessage(error),
-                });
-                return {} as { finishedTaskId?: string };
-              },
-            );
-            if (result.finishedTaskId) sandboxes.finish(result.finishedTaskId);
-          }
-          for (const job of jobs) {
-            // The first claim: how long the job waited once it was due.
-            if (job.attempts === 1)
-              ctx.metrics.claimed(
-                job.kind,
-                (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
-              );
-            if (stopping) await handBack(job);
-            else launch(job);
-          }
-          if (jobs.length === 0) break;
+          const discoveries =
+            slots > 0 && !stopping ? await claimOf(slots, DISCOVERY_KINDS) : 0;
+          if (work + discoveries === 0) break;
         }
       } while (again && !stopping);
       if (!stopping) {
@@ -235,6 +224,42 @@ export function createWorker(
     } finally {
       pumping = false;
     }
+  }
+
+  /** Claims up to `limit` jobs of `kinds` and launches them; returns how many it claimed. */
+  async function claimOf(
+    limit: number,
+    kinds: readonly JobKind[],
+  ): Promise<number> {
+    // Never its own runs: a stall that held their heartbeats past the
+    // lease leaves them alive, not abandoned.
+    const { jobs, exhausted } = await claim(
+      ctx.db,
+      ctx.config.workerId,
+      limit,
+      ctx.config.leaseMs,
+      { running: [...active.keys()], kinds },
+    );
+    for (const job of exhausted) {
+      const result = await handleExhausted(ctx, job).catch((error: unknown) => {
+        ctx.logger.error(`Recovering job ${job.id} failed`, {
+          error: errorMessage(error),
+        });
+        return {} as { finishedTaskId?: string };
+      });
+      if (result.finishedTaskId) sandboxes.finish(result.finishedTaskId);
+    }
+    for (const job of jobs) {
+      // The first claim: how long the job waited once it was due.
+      if (job.attempts === 1)
+        ctx.metrics.claimed(
+          job.kind,
+          (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
+        );
+      if (stopping) await handBack(job);
+      else launch(job);
+    }
+    return jobs.length;
   }
 
   /**

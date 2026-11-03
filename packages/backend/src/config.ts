@@ -16,8 +16,17 @@ export interface ArtifactLimits {
 export interface EngineConfig {
   /** Lease owner name for this worker; unique per process. */
   workerId: string;
-  /** Jobs (session runs and chat replies) one worker runs at once. `JJ_CONCURRENCY`. */
+  /** Jobs (session runs, chat replies and MCP discoveries) one worker runs at once. `JJ_CONCURRENCY`. */
   concurrency: number;
+  /**
+   * MCP discoveries one worker runs at once, default 1: they take slots of
+   * `concurrency`, so the rest always stay for session runs and chat
+   * replies (with `concurrency` 1, a discovery takes the only one while it
+   * runs). Never more than `concurrency - 1` when that is at least 1.
+   */
+  maxConcurrentDiscoveries: number;
+  /** How long a discovery waits for its ephemeral sandbox to start, default 60 s. */
+  discoveryAcquireMs: number;
   leaseMs: number;
   /** How often the worker claims when no wake arrives. */
   pollIntervalMs: number;
@@ -101,6 +110,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
   const config: EngineConfig = {
     workerId: `worker-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`,
     concurrency: 4,
+    maxConcurrentDiscoveries: 1,
+    discoveryAcquireMs: 60_000,
     leaseMs: 30_000,
     pollIntervalMs: 1_000,
     maxSessionsPerTask: 16,
@@ -151,11 +162,17 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "chatMaxTurns",
     "ephemeralIdleMs",
     "maxHeldSandboxes",
+    "maxConcurrentDiscoveries",
+    "discoveryAcquireMs",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`${key} must be a positive integer.`);
   }
+  config.maxConcurrentDiscoveries = Math.min(
+    config.maxConcurrentDiscoveries,
+    Math.max(1, config.concurrency - 1),
+  );
   return config;
 }
 

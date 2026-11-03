@@ -29,9 +29,11 @@ import { LocalSandboxDriver } from "@jj/sandbox";
 import { isPublicAddress } from "@jj/sandbox/addresses";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { EngineConfigInput } from "./config";
 import { createDriverRegistry } from "./drivers";
 import type { Engine } from "./engine";
 import { DomainError } from "./errors";
+import type { EngineDriver } from "./ports";
 import { createKeyring } from "./secrets/keyring";
 import { SecretStore } from "./secrets/store";
 import { MAX_KEPT_DISCOVERIES, mcpConfigHash } from "./services/mcp";
@@ -39,9 +41,11 @@ import {
   OPEN_TIMEOUT,
   openTestDatabase,
   recordingDriver,
+  sleep,
   type TestDatabase,
   type TestEngine,
   testEngine,
+  uniqueName,
   until,
 } from "./testing/harness";
 import { mcpFixture } from "./testing/mcp-fixture";
@@ -173,16 +177,41 @@ afterAll(async () => {
 const allowLoopback = (address: string) =>
   address === "127.0.0.1" || isPublicAddress(address);
 
+/** The local driver, whose sandboxes start `ms` late whatever the signal says. */
+function slowLocal(root: string, ms: number): EngineDriver {
+  const inner = new LocalSandboxDriver({ root, killGraceMs: 200 });
+  return {
+    id: inner.id,
+    capabilities: inner.capabilities,
+    validateSpec: (spec) => inner.validateSpec(spec),
+    probe: () => inner.probe(),
+    async acquire(request) {
+      await sleep(ms);
+      const { signal: _ignored, ...rest } = request;
+      return inner.acquire(rest);
+    },
+  };
+}
+
 async function setup(
-  options: { spawn?: boolean; env?: McpEnv; mcp?: false } = {},
+  options: {
+    spawn?: boolean;
+    env?: McpEnv;
+    mcp?: false;
+    config?: EngineConfigInput;
+    slowAcquireMs?: number;
+  } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "jj-mcp-engine-"));
   roots.push(root);
   const local = recordingDriver(
-    new LocalSandboxDriver({ root, killGraceMs: 200 }),
+    options.slowAcquireMs
+      ? slowLocal(root, options.slowAcquireMs)
+      : new LocalSandboxDriver({ root, killGraceMs: 200 }),
     { spawn: options.spawn ?? true },
   );
   current = await testEngine(db.database, {
+    ...(options.config ? { config: options.config } : {}),
     registry: createDriverRegistry([{ driver: local.driver, label: "Local" }]),
     secretStore: new SecretStore({
       db: db.database.db,
@@ -301,7 +330,10 @@ describe("MCP discovery", () => {
       expect(snapshot).toMatchObject({
         profileId: profile.id,
         server: "docs",
-        configHash: mcpConfigHash(mcpServerSchema.parse(server)),
+        configHash: mcpConfigHash(
+          mcpServerSchema.parse(server),
+          profile.sandbox,
+        ),
         serverInfo: {
           name: "docs-fixture",
           version: "1.2.3",
@@ -578,6 +610,119 @@ describe("MCP discovery", () => {
   });
 
   it(
+    "keeps at most one test of a server queued or running, and answers a second test with it",
+    async () => {
+      const { engine, profile } = await setup();
+      await engine.worker.stop();
+      const start = async (server: McpServerInput) =>
+        (await engine.mcp.startDiscovery(profile.id, { server })).discovery;
+      const first = await start(mcpFixture());
+      // Another draft of the same server while the first waits: the first.
+      expect(await start(mcpFixture({ mode: "hostile" }))).toEqual(first);
+      const other = await start(mcpFixture({ name: "docs_two" }));
+      expect(other.id).not.toBe(first.id);
+      const queued = await db.database.db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          sql`${jobs.kind} = 'mcp.discover' and ${jobs.status} = 'queued' and ${jobs.payload}->>'discoveryId' in (${first.id}, ${other.id})`,
+        );
+      expect(queued).toHaveLength(2);
+      await engine.worker.start();
+      for (const id of [first.id, other.id])
+        await until(async () => {
+          const { discovery } = await engine.mcp.discovery(id);
+          return discovery.status === "succeeded";
+        });
+      // Once it finished, a new test is a new discovery.
+      expect((await start(mcpFixture())).id).not.toBe(first.id);
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "runs at most one discovery at a time, so session runs and chat replies keep their slots",
+    async () => {
+      const { engine, profile } = await setup({ config: { concurrency: 2 } });
+      const silent = (name: string) =>
+        mcpFixture({ name, mode: "silent", startupTimeoutSec: 60 });
+      const ids: string[] = [];
+      for (const name of ["one", "two", "three"])
+        ids.push(
+          (
+            await engine.mcp.startDiscovery(profile.id, {
+              server: silent(name),
+            })
+          ).discovery.id,
+        );
+      const statuses = async () =>
+        Promise.all(
+          ids.map(
+            async (id) => (await engine.mcp.discovery(id)).discovery.status,
+          ),
+        );
+      await until(async () => (await statuses()).includes("running"));
+      // A chat reply still gets the other slot while the discovery hangs.
+      const { bot } = await engine.bots.create({ name: uniqueName("Ada") });
+      current?.chat.brain(bot.name, () => ({ text: "Still here." }));
+      await engine.bots.sendMessage(bot.id, { text: "hello" });
+      await until(
+        async () =>
+          (await engine.bots.conversation(bot.id)).messages.some(
+            (message) =>
+              message.role === "assistant" && message.text === "Still here.",
+          ),
+        { what: "the chat reply", timeoutMs: 15_000 },
+      );
+      expect(
+        (await statuses()).filter((status) => status === "running"),
+      ).toHaveLength(1);
+      expect(
+        (await statuses()).filter((status) => status === "queued"),
+      ).toHaveLength(2);
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "gives up a sandbox that does not start in time, and releases it when it starts late",
+    async () => {
+      const { engine, profile, acquired } = await setup({
+        slowAcquireMs: 1_500,
+        config: { discoveryAcquireMs: 300 },
+      });
+      const discovery = await discover(engine, profile.id, mcpFixture());
+      expect(discovery).toMatchObject({
+        status: "failed",
+        error: "The sandbox could not start: it did not start within 1 s",
+      });
+      expect(discovery.durationMs).toBeLessThan(1_500);
+      await until(() => acquired[0]?.released === true, {
+        what: "the late sandbox's release",
+      });
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it("refuses a configuration too large to identify", async () => {
+    const { engine, profile } = await setup();
+    // Each control character is six in canonical JSON: past its 1 Mi limit.
+    const env = Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [
+        `V${index}`,
+        "\u0001".repeat(4096),
+      ]),
+    );
+    const error = await failure(
+      engine.mcp.startDiscovery(profile.id, { server: mcpFixture({ env }) }),
+    );
+    expect(error.code).toBe("VALIDATION_FAILED");
+    expect(error.message).toBe(
+      "docs: the configuration is too large to identify; use shorter args, env or headers.",
+    );
+  });
+
+  it(
     "hands a running discovery back when the worker stops, and releases its sandbox",
     async () => {
       const { engine, profile, acquired } = await setup();
@@ -678,7 +823,7 @@ describe("profile save-time rules", () => {
       expect(
         await mismatch([{ ...pinned, args: [...pinned.args, "extra"] }]),
       ).toBe(
-        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs. Test the server again and pin the new snapshot.`,
+        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again and pin the new snapshot.`,
       );
       await mismatch([{ ...pinned, env: { FIXTURE_MODE: "crash" } }]);
       await mismatch([
@@ -709,6 +854,45 @@ describe("profile save-time rules", () => {
       expect(created.code).toBe("MCP_SNAPSHOT_MISMATCH");
       // A name-only patch never rechecks the servers.
       await engine.profiles.update(profile.id, { name: "Renamed" });
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "takes a stdio server's snapshot to hold for the sandbox it was discovered in only",
+    async () => {
+      const { engine, profile } = await setup();
+      const server = mcpFixture();
+      const snapshot = snapshotOf(await discover(engine, profile.id, server));
+      const remoteSnapshot = snapshotOf(
+        await discover(engine, profile.id, remote()),
+      );
+      await engine.profiles.update(profile.id, {
+        mcpServers: [
+          { ...server, snapshotId: snapshot.id },
+          { ...remote(), snapshotId: remoteSnapshot.id },
+        ],
+      });
+      // The sandbox's env can change what a stdio server lists.
+      const moved = await failure(
+        engine.profiles.update(profile.id, {
+          sandbox: { env: { REGION: "eu" } },
+        }),
+      );
+      expect(moved.code).toBe("MCP_SNAPSHOT_MISMATCH");
+      expect(moved.message).toBe(
+        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again and pin the new snapshot.`,
+      );
+      // Limits do not, and the worker calls a remote server whatever the sandbox.
+      await engine.profiles.update(profile.id, {
+        sandbox: { limits: { execTimeoutMs: 60_000 } },
+      });
+      await engine.profiles.update(profile.id, {
+        mcpServers: [{ ...remote(), snapshotId: remoteSnapshot.id }],
+      });
+      await engine.profiles.update(profile.id, {
+        sandbox: { env: { REGION: "eu" } },
+      });
     },
     OPEN_TIMEOUT,
   );
@@ -863,14 +1047,37 @@ describe("profile save-time rules", () => {
       false,
       false,
     ]);
-    // The profile still saves what does not touch its servers.
+    // The profile still saves, its servers and grants included: disabled
+    // servers keep their references, and the secret rules skip them.
     await engine.profiles.update(profile.id, { name: "Still here" });
+    await engine.profiles.update(profile.id, { secrets: [] });
+    await engine.profiles.update(profile.id, {
+      mcpServers: stored.mcpServers,
+    });
+    // Enabling one again checks it, and says what it lacks.
+    const [stdio, http] = stored.mcpServers;
+    const again = await failure(
+      engine.profiles.update(profile.id, {
+        mcpServers: [{ ...(stdio as McpServerInput), enabled: true }],
+      }),
+    );
+    expect(again.message).toBe(
+      "mcpServers.0.secretEnv.DOCS_TOKEN: DOCS_SECRET is not granted by this profile; grant it under secrets first.",
+    );
+    const remoteAgain = await failure(
+      engine.profiles.update(profile.id, {
+        mcpServers: [{ ...(http as McpServerInput), enabled: true }],
+      }),
+    );
+    expect(remoteAgain.message).toBe(
+      "mcpServers.0.secretHeaders.Authorization: no sandbox secret named DOCS_KEY is stored. Add it in Settings → Secrets first.",
+    );
   });
 });
 
 describe("discovery retention", () => {
   it(
-    "keeps a profile's newest discoveries and the snapshots it pins or they hold",
+    "keeps a profile's newest finished discoveries, every unfinished one, and the snapshots it pins or they hold",
     async () => {
       const { engine, profile } = await setup();
       await engine.worker.stop();
@@ -881,45 +1088,59 @@ describe("discovery retention", () => {
           id,
           profileId: profile.id,
           server: "docs",
-          configHash: mcpConfigHash(config),
+          configHash: mcpConfigHash(config, profile.sandbox),
           serverInfo: { name: "x", version: "1", protocolVersion: "1" },
           tools: [],
         });
-      // The oldest discovery's snapshot is pinned; the second's is not.
+      // The oldest finished discovery's snapshot is pinned; the second's is not.
       await snapshot("mcps_pinned");
       await snapshot("mcps_dropped");
       await snapshot("mcps_kept");
-      for (let index = 0; index < MAX_KEPT_DISCOVERIES; index++)
+      const finished = MAX_KEPT_DISCOVERIES + 2;
+      for (let index = 0; index < finished; index++)
         await exec.insert(mcpDiscoveries).values({
           id: `mcpd_old_${String(index).padStart(2, "0")}`,
           profileId: profile.id,
           server: "docs",
           config,
-          configHash: mcpConfigHash(config),
-          status: "succeeded",
+          configHash: mcpConfigHash(config, profile.sandbox),
+          status: index === 3 ? "failed" : "succeeded",
           snapshotId:
             index === 0
               ? "mcps_pinned"
               : index === 1
                 ? "mcps_dropped"
-                : index === MAX_KEPT_DISCOVERIES - 1
+                : index === finished - 1
                   ? "mcps_kept"
                   : null,
           createdAt: new Date(Date.now() - (100 - index) * 60_000),
         });
+      // Older than all of them, and still running: a client may poll it.
+      await exec.insert(mcpDiscoveries).values({
+        id: "mcpd_running",
+        profileId: profile.id,
+        server: "other",
+        config: { ...config, name: "other" },
+        configHash: mcpConfigHash(config, profile.sandbox),
+        status: "running",
+        createdAt: new Date(Date.now() - 200 * 60_000),
+      });
       await engine.profiles.update(profile.id, {
         mcpServers: [{ ...config, snapshotId: "mcps_pinned" }],
       });
-      // Two more: the two oldest go.
-      for (let index = 0; index < 2; index++)
-        await engine.mcp.startDiscovery(profile.id, { server: config });
-      const kept = await exec
-        .select({ id: mcpDiscoveries.id })
-        .from(mcpDiscoveries)
-        .where(eq(mcpDiscoveries.profileId, profile.id));
-      expect(kept).toHaveLength(MAX_KEPT_DISCOVERIES);
-      expect(kept.map((row) => row.id)).not.toContain("mcpd_old_00");
-      expect(kept.map((row) => row.id)).not.toContain("mcpd_old_01");
+      // A new test prunes the finished ones to the newest 20: the oldest two go.
+      await engine.mcp.startDiscovery(profile.id, { server: config });
+      const kept = (
+        await exec
+          .select({ id: mcpDiscoveries.id })
+          .from(mcpDiscoveries)
+          .where(eq(mcpDiscoveries.profileId, profile.id))
+      ).map((row) => row.id);
+      expect(kept).toHaveLength(MAX_KEPT_DISCOVERIES + 2);
+      expect(kept).not.toContain("mcpd_old_00");
+      expect(kept).not.toContain("mcpd_old_01");
+      expect(kept).toContain("mcpd_old_02");
+      expect(kept).toContain("mcpd_running");
       const snapshots = await exec
         .select({ id: mcpToolSnapshots.id })
         .from(mcpToolSnapshots)

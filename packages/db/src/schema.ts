@@ -1004,6 +1004,10 @@ export const mcpDiscoveries = pgTable(
   },
   (t) => [
     index("mcp_discoveries_profile_idx").on(t.profileId, t.createdAt),
+    // A server of a profile has at most one test queued or running.
+    uniqueIndex("mcp_discoveries_one_active")
+      .on(t.profileId, t.server)
+      .where(sql`${t.status} in ('queued', 'running')`),
     check(
       "mcp_discoveries_status_check",
       oneOf(t.status, MCP_DISCOVERY_STATUSES),
