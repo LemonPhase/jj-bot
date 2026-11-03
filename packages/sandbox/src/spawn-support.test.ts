@@ -126,20 +126,28 @@ describe("spawned process output relay", () => {
     expect(healthy.chunks).toEqual([["a", "stdout"]]);
   });
 
-  it("keeps the rest held when every listener leaves during the flush", async () => {
-    const { output } = relay();
-    output.push(Buffer.from("one"), "stdout");
-    output.push(Buffer.from("two"), "stdout");
-    const first: string[] = [];
-    const unsubscribe = output.subscribe((chunk) => {
-      first.push(chunk.toString());
+  it("keeps the rest held when every listener leaves during the flush, reading on below the limit", async () => {
+    const { source, output } = relay();
+    const chunk = Buffer.alloc(64 * 1024);
+    let held = 0;
+    while (!source.paused) {
+      output.push(chunk, "stdout");
+      held++;
+    }
+    let first = 0;
+    const unsubscribe = output.subscribe(() => {
+      first++;
       unsubscribe();
     });
     await microtask();
-    expect(first).toEqual(["one"]);
-    const second = received();
-    output.subscribe(second.listener);
+    expect(first).toBe(1);
+    // One chunk left the hold, so there is room again.
+    expect(source.paused).toBe(false);
+    let second = 0;
+    output.subscribe(() => {
+      second++;
+    });
     await microtask();
-    expect(second.chunks).toEqual([["two", "stdout"]]);
+    expect(second).toBe(held - 1);
   });
 });

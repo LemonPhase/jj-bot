@@ -2,6 +2,7 @@ import { randomBytes, randomInt, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import {
   type AcquireRequest,
+  assertEnvironment,
   assertSpawnRequest,
   assertSpecSupported,
   assertWorkspaceKey,
@@ -159,7 +160,6 @@ const READ_SLACK_BYTES = 64 * 1024;
 const PROCESS_INSTANCE = randomUUID();
 const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
 const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@+-]{0,511}$/;
-const ENV_NAME = /^[^=\0]+$/;
 
 /** Labels the driver owns; extra labels may not override them. */
 const LABELS = {
@@ -446,19 +446,6 @@ function lexicalPath(root: string, candidate: string): string {
     : posix.resolve(root, candidate);
   if (!inside(root, resolved)) throw new SandboxPathError(candidate);
   return resolved;
-}
-
-function assertEnv(env: Record<string, string>): void {
-  for (const [name, value] of Object.entries(env)) {
-    if (!ENV_NAME.test(name))
-      throw new SandboxRequestError(
-        `Invalid environment variable name ${JSON.stringify(name)}`,
-      );
-    if (typeof value !== "string" || value.includes("\0"))
-      throw new SandboxRequestError(
-        `Invalid value for environment variable ${name}`,
-      );
-  }
 }
 
 const ERRNO_TEXT: Array<[RegExp, string]> = [
@@ -1050,7 +1037,7 @@ class DockerSandbox implements Sandbox {
 
   async exec(command: string, options: ExecOptions = {}): Promise<ExecResult> {
     this.assertLive();
-    if (options.env) assertEnv(options.env);
+    if (options.env) assertEnvironment(options.env);
     const cwd =
       options.cwd === undefined
         ? WORKSPACE_DIR
@@ -1302,10 +1289,12 @@ class DockerSandbox implements Sandbox {
         relay.push(chunk, name),
       );
     } catch (error) {
-      // A start that failed midway may have started the process; release
-      // ends it with the container.
-      const released = this.released && (await this.removal);
-      finish(null, !starting || released ? "yes" : "unknown");
+      // A start that failed midway may have started the process: stop it by
+      // its marker, or let release end it with the container.
+      const stopped = this.released
+        ? await this.removal
+        : !starting || (await this.stopCommand(marker));
+      finish(null, stopped ? "yes" : "unknown");
       if (this.released) throw new SandboxReleasedError(this.id);
       throw error;
     }
@@ -1542,7 +1531,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       throw new SandboxRequestError(
         `Driver docker takes no driverConfig; got ${configKeys.join(", ")}`,
       );
-    assertEnv(parsed.env);
+    assertEnvironment(parsed.env);
     return parsed;
   }
 
@@ -2036,7 +2025,7 @@ export class DockerSandboxDriver implements SandboxDriver {
   async acquire(request: AcquireRequest): Promise<Sandbox> {
     const spec = this.validateSpec(request.spec);
     const key = assertWorkspaceKey(request.workspaceKey);
-    if (request.secrets) assertEnv(request.secrets);
+    if (request.secrets) assertEnvironment(request.secrets);
     const engine = this.requireEngine();
     const { signal } = request;
     signal?.throwIfAborted();

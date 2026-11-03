@@ -255,8 +255,9 @@ export interface SpawnOptions {
   env?: Record<string, string>;
   /**
    * Aborting stops the process like `kill()`, with `interruptReason:
-   * "abort"`. If it is aborted before the process starts, `spawn` rejects
-   * with the signal's reason and nothing runs.
+   * "abort"`, even when the abort comes while `spawn` is still resolving. If
+   * it is aborted before the process starts, `spawn` rejects with the
+   * signal's reason and nothing runs.
    */
   signal?: AbortSignal;
 }
@@ -291,8 +292,9 @@ export interface SandboxProcess {
    * Writes to its stdin. Resolves once the data has been handed to the
    * process's input, so a caller that awaits each write queues at most that
    * write in the worker: a process that reads slowly slows its writer down.
-   * Rejects after `endInput()` or once its input has closed (it exited or
-   * closed stdin).
+   * Rejects after `endInput()`, once `exited` has settled, or earlier when
+   * the driver sees the input closed. Resolving means handed over, not
+   * read: a process that stopped reading loses what is written to it.
    */
   write(data: Buffer | string): Promise<void>;
   /** Closes its stdin after pending writes, so it reads end-of-file. Idempotent. */
@@ -483,10 +485,27 @@ export function assertWorkspaceKey(key: unknown): string {
 }
 
 /**
+ * Throws `SandboxRequestError` unless every entry has a name without `=` or
+ * NUL and a string value without NUL, which a process environment can hold.
+ */
+export function assertEnvironment(env: Record<string, string>): void {
+  for (const [name, value] of Object.entries(env)) {
+    if (!/^[^=\0]+$/.test(name))
+      throw new SandboxRequestError(
+        `Invalid environment variable name ${JSON.stringify(name)}`,
+      );
+    if (typeof value !== "string" || value.includes("\0"))
+      throw new SandboxRequestError(
+        `Invalid value for environment variable ${name}`,
+      );
+  }
+}
+
+/**
  * Throws `SandboxRequestError` unless `argv` is a non-empty list of strings
- * without NUL, starting with a non-empty one, and every `env` entry has a
- * name without `=` or NUL and a value without NUL. Drivers call it first in
- * `spawn`.
+ * without NUL, starting with a non-empty one, and `env` passes
+ * `assertEnvironment`. Drivers call it in `spawn`, after checking that the
+ * sandbox is live.
  */
 export function assertSpawnRequest(
   argv: unknown,
@@ -501,16 +520,7 @@ export function assertSpawnRequest(
     throw new SandboxRequestError(
       "spawn needs a non-empty argv of strings without NUL, starting with the command",
     );
-  for (const [name, value] of Object.entries(env)) {
-    if (!/^[^=\0]+$/.test(name))
-      throw new SandboxRequestError(
-        `Invalid environment variable name ${JSON.stringify(name)}`,
-      );
-    if (typeof value !== "string" || value.includes("\0"))
-      throw new SandboxRequestError(
-        `Invalid value for environment variable ${name}`,
-      );
-  }
+  assertEnvironment(env);
 }
 
 /** Largest delay a Node timer represents; anything longer overflows and fires at once. */

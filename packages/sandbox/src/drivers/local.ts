@@ -16,6 +16,7 @@ import {
 } from "node:fs/promises";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 import {
   type AcquireRequest,
   assertSpawnRequest,
@@ -462,6 +463,36 @@ interface RunningCommand {
 }
 
 /**
+ * `stopProcesses`, then, once it settles, a short drain before the child's
+ * output pipes are dropped: a descendant that escaped detection may still
+ * hold them open. Resolves whether the stop was verified; never rejects.
+ */
+function stopThenDrain(
+  target: StopTarget,
+  graceMs: number,
+  child: { stdout: Readable | null; stderr: Readable | null },
+  closed: () => boolean,
+): Promise<boolean> {
+  return stopProcesses(target, graceMs)
+    .catch(() => false)
+    .then((verified) => {
+      setTimeout(() => {
+        if (closed()) return;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      }, DRAIN_MS).unref();
+      return verified;
+    });
+}
+
+/** An exit code, with a signalled exit reported the way POSIX shells do (128 + n). */
+const exitStatus = (
+  code: number | null,
+  signalName: NodeJS.Signals | null,
+): number | null =>
+  code ?? (signalName ? 128 + (constants.signals[signalName] ?? 0) : null);
+
+/**
  * A spawned process: its own session and process group, stopped like an
  * interrupted command (SIGTERM to the group and every marked process, then
  * SIGKILL after the grace period, verified by a `/proc` scan).
@@ -540,11 +571,7 @@ class LocalProcess implements SandboxProcess {
       child.once("close", (code, signalName) => {
         if (this.closed) return;
         this.closed = true;
-        // Report a signalled exit the way POSIX shells do.
-        void finish(
-          code ??
-            (signalName ? 128 + (constants.signals[signalName] ?? 0) : null),
-        );
+        void finish(exitStatus(code, signalName));
       });
     });
   }
@@ -578,18 +605,12 @@ class LocalProcess implements SandboxProcess {
     if (this.closed || this.stopped || !this.target) return;
     this.interruptReason = reason;
     this.relay.discardUnheard();
-    const { stdout, stderr } = this.child;
-    this.stopped = stopProcesses(this.target, this.killGraceMs)
-      .catch(() => false)
-      .then((verified) => {
-        // A descendant that escaped detection may still hold the pipes open.
-        setTimeout(() => {
-          if (this.closed) return;
-          stdout.destroy();
-          stderr.destroy();
-        }, DRAIN_MS).unref();
-        return verified;
-      });
+    this.stopped = stopThenDrain(
+      this.target,
+      this.killGraceMs,
+      this.child,
+      () => this.closed,
+    );
   }
 }
 
@@ -743,9 +764,7 @@ class LocalSandbox implements Sandbox {
       child.once("error", fail);
       child.once("close", (code, signalName) => {
         closed = true;
-        if (code !== null) return settle(code);
-        // Report a signalled exit the way POSIX shells do.
-        settle(signalName ? 128 + (constants.signals[signalName] ?? 0) : null);
+        settle(exitStatus(code, signalName));
       });
     });
 
@@ -754,20 +773,12 @@ class LocalSandbox implements Sandbox {
     const stop = (reason: string) => {
       if (closed || stopped || pgid === undefined) return;
       interruptReason = reason;
-      stopped = stopProcesses(
+      stopped = stopThenDrain(
         { groups: new Set([pgid]), since, marked: (value) => value === marker },
         this.killGraceMs,
-      )
-        .catch(() => false)
-        .then((verified) => {
-          // A descendant that escaped detection may still hold the pipes open.
-          setTimeout(() => {
-            if (closed) return;
-            child.stdout?.destroy();
-            child.stderr?.destroy();
-          }, DRAIN_MS).unref();
-          return verified;
-        });
+        child,
+        () => closed,
+      );
     };
 
     const deadline = setTimeout(() => stop("timeout"), timeoutMs);
@@ -804,6 +815,7 @@ class LocalSandbox implements Sandbox {
     argv: readonly string[],
     options: SpawnOptions = {},
   ): Promise<SandboxProcess> {
+    this.assertLive();
     assertSpawnRequest(argv, options.env);
     const cwd = await this.guard(() => this.workingDirectory(options.cwd));
     // No await between these checks and registering the process, so neither

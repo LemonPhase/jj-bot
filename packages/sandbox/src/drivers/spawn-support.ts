@@ -111,8 +111,12 @@ export class OutputRelay {
         this.heldBytes -= entry[0].length + HELD_CHUNK_OVERHEAD;
         this.deliver(entry[0], entry[1]);
       }
-      // Every listener left during the flush: the rest stays held.
-      if (this.discarding) this.dropHeld();
+      // Every listener left during the flush: the rest stays held, and
+      // reading goes on while there is room to hold more.
+      if (this.discarding) return this.dropHeld();
+      this.held = this.held.slice(this.next);
+      this.next = 0;
+      if (this.heldBytes < SPAWN_HOLD_BYTES) this.unpause();
     });
   }
 
