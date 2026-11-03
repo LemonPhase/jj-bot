@@ -61,9 +61,10 @@ To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`,
 Pass `db` for autocommit, or a `tx` to make the job change atomic with other writes. Every operation is one SQL statement, except `claim`, which is two.
 
 - `enqueue(exec, job)` inserts a queued job and returns it, or returns `null` when it was coalesced. `session.run` requires `sessionId`, and `chat.reply` requires `botId`.
-- `claim(exec, owner, limit, leaseMs)` returns `{ jobs, exhausted }`:
+- `claim(exec, owner, limit, leaseMs, { running })` returns `{ jobs, exhausted }`:
   - It takes due queued jobs, and running jobs whose lease expired and that have attempts left, with `FOR UPDATE SKIP LOCKED`. Two claimers never get the same job and never wait on each other. Jobs are returned oldest `run_after` first, and times use the database clock.
   - Each claim increments `attempts`, which is also the lease generation. Each claimed job carries `lease = { jobId, owner, attempt, kind }`.
+  - `running` lists the jobs the claimer is still running. They are neither reclaimed nor failed as exhausted by that claim, even once their lease expired: their owner is alive, its heartbeats only fell behind, and it can still extend the lease. Another claimer takes them over as usual.
   - An expired job that already used `max_attempts` claims (default 3, set per enqueue with `maxAttempts`) is not reclaimed. It is marked `failed` with `last_error = LEASE_EXHAUSTED_ERROR`, and returned once in `exhausted`. The caller then fails that session or chat visibly. The row stays in that state, so recovery can find it.
 - `heartbeat(exec, lease, leaseMs)`, `complete(exec, lease)` and `fail(exec, lease, error, retryAt?)` act only while that exact lease holds: same job, owner and attempt, with status `running`. They return `false` otherwise, even to the same owner after a reclaim, and the caller must then stop without writing results. A holder whose lease expired without being reclaimed can still extend it.
 - A write-back must re-check the lease. Start the write-back transaction with `heartbeat(tx, …)`. It returns `false` if the lease was lost, and otherwise it row-locks the job until commit, so a reclaim cannot interleave.

@@ -182,6 +182,58 @@ describe("recovery", () => {
     expect(run?.status).toBe("running");
   });
 
+  it("keeps a run whose heartbeats fell behind its lease, rather than reclaiming it", async () => {
+    const engine = await worker();
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    engine.executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "stalled" } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "kept" } }] },
+    );
+    const { task } = await engine.engine.tasks.create({
+      goal: "Outlast a stall",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await engine.executor.gate("stalled").reached;
+    // As when a stalled host held the heartbeats past the lease.
+    await db.database.db
+      .update(jobs)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(and(eq(jobs.taskId, task.id), eq(jobs.status, "running")));
+    const expired = Date.now();
+    let passes = 0;
+    let seen = 0;
+    await until(
+      () => {
+        const at = engine.engine.worker.lastPollAt?.getTime() ?? 0;
+        if (at > expired && at !== seen) {
+          passes += 1;
+          seen = at;
+        }
+        return passes >= 2;
+      },
+      { what: "claim passes after the expiry" },
+    );
+    const [job] = await db.database.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.taskId, task.id));
+    expect(job).toMatchObject({ status: "running", attempts: 1 });
+    engine.executor.gate("stalled").open();
+    const view = await untilTask(engine.engine, task.id, status("completed"));
+    expect(view.task.result).toBe("kept");
+    const runRows = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id));
+    expect(runRows.map((run) => [run.reason, run.status])).toEqual([
+      ["start", "completed"],
+    ]);
+  });
+
   it("hands running work to the next worker on a graceful stop", async () => {
     const first = await worker();
     const team = await createTeam(first.engine, ["Ada"]);

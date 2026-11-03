@@ -160,11 +160,14 @@ export function createWorker(
       do {
         again = false;
         while (!stopping && active.size < ctx.config.concurrency) {
+          // Never its own runs: a stall that held their heartbeats past the
+          // lease leaves them alive, not abandoned.
           const { jobs, exhausted } = await claim(
             ctx.db,
             ctx.config.workerId,
             ctx.config.concurrency - active.size,
             ctx.config.leaseMs,
+            { running: [...active.keys()] },
           );
           for (const job of exhausted) {
             const result = await handleExhausted(ctx, job).catch(
