@@ -51,6 +51,15 @@ export const PARK_AFTER_TURNS = 3;
 export const parkedText = (open: number) =>
   `Not run: the engine ended your turn here to wait for your ${open} open delegation${open === 1 ? "" : "s"}. You checked on the task in ${PARK_AFTER_TURNS} turns without doing other work or receiving a result, and delegations are not polled: each result arrives as a message and starts your next turn.`;
 
+/** Whether `text` is `parkedText`, for some count of open delegations. */
+export function isParkedText(text: string): boolean {
+  const open =
+    /^Not run: the engine ended your turn here to wait for your (\d+) /.exec(
+      text,
+    );
+  return open !== null && text === parkedText(Number(open[1]));
+}
+
 /**
  * `RunHooks.reviewTurn`: counts the run's polling turns (work starts the
  * count over here, and `takeInbox` does when it delivers a brief, a result

@@ -179,6 +179,16 @@ interface EntryRow {
   createdAt: Date;
 }
 
+/**
+ * A broadcast: a bot's message to every other active session of the task.
+ * A coordinator's reply to the user has no recipient either, but is a
+ * discussion message.
+ */
+export const isBroadcast = (message: {
+  intent: MessageIntent;
+  authorKind: AuthorKind;
+}) => message.intent === "notification" && message.authorKind === "bot";
+
 async function toEntries(
   exec: Executor,
   rows: EntryRow[],
@@ -199,7 +209,7 @@ async function toEntries(
       kind: row.kind,
       author,
       to: row.recipientBotIds.map(name),
-      everyone: row.intent === "notification" && row.authorKind === "bot",
+      everyone: isBroadcast(row),
       sessionId: row.sessionId,
       text: row.text,
       createdAt: row.createdAt,

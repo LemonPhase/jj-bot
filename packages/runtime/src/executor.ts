@@ -17,6 +17,7 @@ import {
   type ApprovedCall,
   budgetProblem,
   collabAgentTool,
+  hasToolCalls,
   runLoop,
   userMessage,
 } from "./loop";
@@ -228,9 +229,11 @@ export class PiSessionExecutor implements RunExecutor {
       !approved &&
       (!tail || tail.role === "assistant")
     ) {
-      // A wake with nothing new: take what is in the inbox, else there is nothing to do.
+      // A wake with nothing new: take what is in the inbox, else there is
+      // nothing to do. A transcript that ends with the model's answer is
+      // where it ended its turn, so the drain says so.
       try {
-        inputs = await drain();
+        inputs = await drain(tail?.role === "assistant" && !hasToolCalls(tail));
       } catch (error) {
         return exitEarly({
           kind: "error",
