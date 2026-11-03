@@ -757,6 +757,24 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         `Driver ${driver.id} takes no driverConfig; got ${configKeys.join(", ")}`,
       );
   };
+  /** The demo stores no secrets, so it can grant none. */
+  const assertGranted = (names: string[]): string[] => {
+    if (names.length > 0)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `secrets: no sandbox secret named ${names.join(", ")} is stored. Add it in Settings → Secrets first.`,
+        undefined,
+        400,
+      );
+    return names;
+  };
+  const noStore = () =>
+    new ApiError(
+      "SECRET_STORE_UNAVAILABLE",
+      "The demo stores no keys or secrets: connect JJ Bot to a server with JJ_SECRET_KEY set.",
+      undefined,
+      409,
+    );
   const profileStatus = (spec: SandboxSpec): RuntimeProfile["status"] => {
     const driver = DEMO_DRIVERS.find((d) => d.id === spec.driver);
     return {
@@ -979,6 +997,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         ],
         budgets: parsed.budgets ?? profileBudgetsSchema.parse({}),
         approvals: parsed.approvals ?? [],
+        secrets: assertGranted(parsed.secrets ?? []),
         isDefault: false,
         status: profileStatus(parsed.sandbox),
         createdAt,
@@ -1027,6 +1046,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         tools: patch.tools ?? stored.tools,
         budgets: { ...stored.budgets, ...patch.budgets },
         approvals: patch.approvals ?? stored.approvals,
+        secrets: patch.secrets ? assertGranted(patch.secrets) : stored.secrets,
         sandbox,
         status: profileStatus(sandbox),
         updatedAt: now(),
@@ -1061,6 +1081,24 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     },
     listDrivers: async () => clone([...DEMO_DRIVERS]),
     getModels: async () => clone(DEMO_MODELS),
+    putProviderKey: async () => {
+      throw noStore();
+    },
+    deleteProviderKey: async () => {
+      throw noStore();
+    },
+    listSecrets: async () => ({ available: false, secrets: [] }),
+    putSecret: async () => {
+      throw noStore();
+    },
+    deleteSecret: async (name) => {
+      throw new ApiError(
+        "NOT_FOUND",
+        `Secret ${name} was not found.`,
+        undefined,
+        404,
+      );
+    },
     // Totals of the demo tasks' own usage; every window holds all of it.
     getUsage: async (): Promise<UsageReport> => {
       const byBot = new Map<string, TaskView["usage"]["total"]>();

@@ -23,8 +23,11 @@ import type {
   DecideApprovalCommand,
   ModelsView,
   PostTaskMessageCommand,
+  PutSecretCommand,
   RuntimeProfile,
   SandboxDriverInfo,
+  SecretInfo,
+  SecretsView,
   SendBotMessageCommand,
   StopTaskCommand,
   Task,
@@ -157,6 +160,25 @@ export interface JJApi {
   deleteProfile(profileId: string): Promise<void>;
   listDrivers(): Promise<SandboxDriverInfo[]>;
   getModels(): Promise<ModelsView>;
+  /**
+   * `PUT /api/models/providers/:providerId/key`: stores the provider's key,
+   * encrypted. Rejects with `CONFLICT` while a server variable configures the
+   * provider, and with `SECRET_STORE_UNAVAILABLE` without `JJ_SECRET_KEY`.
+   */
+  putProviderKey(
+    providerId: string,
+    command: PutSecretCommand,
+  ): Promise<ModelsView>;
+  /** `DELETE /api/models/providers/:providerId/key`. */
+  deleteProviderKey(providerId: string): Promise<ModelsView>;
+
+  // Sandbox secrets: write-only, so no call ever returns a value.
+  /** `GET /api/secrets`: names, last four characters and dates. */
+  listSecrets(): Promise<SecretsView>;
+  /** `PUT /api/secrets/:name`: stores or replaces the value. */
+  putSecret(name: string, command: PutSecretCommand): Promise<SecretInfo>;
+  /** `DELETE /api/secrets/:name`: also removes every profile's grant of it. */
+  deleteSecret(name: string): Promise<void>;
   /** `GET /api/usage`: spend over rolling windows, per bot and per model, with the caps. */
   getUsage(): Promise<UsageReport>;
 

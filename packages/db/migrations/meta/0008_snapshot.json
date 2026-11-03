@@ -1,220 +1,9 @@
 {
-  "id": "955496ca-737e-4ed5-baea-9c81606a2bc9",
+  "id": "06d7793c-a671-42ca-8fbe-02c9f2708dac",
   "prevId": "21bcfd6c-881b-4b73-ba70-1830a33b5a72",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.approvals": {
-      "name": "approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bot_id": {
-          "name": "bot_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool_call_id": {
-          "name": "tool_call_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool": {
-          "name": "tool",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "args": {
-          "name": "args",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rule": {
-          "name": "rule",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "goal_version": {
-          "name": "goal_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_run_id": {
-          "name": "started_run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "approvals_one_pending": {
-          "name": "approvals_one_pending",
-          "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"approvals\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "approvals_task_idx": {
-          "name": "approvals_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "approvals_task_id_tasks_id_fk": {
-          "name": "approvals_task_id_tasks_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "tasks",
-          "columnsFrom": ["task_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "approvals_session_id_sessions_id_fk": {
-          "name": "approvals_session_id_sessions_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "approvals_session_call": {
-          "name": "approvals_session_call",
-          "nullsNotDistinct": false,
-          "columns": ["session_id", "tool_call_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "approvals_status_check": {
-          "name": "approvals_status_check",
-          "value": "\"approvals\".\"status\" in ('pending', 'approved', 'denied', 'expired', 'cancelled')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.artifacts": {
       "name": "artifacts",
       "schema": "",
@@ -600,12 +389,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "approval_id": {
-          "name": "approval_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -664,7 +447,7 @@
       "checkConstraints": {
         "chat_task_updates_event_check": {
           "name": "chat_task_updates_event_check",
-          "value": "\"chat_task_updates\".\"event\" in ('completed', 'failed', 'waiting', 'approval')"
+          "value": "\"chat_task_updates\".\"event\" in ('completed', 'failed', 'waiting')"
         }
       },
       "isRLSEnabled": false
@@ -1328,8 +1111,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "approvals": {
-          "name": "approvals",
+        "secrets": {
+          "name": "secrets",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -1380,6 +1163,86 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.secrets": {
+      "name": "secrets",
+      "schema": "",
+      "columns": {
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "nonce": {
+          "name": "nonce",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ciphertext": {
+          "name": "ciphertext",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hint": {
+          "name": "hint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "secrets_owner_id_kind_name_pk": {
+          "name": "secrets_owner_id_kind_name_pk",
+          "columns": ["owner_id", "kind", "name"]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "secrets_kind_check": {
+          "name": "secrets_kind_check",
+          "value": "\"secrets\".\"kind\" in ('provider', 'sandbox')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.session_entries": {
@@ -1805,7 +1668,7 @@
         },
         "sessions_waiting_for_check": {
           "name": "sessions_waiting_for_check",
-          "value": "(\"sessions\".\"waiting_for\" is null or \"sessions\".\"waiting_for\" in ('delegations', 'user', 'approval')) and ((\"sessions\".\"status\" = 'waiting') = (\"sessions\".\"waiting_for\" is not null))"
+          "value": "(\"sessions\".\"waiting_for\" is null or \"sessions\".\"waiting_for\" in ('delegations', 'user')) and ((\"sessions\".\"status\" = 'waiting') = (\"sessions\".\"waiting_for\" is not null))"
         }
       },
       "isRLSEnabled": false

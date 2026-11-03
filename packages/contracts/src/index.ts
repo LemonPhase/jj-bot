@@ -15,6 +15,7 @@ export * from "./bots";
 export * from "./common";
 export * from "./events";
 export * from "./profiles";
+export * from "./secrets";
 export * from "./tasks";
 export * from "./usage";
 export * from "./verification";

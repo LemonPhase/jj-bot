@@ -164,6 +164,8 @@ describe("inspector options", () => {
         name: "Anthropic",
         configured: true,
         envVars: ["ANTHROPIC_API_KEY"],
+        keySource: null,
+        storedKey: null,
         models: [
           {
             ref: "anthropic/claude-x",
@@ -180,6 +182,8 @@ describe("inspector options", () => {
         name: "OpenAI",
         configured: false,
         envVars: ["OPENAI_API_KEY"],
+        keySource: null,
+        storedKey: null,
         models: [
           {
             ref: "openai/gpt-y",

@@ -5,11 +5,13 @@ import {
   consoleLogger,
   createDriverRegistry,
   createEngine,
+  createKeyring,
   type DriverEntry,
   type DriverRegistry,
   type Engine,
   type Logger,
   type Secret,
+  SecretStore,
 } from "@jj/backend";
 import { type Database, openDatabase, readInstanceSetting } from "@jj/db";
 import { ChatResponder, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
@@ -48,9 +50,10 @@ export function databasePassword(connectionString: string): string[] {
 
 /**
  * The server's secrets: the provider keys in `env`, `API_TOKEN`, the database
- * password, and the generated API token, which is read from the database on
- * each call, so a worker that started before the API generated it still
- * redacts it.
+ * password, the secrets store's master keys, and the generated API token,
+ * which is read from the database on each call, so a worker that started
+ * before the API generated it still redacts it. The engine adds the stored
+ * secrets itself.
  */
 function serverSecrets(
   config: ServicesConfig,
@@ -63,6 +66,10 @@ function serverSecrets(
     ...(env.API_TOKEN?.trim()
       ? [{ name: "API_TOKEN", value: env.API_TOKEN.trim() }]
       : []),
+    ...(config.secretKeys?.texts ?? []).map((value, index) => ({
+      name: index === 0 ? "JJ_SECRET_KEY" : "JJ_SECRET_KEY_PREVIOUS",
+      value,
+    })),
     ...(config.database.mode === "postgres"
       ? databasePassword(config.database.connectionString).map((value) => ({
           name: "the DATABASE_URL password",
@@ -145,8 +152,14 @@ export async function openServices(
   const database = await open(config);
   try {
     const drivers = createDriverRegistry(entries);
+    const keys = config.secretKeys;
+    const secretStore = new SecretStore({
+      db: database.db,
+      ...(keys ? { keyring: createKeyring(keys.current, keys.previous) } : {}),
+    });
     const models = new ModelRegistry({
       env,
+      storedKeys: secretStore,
       enableScripted: config.enableScripted,
     });
     const secrets = serverSecrets(config, env, database, models);
@@ -160,6 +173,7 @@ export async function openServices(
       config: config.engine,
       logger,
       secrets,
+      secretStore,
     });
     return { database, drivers, models, engine, secrets };
   } catch (error) {

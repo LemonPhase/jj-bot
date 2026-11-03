@@ -19,8 +19,11 @@ import {
   type ModelsView,
   modelsViewSchema,
   postTaskMessageCommandSchema,
+  putSecretCommandSchema,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
+  secretInfoSchema,
+  secretsViewSchema,
   sendBotMessageCommandSchema,
   sendBotMessageResultSchema,
   stopTaskCommandSchema,
@@ -254,15 +257,22 @@ export function createHttp({
 
 /** The mode chip for a connected backend (decision: frontend brief). */
 export function liveBadge(
-  bootstrap: Bootstrap,
+  bootstrap: Pick<
+    Bootstrap,
+    "capabilities" | "contractVersion" | "defaultModel"
+  >,
   models?: ModelsView | null,
 ): ApiBadge {
-  if (!bootstrap.capabilities.agentExecution)
+  // A key stored after boot configures a provider: the models view says so.
+  const execution = models
+    ? models.providers.some((provider) => provider.configured)
+    : bootstrap.capabilities.agentExecution;
+  if (!execution)
     return {
       label: "No model configured",
       tone: "warning",
       title:
-        "Connected to the JJ Bot API, but no model provider is configured, so bots cannot reply or run tasks. Provider keys are set on the server.",
+        "Connected to the JJ Bot API, but no model provider is configured, so bots cannot reply or run tasks. Set a provider key on the server, or store one in Settings → Models.",
     };
   const configured = (models?.providers ?? []).filter((p) => p.configured);
   const scriptedOnly = configured.length
@@ -433,6 +443,30 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
     listDrivers: async () =>
       (await request("GET", "/sandbox-drivers", RESPONSES.drivers)).drivers,
     getModels: () => request("GET", "/models", modelsViewSchema),
+    putProviderKey: (providerId, body) =>
+      request(
+        "PUT",
+        `/models/providers/${id(providerId)}/key`,
+        modelsViewSchema,
+        command(putSecretCommandSchema, body),
+      ),
+    deleteProviderKey: (providerId) =>
+      request(
+        "DELETE",
+        `/models/providers/${id(providerId)}/key`,
+        modelsViewSchema,
+      ),
+    listSecrets: () => request("GET", "/secrets", secretsViewSchema),
+    putSecret: async (name, body) =>
+      (
+        await request(
+          "PUT",
+          `/secrets/${id(name)}`,
+          z.object({ secret: secretInfoSchema }),
+          command(putSecretCommandSchema, body),
+        )
+      ).secret,
+    deleteSecret: (name) => request("DELETE", `/secrets/${id(name)}`, null),
     getUsage: () => request("GET", "/usage", usageReportSchema),
 
     listTasks: async () =>

@@ -225,6 +225,8 @@ export interface StoredProfile {
   tools: ToolName[];
   budgets: ProfileBudgets;
   approvals: ApprovalRule[];
+  /** Granted sandbox secrets, by name. */
+  secrets: string[];
 }
 
 /** The profile's stored settings, with contract defaults for anything missing. */
@@ -234,6 +236,9 @@ export function profileSettings(row: RuntimeProfileRow): StoredProfile {
     tools: row.tools as ToolName[],
     budgets: profileBudgetsSchema.parse(row.budgets),
     approvals: approvalRuleSchema.array().parse(row.approvals ?? []),
+    secrets: Array.isArray(row.secrets)
+      ? row.secrets.filter((name) => typeof name === "string")
+      : [],
   };
 }
 
@@ -250,6 +255,7 @@ export function toProfile(
     tools: settings.tools,
     budgets: settings.budgets,
     approvals: settings.approvals,
+    secrets: settings.secrets,
     isDefault: row.isDefault,
     status,
     createdAt: iso(row.createdAt),

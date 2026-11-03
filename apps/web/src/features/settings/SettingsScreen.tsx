@@ -4,14 +4,16 @@ import { ScreenHeader } from "../shell/ScreenHeader";
 import { DriversPanel } from "./DriversPanel";
 import { ModelsPanel } from "./ModelsPanel";
 import { ProfilesPanel } from "./ProfilesPanel";
+import { SecretsPanel } from "./SecretsPanel";
 import { UsagePanel } from "./UsagePanel";
 import { useDrivers } from "./useDrivers";
 import "./settings.css";
 
-type Section = "models" | "profiles" | "drivers" | "usage";
+type Section = "models" | "secrets" | "profiles" | "drivers" | "usage";
 
 const SECTIONS: readonly { value: Section; label: string }[] = [
   { value: "models", label: "Models" },
+  { value: "secrets", label: "Secrets" },
   { value: "profiles", label: "Runtime profiles" },
   { value: "drivers", label: "Drivers" },
   { value: "usage", label: "Usage" },
@@ -43,9 +45,9 @@ function useSection(): [Section, (section: Section) => void] {
 
 /**
  * `#/settings` (frontend brief, "Settings"; not in the design, built in the
- * same language): models and providers, runtime profiles, sandbox drivers,
- * and usage with the spend caps.
- * Keys never pass through here: providers are enabled by server env vars.
+ * same language): models and providers with their keys, sandbox secrets,
+ * runtime profiles, sandbox drivers, and usage with the spend caps.
+ * Keys and secrets are write-only: typed once, sent once, never shown again.
  */
 export function SettingsScreen() {
   const [section, setSection] = useSection();
@@ -57,7 +59,7 @@ export function SettingsScreen() {
           <>
             <h1 className="screen-title">Settings</h1>
             <span className="settings-subtitle">
-              Models, runtime profiles, sandbox drivers and usage
+              Models, secrets, runtime profiles, sandbox drivers and usage
             </span>
           </>
         }
@@ -74,6 +76,7 @@ export function SettingsScreen() {
       <div className="settings-body">
         <TabPanel id={panelId(section)} className="settings-column">
           {section === "models" && <ModelsPanel />}
+          {section === "secrets" && <SecretsPanel drivers={drivers} />}
           {section === "profiles" && <ProfilesPanel drivers={drivers} />}
           {section === "drivers" && <DriversPanel drivers={drivers} />}
           {section === "usage" && <UsagePanel />}

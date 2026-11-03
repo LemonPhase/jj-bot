@@ -2,6 +2,7 @@
 // user approves it, runs exactly once after (across a restart, never again
 // after a claim), a denial reaches the model with its reason, and expiry,
 // cancellation and queued messages behave as agreed in #87.
+import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +18,7 @@ import {
   conversation,
   fauxAssistantMessage,
   fauxProvider,
+  fauxText,
   fauxToolCall,
   say,
   textOf,
@@ -24,6 +26,9 @@ import {
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DomainError } from "./errors";
+import { REDACTED } from "./redact";
+import { createKeyring } from "./secrets/keyring";
+import { SecretStore } from "./secrets/store";
 import { isOvertaken } from "./services/task-updates";
 import {
   OPEN_TIMEOUT,
@@ -66,7 +71,11 @@ type Step = Parameters<
 async function start(
   root: string,
   steps: Step[],
-  options: { start?: boolean; scripted?: boolean } = {},
+  options: {
+    start?: boolean;
+    scripted?: boolean;
+    secretStore?: SecretStore;
+  } = {},
 ) {
   const faux = fauxProvider();
   faux.setResponses(steps);
@@ -77,6 +86,7 @@ async function start(
     runExecutor: new PiSessionExecutor({ models }),
     workspaceRoot: root,
     start: options.start,
+    ...(options.secretStore ? { secretStore: options.secretStore } : {}),
   });
   engines.push(engine);
   return engine;
@@ -383,6 +393,45 @@ describe("approvals", () => {
     );
     expect(await pushes(root, task.id)).toBe(0);
     expect(view.approvals[0]?.outcome).toBeNull();
+  });
+
+  it("redacts a stored secret's value from the approval, its events and the chat update", async () => {
+    const root = await workspace();
+    const token = "ghp_storedTokenValue0123456789abcdefXYZ";
+    const command = `git push https://bot:${token}@example.com/repo.git main`;
+    const secretStore = new SecretStore({
+      db: db.database.db,
+      keyring: createKeyring(randomBytes(32)),
+    });
+    const { engine } = await start(
+      root,
+      [
+        fauxAssistantMessage(
+          [
+            fauxText(`Pushing with ${token}.`),
+            fauxToolCall("bash", { command }, { id: "push" }),
+          ],
+          { stopReason: "toolUse" },
+        ),
+      ],
+      { secretStore },
+    );
+    await engine.secrets.put("GITHUB_TOKEN", { value: token });
+    const { task, view, approval } = await heldTask(engine);
+    expect(approval.args).toEqual({
+      command: command.replace(token, REDACTED),
+    });
+    expect(approval.summary).not.toContain(token);
+    expect(approval.text).toBe(`Pushing with ${REDACTED}.`);
+    expect(JSON.stringify(view)).not.toContain(token);
+    const page = await engine.tasks.events(task.id);
+    expect(JSON.stringify(page.events)).not.toContain(token);
+    const [update] = await db.database.db
+      .select()
+      .from(chatTaskUpdates)
+      .where(eq(chatTaskUpdates.approvalId, approval.id));
+    expect(update?.text).toContain(REDACTED);
+    expect(update?.text).not.toContain(token);
   });
 
   it("answers concurrent decisions once", async () => {

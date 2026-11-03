@@ -31,14 +31,14 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.5.0 — 2026-11-03 — Approvals for held tool calls
+## 1.6.0 — 2026-11-03 — Approvals for held tool calls
 
 **Changed by:** backend and frontend ([#87](https://github.com/LemonPhase/jj-bot/issues/87), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/87#issuecomment-6595622906)) · **Compatibility:** additive
 
 - `approvalRuleSchema` (`{ tool, match? }`, `match` at most `APPROVAL_MATCH_LIMIT` = 200
   characters) and `runtimeProfileSchema.approvals` (at most `MAX_APPROVAL_RULES` = 50, default
   empty), also in `createRuntimeProfileCommandSchema` and, replaced whole,
-  `updateRuntimeProfileCommandSchema`. The pure matchers `approvalSubject`, `approvalRuleMatches`,
+  `updateRuntimeProfileCommandSchema`, next to 1.5.0's `secrets` grants. The pure matchers `approvalSubject`, `approvalRuleMatches`,
   `matchingApprovalRule` and `describeApprovalRule` decide which calls a rule holds, on the server
   and in the profile editor alike.
 - `waitingForSchema` gains `approval`: a session waiting for the user's answer to the call it
@@ -58,9 +58,45 @@ rather than landing it and announcing it afterwards.
 
 **Action required (frontend):** show held calls and answer them (task chat card, header badge,
 task list, chat task card); edit approval rules in the profile editor. Done in the same change.
-**Action required (backend):** none beyond this change; a client built against 1.4.0 that parses
+**Action required (backend):** none beyond this change; a client built against 1.5.0 that parses
 sessions strictly must accept `waitingFor: "approval"`.
 
+
+## 1.5.0 — 2026-11-03 — Secrets store: encrypted provider keys and sandbox secrets
+
+**Changed by:** backend and frontend ([#30](https://github.com/LemonPhase/jj-bot/issues/30), design agreed on the issue) · **Compatibility:** additive
+
+- New `secrets.ts`: `secretNameSchema` (an environment variable name, `SECRET_NAME_PATTERN`, refusing
+  the names `isReservedSecretName` reserves: `PATH`, `HOME`, `*_PROXY`, `JJ_*`, `LD_*`, …),
+  `secretValueSchema` (one trimmed line of `MIN_SECRET_LENGTH` = 16 to `MAX_SECRET_LENGTH` = 4096
+  characters; issues never repeat the value), `putSecretCommandSchema` (`{ value }`),
+  `storedSecretSchema` (`{ hint, readable, updatedAt }`: the last four characters, and whether the
+  server's current `JJ_SECRET_KEY` opens it), `secretInfoSchema` (adds `name`, `createdAt`),
+  `secretsViewSchema` (`{ available, secrets }`) and `secretGrantsSchema` (unique names, at most 64).
+- Routes: `GET /api/secrets` → `secretsViewSchema`; `PUT /api/secrets/:name` with
+  `putSecretCommandSchema` → `{ secret }` (201 when new, 200 when replaced); `DELETE
+  /api/secrets/:name` → 204, which also removes every profile's grant of it;
+  `PUT /api/models/providers/:providerId/key` with `putSecretCommandSchema` and `DELETE` the same
+  path → `modelsViewSchema`. No answer ever carries a value. A provider its server variable
+  configures refuses a stored key with `409 CONFLICT`; an unknown or keyless provider is
+  `404 NOT_FOUND`.
+- `providerInfoSchema`: adds `keySource` (`env`, `stored` or null) and `storedKey`
+  (`storedSecretSchema` or null), both parsing as null when missing. `configured` also counts a
+  readable stored key; the variable wins when both exist.
+- `runtimeProfileSchema`: adds `secrets`, the sandbox secrets granted by name (default `[]`).
+  `createRuntimeProfileCommandSchema` and `updateRuntimeProfileCommandSchema` take
+  `secrets: secretGrantsSchema` (replaced whole); a name that is not stored, or that is also a
+  `sandbox.env` key, is `VALIDATION_FAILED`.
+- `capabilitiesSchema`: adds `secretStore` (the server has `JJ_SECRET_KEY`), false when missing.
+- `API_ERROR_CODES`: adds `SECRET_STORE_UNAVAILABLE` (409), answered to a write without
+  `JJ_SECRET_KEY`.
+- `workspaceHintSchema`: adds `secrets.changed`, sent when a secret or a stored provider key is
+  stored, replaced or removed. Older clients ignore it.
+
+**Action required (frontend):** Settings shows where each provider's key comes from and stores,
+replaces or removes one; a Secrets section lists, stores and removes sandbox secrets; the profile
+editor grants them. Values are typed once and never shown again.
+**Action required (backend):** none beyond this change.
 ## 1.4.0 — 2026-11-03 — Verification plans and checks
 
 **Changed by:** backend & frontend ([#31](https://github.com/LemonPhase/jj-bot/issues/31), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/31#issuecomment-6594684999)) · **Compatibility:** additive (one reshaped command schema; see below)

@@ -93,7 +93,29 @@ export function apiRoutes({
     return c.body(null, 204);
   });
   api.get("/sandbox-drivers", async (c) => c.json(await engine.drivers()));
-  api.get("/models", (c) => c.json(engine.models()));
+  api.get("/models", async (c) => c.json(await engine.models()));
+  api.put("/models/providers/:providerId/key", async (c) =>
+    c.json(
+      await engine.putProviderKey(idParam(c, "providerId"), await command(c)),
+    ),
+  );
+  api.delete("/models/providers/:providerId/key", async (c) =>
+    c.json(await engine.deleteProviderKey(idParam(c, "providerId"))),
+  );
+
+  // Sandbox secrets: write-only; no answer carries a value.
+  api.get("/secrets", async (c) => c.json(await engine.secrets.list()));
+  api.put("/secrets/:name", async (c) => {
+    const { secret, created } = await engine.secrets.put(
+      idParam(c, "name"),
+      await command(c),
+    );
+    return c.json({ secret }, created ? 201 : 200);
+  });
+  api.delete("/secrets/:name", async (c) => {
+    await engine.secrets.delete(idParam(c, "name"));
+    return c.body(null, 204);
+  });
   api.get("/usage", async (c) => c.json(await engine.usage()));
 
   // Tasks

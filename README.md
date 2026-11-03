@@ -8,9 +8,12 @@ With Docker Engine and Compose v2, from the repository root:
 
 ```sh
 cp .env.example .env    # then set one model provider key, such as OPENAI_API_KEY
+echo "JJ_SECRET_KEY=$(openssl rand -base64 32)" >> .env   # optional: enter keys and secrets in Settings
 docker compose up -d --build --wait
 docker compose logs app | grep "Open JJ Bot"
 ```
+
+The second line is optional. It gives the server the master key that encrypts provider keys and sandbox secrets (such as a Git token) entered in Settings; with it, you can skip the provider key in `.env` and store one in Settings → Models. Keep a copy of the key apart from your database backups: stored values cannot be recovered without it.
 
 Open the logged link, `http://127.0.0.1:3001/?token=…`. The token is generated on first boot and kept with the data, so the same link works after restarts; the web app remembers it and removes it from the address bar. If you set `API_TOKEN` in `.env`, no link is logged: open `http://127.0.0.1:3001/?token=<API_TOKEN>` instead.
 
@@ -24,7 +27,7 @@ The stack is PostgreSQL and one app container (the API serving the web app, with
 
 - The **web app** (`apps/web`, React) renders server state over HTTP and server-sent events and never runs agent loops.
 - The **API** (`apps/api`, Hono) validates every command against the shared Zod contracts (`packages/contracts`) and streams each task's event log.
-- The **worker** (`packages/backend`, embedded in the API by default) claims durable jobs and runs each execution session on the [pi](https://github.com/earendil-works/pi) agent runtime (`packages/runtime`). Model keys and provider calls stay in the worker.
+- The **worker** (`packages/backend`, embedded in the API by default) claims durable jobs and runs each execution session on the [pi](https://github.com/earendil-works/pi) agent runtime (`packages/runtime`). Model keys and provider calls stay in the worker; keys entered in Settings are stored encrypted with the server's `JJ_SECRET_KEY`.
 - Agent tools run in a **sandbox** (`packages/sandbox`): one per task, from the coordinator's runtime profile, on the isolating `docker` driver or the unisolated `local` one.
 - **Storage** (`packages/db`) is PostgreSQL, or embedded PGlite for one process: records, the job queue and an append-only per-task event log from which chat, the execution graph and reconnects are rebuilt.
 

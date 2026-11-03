@@ -23,8 +23,9 @@ import {
 /**
  * The runtime-profile form: its text draft, validation, the create command,
  * and the PATCH for an edit. The server deep-merges a PATCH onto the stored
- * profile (nested objects field by field; `tools`, `approvals`, `sandbox.network`,
- * `sandbox.env` and `sandbox.driverConfig` replaced whole; a driver change
+ * profile (nested objects field by field; `tools`, `secrets`, `approvals`,
+ * `sandbox.network`, `sandbox.env` and `sandbox.driverConfig` replaced
+ * whole; a driver change
  * drops the old image and driverConfig), so the patch carries only what
  * changed, at that granularity, and never a default.
  */
@@ -36,6 +37,8 @@ export interface ProfileDraft {
   /** The generated sandbox fields; see specForm.ts. */
   spec: SpecDraft;
   tools: readonly ToolName[];
+  /** Granted sandbox secrets, by name. */
+  secrets: readonly string[];
   maxTurnsPerRun: string;
   maxRunMinutes: string;
   /** US dollars; empty for no cap. */
@@ -87,6 +90,7 @@ export interface DesiredProfile {
   description: string;
   sandbox: { driver: string } & Record<string, unknown>;
   tools: ToolName[];
+  secrets: string[];
   budgets: Record<BudgetKey, number> & Record<SpendCapKey, number | null>;
   approvals: ApprovalRule[];
   isDefault: boolean;
@@ -104,6 +108,7 @@ export function newProfileDraft(
     driver,
     spec: draftFromSpec(fields),
     tools: [...CODING_TOOLS],
+    secrets: [],
     maxTurnsPerRun: String(BUDGETS.maxTurnsPerRun.default),
     maxRunMinutes: String(BUDGETS.maxRunMinutes.default),
     maxUsdPerTask: String(SPEND_CAPS.maxUsdPerTask.default),
@@ -123,6 +128,7 @@ export function draftFromProfile(
     driver: profile.sandbox.driver,
     spec: draftFromSpec(fields, profile.sandbox),
     tools: [...profile.tools],
+    secrets: [...profile.secrets],
     maxTurnsPerRun: String(profile.budgets.maxTurnsPerRun),
     maxRunMinutes: String(profile.budgets.maxRunMinutes),
     maxUsdPerTask: capText(profile.budgets.maxUsdPerTask),
@@ -219,6 +225,7 @@ export function readProfileDraft(
       description,
       sandbox: { ...spec.value, driver: draft.driver },
       tools: orderedTools(draft.tools),
+      secrets: [...draft.secrets].sort(),
       budgets,
       approvals,
       isDefault: draft.isDefault,
@@ -237,6 +244,7 @@ export function createProfileCommand(
     tools: value.tools,
     budgets: value.budgets,
     ...(value.approvals.length > 0 ? { approvals: value.approvals } : {}),
+    ...(value.secrets.length > 0 ? { secrets: value.secrets } : {}),
     ...(value.isDefault ? { isDefault: true } : {}),
   };
 }
@@ -328,6 +336,9 @@ export function profilePatch(
 
   if (!sameJson(orderedTools(stored.tools), orderedTools(desired.tools)))
     patch.tools = orderedTools(desired.tools);
+
+  if (!sameJson([...stored.secrets].sort(), desired.secrets))
+    patch.secrets = desired.secrets;
 
   const budgets: Partial<DesiredProfile["budgets"]> = {};
   for (const key of Object.keys(BUDGETS) as BudgetKey[])
