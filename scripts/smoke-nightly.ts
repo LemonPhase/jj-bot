@@ -152,6 +152,12 @@ async function runSmoke(
       clearTimeout(timer);
       resolve(timedOut ? { code, timedOutAfterMs: timeoutMs } : { code });
     });
+    // It never started: no exit follows.
+    child.on("error", (error) => {
+      console.error(`smoke:nightly: ${script} did not start: ${error.message}`);
+      clearTimeout(timer);
+      resolve({ code: null });
+    });
   });
   let report: SmokeReport | undefined;
   try {
