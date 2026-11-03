@@ -252,6 +252,27 @@ export async function heartbeat(
   return rows.length > 0;
 }
 
+/**
+ * Give the lease up without finishing the job: it expires now, so the next
+ * claim reclaims the job (attempts permitting) exactly as it would once a
+ * dead owner's lease ran out. The job's records are left as they are, for
+ * the next runner's recovery. Returns false when the lease is no longer held.
+ */
+export async function expireLease(
+  exec: Executor,
+  lease: Lease,
+): Promise<boolean> {
+  const rows = await exec
+    .update(jobs)
+    .set({
+      leaseUntil: sql`now() - interval '1 millisecond'`,
+      updatedAt: sql`now()`,
+    })
+    .where(held(lease))
+    .returning({ id: jobs.id });
+  return rows.length > 0;
+}
+
 /** Mark the leased job done. Returns false when the lease is no longer held. */
 export async function complete(exec: Executor, lease: Lease): Promise<boolean> {
   const rows = await exec

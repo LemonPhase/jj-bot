@@ -9,6 +9,7 @@ import {
   claim,
   complete,
   enqueue,
+  expireLease,
   fail,
   heartbeat,
   LEASE_EXHAUSTED_ERROR,
@@ -177,6 +178,41 @@ describe.each(targets)("job queue on $name", (target) => {
     expect(third.lease).toMatchObject({ owner: "rescuer", attempt: 3 });
     expect(await complete(db, second.lease)).toBe(false);
     expect(await complete(db, third.lease)).toBe(true);
+  });
+
+  it("expires a lease on request, so the next claim reclaims the job as it would a dead owner's", async () => {
+    const { db } = database;
+    const [bot] = await seedBots(db, 1);
+    const job = must(
+      await enqueue(db, { kind: "chat.reply", botId: bot?.id, maxAttempts: 2 }),
+    );
+    const first = must((await claim(db, "w", 1, 60_000)).jobs[0]);
+    expect(await claimIds(database, "other")).toEqual([]);
+    expect(await expireLease(db, { ...first.lease, owner: "x" })).toBe(false);
+    expect(await expireLease(db, first.lease)).toBe(true);
+    // Still running and leased to its owner, only no longer held.
+    expect(await jobRow(database, job.id)).toMatchObject({
+      status: "running",
+      leaseOwner: "w",
+      attempts: 1,
+    });
+    expect(await heartbeat(db, first.lease, 60_000)).toBe(true);
+    expect(await expireLease(db, first.lease)).toBe(true);
+    const second = must((await claim(db, "other", 1, 60_000)).jobs[0]);
+    expect(second.lease).toEqual({
+      ...first.lease,
+      owner: "other",
+      attempt: 2,
+    });
+    expect(await expireLease(db, first.lease)).toBe(false);
+    expect(await complete(db, first.lease)).toBe(false);
+    // Its attempts spent, an expired lease fails the job as claim() does any.
+    expect(await expireLease(db, second.lease)).toBe(true);
+    const last = await claim(db, "third", 1, 60_000);
+    expect(last.jobs).toEqual([]);
+    expect(last.exhausted.map((row) => [row.id, row.lastError])).toEqual([
+      [job.id, LEASE_EXHAUSTED_ERROR],
+    ]);
   });
 
   it("fails a job whose lease expired max_attempts times, and reports it once", async () => {
