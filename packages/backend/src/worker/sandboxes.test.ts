@@ -1,10 +1,12 @@
 import type { TaskStatus } from "@jj/contracts";
 import { LocalSandboxDriver } from "@jj/sandbox";
 import { sandboxSpecSchema } from "@jj/sandbox/contract";
+import { trace } from "@opentelemetry/api";
 import { describe, expect, it } from "vitest";
 import { type EngineConfigInput, resolveConfig } from "../config";
 import type { EngineContext } from "../context";
 import { createDriverRegistry } from "../drivers";
+import { createMetrics } from "../observability/metrics";
 import type { EngineDriver } from "../ports";
 import { countingDriver, quietLogger, until } from "../testing/harness";
 import { TaskSandboxes } from "./sandboxes";
@@ -22,6 +24,8 @@ function manager(
       { driver: counting.driver, label: "Local" },
     ]),
     logger: quietLogger,
+    metrics: createMetrics(),
+    tracer: trace.getTracer("test"),
   } as unknown as EngineContext;
   return {
     sandboxes: new TaskSandboxes(ctx, { statuses: async () => statuses }),

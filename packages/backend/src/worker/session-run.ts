@@ -20,6 +20,8 @@ import type { SandboxSpec } from "@jj/sandbox/contract";
 import { asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
+import { withLogFields } from "../observability/logger";
+import { ActivityTrace, SPANS } from "../observability/tracing";
 import type { RunExecutor, RunOutcome } from "../ports";
 import { planOf, profileSettings } from "../records";
 import { memoryText } from "../services/bots";
@@ -51,6 +53,7 @@ import {
   LeaseLostError,
   loadTranscript,
   nextEntrySeq,
+  outcomeLabel,
   type RunContext,
   runHooks,
   takeInbox,
@@ -342,6 +345,11 @@ async function prepare(
     rc,
     team.filter((member) => !member.self),
   );
+  // Tool calls are traced and counted under these names; any other is `other`.
+  rc.activity?.declareTools([
+    ...(ownSettings?.tools ?? []),
+    ...tools.map((tool) => tool.name),
+  ]);
   const deadline = new Date(
     rc.startedAt.getTime() +
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
@@ -403,13 +411,51 @@ export async function runSessionJob(
   job: ClaimedJob,
   control: JobControl,
 ): Promise<void> {
-  const { ctx, sandboxes } = deps;
+  const { sandboxes } = deps;
   const start = await startRun(deps, job, control);
   if (start.kind === "skip") {
     if (start.taskFinished && start.taskId) sandboxes.finish(start.taskId);
     return;
   }
+  // From here every line the run logs carries its id too.
+  await withLogFields({ runId: start.rc.run.id }, () =>
+    executeRun(deps, executor, start),
+  );
+}
+
+/** The run `startRun` began: sandbox, executor calls, gate, snapshot and outcome, traced. */
+async function executeRun(
+  deps: WorkerDeps,
+  executor: RunExecutor,
+  start: Extract<Start, { kind: "run" }>,
+): Promise<void> {
+  const { ctx, sandboxes } = deps;
   const { rc } = start;
+  const role = rc.session.parentSessionId === null ? "coordinator" : "worker";
+  const activity = new ActivityTrace(
+    ctx.tracer,
+    ctx.metrics,
+    SPANS.sessionRun,
+    {
+      "jj.task.id": rc.task.id,
+      "jj.session.id": rc.session.id,
+      "jj.run.id": rc.run.id,
+      "jj.bot.id": rc.bot.id,
+      "jj.job.id": rc.job.id,
+      "jj.session.role": role,
+      "jj.run.reason": rc.reason,
+      "jj.run.number": rc.run.number,
+    },
+  );
+  rc.activity = activity;
+  const startedAt = performance.now();
+  /** The executor's last outcome (or why nothing ran). */
+  let result = "error";
+  ctx.logger.info("Session run started", {
+    role,
+    reason: rc.reason,
+    number: rc.run.number,
+  });
   let hold: SandboxHold | undefined;
   try {
     let prepared:
@@ -433,6 +479,7 @@ export async function runSessionJob(
         grants && grants.secrets.length > 0
           ? () => grantedSecrets(ctx, grants)
           : undefined,
+        activity.context,
       );
       if (start.spec.workspace === "ephemeral")
         await claimHolder(ctx, rc.task.id);
@@ -504,6 +551,7 @@ export async function runSessionJob(
           ? { kind: "aborted", reason: "signal" }
           : { kind: "error", error: errorMessage(error) };
       }
+      result = outcome.kind;
       // A stop hands the run back with its snapshot pending (a crash cannot
       // snapshot): the session's next snapshot, or the task's final one,
       // covers it.
@@ -533,5 +581,19 @@ export async function runSessionJob(
   } finally {
     hold?.done();
     if (rc.taskFinished) sandboxes.finish(rc.task.id);
+    const outcome = outcomeLabel(rc.control.reason, result);
+    const seconds = (performance.now() - startedAt) / 1000;
+    activity.end(outcome, outcome === "error");
+    ctx.metrics.sessionRun(role, outcome, seconds);
+    const used = activity.usage;
+    ctx.logger.info("Session run finished", {
+      outcome,
+      durationMs: Math.round(seconds * 1000),
+      modelCalls: used.modelCalls,
+      toolCalls: used.toolCalls,
+      inputTokens: used.input,
+      outputTokens: used.output,
+      costUsd: used.cost,
+    });
   }
 }

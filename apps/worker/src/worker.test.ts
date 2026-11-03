@@ -2,6 +2,7 @@
 // tasks of an API started with JJ_EMBED_WORKER=false.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -68,8 +69,20 @@ describe.skipIf(!postgresUrl)(
         env: { ...env, API_PORT: "0", JJ_EMBED_WORKER: "false" },
         logger: { info() {}, warn() {}, error() {} },
       });
+      // A collector that refuses every connection: the worker's spans have
+      // nowhere to go, which must neither delay nor fail its shutdown.
+      const refusing = createServer();
+      await new Promise<void>((resolve) =>
+        refusing.listen(0, "127.0.0.1", resolve),
+      );
+      const { port } = refusing.address() as { port: number };
+      await new Promise((resolve) => refusing.close(resolve));
       worker = spawn(process.execPath, ["--import", "tsx", entry], {
-        env: { PATH: process.env.PATH, ...env },
+        env: {
+          PATH: process.env.PATH,
+          ...env,
+          OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       });
       let output = "";
@@ -109,10 +122,45 @@ describe.skipIf(!postgresUrl)(
       expect(
         view.artifacts.map((artifact: { name: string }) => artifact.name),
       ).toContain("notes-grace.md");
+      // The API embeds no worker: it is ready on the separate worker's heartbeat.
       const ready = await fetch(`${server.url}/health/ready`);
+      expect(ready.status).toBe(200);
       expect(((await ready.json()) as any).checks.worker).toEqual({
         ok: true,
+        reason: "a worker's heartbeat is fresh",
         embedded: false,
+        workers: 1,
+        lastSeenSecondsAgo: expect.any(Number),
+      });
+      // The worker logs JSON lines, and its runs' lines carry their ids.
+      const lines = output
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line));
+      const finished = lines.filter(
+        (line) => line.msg === "Session run finished",
+      );
+      expect(finished.length).toBeGreaterThan(0);
+      for (const line of finished)
+        expect(line).toMatchObject({
+          taskId: task.id,
+          sessionId: expect.stringMatching(/^ses/),
+          runId: expect.stringMatching(/^run/),
+        });
+
+      // Stopped, it removes its heartbeat, so the API is no longer ready, and
+      // it exits cleanly, soon, though the collector took none of its spans.
+      const exited = new Promise((resolve) => worker?.once("exit", resolve));
+      const stoppedAt = Date.now();
+      worker.kill("SIGTERM");
+      expect(await exited, output).toBe(0);
+      expect(Date.now() - stoppedAt).toBeLessThan(15_000);
+      expect(output).not.toContain("Shutdown failed");
+      const after = await fetch(`${server.url}/health/ready`);
+      expect(after.status).toBe(503);
+      expect(((await after.json()) as any).checks.worker).toMatchObject({
+        ok: false,
+        reason: "no worker has a heartbeat",
       });
     }, 90_000);
   },

@@ -182,8 +182,9 @@ describe("beyond loopback without API_TOKEN", () => {
         const deadline = Date.now() + OPEN_TIMEOUT;
         let match: RegExpExecArray | null = null;
         while (!match) {
+          // The token is base64url; the line is a JSON object by default.
           match =
-            /Open JJ Bot: (http:\/\/127\.0\.0\.1:(\d+))\/\?token=(\S+)/.exec(
+            /Open JJ Bot: (http:\/\/127\.0\.0\.1:(\d+))\/\?token=([A-Za-z0-9_-]+)/.exec(
               output,
             );
           if (child.exitCode !== null || Date.now() > deadline)

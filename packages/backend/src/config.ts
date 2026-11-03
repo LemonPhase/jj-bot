@@ -66,6 +66,12 @@ export interface EngineConfig {
   artifacts: ArtifactLimits;
   /** False for an in-memory database; reported by bootstrap. */
   persistence: boolean;
+  /**
+   * Record the worker's row in `worker_heartbeats`. Only another process
+   * reads it (an API without an embedded worker), so it is off on PGlite,
+   * which no other process can open.
+   */
+  workerHeartbeat: boolean;
   /** Fallback re-read interval of a task stream, in case a notification is lost. */
   streamPollMs: number;
   /** How long a driver probe result is reused. */
@@ -111,6 +117,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     chatMaxTurns: 6,
     chatTimeoutMs: 120_000,
     persistence: true,
+    workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
     ...stripUndefined(rest),
@@ -200,6 +207,7 @@ export function configFromEnv(
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
     persistence: !inMemory,
+    workerHeartbeat: Boolean(env.DATABASE_URL?.trim()),
   };
 }
 
