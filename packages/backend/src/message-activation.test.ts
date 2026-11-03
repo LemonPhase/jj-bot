@@ -759,7 +759,7 @@ describe("a message a worker finished without reading", () => {
       done.messages.find((message) => message.text === text)?.id;
     const result = textOf(lastMessage(adaSaw.at(-1) as TranscriptContext));
     expect(result).toContain(
-      `${bob} finished before reading 28 messages sent to it, so they are handed to you (each is in the task log):\n\n(8 earlier messages, left out of its inbox — use \`task_log\` with kind "message" and before "${entry("note 8")}" to list them.)\n\n> Message from ${ada}:\n> note 8\n\n`,
+      `${bob} finished before reading 28 messages, so they are handed to you (each is in the task log): 20 sent to it, quoted below, and 8 earlier ones its inbox left out, which may include messages to everyone.\n\n(Use \`task_log\` with kind "message" and before "${entry("note 8")}" to find the 8 left out among the task's messages.)\n\n> Message from ${ada}:\n> note 8\n\n`,
     );
     expect(result).not.toContain("omitted]");
     expect(result).not.toContain("note 7\n");
