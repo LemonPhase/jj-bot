@@ -5,8 +5,10 @@
  * and every value crossing it is a `@jj/contracts` type: the contract types are
  * the view models. `resolveApi()` picks the live backend when `/api/bootstrap`
  * answers `mode: "backend"` with a compatible contract, and the in-memory demo
- * otherwise. Both implementations fold task events with `applyTaskEvent`, so
- * the screens run the same code against either.
+ * only with `?demo` or when no JJ Bot backend is there at all; a backend it
+ * cannot use stops the app with the reason instead. Both implementations fold
+ * task events with `applyTaskEvent`, so the screens run the same code against
+ * either.
  */
 import type {
   ApiErrorCode,

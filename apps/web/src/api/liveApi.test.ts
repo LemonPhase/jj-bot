@@ -676,21 +676,73 @@ describe("backend probe", () => {
       demo: false,
       reason: expect.stringMatching(/isn't reachable/),
     });
-    // No JJ Bot API served here (a static build): the demo data may stand in.
-    const html = vi.fn(
-      async () => new Response("<!doctype html>", { status: 200 }),
-    );
+    const answer = (response: () => Response) =>
+      probeBackend({
+        fetch: vi.fn(async () => response()) as unknown as typeof fetch,
+      });
+    // No JJ Bot API served here (a static build): a 404, or the app's own
+    // index.html for every path. The demo data may stand in.
+    const appPage =
+      '<!doctype html><html><body><div id="root"></div><script type="module" crossorigin src="/assets/index-AbCd1234.js"></script></body></html>';
     expect(
-      await probeBackend({ fetch: html as unknown as typeof globalThis.fetch }),
+      await answer(() => new Response(appPage, { status: 200 })),
     ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
-    const missing = vi.fn(
-      async () => new Response("<!doctype html>", { status: 404 }),
-    );
     expect(
-      await probeBackend({
-        fetch: missing as unknown as typeof globalThis.fetch,
+      await answer(() => new Response("<!doctype html>", { status: 404 })),
+    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
+    // A redirect, say to a sign-in page, is a backend in the way: no demo.
+    expect(
+      await answer(() => {
+        const login = new Response(appPage, { status: 200 });
+        Object.defineProperty(login, "redirected", { value: true });
+        Object.defineProperty(login, "url", {
+          value: "http://127.0.0.1:3001/login",
+        });
+        return login;
       }),
-    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
+    ).toMatchObject({
+      demo: false,
+      reason: expect.stringMatching(/redirected to \/login \(HTTP 200\)/),
+    });
+    // Another page, or another status: named, never demo data.
+    expect(
+      await answer(
+        () =>
+          new Response("<!doctype html><title>Sign in</title>", {
+            status: 200,
+          }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The API's address answered HTTP 200 with a web page, not the JJ Bot API.",
+    });
+    expect(
+      await answer(
+        () =>
+          new Response("<!doctype html><title>Forbidden</title>", {
+            status: 403,
+          }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The API's address answered HTTP 403 with a web page, not the JJ Bot API.",
+    });
+    expect(
+      await answer(() =>
+        json(403, {
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Cross-site requests are refused.",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The JJ Bot API answered HTTP 403: Cross-site requests are refused.",
+    });
     const legacy = mockFetch({
       "GET /api/bootstrap": { mode: "backend", contractVersion: "0.4.0" },
     });

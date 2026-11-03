@@ -226,8 +226,9 @@ function ShellLoadFailed({
 }
 
 /**
- * The app could not start: neither the backend nor the demo data is
- * available (`resolveApi` rejected). Says why, with a reload.
+ * The app could not start (`resolveApi` rejected): the backend is unreachable,
+ * asks for a token or cannot be used, or the demo data it was opened on did
+ * not load. Says why, with a reload.
  */
 export function StartFailed({ message }: { message: string }) {
   return (
