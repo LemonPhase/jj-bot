@@ -54,6 +54,8 @@ export const CONVERSATION_ROLES = ["user", "assistant"] as const;
 export const TASK_UPDATE_EVENTS = ["completed", "failed", "waiting"] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 export const JOB_KINDS = ["session.run", "chat.reply"] as const;
+/** What a stored secret is: a model provider's key, or a sandbox secret granted by name. */
+export const SECRET_KINDS = ["provider", "sandbox"] as const;
 export const JOB_STATUSES = [
   "queued",
   "running",
@@ -76,6 +78,7 @@ export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
+export type SecretKind = (typeof SECRET_KINDS)[number];
 
 /** Claims of a job before an expired lease is no longer reclaimed (see `claim`). */
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -118,6 +121,8 @@ export const runtimeProfiles = pgTable(
     sandbox: jsonb("sandbox").$type<JsonObject>().notNull(),
     tools: jsonb("tools").$type<string[]>().notNull(),
     budgets: jsonb("budgets").$type<JsonObject>().notNull(),
+    /** Names of the sandbox secrets this profile grants (`secrets.name`, kind `sandbox`). */
+    secrets: jsonb("secrets").$type<string[]>().notNull().default([]),
     isDefault: boolean("is_default").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -705,6 +710,35 @@ export const instanceSettings = pgTable("instance_settings", {
 
 export type InstanceSettingRow = typeof instanceSettings.$inferSelect;
 
+/**
+ * Values entered through settings: provider keys (`name` is the provider id)
+ * and sandbox secrets (`name` is the variable). Only ciphertext is stored:
+ * AES-256-GCM under a key derived from the server's `JJ_SECRET_KEY`, which
+ * is never stored, so the database alone reveals no value. `key_id` names
+ * the key that sealed the row; `hint` is the value's last four characters.
+ */
+export const secrets = pgTable(
+  "secrets",
+  {
+    ownerId: ownerId(),
+    kind: text("kind").$type<SecretKind>().notNull(),
+    name: text("name").notNull(),
+    keyId: text("key_id").notNull(),
+    nonce: bytea("nonce").notNull(),
+    /** The GCM ciphertext with its 16-byte tag appended. */
+    ciphertext: bytea("ciphertext").notNull(),
+    hint: text("hint").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.ownerId, t.kind, t.name] }),
+    check("secrets_kind_check", oneOf(t.kind, SECRET_KINDS)),
+  ],
+);
+
+export type SecretRow = typeof secrets.$inferSelect;
+
 /** Every table, for `drizzle(client, { schema: tables })` and the `Db` type. */
 export const tables = {
   runtimeProfiles,
@@ -725,4 +759,5 @@ export const tables = {
   usage,
   jobs,
   instanceSettings,
+  secrets,
 };

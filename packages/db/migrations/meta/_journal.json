@@ -50,6 +50,13 @@
       "when": 1793675376590,
       "tag": "0006_spend_caps",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793680853161,
+      "tag": "0007_secrets",
+      "breakpoints": true
     }
   ]
 }
