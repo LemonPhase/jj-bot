@@ -652,12 +652,19 @@ const majorOf = (version: string) => version.split(".")[0];
  * built page, has the app's root and a module script).
  */
 function isAppPage(html: string): boolean {
+  // Typed loosely: this module also runs in Node (the API's client tests).
+  const page = (
+    globalThis as {
+      document?: {
+        querySelector(selector: string): {
+          getAttribute(name: string): string | null;
+        } | null;
+      };
+    }
+  ).document;
   const entry =
-    typeof document === "undefined"
-      ? null
-      : (document
-          .querySelector<HTMLScriptElement>('script[type="module"][src]')
-          ?.getAttribute("src") ?? null);
+    page?.querySelector('script[type="module"][src]')?.getAttribute("src") ??
+    null;
   return entry
     ? html.includes(`src="${entry}"`)
     : html.includes('<div id="root">') &&
