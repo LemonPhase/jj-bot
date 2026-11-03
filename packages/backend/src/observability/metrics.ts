@@ -40,6 +40,8 @@ export interface EngineMetrics {
   eventsCompacted(removed: number, stripped: number): void;
   /** An event payload over the cap was stored as an artifact. */
   payloadSpilled(type: string): void;
+  /** Finished tasks past the retention that a pending snapshot keeps from compaction, as the last pass counted. */
+  compactionWaitingOnSnapshots(tasks: number): void;
 }
 
 export interface MetricsOptions {
@@ -166,6 +168,12 @@ export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
     registers: [registry],
   });
 
+  const waiting = new Gauge({
+    name: "jj_events_compaction_waiting_tasks",
+    help: "Finished tasks past the retention that the last compaction pass left alone because a run is still pending a snapshot.",
+    registers: [registry],
+  });
+
   return {
     contentType: registry.contentType,
     text: () => registry.metrics(),
@@ -205,6 +213,9 @@ export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
     },
     payloadSpilled(type) {
       spilled.inc({ type });
+    },
+    compactionWaitingOnSnapshots(tasks) {
+      waiting.set(Math.max(0, tasks));
     },
   };
 }

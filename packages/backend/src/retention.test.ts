@@ -34,6 +34,9 @@ import { type Brain, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
+  postgresUrl,
+  quietLogger,
+  sleep,
   type TestDatabase,
   type TestEngine,
   testEngine,
@@ -608,6 +611,160 @@ function steadyCoordinator(steps: number): Brain {
     return { calls: [{ name: "complete_task", args: { result: "Done." } }] };
   };
 }
+
+describe("the compaction pass", () => {
+  it("logs a task whose compaction fails, skips it, and goes on with the others", async () => {
+    // Earlier tests' tasks are compacted first, by an engine of their own.
+    const drain = await setup({ start: false });
+    while ((await compactNow(drain.engine)).more);
+    const test = await setup({ config: { compactionMaxTasks: 1 } });
+    const { engine } = test;
+    const failing = (await finishedTeamTask(test)).task;
+    const other = (await finishedTeamTask(test)).task;
+    await engine.worker.stop();
+    const { db: store } = db.database;
+    // Every delete of the failing task's events fails, as a damaged row would.
+    await store.execute(
+      sql.raw(`create or replace function jj_test_refuse_delete() returns trigger as $$
+        begin
+          if old.task_id = '${failing.id}' then raise exception 'refused for the test'; end if;
+          return old;
+        end $$ language plpgsql`),
+    );
+    await store.execute(
+      sql.raw(
+        "create trigger jj_test_refuse_delete before delete on task_events for each row execute function jj_test_refuse_delete()",
+      ),
+    );
+    try {
+      const warnings = quietLogger.warnings.length;
+      // Only one task a pass: the failing one, the oldest finish, comes first.
+      const first = await compactNow(engine);
+      expect(first.failed).toEqual([failing.id]);
+      expect(first.tasks).toEqual([]);
+      expect(quietLogger.warnings.slice(warnings)).toEqual([
+        "Compacting a task's events failed; the next passes skip it for a day",
+      ]);
+      // The next pass skips it, so the other task is not held up.
+      const second = await compactNow(engine);
+      expect(second.tasks.map((done) => done.taskId)).toEqual([other.id]);
+      expect(second.failed).toEqual([]);
+      expect((await engine.tasks.get(failing.id)).compactedThrough).toBe(0);
+    } finally {
+      await store.execute(
+        sql.raw("drop trigger jj_test_refuse_delete on task_events"),
+      );
+      await store.execute(sql.raw("drop function jj_test_refuse_delete()"));
+    }
+  });
+
+  it("vacuums PGlite only once nothing is left to compact, and at most once a day", async () => {
+    // Earlier tests' tasks are compacted first, by an engine of their own.
+    const drain = await setup({ start: false });
+    while ((await compactNow(drain.engine)).more);
+    const test = await setup({ config: { compactionMaxTasks: 1 } });
+    const { engine } = test;
+    await finishedTeamTask(test);
+    await finishedTeamTask(test);
+    const pglite = db.database.mode === "pglite";
+    // One task a pass: the first pass leaves the other, so it does not vacuum.
+    const first = await compactNow(engine);
+    expect(first.more).toBe(true);
+    expect(first.vacuumed).toBe(false);
+    const second = await compactNow(engine);
+    expect(second.more).toBe(false);
+    expect(second.vacuumed).toBe(pglite);
+    // A third task's pass, the same day, does not vacuum again.
+    await finishedTeamTask(test);
+    const third = await compactNow(engine);
+    expect(third.tasks).toHaveLength(1);
+    expect(third.vacuumed).toBe(false);
+  });
+
+  it("counts the finished tasks a pending snapshot keeps from compaction", async () => {
+    const test = await setup();
+    const { engine } = test;
+    const { task } = await finishedTeamTask(test);
+    await engine.worker.stop();
+    const { db: store } = db.database;
+    const before = (await compactNow(engine)).waitingOnSnapshots;
+    // A fresh task that a run pending a snapshot keeps uncompacted.
+    const pending = await finishedTeamTask(await setup());
+    await store
+      .update(runs)
+      .set({ snapshotPending: true })
+      .where(eq(runs.taskId, pending.task.id));
+    const pass = await compactNow(engine);
+    expect(pass.tasks.map((done) => done.taskId)).not.toContain(
+      pending.task.id,
+    );
+    expect(pass.waitingOnSnapshots).toBe(before + 1);
+    expect(await engine.metrics.text()).toMatch(
+      new RegExp(`jj_events_compaction_waiting_tasks ${before + 1}\\b`),
+    );
+    await store
+      .update(runs)
+      .set({ snapshotPending: false })
+      .where(eq(runs.taskId, pending.task.id));
+    const after = await compactNow(engine);
+    expect(after.tasks.map((done) => done.taskId)).toContain(pending.task.id);
+    expect(after.waitingOnSnapshots).toBe(before);
+    expect(task.id).toBeDefined();
+  });
+
+  it.skipIf(!postgresUrl)(
+    "re-checks under the lock what committed while it waited for it (PostgreSQL)",
+    async () => {
+      const test = await setup();
+      const { engine } = test;
+      const { task } = await finishedTeamTask(test);
+      await engine.worker.stop();
+      const { db: store } = db.database;
+      const [session] = await store
+        .select()
+        .from(sessions)
+        .where(eq(sessions.taskId, task.id));
+      let locked = () => {};
+      const isLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // Another writer holds the task's row and queues work for it.
+      const writer = store.transaction(async (tx) => {
+        await tx
+          .select({ id: tasks.id })
+          .from(tasks)
+          .where(eq(tasks.id, task.id))
+          .for("update");
+        locked();
+        await released;
+        await tx.insert(jobs).values({
+          id: "job_retention_recheck",
+          kind: "session.run",
+          taskId: task.id,
+          sessionId: session?.id as string,
+        });
+      });
+      await isLocked;
+      // The pass picks the task, then waits for its row.
+      const pass = compactNow(engine);
+      await sleep(500);
+      release();
+      await writer;
+      try {
+        expect((await pass).tasks.map((done) => done.taskId)).not.toContain(
+          task.id,
+        );
+        expect((await engine.tasks.get(task.id)).compactedThrough).toBe(0);
+      } finally {
+        await store.delete(jobs).where(eq(jobs.id, "job_retention_recheck"));
+      }
+    },
+  );
+});
 
 describe("a compacted task", () => {
   it("continues to a verified completion, with spend dedupe, gate attempts and lookups unchanged", async () => {

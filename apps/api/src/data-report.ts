@@ -6,7 +6,12 @@
 // `apps/api/src/data-check.ts` is the command.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createKeyring, SecretStore } from "@jj/backend";
+import {
+  configFromEnv,
+  createKeyring,
+  resolveConfig,
+  SecretStore,
+} from "@jj/backend";
 import { CONTRACT_VERSION } from "@jj/contracts";
 import {
   type Db,
@@ -65,6 +70,11 @@ export interface DataReport {
     eventBytes: number;
     /** Tasks whose events were compacted (`task.compacted`). */
     compactedTasks: number;
+    /**
+     * Finished tasks past `JJ_EVENT_RETENTION_DAYS` that compaction leaves
+     * alone because a run of theirs is still pending a snapshot.
+     */
+    waitingOnSnapshots: number;
   };
   /** Stored secrets; absent before the secrets store's migration. */
   secrets?: {
@@ -131,6 +141,40 @@ async function count(exec: Db, query: string): Promise<number> {
   return Number(result.rows[0]?.n ?? 0);
 }
 
+async function hasColumn(
+  exec: Db,
+  table: string,
+  column: string,
+): Promise<boolean> {
+  const result = (await exec.execute(
+    sql`select 1 from information_schema.columns where table_schema = 'public' and table_name = ${table} and column_name = ${column}`,
+  )) as unknown as { rows: unknown[] };
+  return result.rows.length > 0;
+}
+
+/**
+ * Finished tasks past the retention, with events to compact, that a finished
+ * run pending a snapshot keeps from compaction; 0 with retention off or
+ * before the retention's migration.
+ */
+async function waitingOnSnapshots(exec: Db, env: Env): Promise<number> {
+  let days = 30;
+  try {
+    days = resolveConfig(configFromEnv(env)).eventRetentionDays;
+  } catch {
+    // A setting that cannot work is the server's to refuse; count with the default.
+  }
+  if (
+    days === 0 ||
+    !(await hasColumn(exec, "tasks", "events_compacted_through"))
+  )
+    return 0;
+  return count(
+    exec,
+    `select count(*) as n from tasks t where t.status in ('completed', 'failed', 'cancelled') and t.finished_at < now() - interval '${days} days' and t.event_seq > t.events_compacted_through + 1 and exists (select 1 from runs r where r.task_id = t.id and r.status <> 'running' and r.snapshot_pending)`,
+  );
+}
+
 /** The report, read through `exec`, which must not have been migrated. */
 export async function reportOn(
   exec: Db,
@@ -180,6 +224,7 @@ export async function reportOn(
       exec,
       "select count(distinct task_id) as n from task_events where type = 'task.compacted'",
     ),
+    waitingOnSnapshots: await waitingOnSnapshots(exec, env),
   };
   if (await present(exec, "secrets")) {
     const keys = secretKeys(env);
@@ -266,10 +311,11 @@ export function formatReport(report: DataReport): string {
       events,
       eventBytes,
       compactedTasks,
+      waitingOnSnapshots,
     } = report.records;
     lines.push(
       `Records: ${plural(bots, "bot")}, ${plural(tasks, "task")}, ${plural(artifacts, "artifact")} (${artifactBytes} bytes).`,
-      `Task events: ${plural(events, "event")} (${eventBytes} payload bytes); ${plural(compactedTasks, "task")} compacted.`,
+      `Task events: ${plural(events, "event")} (${eventBytes} payload bytes); ${plural(compactedTasks, "task")} compacted${waitingOnSnapshots > 0 ? `; ${plural(waitingOnSnapshots, "finished task")} past the retention wait on a run pending a snapshot and are not compacted` : ""}.`,
     );
   }
   if (report.secrets) {
@@ -325,6 +371,7 @@ export function formatEnv(report: DataReport): string {
     ["events", report.records?.events ?? 0],
     ["event_bytes", report.records?.eventBytes ?? 0],
     ["compacted_tasks", report.records?.compactedTasks ?? 0],
+    ["events_waiting_on_snapshots", report.records?.waitingOnSnapshots ?? 0],
     ["secrets_stored", report.secrets?.stored ?? 0],
     ["secrets_unreadable", report.secrets?.unreadable.length ?? 0],
     ["secrets_retired", report.secrets?.retired.stored ?? 0],

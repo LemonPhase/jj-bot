@@ -21,12 +21,14 @@ import {
 import {
   and,
   asc,
+  count,
   eq,
   gt,
   inArray,
   isNotNull,
   isNull,
   lt,
+  notInArray,
   or,
   type SQL,
   sql,
@@ -153,11 +155,19 @@ export async function compactTask(
   taskId: string,
   finishedBefore: Date,
 ): Promise<TaskCompaction | undefined> {
+  const [locked] = await tx
+    .select({ id: tasks.id })
+    .from(tasks)
+    .where(eq(tasks.id, taskId))
+    .for("update");
+  if (!locked) return undefined;
+  // Checked in a statement of its own once the lock is held: on PostgreSQL a
+  // statement that waited for the lock still reads its subqueries from the
+  // snapshot it started with, and would miss work committed meanwhile.
   const [task] = await tx
     .select({ id: tasks.id, through: tasks.eventSeq })
     .from(tasks)
-    .where(and(eq(tasks.id, taskId), compactable(finishedBefore)))
-    .for("update");
+    .where(and(eq(tasks.id, taskId), compactable(finishedBefore)));
   if (!task) return undefined;
   const { through } = task;
   const inRange = and(
@@ -217,6 +227,48 @@ export interface CompactionPass {
   stripped: number;
   /** The pass stopped at its task or time budget with candidates left. */
   more: boolean;
+  /** Tasks whose compaction failed; the next passes skip them for a while. */
+  failed: string[];
+  /**
+   * Finished tasks past the cutoff that the pass leaves alone only because
+   * a run of theirs is still pending a snapshot.
+   */
+  waitingOnSnapshots: number;
+  /** PGlite's `VACUUM task_events` ran after this pass. */
+  vacuumed: boolean;
+}
+
+/** How long the passes skip a task whose compaction failed. */
+export const FAILED_TASK_RETRY_MS = 24 * 60 * 60_000;
+/** PGlite vacuums at most this often: it holds the process while it runs. */
+export const VACUUM_INTERVAL_MS = 24 * 60 * 60_000;
+
+/** What one engine's passes remember between them. */
+interface PassMemory {
+  /** Task id to when its compaction last failed. */
+  failed: Map<string, number>;
+  lastVacuumAt: number;
+  removedSinceVacuum: number;
+}
+
+const memories = new WeakMap<EngineContext, PassMemory>();
+
+function memoryOf(ctx: EngineContext): PassMemory {
+  let memory = memories.get(ctx);
+  if (!memory) {
+    memory = { failed: new Map(), lastVacuumAt: 0, removedSinceVacuum: 0 };
+    memories.set(ctx, memory);
+  }
+  return memory;
+}
+
+/** An error's class and database code, never its message, which may quote data. */
+function errorClass(error: unknown): string {
+  if (!(error instanceof Error)) return typeof error;
+  const code =
+    (error as { code?: unknown }).code ??
+    (error.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" ? `${error.name} (${code})` : error.name;
 }
 
 /** When a task must have finished to be compacted now; null when retention is off. */
@@ -226,18 +278,47 @@ export function retentionCutoff(ctx: EngineContext): Date | null {
   return new Date(ctx.clock().getTime() - days * 24 * 60 * 60_000);
 }
 
-/** The tasks a pass would compact now, oldest finish first. */
+/** The tasks a pass would compact now, oldest finish first, but those in `skip`. */
 export function compactionCandidates(
   exec: Executor,
   finishedBefore: Date,
   limit: number,
+  skip: readonly string[] = [],
 ): Promise<{ id: string }[]> {
   return exec
     .select({ id: tasks.id })
     .from(tasks)
-    .where(compactable(finishedBefore))
+    .where(
+      and(
+        compactable(finishedBefore),
+        skip.length > 0 ? notInArray(tasks.id, [...skip]) : undefined,
+      ),
+    )
     .orderBy(asc(tasks.finishedAt), asc(tasks.id))
     .limit(limit);
+}
+
+/**
+ * Finished tasks past the cutoff, with events to compact, that compaction
+ * leaves alone only because a finished run of theirs is still pending a
+ * snapshot (its sandbox was gone before the final snapshot could run).
+ */
+export async function waitingOnSnapshots(
+  exec: Executor,
+  finishedBefore: Date,
+): Promise<number> {
+  const [row] = await exec
+    .select({ value: count() })
+    .from(tasks)
+    .where(
+      and(
+        inArray(tasks.status, [...FINISHED]),
+        lt(tasks.finishedAt, finishedBefore),
+        gt(tasks.eventSeq, sql`${tasks.eventsCompactedThrough} + 1`),
+        sql`exists (select 1 from ${runs} where ${runs.taskId} = ${tasks.id} and ${runs.status} <> 'running' and ${runs.snapshotPending})`,
+      ),
+    );
+  return row?.value ?? 0;
 }
 
 export interface CompactionPassOptions {
@@ -249,9 +330,12 @@ export interface CompactionPassOptions {
 
 /**
  * One compaction pass: at most `compactionMaxTasks` tasks, starting none
- * after `compactionMaxMs`, each in its own transaction. On PGlite the space
- * is reclaimed afterwards with `VACUUM task_events`; on PostgreSQL
- * autovacuum reuses it.
+ * after `compactionMaxMs`, each in its own transaction. A task whose
+ * compaction fails is logged by id and error class, and skipped by this
+ * engine's passes for FAILED_TASK_RETRY_MS, so it never holds the others
+ * up. On PGlite, a pass that leaves nothing to compact ends with `VACUUM
+ * task_events`, at most once in VACUUM_INTERVAL_MS, since it holds the
+ * process while it runs; on PostgreSQL autovacuum reuses the space.
  */
 export async function compactionPass(
   ctx: EngineContext,
@@ -262,23 +346,41 @@ export async function compactionPass(
     removed: 0,
     stripped: 0,
     more: false,
+    failed: [],
+    waitingOnSnapshots: 0,
+    vacuumed: false,
   };
   const finishedBefore = options.finishedBefore ?? retentionCutoff(ctx);
   if (!finishedBefore) return pass;
+  const memory = memoryOf(ctx);
   const started = Date.now();
+  for (const [taskId, at] of memory.failed)
+    if (started - at >= FAILED_TASK_RETRY_MS) memory.failed.delete(taskId);
   const { compactionMaxTasks: maxTasks, compactionMaxMs: maxMs } = ctx.config;
   const candidates = await compactionCandidates(
     ctx.db,
     finishedBefore,
     maxTasks + 1,
+    [...memory.failed.keys()],
   );
   let tried = 0;
   for (const candidate of candidates.slice(0, maxTasks)) {
     if (Date.now() - started >= maxMs || options.stop?.()) break;
     tried += 1;
-    const done = await ctx.db.transaction((tx) =>
-      compactTask(tx, ctx, candidate.id, finishedBefore),
-    );
+    let done: TaskCompaction | undefined;
+    try {
+      done = await ctx.db.transaction((tx) =>
+        compactTask(tx, ctx, candidate.id, finishedBefore),
+      );
+    } catch (error) {
+      memory.failed.set(candidate.id, Date.now());
+      pass.failed.push(candidate.id);
+      ctx.logger.warn(
+        "Compacting a task's events failed; the next passes skip it for a day",
+        { taskId: candidate.id, error: errorClass(error) },
+      );
+      continue;
+    }
     if (!done) continue;
     pass.tasks.push(done);
     pass.removed += done.removed;
@@ -286,13 +388,31 @@ export async function compactionPass(
   }
   pass.more = candidates.length > tried;
   ctx.metrics.eventsCompacted(pass.removed, pass.stripped);
-  if (pass.removed > 0 && ctx.dbMode === "pglite")
-    await ctx.db.execute(sql`vacuum task_events`).catch((error: unknown) =>
-      ctx.logger.warn("Vacuuming task_events after compaction failed", {
-        error: errorMessage(error),
-      }),
-    );
-  const line = pass.tasks.length > 0 ? ctx.logger.info : ctx.logger.debug;
+  pass.waitingOnSnapshots = await waitingOnSnapshots(ctx.db, finishedBefore);
+  ctx.metrics.compactionWaitingOnSnapshots(pass.waitingOnSnapshots);
+  memory.removedSinceVacuum += pass.removed;
+  if (
+    ctx.dbMode === "pglite" &&
+    !pass.more &&
+    memory.removedSinceVacuum > 0 &&
+    Date.now() - memory.lastVacuumAt >= VACUUM_INTERVAL_MS
+  ) {
+    memory.lastVacuumAt = Date.now();
+    memory.removedSinceVacuum = 0;
+    pass.vacuumed = await ctx.db
+      .execute(sql`vacuum task_events`)
+      .then(() => true)
+      .catch((error: unknown) => {
+        ctx.logger.warn("Vacuuming task_events after compaction failed", {
+          error: errorMessage(error),
+        });
+        return false;
+      });
+  }
+  const line =
+    pass.tasks.length > 0 || pass.failed.length > 0
+      ? ctx.logger.info
+      : ctx.logger.debug;
   line?.call(
     ctx.logger,
     `Compacted the events of ${pass.tasks.length} task(s)`,
@@ -302,6 +422,9 @@ export async function compactionPass(
       removed: pass.removed,
       stripped: pass.stripped,
       more: pass.more,
+      failed: pass.failed,
+      waitingOnSnapshots: pass.waitingOnSnapshots,
+      vacuumed: pass.vacuumed,
     },
   );
   return pass;

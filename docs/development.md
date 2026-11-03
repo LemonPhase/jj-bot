@@ -75,7 +75,7 @@ It exits 1 when the backup is damaged or refused, the stack refuses it, or the r
 `npm run data:check` (in the compose stack, `docker compose run --rm --no-deps app node --import tsx apps/api/src/data-check.ts`) reads the configured database without migrating or writing anything and reports:
 
 - **Schema:** `empty` (JJ Bot never opened it), `behind` (an older release's; the server applies the newer migrations when it starts), `current`, or `newer` (written by a newer version, which this build refuses to start on; exit code 1).
-- **Records:** bots, tasks, artifacts and their bytes, task events and the bytes of their payloads, and how many tasks were compacted.
+- **Records:** bots, tasks, artifacts and their bytes, task events and the bytes of their payloads, how many tasks were compacted, and how many finished tasks past `JJ_EVENT_RETENTION_DAYS` a run pending a snapshot keeps from compaction.
 - **Secrets:** how many are stored, and by name the ones the configured `JJ_SECRET_KEY` (with `JJ_SECRET_KEY_PREVIOUS`) cannot read. A backup restored under another key, or none, keeps those rows unreadable ([Secrets store](#secrets-store)): set the key they were stored with, or move them to a new one by keeping the old key in `JJ_SECRET_KEY_PREVIOUS`, or store them again in Settings. Also how many replaced or removed values are kept for redaction, and how many of those the key cannot read: those are no longer redacted, until the key that sealed them is set.
 
 `--json` and `--env` (`key=value` lines) print the same for scripts.
@@ -86,7 +86,7 @@ A PGlite data directory (`JJ_DATABASE_PATH`, default `.jj-data`) is the whole da
 
 ### Event retention
 
-A finished task's events are compacted once it finished `JJ_EVENT_RETENTION_DAYS` ago (default 30; `0` keeps them for good): activity and superseded snapshots are deleted and output previews dropped, while every record stays ([Event retention](architecture.md#event-retention)). The worker runs one pass an hour, and Settings → About shows the setting. The data check reports the events and their payload bytes before and after. On PGlite each pass ends with `VACUUM task_events`, which returns the space. On PostgreSQL autovacuum reuses the space but does not return it to the operating system; to shrink the table, run `VACUUM FULL task_events` while the app is stopped, since it locks the table. A backup restored from before a pass brings back the events it compacted, and the next pass compacts them again.
+A finished task's events are compacted once it finished `JJ_EVENT_RETENTION_DAYS` ago (default 30; `0` keeps them for good): activity and superseded snapshots are deleted and output previews dropped, while every record stays ([Event retention](architecture.md#event-retention)). The worker runs one pass an hour, and Settings → About shows the setting. The data check reports the events and their payload bytes before and after, and the finished tasks a run pending a snapshot keeps from compaction (also `jj_events_compaction_waiting_tasks`). A task whose compaction fails is logged by id and skipped for a day. On PGlite, a pass that leaves nothing to compact ends with `VACUUM task_events`, at most once a day, which returns the space and holds the process while it runs. On PostgreSQL autovacuum reuses the space but does not return it to the operating system; to shrink the table, run `VACUUM FULL task_events` while the app is stopped, since it locks the table. A backup restored from before a pass brings back the events it compacted, and the next pass compacts them again.
 
 ### Upgrades
 
@@ -159,7 +159,7 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `JJ_MAX_USD_PER_DAY`                    | What the whole server may spend on priced model calls in any 24 hours, in US dollars; unset (default) for no instance cap. Task and bot caps are in runtime profiles.                                              |
 | `JJ_OUTPUT_CAP_BYTES`                   | Tool output kept in events, default and maximum 65536; larger output is stored as an artifact.                                                                                                                     |
 | `JJ_EVENT_RETENTION_DAYS`               | Days after a task finishes before its events are compacted, default `30`, at most `3650`; `0` never compacts. See [Event retention](architecture.md#event-retention).                                              |
-| `JJ_EVENT_PAYLOAD_CAP_BYTES`            | Event payload size past which tool output, error texts and held calls' arguments are clipped in the event and saved whole as an artifact, default `262144` (256 KiB), from `131072` to `1048576`.                 |
+| `JJ_EVENT_PAYLOAD_CAP_BYTES`            | Event payload size past which tool output, error texts and held calls' arguments are clipped in the event and saved whole as an artifact, default `262144` (256 KiB), from `131072` to `1048576`.                  |
 | `JJ_MAX_VERIFICATION_ATTEMPTS`          | Verification gate runs one coordinator run may make on a task with a plan, default `3`; after the last failed one the task waits for the user.                                                                     |
 | `JJ_EPHEMERAL_IDLE_MINUTES`             | Minutes an idle ephemeral workspace is kept while its task is open, default `360`; its release discards the files.                                                                                                 |
 | `JJ_MAX_HELD_SANDBOXES`                 | Sandboxes one worker holds at once, default `32`; over it the least recently used idle one is released.                                                                                                            |
@@ -294,6 +294,7 @@ Totals are `jj.model_calls`, `jj.tool_calls`, the `gen_ai.usage.*` token counts 
 | `jj_sandbox_acquire_failures_total`   | `driver`                    | sandbox starts that failed                               |
 | `jj_events_compacted_total`           | `action`                    | events compaction deleted or stripped of their previews  |
 | `jj_event_payloads_spilled_total`     | `type`                      | event payloads over the cap, saved as an artifact        |
+| `jj_events_compaction_waiting_tasks`  |                             | finished tasks past the retention a snapshot holds back  |
 
 Label values are bounded: job kinds, roles, outcomes, tool names a run or reply declared (else `other`), catalog models, registered drivers and event types. No metric is labelled with a task, session, run, bot or job id.
 
