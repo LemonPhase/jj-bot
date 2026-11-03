@@ -614,6 +614,49 @@ describe("approvals", () => {
     ).rejects.toMatchObject({ code: "APPROVAL_NOT_PENDING" });
   });
 
+  it("expires a call approved for the old goal before it ran", async () => {
+    const root = await workspace();
+    const first = await start(root, [callTool("bash", { command: PUSH })]);
+    const { task, approval } = await heldTask(first.engine);
+    await first.dispose();
+    engines.splice(engines.indexOf(first), 1);
+    let seen = "";
+    const second = await start(
+      root,
+      [
+        (context) => {
+          seen = resultText(context, approval.toolCallId);
+          return say("On the new goal now.");
+        },
+      ],
+      { start: false },
+    );
+    await second.engine.tasks.decideApproval(task.id, approval.id, {
+      decision: "approve",
+    });
+    // The goal changes before any run started the approved call.
+    await second.engine.tasks.postMessage(task.id, {
+      text: "Tag it instead.",
+      goal: "Tag the release",
+      observedGoalVersion: 1,
+    });
+    await second.engine.worker.start();
+    const view = await untilTask(
+      second.engine,
+      task.id,
+      (v) =>
+        v.task.status === "waiting" && v.sessions[0]?.waitingFor === "user",
+    );
+    expect(view.approvals[0]).toMatchObject({
+      status: "expired",
+      startedAt: null,
+    });
+    expect(seen).toBe(
+      "Not run: the task's goal or plan changed (now goal version 2) before it ran.",
+    );
+    expect(await pushes(root, task.id)).toBe(0);
+  });
+
   it("cancels a pending approval when the task is stopped", async () => {
     const root = await workspace();
     const { engine } = await start(root, [callTool("bash", { command: PUSH })]);

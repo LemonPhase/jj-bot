@@ -387,8 +387,10 @@ export async function decideApproval(
 }
 
 /**
- * A goal (or plan) change: every pending approval of the task made at an
- * older version expires, and its session wakes to tell the model.
+ * A goal (or plan) change: every approval of the task made at an older
+ * version that has not run, pending or approved and not started, expires,
+ * and its session wakes to tell the model. A call approved for the old goal
+ * never runs for the new one.
  */
 export async function expireApprovals(
   tx: Tx,
@@ -402,7 +404,8 @@ export async function expireApprovals(
     .where(
       and(
         eq(approvals.taskId, taskId),
-        eq(approvals.status, "pending"),
+        inArray(approvals.status, ["pending", "approved"] as ApprovalStatus[]),
+        isNull(approvals.startedAt),
         lt(approvals.goalVersion, goalVersion),
       ),
     )
@@ -410,8 +413,11 @@ export async function expireApprovals(
   for (const current of rows) {
     const row = await updateApproval(tx, current, {
       status: "expired",
-      reason: `the task's goal or plan changed (now goal version ${goalVersion}) before the user answered.`,
-      decidedAt: ctx.clock(),
+      reason:
+        current.status === "pending"
+          ? `the task's goal or plan changed (now goal version ${goalVersion}) before the user answered.`
+          : `the task's goal or plan changed (now goal version ${goalVersion}) before it ran.`,
+      decidedAt: current.decidedAt ?? ctx.clock(),
     });
     await wake(tx, row);
   }
