@@ -33,6 +33,7 @@ import {
   RETIRED_VALUES_PER_NAME,
   retiredBefore,
 } from "../secrets/store";
+import { lockProfiles } from "./profiles";
 
 /**
  * The secret among `secrets` that `value` would carry into a sandbox: one
@@ -239,12 +240,8 @@ export async function deleteSecret(
 ): Promise<void> {
   const name = secretName(rawName);
   await ctx.db.transaction(async (tx) => {
-    // Profiles before secrets, as a profile save takes them: a save holding
-    // its profile and waiting on this secret's row cannot meet this.
-    await tx
-      .select({ id: runtimeProfiles.id })
-      .from(runtimeProfiles)
-      .for("no key update");
+    // Profiles before secrets, in id order (the lock order, profiles.ts).
+    await lockProfiles(tx);
     const deleted = await tx
       .delete(secrets)
       .where(rowOf(ctx, "sandbox", name))

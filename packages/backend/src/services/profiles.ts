@@ -21,7 +21,7 @@ import {
   secrets,
   type Tx,
 } from "@jj/db";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, type SQL, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
@@ -163,6 +163,32 @@ function refuseSkills(command: { skills?: readonly unknown[] }): void {
     );
 }
 
+/**
+ * The engine's lock order. A transaction that locks more than one of these
+ * takes them in this order, so no two can wait on each other:
+ *
+ * 1. runtime profiles, by ascending id (`lockProfiles`);
+ * 2. secrets (`checkGrants` and `assertSecretHeadersStored` share them,
+ *    `deleteSecret` deletes one);
+ * 3. MCP tool snapshots, then MCP discoveries.
+ *
+ * A foreign key check takes its profile row FOR KEY SHARE, which only a
+ * profile's deletion (FOR UPDATE) conflicts with; a discovery's final write
+ * takes it so before its own row, as that deletion's cascade does.
+ */
+export function lockProfiles(
+  tx: Tx,
+  where: SQL = sql`true`,
+): Promise<RuntimeProfileRow[]> {
+  return tx
+    .select()
+    .from(runtimeProfiles)
+    .where(where)
+    .orderBy(asc(runtimeProfiles.id))
+    .for("no key update");
+}
+
+/** Unsets the other default; the caller locked it (`lockProfiles`). */
 async function clearDefault(tx: Tx, except: string) {
   await tx
     .update(runtimeProfiles)
@@ -182,6 +208,9 @@ export async function createProfile(
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
   const row = await ctx.db.transaction(async (tx) => {
+    // The default it replaces first: profiles before secrets.
+    if (command.isDefault)
+      await lockProfiles(tx, sql`${runtimeProfiles.isDefault}`);
     await checkGrants(ctx, tx, command.secrets ?? [], sandbox);
     await checkMcpServers(ctx, tx, {
       profileId: id,
@@ -251,13 +280,15 @@ export async function updateProfile(
   const command = parseCommand(updateRuntimeProfileCommandSchema, input);
   refuseSkills(command);
   const row = await ctx.db.transaction(async (tx) => {
-    // Held to the end: saves of one profile, and discoveries pruning its
-    // snapshots, take their turns.
-    const [current] = await tx
-      .select()
-      .from(runtimeProfiles)
-      .where(eq(runtimeProfiles.id, id))
-      .for("no key update");
+    // Held to the end, with the default it replaces, in id order: saves of
+    // one profile, and discoveries pruning its snapshots, take their turns.
+    const locked = await lockProfiles(
+      tx,
+      command.isDefault
+        ? sql`${runtimeProfiles.id} = ${id} or ${runtimeProfiles.isDefault}`
+        : eq(runtimeProfiles.id, id),
+    );
+    const current = locked.find((entry) => entry.id === id);
     if (!current) throw notFound("Runtime profile", id);
     const settings = profileSettings(current);
     if (command.isDefault === false && current.isDefault)
