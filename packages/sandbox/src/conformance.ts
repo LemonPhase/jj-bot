@@ -26,7 +26,9 @@ import {
   SandboxPathError,
   SandboxReleasedError,
   SandboxRequestError,
+  SPAWN_ENTRY_LIMIT_BYTES,
   SPAWN_HOLD_BYTES,
+  SPAWN_REQUEST_LIMIT_BYTES,
 } from "./contract";
 
 /**
@@ -50,6 +52,14 @@ const HOST_SECRET = "host-only-value";
  * driver that copies `process.env` at import time, before the canary exists.
  */
 const RUNNER_VARS = ["VITEST", "VITEST_POOL_ID", "VITEST_WORKER_ID"];
+
+/**
+ * What pipes, connections and a daemon may buffer between a spawned process
+ * and its driver, on top of `SPAWN_HOLD_BYTES`: a writer nobody reads must
+ * block before it has handed over more than the two together. Measured: about
+ * 0.1 MiB on `local` and 1.4 MiB on `docker`.
+ */
+export const SPAWN_TRANSPORT_SLACK_BYTES = 4 * 1024 * 1024;
 
 export interface ConformanceOptions {
   /** Driver-specific spec additions, such as an image or template reference. */
@@ -920,6 +930,79 @@ export function describeSandboxConformance(
     );
 
     it(
+      "settles a spawned process's exit only once its output has closed, not when it exits",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        // The process exits at once; a child it left writes a second later.
+        const spawned = await spawner(sandbox)([
+          "sh",
+          "-c",
+          "(sleep 1; echo late; echo late-err >&2) & echo early; exit 0",
+        ]);
+        const output = capture(spawned);
+        const exit = await spawned.exited;
+        expect(output.stdout).toBe("early\nlate\n");
+        expect(output.stderr).toBe("late-err\n");
+        expect(exit).toMatchObject({ exitCode: 0, interrupted: "no" });
+      },
+      testTimeout,
+    );
+
+    it(
+      "reports a natural exit when kill() comes after the process exited by itself",
+      async (context) => {
+        spawnOnly(context);
+        const sandbox = await acquire();
+        const spawn = spawner(sandbox);
+        /** Resolves once the sandbox no longer has process `pid` (reaped). */
+        const gone = async (pid: string) => {
+          for (let attempt = 0; attempt < 200; attempt++) {
+            const probe = await sandbox.exec(
+              `kill -0 ${pid} 2>/dev/null && echo alive || echo gone`,
+            );
+            if (probe.stdout.trim() === "gone") return;
+            await delay(100);
+          }
+          throw new Error(`process ${pid} never ended`);
+        };
+
+        // A child it left keeps its stdout open, so `exited` is still pending.
+        const holder = await spawn([
+          "sh",
+          "-c",
+          'echo "$$"; sleep 30 & exit 3',
+        ]);
+        const output = capture(holder);
+        await output.until(() => output.stdout.includes("\n"), "its pid");
+        await gone(output.stdout.trim());
+        const held = await holder.kill();
+        expect(held).toMatchObject({ exitCode: 3, interrupted: "no" });
+        expect(held.interruptReason).toBeUndefined();
+
+        // Nobody listens and a little more than the hold is unread, which the
+        // pipes still take: it exits, and `exited` waits for a reader.
+        const unread = await spawn([
+          "sh",
+          "-c",
+          `echo "$$" > spawn-unread-pid; dd if=/dev/zero bs=16384 count=${SPAWN_HOLD_BYTES / 16384 + 1} 2>/dev/null; exit 0`,
+        ]);
+        let pid = "";
+        for (let attempt = 0; attempt < 200 && !pid; attempt++) {
+          pid = (await sandbox.fs.read("spawn-unread-pid").catch(() => ""))
+            .toString()
+            .trim();
+          if (!pid) await delay(100);
+        }
+        await gone(pid);
+        const discarded = await unread.kill();
+        expect(discarded).toMatchObject({ exitCode: 0, interrupted: "no" });
+        expect(discarded.interruptReason).toBeUndefined();
+      },
+      testTimeout,
+    );
+
+    it(
       "settles a spawned process's exit with its code, and reports a missing command as 127",
       async (context) => {
         spawnOnly(context);
@@ -1013,10 +1096,30 @@ export function describeSandboxConformance(
           `${sandbox.workspaceDir}/nested`,
         );
         expect((await sandbox.exec("ln -s / out")).exitCode).toBe(0);
-        for (const cwd of ["../..", "/", "out", `${sandbox.workspaceDir}-evil`])
+        for (const cwd of [
+          "../..",
+          "/",
+          "out",
+          `${sandbox.workspaceDir}-evil`,
+          "nested\0/dir",
+        ])
           await expect(spawn(["pwd"], { cwd }), cwd).rejects.toThrow(
             SandboxPathError,
           );
+        // A cwd that is no directory is named, for spawn and exec alike.
+        await sandbox.fs.write("a-file", "x");
+        for (const [cwd, code] of [
+          ["no-such-dir", "ENOENT"],
+          ["a-file", "ENOTDIR"],
+        ] as const) {
+          await expect(spawn(["pwd"], { cwd }), cwd).rejects.toMatchObject({
+            code,
+            message: expect.stringContaining(cwd),
+          });
+          await expect(sandbox.exec("pwd", { cwd }), cwd).rejects.toMatchObject(
+            { code, message: expect.stringContaining(cwd) },
+          );
+        }
       },
       testTimeout,
     );
@@ -1037,6 +1140,32 @@ export function describeSandboxConformance(
         await expect(spawn(["true"], { env: { A: "x\0y" } })).rejects.toThrow(
           SandboxRequestError,
         );
+        // Too large for the kernel to start: refused the same way everywhere.
+        const entry = "x".repeat(SPAWN_ENTRY_LIMIT_BYTES);
+        await expect(spawn(["echo", `${entry}x`])).rejects.toThrow(
+          SandboxRequestError,
+        );
+        await expect(spawn(["true"], { env: { BIG: entry } })).rejects.toThrow(
+          SandboxRequestError,
+        );
+        const many = Array.from(
+          { length: Math.ceil(SPAWN_REQUEST_LIMIT_BYTES / entry.length) + 1 },
+          () => entry,
+        );
+        await expect(spawn(["echo", ...many])).rejects.toThrow(
+          SandboxRequestError,
+        );
+        // Right at the entry limit is still accepted.
+        const fits = await spawn([
+          "sh",
+          "-c",
+          'printf %s "$1" | wc -c',
+          "sh",
+          entry,
+        ]);
+        const counted = capture(fits);
+        expect((await fits.exited).exitCode).toBe(0);
+        expect(counted.stdout.trim()).toBe(String(entry.length));
       },
       testTimeout,
     );
@@ -1203,15 +1332,34 @@ export function describeSandboxConformance(
       async (context) => {
         spawnOnly(context);
         const sandbox = await acquire();
+        const block = 65_536;
         const size = 32 * SPAWN_HOLD_BYTES;
+        // Counts the blocks it has handed over, so the suite sees how far it got.
         const spawned = await spawner(sandbox)([
           "sh",
           "-c",
-          `dd if=/dev/zero bs=65536 count=${size / 65536} 2>/dev/null; echo finished > spawn-flood-done`,
+          `i=0; while [ "$i" -lt ${size / block} ]; do dd if=/dev/zero bs=${block} count=1 2>/dev/null || exit 1; i=$((i + 1)); echo "$i" > spawn-flood-progress; done; echo finished > spawn-flood-done`,
         ]);
-        // Nobody reads, so the writer blocks once the hold and the pipes are full.
+        const progress = async () =>
+          Number(
+            (await sandbox.fs.read("spawn-flood-progress").catch(() => ""))
+              .toString()
+              .trim(),
+          ) || 0;
+        // Nobody reads, so the writer blocks once the hold and the pipes are
+        // full: wait until its count stops moving.
         await delay(1_500);
+        let written = await progress();
+        for (let check = 0; check < 40; check++) {
+          await delay(500);
+          const now = await progress();
+          if (now === written) break;
+          written = now;
+        }
         expect(await sandbox.fs.stat("spawn-flood-done")).toBeUndefined();
+        expect(written * block).toBeLessThanOrEqual(
+          SPAWN_HOLD_BYTES + SPAWN_TRANSPORT_SLACK_BYTES,
+        );
         let bytes = 0;
         spawned.onOutput((chunk, stream) => {
           if (stream === "stdout") bytes += chunk.length;

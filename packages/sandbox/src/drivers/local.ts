@@ -131,6 +131,9 @@ const inside = (root: string, path: string) =>
 
 /** Lexical containment: rejects `..` escapes and absolute paths outside the root. */
 function lexicalPath(root: string, candidate: string): string {
+  // No path can hold a NUL: refused like any other path outside the workspace.
+  if (typeof candidate !== "string" || candidate.includes("\0"))
+    throw new SandboxPathError(String(candidate));
   const resolved = isAbsolute(candidate)
     ? resolve(candidate)
     : resolve(root, candidate);
@@ -506,6 +509,8 @@ class LocalProcess implements SandboxProcess {
   private inputEnded = false;
   private inputBroken = false;
   private closed = false;
+  /** The process itself exited before any stop: later stops do not interrupt it. */
+  private exitedBySelf = false;
   private interruptReason?: SpawnExit["interruptReason"];
   private stopped?: Promise<boolean>;
 
@@ -556,7 +561,11 @@ class LocalProcess implements SandboxProcess {
         settle({
           exitCode,
           interrupted:
-            verified === undefined ? "no" : verified ? "yes" : "unknown",
+            this.interruptReason === undefined
+              ? "no"
+              : verified
+                ? "yes"
+                : "unknown",
           ...(this.interruptReason
             ? { interruptReason: this.interruptReason }
             : {}),
@@ -567,6 +576,10 @@ class LocalProcess implements SandboxProcess {
         if (this.closed) return;
         this.closed = true;
         void finish(null);
+      });
+      // The process itself has ended; its output may still be draining.
+      child.once("exit", () => {
+        this.exitedBySelf = this.interruptReason === undefined;
       });
       child.once("close", (code, signalName) => {
         if (this.closed) return;
@@ -603,7 +616,9 @@ class LocalProcess implements SandboxProcess {
 
   stop(reason: NonNullable<SpawnExit["interruptReason"]>): void {
     if (this.closed || this.stopped || !this.target) return;
-    this.interruptReason = reason;
+    // After it exited by itself, a stop only ends what still holds its
+    // output (descendants, unread output), and its exit stays natural.
+    if (!this.exitedBySelf) this.interruptReason = reason;
     this.relay.discardUnheard();
     this.stopped = stopThenDrain(
       this.target,
@@ -698,6 +713,17 @@ class LocalSandbox implements Sandbox {
     const directory = cwd
       ? await containedPath(this.workspaceDir, cwd, true)
       : this.workspaceDir;
+    if (cwd) {
+      // Otherwise starting the shell fails as "spawn /bin/sh ENOENT".
+      const info = await stat(directory).catch(() => undefined);
+      if (!info?.isDirectory()) {
+        const error: NodeJS.ErrnoException = new Error(
+          `cwd ${cwd}: ${info ? "not a directory" : "no such directory"} in the workspace`,
+        );
+        error.code = info ? "ENOTDIR" : "ENOENT";
+        throw error;
+      }
+    }
     await mkdir(join(this.workspaceDir, ".tmp"), { recursive: true });
     return directory;
   }

@@ -931,8 +931,18 @@ class DockerSandbox implements Sandbox {
   /** The real path of a working directory, which must be a directory inside the workspace. */
   private async workingDirectory(cwd: string): Promise<string> {
     const target = lexicalPath(WORKSPACE_DIR, cwd);
-    const result = await this.fsCall("dir", cwd, [target, ""]);
-    return result.stdout.toString("utf8");
+    try {
+      const result = await this.fsCall("dir", cwd, [target, ""]);
+      return result.stdout.toString("utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const missing: NodeJS.ErrnoException = new Error(
+        `cwd ${cwd}: ${code === "ENOENT" ? "no such directory" : "not a directory"} in the workspace`,
+      );
+      missing.code = code;
+      throw missing;
+    }
   }
 
   /** Built from scratch: the image's own environment plus spec env, secrets and per-call env. */
@@ -1019,6 +1029,20 @@ class DockerSandbox implements Sandbox {
       return false;
     } catch {
       return this.containerStopped();
+    }
+  }
+
+  /**
+   * Whether a spawned process itself (not a descendant) still runs: an
+   * exec's process has no parent inside the container, so it is the one
+   * with this marker and parent pid 0. When the scan fails, it may.
+   */
+  private async mainRunning(marker: string): Promise<boolean> {
+    try {
+      const table = await this.processTable();
+      return table.some((entry) => entry.marker === marker && entry.ppid === 0);
+    } catch {
+      return true;
     }
   }
 
@@ -1212,6 +1236,8 @@ class DockerSandbox implements Sandbox {
     let wantPaused = false;
     let inputEnded = false;
     let outputEnded = false;
+    /** The process itself had exited when a stop came: its exit stays natural. */
+    let exitedBySelf = false;
     const relay = new OutputRelay({
       pause: () => {
         wantPaused = true;
@@ -1225,18 +1251,21 @@ class DockerSandbox implements Sandbox {
 
     const beginStop = () => {
       relay.discardUnheard();
-      const verification =
-        interruptReason === "release" && this.removal
-          ? this.removal
-          : this.stopCommand(marker);
-      stopping = verification.then((verified) => {
+      const release = interruptReason === "release" && this.removal;
+      stopping = (async () => {
+        // After it exited by itself, a stop only ends what still holds its
+        // output (descendants, unread output).
+        if (!release) exitedBySelf = !(await this.mainRunning(marker));
+        const verified = release
+          ? await release
+          : await this.stopCommand(marker);
         stopSettledAt = Date.now();
         // A survivor that escaped attribution may still hold the stream open.
         setTimeout(() => {
           if (phase !== "ended") stream?.destroy();
         }, DRAIN_MS).unref();
         return verified;
-      });
+      })();
     };
     const stop = (reason: NonNullable<SpawnExit["interruptReason"]>) => {
       if (interruptReason !== undefined || phase === "ended") return;
@@ -1263,10 +1292,13 @@ class DockerSandbox implements Sandbox {
       phase = "ended";
       options.signal?.removeEventListener("abort", onAbort);
       this.running.delete(running);
+      // Natural only when nothing of it was left running: otherwise the
+      // stop did interrupt something, or could not tell.
+      const natural = exitedBySelf && interrupted === "yes";
       settle({
         exitCode,
-        interrupted,
-        ...(interruptReason ? { interruptReason } : {}),
+        interrupted: natural ? "no" : interrupted,
+        ...(interruptReason && !natural ? { interruptReason } : {}),
         durationMs: Date.now() - startedAt,
       });
     };

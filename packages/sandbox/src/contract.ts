@@ -294,7 +294,11 @@ export interface SandboxProcess {
    * write in the worker: a process that reads slowly slows its writer down.
    * Rejects after `endInput()`, once `exited` has settled, or earlier when
    * the driver sees the input closed. Resolving means handed over, not
-   * read: a process that stopped reading loses what is written to it.
+   * read: a process that stopped reading loses what is written to it. A
+   * write to a process that keeps running but no longer reads stdin (or has
+   * closed it, which a driver may not see) can stay pending until the
+   * process exits or is stopped, so callers bound each write by their own
+   * timeout.
    */
   write(data: Buffer | string): Promise<void>;
   /** Closes its stdin after pending writes, so it reads end-of-file. Idempotent. */
@@ -345,10 +349,12 @@ export interface Sandbox {
    * same isolation and network policy, and a working directory inside the
    * workspace. A command that cannot be found or run exits with 127 or 126,
    * with the reason on stderr, as from a POSIX shell. `spawn` rejects with
-   * `SandboxRequestError` for an empty argv or a NUL in it or in `env`, with
-   * `SandboxPathError` for a cwd outside the workspace, with the signal's
-   * reason for an aborted signal, and with `SandboxReleasedError` once
-   * `release()` has begun.
+   * `SandboxRequestError` for an empty argv, a NUL in it or in `env`, or
+   * either over its size limit (`assertSpawnRequest`); with
+   * `SandboxPathError` for a cwd outside the workspace or holding a NUL; with
+   * an `ENOENT` or `ENOTDIR` error for a cwd that is not a directory; with
+   * the signal's reason for an aborted signal; and with
+   * `SandboxReleasedError` once `release()` has begun.
    */
   spawn?(
     argv: readonly string[],
@@ -502,10 +508,25 @@ export function assertEnvironment(env: Record<string, string>): void {
 }
 
 /**
+ * Largest argv entry, or `env` entry counted as `NAME=value`, that `spawn`
+ * accepts: the kernel's limit for one string (Linux `MAX_ARG_STRLEN`, 128 KiB
+ * with its terminating NUL).
+ */
+export const SPAWN_ENTRY_LIMIT_BYTES = 128 * 1024 - 1;
+
+/**
+ * Largest total of argv and `env` (UTF-8, entries as above) that `spawn`
+ * accepts, which leaves room under the kernel's limit for the sandbox's own
+ * environment, spec `env` and secrets.
+ */
+export const SPAWN_REQUEST_LIMIT_BYTES = 1024 * 1024;
+
+/**
  * Throws `SandboxRequestError` unless `argv` is a non-empty list of strings
- * without NUL, starting with a non-empty one, and `env` passes
- * `assertEnvironment`. Drivers call it in `spawn`, after checking that the
- * sandbox is live.
+ * without NUL, starting with a non-empty one, `env` passes
+ * `assertEnvironment`, and both fit `SPAWN_ENTRY_LIMIT_BYTES` and
+ * `SPAWN_REQUEST_LIMIT_BYTES`. Drivers call it in `spawn`, after checking
+ * that the sandbox is live.
  */
 export function assertSpawnRequest(
   argv: unknown,
@@ -521,6 +542,23 @@ export function assertSpawnRequest(
       "spawn needs a non-empty argv of strings without NUL, starting with the command",
     );
   assertEnvironment(env);
+  const utf8 = new TextEncoder();
+  let total = 0;
+  for (const entry of [
+    ...(argv as string[]),
+    ...Object.entries(env).map(([name, value]) => `${name}=${value}`),
+  ]) {
+    const bytes = utf8.encode(entry).length;
+    if (bytes > SPAWN_ENTRY_LIMIT_BYTES)
+      throw new SandboxRequestError(
+        `spawn: an argv or env entry of ${bytes} bytes is over the ${SPAWN_ENTRY_LIMIT_BYTES}-byte limit for one entry; pass large input on stdin or in a workspace file`,
+      );
+    total += bytes + 1;
+  }
+  if (total > SPAWN_REQUEST_LIMIT_BYTES)
+    throw new SandboxRequestError(
+      `spawn: argv and env total ${total} bytes, over the ${SPAWN_REQUEST_LIMIT_BYTES}-byte limit; pass large input on stdin or in a workspace file`,
+    );
 }
 
 /** Largest delay a Node timer represents; anything longer overflows and fires at once. */
