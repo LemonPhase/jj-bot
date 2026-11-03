@@ -21,6 +21,7 @@ import type {
   ConversationView,
   CreateBotCommand,
   CreateRuntimeProfileCommand,
+  CreateScheduleCommand,
   CreateTaskCommand,
   CreateTaskTemplateCommand,
   DecideApprovalCommand,
@@ -29,6 +30,9 @@ import type {
   PutSecretCommand,
   RuntimeProfile,
   SandboxDriverInfo,
+  Schedule,
+  ScheduleDetail,
+  ScheduleList,
   SecretInfo,
   SecretsView,
   SendBotMessageCommand,
@@ -42,6 +46,7 @@ import type {
   UpdateBotCommand,
   UpdateBotMemoryCommand,
   UpdateRuntimeProfileCommand,
+  UpdateScheduleCommand,
   UpdateTaskCommand,
   UpdateTaskTemplateCommand,
   UsageReport,
@@ -242,7 +247,10 @@ export interface JJApi {
     templateId: string,
     command: UpdateTaskTemplateCommand,
   ): Promise<TaskTemplate>;
-  /** Tasks started from it keep their `templateId`. */
+  /**
+   * Tasks started from it keep their `templateId`. Rejects with
+   * `TEMPLATE_IN_USE` while a schedule starts it.
+   */
   deleteTemplate(templateId: string): Promise<void>;
   /**
    * `POST /api/task-templates/:id/tasks`: the task, as `createTask` makes it.
@@ -254,6 +262,25 @@ export interface JJApi {
     templateId: string,
     command: StartTemplateCommand,
   ): Promise<Task>;
+
+  // Schedules: offered only while `capabilities.schedules` is true.
+  /** `GET /api/schedules`: oldest first, with the scheduler's last pass and settings. */
+  listSchedules(): Promise<ScheduleList>;
+  /** `GET /api/schedules/:id`: the schedule and its latest fires, newest first. */
+  getSchedule(scheduleId: string): Promise<ScheduleDetail>;
+  /**
+   * Rejects with `VALIDATION_FAILED` for a bad trigger, a gap under the
+   * server's minimum, a schedule that never runs or a template without a
+   * cap, and `CONFLICT` past the limits.
+   */
+  createSchedule(command: CreateScheduleCommand): Promise<Schedule>;
+  /** Every edit computes the next run from now; enabling clears a pause. */
+  updateSchedule(
+    scheduleId: string,
+    command: UpdateScheduleCommand,
+  ): Promise<Schedule>;
+  /** Its tasks keep running and keep their `scheduleId`. */
+  deleteSchedule(scheduleId: string): Promise<void>;
 
   /** Demo only: run the next scripted step of a demo task now. */
   advanceDemoTask?(taskId: string): Promise<void>;

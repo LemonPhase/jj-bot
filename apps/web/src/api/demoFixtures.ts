@@ -240,6 +240,8 @@ export const DEMO_CAPABILITIES: Capabilities = {
   secretStore: false,
   mcp: { stdio: false, remote: false },
   skills: false,
+  // The demo's own scheduler starts its schedules on its clock.
+  schedules: true,
   drivers: DEMO_DRIVERS.map((driver) => ({
     id: driver.id,
     available: driver.available,
@@ -314,6 +316,25 @@ export const DEMO_TEMPLATES: readonly {
     coordinatorBotId: "bot-kite",
     participantBotIds: ["bot-kite", "bot-vesper"],
     minutesAgo: 60 * 24,
+  },
+];
+
+/** Seeded schedules: each starts a seeded template. */
+export const DEMO_SCHEDULES: readonly {
+  id: string;
+  name: string;
+  templateId: string;
+  trigger: { kind: "cron"; cron: string; timeZone: string };
+  instructions: string;
+  minutesAgo: number;
+}[] = [
+  {
+    id: "sched-demo-1",
+    name: "Monday contract review",
+    templateId: "tmpl-demo-1",
+    trigger: { kind: "cron", cron: "0 9 * * 1", timeZone: "Europe/London" },
+    instructions: "",
+    minutesAgo: 60 * 20,
   },
 ];
 

@@ -15,6 +15,7 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotList } from "../bots/BotList";
 import { useModels } from "../bots/useModels";
+import { ScheduleList } from "../schedules/ScheduleList";
 import { TaskList } from "../tasks/TaskList";
 import { TemplateList } from "../templates/TemplateList";
 import { modeBadgeFor } from "./modeBadge";
@@ -131,6 +132,7 @@ export function Sidebar({
           <>
             <TaskList labelledBy={listLabelId} />
             <TemplateList />
+            <ScheduleList />
           </>
         )}
       </div>

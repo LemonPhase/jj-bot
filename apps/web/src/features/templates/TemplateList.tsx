@@ -54,7 +54,8 @@ function TemplateRow({
   template: TaskTemplate;
   coordinator: string | undefined;
 }) {
-  const { openTemplateDialog } = useShell();
+  const { openTemplateDialog, openScheduleDialog } = useShell();
+  const { schedules } = useWorkspace();
   const problemId = useId();
   const problems = problemLines(template.problems);
   const count = template.participantBotIds.length;
@@ -95,6 +96,18 @@ function TemplateRow({
         >
           Edit
         </Button>
+        {schedules !== null && (
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label={`Schedule ${template.title}`}
+            onClick={() =>
+              openScheduleDialog({ kind: "new", templateId: template.id })
+            }
+          >
+            Schedule…
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"

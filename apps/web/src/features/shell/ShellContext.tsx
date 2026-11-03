@@ -11,6 +11,15 @@ export type TemplateDialogRequest =
   | { kind: "start"; templateId: string }
   | { kind: "delete"; templateId: string };
 
+/**
+ * A schedule dialog: a new schedule (of the template `templateId`, when
+ * given), editing one, or confirming its deletion.
+ */
+export type ScheduleDialogRequest =
+  | { kind: "new"; templateId?: string }
+  | { kind: "edit"; scheduleId: string }
+  | { kind: "delete"; scheduleId: string };
+
 /** Shell-level actions any screen can trigger. Provided by `AppShell`. */
 export interface ShellActions {
   /** Opens Bot Studio on a new bot (`#/studio/new`). */
@@ -19,6 +28,8 @@ export interface ShellActions {
   openNewTask: (botIds?: string[]) => void;
   /** Opens a task template dialog. */
   openTemplateDialog: (request: TemplateDialogRequest) => void;
+  /** Opens a schedule dialog. */
+  openScheduleDialog: (request: ScheduleDialogRequest) => void;
 }
 
 export const ShellContext = createContext<ShellActions | null>(null);

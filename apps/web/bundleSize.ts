@@ -57,6 +57,9 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
   "src/features/templates/TemplateDialog.tsx": {
     what: "the task template dialogs",
   },
+  "src/features/schedules/ScheduleDialog.tsx": {
+    what: "the schedule dialogs",
+  },
   "src/features/office/Office3D.tsx": {
     what: "the 3D office",
     after: [TASKS_SCREEN],
