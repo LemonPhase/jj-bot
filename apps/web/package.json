@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json && tsc -p e2e/tsconfig.json",
-    "size": "node --import tsx bundleSize.ts"
+    "size": "node --import tsx bundleSize.ts",
+    "icons": "node --import tsx icons.ts"
   },
   "dependencies": {
     "@jj/contracts": "*",

@@ -661,34 +661,107 @@ describe("backend probe", () => {
     const unreachable = vi.fn(async () => {
       throw new TypeError("fetch failed");
     }) as unknown as typeof globalThis.fetch;
+    // Offline or down: never replaced by demo data.
     expect(await probeBackend({ fetch: unreachable })).toMatchObject({
       ok: false,
+      demo: false,
       reason: expect.stringMatching(/isn't reachable/),
     });
-    const html = vi.fn(
-      async () => new Response("<!doctype html>", { status: 200 }),
+    const down = vi.fn(
+      async () => new Response("Bad gateway", { status: 502 }),
     );
     expect(
-      await probeBackend({ fetch: html as unknown as typeof globalThis.fetch }),
+      await probeBackend({ fetch: down as unknown as typeof globalThis.fetch }),
     ).toMatchObject({
+      demo: false,
       reason: expect.stringMatching(/isn't reachable/),
+    });
+    const answer = (response: () => Response) =>
+      probeBackend({
+        fetch: vi.fn(async () => response()) as unknown as typeof fetch,
+      });
+    // No JJ Bot API served here (a static build): a 404, or the app's own
+    // index.html for every path. The demo data may stand in.
+    const appPage =
+      '<!doctype html><html><body><div id="root"></div><script type="module" crossorigin src="/assets/index-AbCd1234.js"></script></body></html>';
+    expect(
+      await answer(() => new Response(appPage, { status: 200 })),
+    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
+    expect(
+      await answer(() => new Response("<!doctype html>", { status: 404 })),
+    ).toMatchObject({ demo: true, reason: "No JJ Bot API answers here." });
+    // A redirect, say to a sign-in page, is a backend in the way: no demo.
+    expect(
+      await answer(() => {
+        const login = new Response(appPage, { status: 200 });
+        Object.defineProperty(login, "redirected", { value: true });
+        Object.defineProperty(login, "url", {
+          value: "http://127.0.0.1:3001/login",
+        });
+        return login;
+      }),
+    ).toMatchObject({
+      demo: false,
+      reason: expect.stringMatching(/redirected to \/login \(HTTP 200\)/),
+    });
+    // Another page, or another status: named, never demo data.
+    expect(
+      await answer(
+        () =>
+          new Response("<!doctype html><title>Sign in</title>", {
+            status: 200,
+          }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The API's address answered HTTP 200 with a web page, not the JJ Bot API.",
+    });
+    expect(
+      await answer(
+        () =>
+          new Response("<!doctype html><title>Forbidden</title>", {
+            status: 403,
+          }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The API's address answered HTTP 403 with a web page, not the JJ Bot API.",
+    });
+    expect(
+      await answer(() =>
+        json(403, {
+          error: {
+            code: "UNAUTHORIZED",
+            message: "Cross-site requests are refused.",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      demo: false,
+      reason:
+        "The JJ Bot API answered HTTP 403: Cross-site requests are refused.",
     });
     const legacy = mockFetch({
       "GET /api/bootstrap": { mode: "backend", contractVersion: "0.4.0" },
     });
     expect(await probeBackend({ fetch: legacy.fetch })).toMatchObject({
+      demo: false,
       reason: expect.stringMatching(/doesn't match contract/),
     });
     const locked = mockFetch({
       "GET /api/bootstrap": () => json(401, { error: "UNAUTHORIZED" }),
     });
     expect(await probeBackend({ fetch: locked.fetch })).toMatchObject({
+      demo: false,
       reason: expect.stringMatching(/\?token=/),
     });
     const scaffold = mockFetch({
       "GET /api/bootstrap": { ...bootstrap, mode: "scaffold" },
     });
     expect(await probeBackend({ fetch: scaffold.fetch })).toMatchObject({
+      demo: true,
       reason: expect.stringMatching(/scaffold/),
     });
     const ok = mockFetch({ "GET /api/bootstrap": bootstrap });

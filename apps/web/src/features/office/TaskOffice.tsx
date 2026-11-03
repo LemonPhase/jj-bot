@@ -1,5 +1,6 @@
 import type { Bot, TaskView } from "@jj/contracts";
 import {
+  Component,
   lazy,
   type ReactNode,
   Suspense,
@@ -20,9 +21,11 @@ import {
   Segmented,
   StatusTag,
 } from "../../components/ui";
+import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { describeStatus } from "../../lib/status";
 import { sessionLine, sessionOrdinal } from "../../lib/tasks";
 import { useTheme } from "../../lib/theme";
+import { supportsWebGL } from "../../lib/webgl";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import {
   beatLabel,
@@ -48,10 +51,71 @@ import {
 import "./office.css";
 
 // Three.js is large: the 3D view downloads only when someone switches to it.
+// A chunk that failed to load stays failed for the life of the page (React
+// keeps the rejection, and the browser its failed module fetch), so only a
+// reload fetches it again: Office3DBoundary offers one.
 const Office3D = lazy(() => import("./Office3D"));
 
 /** Desks the 3D room has (OfficeScene `MAX_DESKS`); kept here so 2D never loads Three.js. */
 const DESKS_3D = 6;
+
+/**
+ * Why 3D is not offered here, shown under the switch; null when it is. A
+ * phone-width screen gets 2D (the 3D room needs the width, and Three.js is a
+ * large download), and so does a browser without WebGL, which is asked only
+ * on a wider screen. A remembered 3D choice is kept for a screen that can
+ * show it.
+ */
+export function no3dReason(
+  narrow: boolean,
+  webgl: () => boolean,
+): string | null {
+  if (narrow)
+    return "3D needs a wider screen. The 2D office shows the same task.";
+  if (!webgl())
+    return "3D needs WebGL, which this browser does not offer. The 2D office shows the same task.";
+  return null;
+}
+
+/**
+ * Keeps a 3D office that fails to start (WebGL lost or refused, or its chunk
+ * not arriving) from taking the Tasks screen down: it says so in the stage
+ * and offers the 2D office, or a reload, the only way to fetch a chunk that
+ * failed once.
+ */
+export class Office3DBoundary extends Component<
+  {
+    onShow2d: () => void;
+    /** Reloads the page; replaceable for tests. */
+    onReload?: () => void;
+    children: ReactNode;
+  },
+  { error: Error | null }
+> {
+  override state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown): { error: Error } {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  override render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    const reload = this.props.onReload ?? (() => window.location.reload());
+    return (
+      <div
+        className="office-stage office-stage--3d office-stage--loading office-stage--failed"
+        role="status"
+      >
+        <span>The 3D office could not start: {error.message}</span>
+        <span className="office-stage__actions">
+          <Button onClick={this.props.onShow2d}>Show the 2D office</Button>
+          <Button onClick={reload}>Reload</Button>
+        </span>
+      </div>
+    );
+  }
+}
 
 export interface TaskOfficeProps {
   view: TaskView;
@@ -83,9 +147,13 @@ export function TaskOffice({
   const { resolved: theme } = useTheme();
   const reducedMotion = useReducedMotion();
   const { task } = view;
-  const [mode, setModeState] = useState<OfficeMode>(() =>
+  const [chosen, setModeState] = useState<OfficeMode>(() =>
     readOfficeMode(defaultMode),
   );
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const no3d = no3dReason(narrow, supportsWebGL);
+  const mode: OfficeMode = no3d ? "2d" : chosen;
+  const noteId = useId();
   const [status, setStatus] = useState<OfficeStatus>(IDLE_STATUS);
   const [paused, setPaused] = useState(false);
   const [speed, setSpeed] = useState<Speed>(1);
@@ -93,10 +161,17 @@ export function TaskOffice({
   const inspectId = useId();
   const viewRef = useRef<OfficeViewHandle | null>(null);
 
-  const setMode = (next: OfficeMode) => {
-    setModeState(next);
+  // Another view on screen, chosen or because the screen narrowed: it starts
+  // from a clean status and nobody picked, before it renders.
+  const [shown, setShown] = useState(mode);
+  if (shown !== mode) {
+    setShown(mode);
     setStatus(IDLE_STATUS);
     setPickedBotId(null);
+  }
+
+  const setMode = (next: OfficeMode) => {
+    setModeState(next);
     writeOfficeMode(next);
   };
 
@@ -189,9 +264,10 @@ export function TaskOffice({
             label="Office view"
             value={mode}
             onChange={setMode}
+            describedBy={no3d ? noteId : undefined}
             options={[
               { value: "2d", label: "2D" },
-              { value: "3d", label: "3D" },
+              { value: "3d", label: "3D", disabled: no3d !== null },
             ]}
           />
           <Badge tone={chip.tone} title={chip.title}>
@@ -199,24 +275,31 @@ export function TaskOffice({
           </Badge>
         </div>
       </div>
+      {no3d && (
+        <p id={noteId} className="office__note">
+          {no3d}
+        </p>
+      )}
 
       <div className="office__stage-wrap">
         {mode === "2d" ? (
           <Office2D {...viewProps} />
         ) : (
-          <Suspense
-            fallback={
-              <div className="office-stage office-stage--3d office-stage--loading">
-                <span>Loading 3D office…</span>
-              </div>
-            }
-          >
-            <Office3D
-              {...viewProps}
-              theme={theme}
-              onPick={(id) => setPickedBotId(id)}
-            />
-          </Suspense>
+          <Office3DBoundary onShow2d={() => setMode("2d")}>
+            <Suspense
+              fallback={
+                <div className="office-stage office-stage--3d office-stage--loading">
+                  <span>Loading 3D office…</span>
+                </div>
+              }
+            >
+              <Office3D
+                {...viewProps}
+                theme={theme}
+                onPick={(id) => setPickedBotId(id)}
+              />
+            </Suspense>
+          </Office3DBoundary>
         )}
         {mode === "3d" && (
           <div className="office__camera">

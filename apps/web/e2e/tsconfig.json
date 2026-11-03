@@ -1,4 +1,8 @@
 {
   "extends": "../../../tsconfig.base.json",
-  "include": ["."]
+  "include": ["."],
+  "compilerOptions": {
+    // Node for the suite, the DOM for the code it runs in the page.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+  }
 }
