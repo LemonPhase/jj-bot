@@ -48,25 +48,28 @@ export interface CompletionRequest {
   goalVersion: number;
   /**
    * Set by the verification gate (gate.ts) when every check of the task's
-   * plan passed: the attempt that passed. A task with a plan never
-   * completes without it.
+   * plan passed: the attempt that passed and the run whose gate ran it. A
+   * task with a plan completes only in that run; another run's verification
+   * is stale and the gate runs again.
    */
-  verification?: { attempt: number };
+  verification?: { attempt: number; runId: string };
 }
 
 /**
- * Whether every criterion of the task's current plan passed at the attempt
- * the request records, and that attempt is its goal version's latest. Read
- * in the transaction that completes the task.
+ * Whether this run's gate passed the request: every criterion of the task's
+ * current plan passed at the attempt it records, and that attempt is its
+ * goal version's latest. Read in the transaction that completes the task.
  */
 async function gatePassed(
   tx: Tx,
   task: TaskRow,
   plan: VerificationPlan,
   request: CompletionRequest,
+  runId: string,
 ): Promise<boolean> {
   const attempt = request.verification?.attempt;
-  if (attempt === undefined) return false;
+  if (attempt === undefined || request.verification?.runId !== runId)
+    return false;
   const [latest] = await tx
     .select({ value: max(verificationChecks.attempt) })
     .from(verificationChecks)
@@ -249,7 +252,7 @@ async function endTurn(
       request !== null &&
       request.goalVersion === task.goalVersion &&
       plan !== null &&
-      !(await gatePassed(tx, task, plan, request));
+      !(await gatePassed(tx, task, plan, request, rc.run.id));
     if (request && request.goalVersion === task.goalVersion && !unverified) {
       await postMessage(
         tx,

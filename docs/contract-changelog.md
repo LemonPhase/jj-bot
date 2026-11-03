@@ -40,7 +40,8 @@ rather than landing it and announcing it afterwards.
   `file` (`path`, `expect`: `exists` | `contains` | `matches` | `json`, with `value`, `flags` or a
   JSON `schema`) and `result` (the same assertions on the `complete_task` result). Every criterion
   has an `id` (a slug, unique in its plan) and a `description`; `verificationPlanSchema` holds 1 to
-  `VERIFICATION_PLAN_LIMIT` (20). This is a minor change although the shape changed: every server
+  `VERIFICATION_PLAN_LIMIT` (20). A JSON `schema` may not use references (`$ref`, `$dynamicRef`,
+  `$recursiveRef`) and is at most `CHECK_SCHEMA_LIMIT` (20000) characters and 32 levels deep. This is a minor change although the shape changed: every server
   so far refused any plan with `422 VERIFICATION_UNAVAILABLE`, so no stored data or working client
   depends on the old shape.
 - `taskSchema`: adds `verificationPlan`, the current goal version's plan or null (parsed as null
@@ -59,7 +60,8 @@ rather than landing it and announcing it afterwards.
   version, which `applyTaskEvent` keeps current. `taskSummarySchema` adds `verification`
   (`verificationSummarySchema`), present exactly when the task has a plan.
 - Pure helpers: `verificationSummary` (where a task stands for its current goal version),
-  `latestAttemptChecks` and `isVerified`, the one rule for showing a task as verified.
+  `latestAttemptChecks`, `isVerified` (the one rule for showing a task as verified) and
+  `samePlan` (plans equal whatever their key order; a repeated plan starts no new version).
 - `ACTIVITY_KINDS` adds `verifying`; `verification.started` sets it ("Running the verification
   checks (n)").
 - `capabilities.verification` is true on the backend: plans are accepted and enforced.

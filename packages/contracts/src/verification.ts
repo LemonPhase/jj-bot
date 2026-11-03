@@ -99,6 +99,41 @@ export const verificationCriterionObjectSchema = z.discriminatedUnion(
 
 type CriterionObject = z.infer<typeof verificationCriterionObjectSchema>;
 
+/** Longest JSON Schema a criterion takes, as JSON text. */
+export const CHECK_SCHEMA_LIMIT = 20_000;
+const SCHEMA_DEPTH_LIMIT = 32;
+const REFERENCE_KEYS = new Set(["$ref", "$dynamicRef", "$recursiveRef"]);
+
+/**
+ * Why a JSON Schema cannot be a criterion's, if it cannot: too large, nested
+ * too deep, or using references (a schema that refers to itself, such as
+ * `{"$ref": "#"}`, would recurse without end when checked).
+ */
+function schemaShapeProblem(schema: unknown): string | undefined {
+  if (JSON.stringify(schema).length > CHECK_SCHEMA_LIMIT)
+    return `A JSON Schema may be at most ${CHECK_SCHEMA_LIMIT} characters.`;
+  const visit = (value: unknown, depth: number): string | undefined => {
+    if (depth > SCHEMA_DEPTH_LIMIT)
+      return `A JSON Schema may nest at most ${SCHEMA_DEPTH_LIMIT} levels.`;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const problem = visit(item, depth + 1);
+        if (problem) return problem;
+      }
+      return undefined;
+    }
+    if (value && typeof value === "object")
+      for (const [key, item] of Object.entries(value)) {
+        if (REFERENCE_KEYS.has(key))
+          return `JSON Schema references (${key}) are not supported; write the schema out in full.`;
+        const problem = visit(item, depth + 1);
+        if (problem) return problem;
+      }
+    return undefined;
+  };
+  return visit(schema, 0);
+}
+
 /** Field problems of a criterion's assertion, by field. Empty when it is well formed. */
 function assertionProblems(
   criterion: CriterionObject,
@@ -129,8 +164,10 @@ function assertionProblems(
       });
     }
   if (criterion.schema !== undefined) {
+    const shape = schemaShapeProblem(criterion.schema);
     if (criterion.expect !== "json")
       problems.push({ path: "schema", message: "Only `json` takes a schema." });
+    else if (shape) problems.push({ path: "schema", message: shape });
     else
       try {
         z.fromJSONSchema(criterion.schema as never);
@@ -319,6 +356,29 @@ export function verificationSummary(
     inconclusive,
     total: plan.length,
   };
+}
+
+/** JSON with object keys sorted, so a plan read back from storage compares equal. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+      .join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * Whether two plans are the same, whatever their key order. A message that
+ * repeats the current plan starts no new goal version.
+ */
+export function samePlan(
+  a: readonly object[] | null | undefined,
+  b: readonly object[] | null | undefined,
+): boolean {
+  return canonicalJson(a ?? null) === canonicalJson(b ?? null);
 }
 
 /**

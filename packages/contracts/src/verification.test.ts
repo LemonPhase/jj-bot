@@ -9,6 +9,7 @@ import {
 import {
   isVerified,
   latestAttemptChecks,
+  samePlan,
   type VerificationCheck,
   type VerificationPlan,
   verificationCheckSchema,
@@ -176,6 +177,46 @@ describe("verification plans", () => {
         })),
       ).success,
     ).toBe(false);
+  });
+
+  it("refuses JSON Schemas that refer to themselves, or are too large or deep", () => {
+    const json = (schema: unknown) =>
+      verificationPlanSchema.safeParse([
+        {
+          id: "j",
+          description: "d",
+          method: "result",
+          expect: "json",
+          schema,
+        },
+      ]);
+    expect(json({ type: "object" }).success).toBe(true);
+    const selfRef = json({ $ref: "#" });
+    expect(selfRef.success).toBe(false);
+    expect(JSON.stringify(selfRef.error?.issues)).toContain(
+      "JSON Schema references ($ref) are not supported",
+    );
+    expect(
+      json({ type: "object", properties: { a: { $ref: "#/$defs/x" } } })
+        .success,
+    ).toBe(false);
+    let deep: Record<string, unknown> = { type: "string" };
+    for (let level = 0; level < 40; level += 1)
+      deep = { type: "array", items: deep };
+    expect(json(deep).success).toBe(false);
+    expect(
+      json({ type: "string", description: "x".repeat(20_001) }).success,
+    ).toBe(false);
+  });
+
+  it("compares plans whatever their key order", () => {
+    const reordered = plan.map((criterion) =>
+      Object.fromEntries(Object.entries(criterion).reverse()),
+    );
+    expect(samePlan(plan, reordered)).toBe(true);
+    expect(samePlan(plan, plan.slice(0, 1))).toBe(false);
+    expect(samePlan(null, undefined)).toBe(true);
+    expect(samePlan(plan, null)).toBe(false);
   });
 
   it("travels with task creation and with a message that observed the goal version", () => {

@@ -35,7 +35,7 @@ import {
   toTask,
   toTaskEvent,
 } from "../records";
-import { latestChecks } from "./verification";
+import { latestChecks, latestOutcomes } from "./verification";
 
 const usageOf = (row: UsageRow): Usage => ({
   modelCalls: 1,
@@ -252,9 +252,9 @@ export async function taskSummaries(
     taskRows.filter((row) => row.status === "waiting").map((row) => row.id),
     options.redact ?? ((text) => text),
   );
-  const checks = await latestChecks(
+  const outcomes = await latestOutcomes(
     exec,
-    taskRows.filter((row) => row.verificationPlan).map((row) => row.id),
+    taskRows.filter((row) => row.verificationPlan),
   );
   return taskRows.map((row) => {
     const own = sessionRows.filter((session) => session.taskId === row.id);
@@ -265,7 +265,7 @@ export async function taskSummaries(
         .filter((participant) => participant.taskId === row.id)
         .map((participant) => participant.botId),
     );
-    const verification = verificationSummary(task, checks.get(row.id) ?? []);
+    const verification = verificationSummary(task, outcomes.get(row.id) ?? []);
     return {
       ...task,
       sessionCount: own.length,

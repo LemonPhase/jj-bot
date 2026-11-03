@@ -14,6 +14,7 @@ import {
   type SandboxLimits,
 } from "@jj/sandbox/contract";
 import { errorMessage } from "../errors";
+import { ISOLATED_TIME_LIMIT_MS, runIsolated } from "./isolated";
 
 export interface CheckRun {
   outcome: CheckOutcome;
@@ -49,31 +50,59 @@ const clipLine = (text: string, max: number) => {
 const isNamed = (error: unknown, name: string) =>
   error instanceof Error && error.name === name;
 
-/** Keeps at most `maxBytes` of a command's output, in arrival order. */
-function collector(maxBytes: number) {
-  const chunks: Buffer[] = [];
-  let kept = 0;
-  let cut = false;
+/**
+ * Keeps at most `maxBytes` of a command's output: its head and, once it runs
+ * over, a rolling tail, so the end of the output (where test runners print
+ * their failures) is always kept.
+ */
+export function headTailCollector(maxBytes: number) {
+  const headMax = Math.ceil(maxBytes / 2);
+  const tailMax = maxBytes - headMax;
+  const head: Buffer[] = [];
+  let headBytes = 0;
+  let tail: Buffer[] = [];
+  let tailBytes = 0;
+  let total = 0;
   return {
     onData(chunk: Buffer) {
-      if (cut) return;
-      const room = maxBytes - kept;
-      if (chunk.length > room) {
-        if (room > 0) chunks.push(chunk.subarray(0, room));
-        kept = maxBytes;
-        cut = true;
-        return;
+      total += chunk.length;
+      let rest = chunk;
+      if (headBytes < headMax) {
+        const taken = rest.subarray(0, headMax - headBytes);
+        head.push(taken);
+        headBytes += taken.length;
+        rest = rest.subarray(taken.length);
       }
-      chunks.push(chunk);
-      kept += chunk.length;
+      if (rest.length === 0 || tailMax === 0) return;
+      tail.push(rest);
+      tailBytes += rest.length;
+      while (tailBytes > tailMax && tail.length > 0) {
+        const first = tail[0] as Buffer;
+        const over = tailBytes - tailMax;
+        if (first.length <= over) {
+          tail.shift();
+          tailBytes -= first.length;
+        } else {
+          tail[0] = first.subarray(over);
+          tailBytes -= over;
+        }
+      }
     },
     get bytes() {
-      return kept;
+      return total;
     },
+    /** True when the middle of the output was left out. */
     get cut() {
-      return cut;
+      return total > headBytes + tailBytes;
     },
-    text: () => Buffer.concat(chunks).toString("utf8"),
+    text() {
+      const start = Buffer.concat(head).toString("utf8");
+      const end = Buffer.concat(tail).toString("utf8");
+      const omitted = total - headBytes - tailBytes;
+      return omitted > 0
+        ? `${start}\n[… ${omitted} bytes of output left out: the sandbox keeps ${Math.floor(maxBytes / 1024)} KiB, its head and its tail …]\n${end}`
+        : `${start}${end}`;
+    },
   };
 }
 
@@ -100,7 +129,7 @@ async function runCommand(
   );
   const byDeadline = remaining < timeoutMs;
   if (byDeadline) timeoutMs = Math.max(1, Math.floor(remaining));
-  const output = collector(Math.max(1, env.limits.maxOutputBytes));
+  const output = headTailCollector(Math.max(2, env.limits.maxOutputBytes));
   let result: Awaited<ReturnType<Sandbox["exec"]>>;
   try {
     result = await env.sandbox.exec(criterion.command, {
@@ -120,7 +149,7 @@ async function runCommand(
     output.bytes > 0
       ? output.text()
       : [result.stdout, result.stderr].filter(Boolean).join("\n");
-  if (output.cut || result.truncated)
+  if (output.bytes === 0 && result.truncated)
     text += `\n[Output cut at ${Math.floor(env.limits.maxOutputBytes / 1024)} KiB, the sandbox's output limit.]`;
   const run = {
     exitCode: result.exitCode,
@@ -167,13 +196,18 @@ type Assertion = Extract<VerificationCriterion, { method: "file" | "result" }>;
 const lineOf = (text: string, index: number) =>
   text.slice(0, index).split("\n").length;
 
-/** Checks `text` against a `contains`, `matches` or `json` assertion. */
-export function assertText(
+/**
+ * Checks `text` against a `contains`, `matches` or `json` assertion. A
+ * regular expression and a JSON Schema run isolated (isolated.ts): one that
+ * does not finish in time is inconclusive, and the thread is never blocked.
+ */
+export async function assertText(
   text: string,
   criterion: Assertion,
   subject: string,
   redact: (text: string) => string = (value) => value,
-): { outcome: CheckOutcome; detail: string } {
+  timeLimitMs = ISOLATED_TIME_LIMIT_MS,
+): Promise<{ outcome: CheckOutcome; detail: string }> {
   switch (criterion.expect) {
     case "contains": {
       const value = criterion.value ?? "";
@@ -189,24 +223,32 @@ export function assertText(
           };
     }
     case "matches": {
-      let pattern: RegExp;
-      try {
-        pattern = new RegExp(criterion.value ?? "", criterion.flags);
-      } catch (error) {
+      const shown = `/${criterion.value ?? ""}/${criterion.flags ?? ""}`;
+      const run = await runIsolated(
+        {
+          kind: "match",
+          pattern: criterion.value ?? "",
+          ...(criterion.flags ? { flags: criterion.flags } : {}),
+          text,
+        },
+        timeLimitMs,
+      );
+      if (!run.ok)
         return {
           outcome: "inconclusive",
-          detail: `The regular expression does not compile: ${errorMessage(error)}`,
+          detail:
+            run.reason === "timeout"
+              ? `The regular expression ${shown} was stopped: ${run.message} (it may backtrack catastrophically on this text). Simplify the pattern.`
+              : `The regular expression ${shown} could not be evaluated: ${run.message}`,
         };
-      }
-      const match = pattern.exec(text);
-      return match
+      return run.result.kind === "match"
         ? {
             outcome: "passed",
-            detail: `${subject} matches /${pattern.source}/${pattern.flags} at line ${lineOf(text, match.index)}: ${JSON.stringify(clipLine(redact(match[0]), 120))}.`,
+            detail: `${subject} matches ${shown} at line ${lineOf(text, run.result.index)}: ${JSON.stringify(clipLine(redact(run.result.text), 120))}.`,
           }
         : {
             outcome: "failed",
-            detail: `${subject} does not match /${pattern.source}/${pattern.flags}.`,
+            detail: `${subject} does not match ${shown}.`,
           };
     }
     case "json": {
@@ -221,26 +263,32 @@ export function assertText(
       }
       if (!criterion.schema)
         return { outcome: "passed", detail: `${subject} is valid JSON.` };
-      let schema: z.ZodType;
-      try {
-        schema = z.fromJSONSchema(criterion.schema as never);
-      } catch (error) {
+      const run = await runIsolated(
+        { kind: "schema", schema: criterion.schema, value },
+        timeLimitMs,
+      );
+      if (!run.ok)
         return {
           outcome: "inconclusive",
-          detail: `The JSON Schema cannot be checked: ${errorMessage(error)}`,
+          detail:
+            run.reason === "timeout"
+              ? `The JSON Schema check was stopped: ${run.message} (a pattern in it may backtrack catastrophically).`
+              : `The JSON Schema cannot be checked: ${run.message}`,
         };
-      }
-      const parsed = schema.safeParse(value);
-      if (parsed.success)
+      if (run.result.kind === "valid")
         return {
           outcome: "passed",
           detail: `${subject} is JSON valid against the schema.`,
         };
-      const issues = parsed.error.issues;
+      if (run.result.kind !== "invalid")
+        return {
+          outcome: "inconclusive",
+          detail: "The JSON Schema check returned no verdict.",
+        };
+      const { count, issues } = run.result;
       return {
         outcome: "failed",
-        detail: `${subject} does not match the JSON Schema (${issues.length} issue${issues.length === 1 ? "" : "s"}): ${issues
-          .slice(0, 5)
+        detail: `${subject} does not match the JSON Schema (${count} issue${count === 1 ? "" : "s"}): ${issues
           .map(
             (issue) =>
               `${issue.path.length ? `/${issue.path.join("/")}` : "(root)"}: ${issue.message}`,
@@ -317,7 +365,7 @@ export async function runCheck(
     const judged =
       criterion.method === "file"
         ? await checkFile(criterion, env)
-        : assertText(env.result, criterion, "The result", env.redact);
+        : await assertText(env.result, criterion, "The result", env.redact);
     return { ...base, ...judged, durationMs: Date.now() - started };
   } catch (error) {
     return {

@@ -1,4 +1,4 @@
-import type { TaskView } from "@jj/contracts";
+import { samePlan, type TaskView } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import type { ApiError } from "../../api/client";
 import { Button, Dialog, ErrorBanner, Textarea } from "../../components/ui";
@@ -28,6 +28,7 @@ export function ChecksDialog({
   const [note, setNote] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<ApiError | null>(null);
+  const [unchanged, setUnchanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const next = task.goalVersion + 1;
 
@@ -39,13 +40,20 @@ export function ChecksDialog({
       return;
     }
     setErrors({});
-    setBusy(true);
     setFailure(null);
+    // The same checks are no change: nothing is posted and no version starts.
+    if (samePlan(built.plan, task.verificationPlan)) {
+      setUnchanged(true);
+      return;
+    }
+    setBusy(true);
     const text =
       note.trim() ||
-      (built.plan
-        ? "I changed the verification checks."
-        : "I removed the verification checks.");
+      (!built.plan
+        ? "I removed the verification checks."
+        : task.verificationPlan
+          ? "I changed the verification checks."
+          : "I added verification checks.");
     const result = await postTaskMessage(task.id, text, false, built.plan);
     if (result.ok) onClose();
     else {
@@ -80,6 +88,7 @@ export function ChecksDialog({
           onChange={(next) => {
             setDrafts(next);
             setErrors({});
+            setUnchanged(false);
           }}
           errors={errors}
           disabled={busy}
@@ -92,6 +101,11 @@ export function ChecksDialog({
           disabled={busy}
           onChange={(event) => setNote(event.target.value)}
         />
+        {unchanged && (
+          <p className="checks-editor__empty" role="status">
+            Nothing to save: these are the checks of goal v{task.goalVersion}.
+          </p>
+        )}
         {failure &&
           (failure.code === "STALE_GOAL_VERSION" ? (
             <ErrorBanner word="Goal changed" onDismiss={() => setFailure(null)}>

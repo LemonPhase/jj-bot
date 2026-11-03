@@ -18,9 +18,11 @@ import {
   type SessionRow,
   sessions,
   type TaskRow,
+  type Tx,
+  taskEvents,
   verificationChecks,
 } from "@jj/db";
-import { and, eq, max } from "drizzle-orm";
+import { and, eq, max, sql } from "drizzle-orm";
 import { emit } from "../events";
 import { planOf, toVerificationCheck } from "../records";
 import { deliver, postMessage } from "../services/messages";
@@ -48,27 +50,46 @@ interface Pending {
   attempt: number;
 }
 
-/** The completion request a gate must check, or undefined when none is due. */
+/**
+ * The completion request a gate must check, or undefined when none is due. A
+ * request this run's gate already passed is not due again; one another run
+ * verified is stale (that run may have been cut off after its gate, and a
+ * later turn may have changed the workspace), so the gate runs again.
+ */
 function dueRequest(
   task: TaskRow,
   session: SessionRow,
+  runId: string,
 ): { plan: VerificationPlan; request: CompletionRequest } | undefined {
   if (session.parentSessionId !== null) return undefined;
   const request = session.completionRequested as CompletionRequest | null;
-  if (!request || request.verification) return undefined;
+  if (!request || request.verification?.runId === runId) return undefined;
   if (request.goalVersion !== task.goalVersion) return undefined;
   if (task.cancelRequestedAt || isFinishedStatus(task.status)) return undefined;
   const plan = planOf(task.verificationPlan);
   return plan ? { plan, request } : undefined;
 }
 
-/** The next attempt number of a goal version: one more than its gate runs so far. */
-async function nextAttempt(
-  tx: Parameters<Parameters<typeof writeRun>[1]>[0],
-  taskId: string,
-  goalVersion: number,
-) {
-  const [row] = await tx
+/**
+ * The next attempt number of a goal version: one more than every gate run
+ * that started for it, including one a crash cut off before any check was
+ * recorded (its `verification.started` event is durable), so an attempt's
+ * number is never reused.
+ */
+async function nextAttempt(tx: Tx, taskId: string, goalVersion: number) {
+  const [started] = await tx
+    .select({
+      value: max(sql<number>`(${taskEvents.payload}->>'attempt')::int`),
+    })
+    .from(taskEvents)
+    .where(
+      and(
+        eq(taskEvents.taskId, taskId),
+        eq(taskEvents.type, "verification.started"),
+        sql`(${taskEvents.payload}->>'goalVersion')::int = ${goalVersion}`,
+      ),
+    );
+  const [checked] = await tx
     .select({ value: max(verificationChecks.attempt) })
     .from(verificationChecks)
     .where(
@@ -77,7 +98,7 @@ async function nextAttempt(
         eq(verificationChecks.goalVersion, goalVersion),
       ),
     );
-  return (row?.value ?? 0) + 1;
+  return Math.max(Number(started?.value ?? 0), checked?.value ?? 0) + 1;
 }
 
 const OUTCOME_WORD: Record<CheckOutcome, string> = {
@@ -131,7 +152,7 @@ export async function runVerificationGate(
       if (!task || !session) return undefined;
       rc.task = task;
       rc.session = session;
-      const due = dueRequest(task, session);
+      const due = dueRequest(task, session, rc.run.id);
       if (!due) return undefined;
       const attempt = await nextAttempt(tx, task.id, task.goalVersion);
       await emit(tx, task.id, {
@@ -255,7 +276,7 @@ export async function runVerificationGate(
     if (outcome === "passed") {
       const verified: CompletionRequest = {
         ...request,
-        verification: { attempt },
+        verification: { attempt, runId: rc.run.id },
       };
       await tx
         .update(sessions)

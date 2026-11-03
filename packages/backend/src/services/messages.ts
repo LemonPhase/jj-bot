@@ -5,6 +5,7 @@ import {
   isFinishedStatus,
   type PostTaskMessageCommand,
   postTaskMessageCommandSchema,
+  samePlan,
   type TaskMessage,
   type VerificationPlan,
 } from "@jj/contracts";
@@ -31,7 +32,7 @@ import { type Attribution, emit, wakeWorkers } from "../events";
 import { planOf, toMessage } from "../records";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
-import { describePlan, samePlan } from "./verification";
+import { describePlan } from "./verification";
 
 export interface PostMessageInput {
   taskId: string;

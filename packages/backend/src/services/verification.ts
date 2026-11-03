@@ -3,6 +3,7 @@
 // summary every view and lookup uses. The gate that runs checks is in
 // worker/gate.ts.
 import {
+  type CheckOutcome,
   latestAttemptChecks,
   type VerificationCheck,
   type VerificationCriterion,
@@ -50,26 +51,6 @@ export function describePlan(plan: VerificationPlan): string {
     .join("\n");
 }
 
-/** JSON with object keys sorted, so a plan read back from jsonb compares equal. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object")
-    return `{${Object.entries(value)
-      .filter(([, entry]) => entry !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
-      .join(",")}}`;
-  return JSON.stringify(value ?? null);
-}
-
-/** Whether two plans are the same (a message that repeats the plan changes nothing). */
-export function samePlan(
-  a: VerificationPlan | null,
-  b: VerificationPlan | null,
-): boolean {
-  return canonical(a ?? null) === canonical(b ?? null);
-}
-
 /**
  * Checks of the latest attempt of each goal version of these tasks, ordered
  * by task, goal version and plan position (as a task view carries them).
@@ -103,6 +84,61 @@ export async function latestChecks(
       versions.flatMap((version) => latestAttemptChecks(checks, version)),
     );
   }
+  return result;
+}
+
+/**
+ * The outcomes (criterion, goal version, attempt) of the latest attempt of
+ * each task's current goal version: what a task summary needs, without the
+ * checks' details and output previews.
+ */
+export async function latestOutcomes(
+  exec: Executor,
+  tasks: readonly { id: string; goalVersion: number }[],
+): Promise<
+  Map<
+    string,
+    {
+      goalVersion: number;
+      attempt: number;
+      criterionId: string;
+      outcome: CheckOutcome;
+    }[]
+  >
+> {
+  const result = new Map<
+    string,
+    {
+      goalVersion: number;
+      attempt: number;
+      criterionId: string;
+      outcome: CheckOutcome;
+    }[]
+  >();
+  if (tasks.length === 0) return result;
+  const rows = await exec
+    .select({
+      taskId: verificationChecks.taskId,
+      goalVersion: verificationChecks.goalVersion,
+      attempt: verificationChecks.attempt,
+      criterionId: verificationChecks.criterionId,
+      outcome: verificationChecks.outcome,
+    })
+    .from(verificationChecks)
+    .where(
+      inArray(
+        verificationChecks.taskId,
+        tasks.map((task) => task.id),
+      ),
+    );
+  for (const task of tasks)
+    result.set(
+      task.id,
+      latestAttemptChecks(
+        rows.filter((row) => row.taskId === task.id),
+        task.goalVersion,
+      ),
+    );
   return result;
 }
 

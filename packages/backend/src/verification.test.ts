@@ -7,9 +7,12 @@ import {
   type VerificationPlan,
   verificationSummary,
 } from "@jj/contracts";
-import { sessions, verificationChecks } from "@jj/db";
+import { runs, sessions, verificationChecks } from "@jj/db";
+import { LocalSandboxDriver } from "@jj/sandbox";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createDriverRegistry } from "./drivers";
+import type { EngineDriver } from "./ports";
 import { formatTaskState, readTaskState } from "./services/task-log";
 import { type Brain, said } from "./testing/fake-executor";
 import {
@@ -393,6 +396,160 @@ describe("verification gate", () => {
     expect(Buffer.from(content.content).toString()).toContain("\n12345\n");
   });
 
+  it("keeps the end of an output longer than the sandbox keeps, and shows the coordinator that end", async () => {
+    const { engine, executor } = await setup({
+      config: { maxVerificationAttempts: 1 },
+    });
+    // About 590 KB, over the sandbox's 256 KiB output limit.
+    const { task } = await planned(engine, coordinator([]), executor, [
+      {
+        id: "huge",
+        description: "Prints more than the sandbox keeps, then fails",
+        method: "command",
+        command: "seq 1 100000; exit 1",
+      },
+    ]);
+    const view = await untilTask(engine, task.id, status("waiting"));
+    const [check] = view.verificationChecks;
+    expect(check).toMatchObject({
+      outcome: "failed",
+      exitCode: 1,
+      truncated: true,
+    });
+    expect(check?.output?.startsWith("1\n2\n3\n")).toBe(true);
+    expect(check?.output?.trimEnd().endsWith("99999\n100000")).toBe(true);
+    const content = Buffer.from(
+      (await engine.tasks.artifactContent(task.id, check?.artifactId as string))
+        .content,
+    ).toString();
+    // The artifact is what the sandbox kept: the head, the tail, and a note
+    // on what was left out between them.
+    expect(content.startsWith("1\n2\n")).toBe(true);
+    expect(content).toMatch(/\[… \d+ bytes of output left out/);
+    expect(content.trimEnd().endsWith("99999\n100000")).toBe(true);
+    const told = executor.inputs
+      .flatMap((input) => input.inputs)
+      .find((text) => text.startsWith(VERIFICATION_HEADER));
+    expect(told).toContain("> 100000");
+  });
+
+  it("stops a regular expression or JSON Schema that backtracks catastrophically, without blocking the server", async () => {
+    const { engine, executor } = await setup({
+      config: { maxVerificationAttempts: 1 },
+    });
+    const evil = "^(\\w+\\s?)+$";
+    const text = `${"a".repeat(34)}!`;
+    const { task } = await planned(
+      engine,
+      coordinator([`printf '"%s"' '${text}' > data.json`], [], text),
+      executor,
+      [
+        {
+          id: "regex",
+          description: "The result is words",
+          method: "result",
+          expect: "matches",
+          value: evil,
+        },
+        {
+          id: "schema",
+          description: "data.json holds words",
+          method: "file",
+          path: "data.json",
+          expect: "json",
+          schema: { type: "string", pattern: evil },
+        },
+      ],
+    );
+    // The event loop keeps turning while the checks run.
+    let last = Date.now();
+    let longestGap = 0;
+    const ticker = setInterval(() => {
+      const now = Date.now();
+      longestGap = Math.max(longestGap, now - last);
+      last = now;
+    }, 20);
+    const started = Date.now();
+    try {
+      const view = await untilTask(engine, task.id, status("waiting"));
+      expect(Date.now() - started).toBeLessThan(12_000);
+      expect(
+        view.verificationChecks.map((check) => [
+          check.criterionId,
+          check.outcome,
+        ]),
+      ).toEqual([
+        ["regex", "inconclusive"],
+        ["schema", "inconclusive"],
+      ]);
+      expect(view.verificationChecks[0]?.detail).toContain(
+        "was stopped: it did not finish within 2 s",
+      );
+      expect(view.verificationChecks[1]?.detail).toContain(
+        "The JSON Schema check was stopped",
+      );
+      // The API answered meanwhile and still does.
+      expect((await engine.bootstrap()).capabilities.verification).toBe(true);
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(longestGap).toBeLessThan(1_000);
+  }, 30_000);
+
+  it("never passes an attempt whose checks were all inconclusive", async () => {
+    const { engine, executor } = await setup({
+      config: { maxVerificationAttempts: 1 },
+    });
+    const { task } = await planned(
+      engine,
+      coordinator(["head -c 1100000 /dev/zero > big.bin"]),
+      executor,
+      [
+        {
+          id: "big",
+          description: "big.bin is JSON",
+          method: "file",
+          path: "big.bin",
+          expect: "json",
+        },
+      ],
+    );
+    const view = await untilTask(engine, task.id, status("waiting"));
+    expect(view.verificationChecks).toMatchObject([
+      { criterionId: "big", outcome: "inconclusive" },
+    ]);
+    expect(
+      view.messages.some((message) =>
+        message.text.startsWith("Verification passed"),
+      ),
+    ).toBe(false);
+    expect(
+      view.messages.some((message) =>
+        message.text.startsWith(
+          "Verification was inconclusive: 0 of 1 checks passed",
+        ),
+      ),
+    ).toBe(true);
+    const told = executor.inputs
+      .flatMap((input) => input.inputs)
+      .find((text) => text.startsWith(VERIFICATION_HEADER));
+    expect(told).toContain("- big (big.bin is JSON): INCONCLUSIVE.");
+    const finished = view.events.find(
+      (event) => event.type === "verification.finished",
+    );
+    expect(
+      finished?.type === "verification.finished" && finished.payload,
+    ).toMatchObject({
+      outcome: "inconclusive",
+      passed: 0,
+      inconclusive: 1,
+    });
+    expect(view.events.some((event) => event.type === "task.finished")).toBe(
+      false,
+    );
+    expect(isVerified(view.task, summaryOf(view))).toBe(false);
+  });
+
   it("supersedes earlier evidence when the plan or the goal changes", async () => {
     const { engine, executor } = await setup();
     const first: VerificationPlan = [
@@ -533,14 +690,18 @@ describe("verification gate", () => {
       ],
     });
     await executor.gate("forge").reached;
-    // A request that claims a passing attempt nobody ran.
+    // A request that claims this run's gate passed an attempt nobody ran.
+    const [running] = await db.database.db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(eq(runs.taskId, task.id), eq(runs.status, "running")));
     await db.database.db
       .update(sessions)
       .set({
         completionRequested: {
           result: "forged",
           goalVersion: 1,
-          verification: { attempt: 1 },
+          verification: { attempt: 1, runId: running?.id },
         },
       })
       .where(
@@ -604,14 +765,131 @@ describe("verification gate", () => {
       );
       expect(isVerified(view.task, summaryOf(view))).toBe(true);
       const page = await second.engine.tasks.events(task.id);
+      // The cut-off attempt keeps its number; the re-run takes the next one.
       expect(
-        page.events.filter((event) => event.type === "verification.started"),
-      ).toHaveLength(2);
+        page.events.flatMap((event) =>
+          event.type === "verification.started" ? [event.payload.attempt] : [],
+        ),
+      ).toEqual([1, 2]);
       expect(view.verificationChecks).toMatchObject([
-        { attempt: 1, outcome: "passed", exitCode: 0 },
+        { attempt: 2, outcome: "passed", exitCode: 0 },
       ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("runs the gate again when a run that passed it was cut off, so a later turn's changes are checked", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jj-gate-stale-"));
+    try {
+      const check = "test -f out.txt";
+      let armed = false;
+      let blocked = false;
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const local = new LocalSandboxDriver({ root, killGraceMs: 200 });
+      // Once the check has run, the run's artifact snapshot (between the
+      // gate's passing write and the write-back) hangs, so the worker can be
+      // crashed in that window.
+      const stalling: EngineDriver = {
+        id: local.id,
+        capabilities: local.capabilities,
+        validateSpec: (spec) => local.validateSpec(spec),
+        probe: () => local.probe(),
+        async acquire(request) {
+          const sandbox = await local.acquire(request);
+          return Object.assign(Object.create(sandbox) as typeof sandbox, {
+            exec: async (
+              command: string,
+              options?: Parameters<typeof sandbox.exec>[1],
+            ) => {
+              const result = await sandbox.exec(command, options);
+              if (command === check) armed = true;
+              return result;
+            },
+            release: sandbox.release.bind(sandbox),
+            id: sandbox.id,
+            driverId: sandbox.driverId,
+            workspaceDir: sandbox.workspaceDir,
+            fs: {
+              ...sandbox.fs,
+              list: async (
+                path: string,
+                options?: Parameters<typeof sandbox.fs.list>[1],
+              ) => {
+                if (armed) {
+                  blocked = true;
+                  await released;
+                }
+                return sandbox.fs.list(path, options);
+              },
+            },
+          });
+        },
+      };
+      const first = await setup({
+        workspaceRoot: root,
+        registry: createDriverRegistry([{ driver: stalling, label: "Local" }]),
+        config: { leaseMs: 1_000 },
+      });
+      const { task, ada } = await planned(
+        first.engine,
+        coordinator(["echo hi > out.txt"]),
+        first.executor,
+        [
+          {
+            id: "out",
+            description: "out.txt exists",
+            method: "command",
+            command: check,
+          },
+        ],
+      );
+      await until(() => blocked, { what: "the snapshot after the gate" });
+      const passed = await first.engine.tasks.get(task.id);
+      expect(passed.verificationChecks).toMatchObject([
+        { attempt: 1, outcome: "passed" },
+      ]);
+      // Crash: the job is fenced first, then the stalled scan returns.
+      const crashing = first.engine.worker.abandon();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await crashing;
+
+      // The recovered coordinator takes another turn and deletes the file
+      // the check observed.
+      const second = await setup({
+        workspaceRoot: root,
+        config: { leaseMs: 1_000 },
+      });
+      second.executor.brain(ada, (view) =>
+        said.results(view).filter((message) => message.name === "bash").length <
+        2
+          ? { calls: [{ name: "bash", args: { command: "rm out.txt" } }] }
+          : { text: "Done." },
+      );
+      const done = await untilTask(
+        second.engine,
+        task.id,
+        (view) =>
+          view.task.status === "completed" || view.task.status === "waiting",
+        "the recovered task",
+        20_000,
+      );
+      const gone = await stat(join(root, "task", task.id, "out.txt")).then(
+        () => false,
+        () => true,
+      );
+      expect(gone).toBe(true);
+      expect(done.task.status).toBe("waiting");
+      expect(isVerified(done.task, summaryOf(done))).toBe(false);
+      expect(done.verificationChecks).toMatchObject([
+        { attempt: 2, outcome: "failed", exitCode: 1 },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 40_000);
 });

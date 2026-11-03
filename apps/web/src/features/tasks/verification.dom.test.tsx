@@ -326,6 +326,57 @@ describe("checks editor", () => {
     expect(screen.queryByRole("button", { name: "Add a check" })).toBeNull();
   });
 
+  it("posts nothing when the checks did not change", async () => {
+    const postTaskMessage = vi.fn();
+    const withPlan = viewOf("completed", passedBoth());
+    const base = createDemoApi({ autoplay: false });
+    renderReady(<TaskHeader view={withPlan} />, {
+      postTaskMessage,
+      bootstrap: async () => ({
+        ...(await base.bootstrap()),
+        tasks: [
+          {
+            ...withPlan.task,
+            activeSessionCount: 0,
+            sessionCount: 1,
+            usage: emptyUsage(),
+            verification: verificationSummary(
+              withPlan.task,
+              withPlan.verificationChecks,
+            ),
+          },
+        ],
+      }),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit checks" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Verification checks",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Save as goal v3" }),
+    );
+    expect((await within(dialog).findByRole("status")).textContent).toBe(
+      "Nothing to save: these are the checks of goal v2.",
+    );
+    expect(postTaskMessage).not.toHaveBeenCalled();
+  });
+
+  it("posts nothing when Add checks is saved without a check", async () => {
+    const postTaskMessage = vi.fn();
+    renderReady(<TaskHeader view={viewOf("completed", [], null)} />, {
+      postTaskMessage,
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Add checks" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Verification checks",
+    });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Save as goal v3" }),
+    );
+    await within(dialog).findByRole("status");
+    expect(postTaskMessage).not.toHaveBeenCalled();
+  });
+
   it("changes the checks as a new goal version against the version on screen", async () => {
     const view = viewOf("completed", passedBoth());
     const postTaskMessage = vi.fn(async () => ({
