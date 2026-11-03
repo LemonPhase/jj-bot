@@ -7,6 +7,7 @@ import { isFinishedStatus } from "@jj/contracts";
 import { bots, type Executor, type SessionRow, sessions } from "@jj/db";
 import { and, asc, count, desc, eq, inArray, ne } from "drizzle-orm";
 import type { CollabTool, CollabToolResult } from "../ports";
+import { planOf } from "../records";
 import { deliver, postMessage } from "../services/messages";
 import {
   getSession,
@@ -364,10 +365,11 @@ function messageTool(
 }
 
 function completeTaskTool(rc: RunContext): CollabTool {
+  const { config } = rc.deps.ctx;
   return {
     name: "complete_task",
     description:
-      "Finish the task with the consolidated result for the user. Only when the goal is met, every delegation has reported, and you have checked the work against the current goal.",
+      "Finish the task with the consolidated result for the user. Only when the goal is met, every delegation has reported, and you have checked the work against the current goal. If the task has a verification plan, its checks run when your turn ends, and the task completes only if every one passes.",
     parameters: {
       type: "object",
       properties: {
@@ -401,6 +403,11 @@ function completeTaskTool(rc: RunContext): CollabTool {
           return refuse(
             `${open.length} delegation(s) have not reported yet. End your turn to wait for their results, then complete.`,
           );
+        const plan = planOf(task.verificationPlan);
+        if (plan && rc.verificationAttempts >= config.maxVerificationAttempts)
+          return refuse(
+            `No verification attempts are left in this run (${config.maxVerificationAttempts} were made). Tell the user what still fails and what you need, then end your turn.`,
+          );
         const request: CompletionRequest = {
           result,
           goalVersion: task.goalVersion,
@@ -411,7 +418,9 @@ function completeTaskTool(rc: RunContext): CollabTool {
           .where(eq(sessions.id, session.id));
         rc.session = { ...session, completionRequested: { ...request } };
         return {
-          text: "The result is recorded; the task completes when this turn ends.",
+          text: plan
+            ? `The result is recorded. When this turn ends, the engine runs the ${plan.length} check${plan.length === 1 ? "" : "s"} of the verification plan in the workspace: the task completes only if every one passes, and otherwise you get each check's outcome. End your turn now.`
+            : "The result is recorded; the task completes when this turn ends.",
           endRun: true,
         };
       });

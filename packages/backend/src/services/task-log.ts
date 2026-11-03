@@ -6,6 +6,14 @@
 // stored. The formatters take a redactor and redact before they clip, so no
 // caller can show part of a secret a preview cut through.
 // Session transcripts are never read here: they stay private to their session.
+
+import {
+  latestAttemptChecks,
+  type VerificationCheck,
+  type VerificationPlan,
+  type VerificationSummary,
+  verificationSummary,
+} from "@jj/contracts";
 import {
   type AuthorKind,
   bots,
@@ -32,6 +40,8 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import { planOf } from "../records";
+import { criterionRule, latestChecks, summaryLine } from "./verification";
 
 /** What a task log entry is: a user message, a brief, a report or a message. */
 export const TASK_LOG_KINDS = ["user", "brief", "report", "message"] as const;
@@ -406,6 +416,12 @@ export interface TaskState {
   status: TaskStatus;
   result: string | null;
   error: string | null;
+  /** With a plan: its criteria, where they stand, and each one's latest check at the current goal version. */
+  verification?: {
+    plan: VerificationPlan;
+    summary: VerificationSummary;
+    checks: VerificationCheck[];
+  };
   /** Oldest first, each with its brief in full (the formatter shows its first line). */
   sessions: (SessionSummary & { brief: string })[];
 }
@@ -469,6 +485,19 @@ export async function readTaskState(
 ): Promise<TaskState | undefined> {
   const [task] = await exec.select().from(tasks).where(eq(tasks.id, taskId));
   if (!task) return undefined;
+  const plan = planOf(task.verificationPlan);
+  const checks = plan
+    ? latestAttemptChecks(
+        (await latestChecks(exec, [task.id])).get(task.id) ?? [],
+        task.goalVersion,
+      )
+    : [];
+  const summary = plan
+    ? verificationSummary(
+        { goalVersion: task.goalVersion, verificationPlan: plan },
+        checks,
+      )
+    : undefined;
   return {
     id: task.id,
     title: task.title,
@@ -477,6 +506,7 @@ export async function readTaskState(
     status: task.status,
     result: task.result,
     error: task.error,
+    ...(plan && summary ? { verification: { plan, summary, checks } } : {}),
     sessions: (await sessionReports(exec, taskId)).map(
       ({ report: _, error: __, botId: ___, ...session }) => session,
     ),
@@ -565,6 +595,23 @@ export function formatTaskState(state: TaskState, redact: Redact): string {
     lines.push(`Result: ${clipLine(redact(state.result), 400)}`);
   if (state.error !== null)
     lines.push(`Error: ${clipLine(redact(state.error), 400)}`);
+  if (state.verification) {
+    const { plan, summary, checks } = state.verification;
+    lines.push(
+      "",
+      `Verification plan (the user's): ${summaryLine(summary)}. The task completes only when every check passes.`,
+    );
+    for (const criterion of plan) {
+      const check = checks.find((entry) => entry.criterionId === criterion.id);
+      lines.push(
+        `- ${criterion.id}: ${criterion.description} (${criterionRule(criterion)}): ${
+          check
+            ? `${check.outcome}. ${clipLine(redact(check.detail), 200)}`
+            : "not checked"
+        }`,
+      );
+    }
+  }
   lines.push("", "Sessions, oldest first:");
   for (const session of state.sessions)
     lines.push(

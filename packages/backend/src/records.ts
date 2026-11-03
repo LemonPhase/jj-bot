@@ -18,6 +18,8 @@ import {
   type TaskEvent,
   type TaskMessage,
   type ToolName,
+  type VerificationCheck,
+  type VerificationPlan,
 } from "@jj/contracts";
 import type {
   ArtifactRow,
@@ -28,6 +30,7 @@ import type {
   TaskEventRow,
   TaskMessageRow,
   TaskRow,
+  VerificationCheckRow,
 } from "@jj/db";
 
 const iso = (date: Date) => date.toISOString();
@@ -86,10 +89,45 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     error: row.error,
     cancelReason: row.cancelReason,
     cancelRequestedAt: isoOrNull(row.cancelRequestedAt),
+    verificationPlan: planOf(row.verificationPlan),
     spendCapUsd: row.spendCapUsd,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     finishedAt: isoOrNull(row.finishedAt),
+  };
+}
+
+/** A stored plan (validated when it was written); null for none. */
+export function planOf(
+  stored: readonly object[] | null | undefined,
+): VerificationPlan | null {
+  return stored && stored.length > 0
+    ? (stored as unknown as VerificationPlan)
+    : null;
+}
+
+export function toVerificationCheck(
+  row: VerificationCheckRow,
+): VerificationCheck {
+  return {
+    id: row.id,
+    taskId: row.taskId,
+    goalVersion: row.goalVersion,
+    attempt: row.attempt,
+    criterionId: row.criterionId,
+    method: row.method,
+    outcome: row.outcome,
+    exitCode: row.exitCode,
+    interrupted: (row.interrupted as VerificationCheck["interrupted"]) ?? null,
+    durationMs: row.durationMs,
+    detail: row.detail,
+    output: row.output,
+    truncated: row.truncated,
+    artifactId: row.artifactId,
+    sessionId: row.sessionId,
+    runId: row.runId,
+    startedAt: iso(row.startedAt),
+    finishedAt: iso(row.finishedAt),
   };
 }
 

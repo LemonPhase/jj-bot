@@ -64,6 +64,7 @@ const task = {
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  verificationPlan: null,
   spendCapUsd: 5,
   createdAt: at,
   updatedAt: at,
@@ -122,7 +123,11 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     task: { ...task, status: "running" },
     previousStatus: "queued",
   },
-  "task.goal_changed": { goal: "Ship it twice", goalVersion: 2 },
+  "task.goal_changed": {
+    goal: "Ship it twice",
+    goalVersion: 2,
+    verificationPlan: null,
+  },
   "task.reopened": { previous: "completed" },
   "task.finished": { status: "completed", result: "Done.", error: null },
   "message.posted": { message },
@@ -157,6 +162,37 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     messageId: "m1",
     goalVersion: 1,
     delivered: "injected",
+  },
+  "verification.started": { goalVersion: 1, attempt: 1, criteria: 1 },
+  "verification.checked": {
+    check: {
+      id: "c1",
+      taskId: "t1",
+      goalVersion: 1,
+      attempt: 1,
+      criterionId: "tests",
+      method: "command",
+      outcome: "passed",
+      exitCode: 0,
+      interrupted: "no",
+      durationMs: 1200,
+      detail: "`npm test` exited with code 0.",
+      output: "ok",
+      truncated: false,
+      artifactId: null,
+      sessionId: "s0",
+      runId: "r1",
+      startedAt: at,
+      finishedAt: at,
+    },
+  },
+  "verification.finished": {
+    goalVersion: 1,
+    attempt: 1,
+    outcome: "passed",
+    passed: 1,
+    failed: 0,
+    inconclusive: 0,
   },
   "spend.capped": { scope: "task", spentUsd: 5.02, capUsd: 5 },
   "spend.threshold": { spentUsd: 4.1, capUsd: 5 },
@@ -196,8 +232,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.3.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.3.0");
+  it("is version 1.4.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.4.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -739,6 +775,7 @@ describe("spend caps and usage (1.3.0)", () => {
       sessions: [session],
       messages: [],
       artifacts: [],
+      verificationChecks: [],
       usage: { total: emptyUsage(), bySession: {} },
       events: [],
       firstSequence: 1,

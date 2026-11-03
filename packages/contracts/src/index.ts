@@ -16,3 +16,4 @@ export * from "./events";
 export * from "./profiles";
 export * from "./tasks";
 export * from "./usage";
+export * from "./verification";

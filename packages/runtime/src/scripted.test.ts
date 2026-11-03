@@ -14,6 +14,7 @@ import { ModelRegistry } from "./models";
 import {
   SCRIPTED_MODEL_REF,
   scriptedCommands,
+  scriptedFix,
   scriptedNotesFile,
   scriptedQuestion,
   scriptedSummary,
@@ -267,6 +268,82 @@ describe("scripted test model", () => {
       kind: "ended",
     });
     expect(completions).toHaveLength(1);
+  });
+
+  it("answers a failed verification by running the goal's fix and completing again, or by asking", async () => {
+    expect(
+      scriptedFix("Write it. If a check fails, fix it with `touch ok`."),
+    ).toBe("touch ok");
+    expect(scriptedFix("Write it.")).toBeUndefined();
+    const executor = new PiSessionExecutor({
+      models: new ModelRegistry({ env: {}, enableScripted: true }),
+    });
+    const completions: string[] = [];
+    const commands: string[] = [];
+    const solo = (goal: string) => {
+      const transcript: TranscriptEntry[] = [];
+      return async (inputs: string[]) => {
+        const recorded = recordingHooks();
+        const outcome = await executor.run({
+          sessionId: "checker",
+          runId: `run-${transcript.length}`,
+          systemPrompt: "You are Solo, working alone.",
+          transcript: [...transcript],
+          inputs: transcript.length === 0 ? [goal, ...inputs] : inputs,
+          model: SCRIPTED_MODEL_REF,
+          sandbox: workspace.sandbox,
+          sandboxLimits: workspace.limits,
+          codingTools: ["bash"],
+          collaborationTools: [
+            {
+              name: "complete_task",
+              description: "Finish.",
+              parameters: Type.Object({ result: Type.String() }),
+              execute: async (args) => {
+                completions.push(String(args.result));
+                return { text: "ok", endRun: true };
+              },
+            },
+          ],
+          budgets: budgets(),
+          signal: new AbortController().signal,
+          hooks: recorded.hooks,
+        });
+        transcript.push(...recorded.entries);
+        for (const event of recorded.events)
+          if (event.type === "tool.started" && event.tool === "bash")
+            commands.push(event.summary);
+        return outcome;
+      };
+    };
+    const report = (attempt: number, last = false) =>
+      `Verification of goal version 1, attempt ${attempt}: 0 of 1 checks passed, so the task did not complete.\n- ok (ok exists): FAILED. \`test -f ok\` Exited with code 1 in 0 s.\n\n${last ? "No verification attempts are left in this run: do not call `complete_task` again." : "Revise the work, then call `complete_task` again."}`;
+
+    const fixing = solo(
+      "New task. Goal (version 1):\nMake ok. If a check fails, fix it with `touch ok`.",
+    );
+    await fixing([]);
+    expect(completions).toHaveLength(1);
+    await fixing([report(1)]);
+    expect(commands.at(-1)).toBe("touch ok");
+    expect(completions).toHaveLength(2);
+    expect(completions[1]).toBe(completions[0]);
+
+    // Without a fix, or with no attempts left, it reports and waits.
+    const asking = solo("New task. Goal (version 1):\nMake ok.");
+    await asking([]);
+    const before = completions.length;
+    const answer = await asking([report(1)]);
+    expect(answer).toMatchObject({ kind: "ended" });
+    expect(answer.kind === "ended" && answer.finalText).toContain(
+      "The checks did not pass, so the task is not complete.",
+    );
+    expect(completions).toHaveLength(before);
+    const last = await fixing([report(3, true)]);
+    expect(last.kind === "ended" && last.finalText).toContain(
+      "What should I change?",
+    );
+    expect(completions).toHaveLength(before);
   });
 
   it("runs the commands a brief quotes after run, once each, after writing its notes", async () => {

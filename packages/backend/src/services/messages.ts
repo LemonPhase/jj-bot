@@ -5,7 +5,9 @@ import {
   isFinishedStatus,
   type PostTaskMessageCommand,
   postTaskMessageCommandSchema,
+  samePlan,
   type TaskMessage,
+  type VerificationPlan,
 } from "@jj/contracts";
 import {
   type AuthorKind,
@@ -27,9 +29,10 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
-import { toMessage } from "../records";
+import { planOf, toMessage } from "../records";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
+import { describePlan } from "./verification";
 
 export interface PostMessageInput {
   taskId: string;
@@ -239,6 +242,30 @@ export async function continueTask(
   return { task, root };
 }
 
+/** What the coordinator is told about a new goal version. */
+function changeText(change: {
+  version: number;
+  goal?: string;
+  plan?: VerificationPlan | null;
+}): string {
+  const parts: string[] = [];
+  if (change.goal !== undefined)
+    parts.push(
+      `The user changed the task goal (now version ${change.version}):\n${change.goal}`,
+    );
+  if (change.plan !== undefined)
+    parts.push(
+      change.plan
+        ? `${
+            change.goal !== undefined
+              ? "The user also set a new verification plan."
+              : `The user set a new verification plan (goal version ${change.version}).`
+          } The task completes only when every check passes; evidence from earlier versions no longer counts:\n${describePlan(change.plan)}`
+        : `The user removed the verification plan (goal version ${change.version}): the task completes without checks.`,
+    );
+  return parts.join("\n\n");
+}
+
 /** TASK_TERMINAL for a cancelled task or one being stopped. */
 export function assertOpen(task: TaskRow) {
   if (task.status === "cancelled" || task.cancelRequestedAt)
@@ -257,18 +284,26 @@ export async function postTaskMessage(
   input: PostTaskMessageCommand,
 ): Promise<{ message: TaskMessage }> {
   const command = parseCommand(postTaskMessageCommandSchema, input);
-  if (command.verificationPlan)
-    throw new DomainError(
-      "VERIFICATION_UNAVAILABLE",
-      "Verification plans are not enforced by this server yet.",
-    );
   const message = await ctx.db.transaction(async (tx) => {
     let task = await lockTask(tx, taskId);
     if (!task) throw notFound("Task", taskId);
     assertOpen(task);
 
-    let goalChange: { goal: string; version: number } | undefined;
-    if (command.goal !== undefined && command.goal !== task.goal) {
+    // The goal version changes if and only if the goal or its plan changes.
+    const currentPlan = planOf(task.verificationPlan);
+    const goal =
+      command.goal !== undefined && command.goal !== task.goal
+        ? command.goal
+        : undefined;
+    const plan =
+      command.verificationPlan !== undefined &&
+      !samePlan(command.verificationPlan, currentPlan)
+        ? { next: command.verificationPlan }
+        : undefined;
+    let goalChange:
+      | { version: number; goal?: string; plan?: VerificationPlan | null }
+      | undefined;
+    if (goal !== undefined || plan) {
       if (command.observedGoalVersion !== task.goalVersion)
         throw new DomainError(
           "STALE_GOAL_VERSION",
@@ -281,22 +316,34 @@ export async function postTaskMessage(
           `The goal can change at most ${ctx.config.maxGoalVersions - 1} times; start a new task instead.`,
         );
       const version = task.goalVersion + 1;
+      const nextGoal = goal ?? task.goal;
+      const nextPlan = plan ? plan.next : currentPlan;
       await tx.insert(taskGoalVersions).values({
         taskId,
         version,
-        goal: command.goal,
+        goal: nextGoal,
+        verificationPlan: nextPlan,
         author: "user",
         createdAt: ctx.clock(),
       });
       task = await updateTask(tx, ctx, task, {
-        goal: command.goal,
+        goal: nextGoal,
         goalVersion: version,
+        verificationPlan: nextPlan,
       });
       await emit(tx, taskId, {
         type: "task.goal_changed",
-        payload: { goal: command.goal, goalVersion: version },
+        payload: {
+          goal: nextGoal,
+          goalVersion: version,
+          verificationPlan: nextPlan,
+        },
       });
-      goalChange = { goal: command.goal, version };
+      goalChange = {
+        version,
+        ...(goal !== undefined ? { goal } : {}),
+        ...(plan ? { plan: plan.next } : {}),
+      };
     }
     const continued = await continueTask(tx, ctx, task);
     task = continued.task;
@@ -308,7 +355,7 @@ export async function postTaskMessage(
       recipientBotIds: [task.coordinatorBotId],
     });
     const text = goalChange
-      ? `The user changed the task goal (now version ${goalChange.version}):\n${goalChange.goal}\n\nTheir message:\n${command.text}`
+      ? `${changeText(goalChange)}\n\nTheir message:\n${command.text}`
       : `Message from the user:\n${command.text}`;
     const delivered = await deliver(
       tx,

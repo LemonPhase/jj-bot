@@ -37,6 +37,12 @@ export interface EngineConfig {
   /** Goal versions a task may reach; a further change answers GOAL_VERSION_BUDGET. */
   maxGoalVersions: number;
   /**
+   * Verification gate runs one coordinator run may make
+   * (`JJ_MAX_VERIFICATION_ATTEMPTS`, default 3). After the last failed one the
+   * task waits for the user.
+   */
+  maxVerificationAttempts: number;
+  /**
    * A task's sandbox is released after this long without a run. Ephemeral
    * workspaces use `ephemeralIdleMs` instead, since releasing one discards
    * its files.
@@ -97,6 +103,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     maxUsdPerDay: null,
     outputCapBytes: TOOL_OUTPUT_PREVIEW_LIMIT,
     maxGoalVersions: 20,
+    maxVerificationAttempts: 3,
     sandboxIdleMs: 10 * 60_000,
     ephemeralIdleMs: 6 * 60 * 60_000,
     maxHeldSandboxes: 32,
@@ -132,6 +139,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "maxDelegationDepth",
     "tasksPerBotPerHour",
     "maxGoalVersions",
+    "maxVerificationAttempts",
     "chatHistoryLimit",
     "chatMaxTurns",
     "ephemeralIdleMs",
@@ -188,6 +196,7 @@ export function configFromEnv(
     tasksPerBotPerHour: int("JJ_TASKS_PER_BOT_PER_HOUR"),
     maxUsdPerDay: usd("JJ_MAX_USD_PER_DAY"),
     outputCapBytes: int("JJ_OUTPUT_CAP_BYTES"),
+    maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
     persistence: !inMemory,

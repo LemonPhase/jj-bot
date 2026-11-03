@@ -10,6 +10,7 @@ import {
   type TaskEventOf,
   type UpdateTaskCommand,
   updateTaskCommandSchema,
+  type VerificationPlan,
 } from "@jj/contracts";
 import {
   bots,
@@ -57,6 +58,8 @@ export interface NewTaskInput {
   createdByBotId?: string | null;
   /** The conversation message whose reply created the task (one task per message). */
   createdFromMessageId?: string | null;
+  /** The user's verification plan for goal version 1; null or omitted for none. */
+  verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's `maxUsdPerTask`. Null: no cap. */
   spendCapUsd?: number | null;
 }
@@ -86,6 +89,7 @@ export async function createTaskTx(
       coordinatorBotId: input.coordinatorBotId,
       createdByBotId: input.createdByBotId ?? null,
       createdFromMessageId: input.createdFromMessageId ?? null,
+      verificationPlan: input.verificationPlan ?? null,
       spendCapUsd,
       createdAt: now,
       updatedAt: now,
@@ -104,6 +108,7 @@ export async function createTaskTx(
     taskId: task.id,
     version: 1,
     goal: input.goal,
+    verificationPlan: input.verificationPlan ?? null,
     author: input.createdByBotId ?? "user",
     createdAt: now,
   });
@@ -125,7 +130,14 @@ export async function createTaskTx(
   await deliver(
     tx,
     root,
-    { kind: "brief", text: `New task. Goal (version 1):\n${input.goal}` },
+    {
+      kind: "brief",
+      text: `New task. Goal (version 1):\n${input.goal}${
+        input.verificationPlan
+          ? `\n\nThe user set a verification plan; it is in your system prompt. The task completes only when every check passes.`
+          : ""
+      }`,
+    },
     { wake: true, ctx },
   );
   return { task, root };
@@ -152,11 +164,6 @@ export async function createTask(
   input: CreateTaskCommand,
 ): Promise<{ task: Task }> {
   const command = parseCommand(createTaskCommandSchema, input);
-  if (command.verificationPlan)
-    throw new DomainError(
-      "VERIFICATION_UNAVAILABLE",
-      "Verification plans are not enforced by this server yet; create the task without one.",
-    );
   const found = await ctx.db
     .select()
     .from(bots)

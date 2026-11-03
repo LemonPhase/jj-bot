@@ -1,5 +1,6 @@
 import { profileBudgetsSchema } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
+import { useApi } from "../../api/ApiContext";
 import {
   Avatar,
   Button,
@@ -12,8 +13,10 @@ import {
   Textarea,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
+import { ChecksEditor } from "./ChecksEditor";
 import { formatCap } from "./format";
 import { readCapInput } from "./SpendControl";
+import { type CheckDraft, planFromDrafts } from "./verification";
 
 export interface NewTaskDialogProps {
   /** Preselected bots; the first coordinates. */
@@ -23,12 +26,17 @@ export interface NewTaskDialogProps {
 
 /**
  * Starts a task: the goal, the coordinator who plans and delegates, and any
- * number of other participants. On success the task opens.
+ * number of other participants, and, where the server enforces them,
+ * optional verification checks. On success the task opens.
  */
 export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const { bots, profiles, createTask } = useWorkspace();
+  const api = useApi();
   const formId = useId();
   const pickLabelId = useId();
+  const checksLabelId = useId();
+  const [drafts, setDrafts] = useState<CheckDraft[]>([]);
+  const [checkErrors, setCheckErrors] = useState<Record<string, string>>({});
   const known = initialBotIds.filter((botId) =>
     bots.some((bot) => bot.id === botId),
   );
@@ -66,18 +74,20 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!canStart) return;
+    const checks = planFromDrafts(drafts);
     const cap = readCapInput(capValue);
-    if (!cap.ok) {
-      setCapError(cap.error);
-      return;
-    }
-    setCapError(null);
+    if (!checks.ok) setCheckErrors(checks.errors);
+    else setCheckErrors({});
+    if (!cap.ok) setCapError(cap.error);
+    else setCapError(null);
+    if (!checks.ok || !cap.ok) return;
     setBusy(true);
     setError(null);
     try {
       await createTask({
         goal: goal.trim(),
         participantBotIds: participants,
+        verificationPlan: checks.plan,
         // An untouched field leaves the cap to the server (the profile's).
         ...(capText !== null ? { spendCapUsd: cap.value } : {}),
       });
@@ -98,8 +108,8 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
       }}
       title="New task"
       description="Describe the goal and pick the team. The coordinator plans the work and delegates to the others; everyone sees the whole chat."
-      dismissible={!goal.trim()}
-      width={520}
+      dismissible={!goal.trim() && drafts.length === 0}
+      width={drafts.length > 0 ? 600 : 520}
       footer={
         <>
           <Button onClick={onClose} disabled={busy}>
@@ -200,6 +210,25 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
             value={capValue}
             onChange={(event) => setCapText(event.target.value)}
           />
+          {api.capabilities.verification && (
+            <div className="new-task-form__checks">
+              <SectionLabel id={checksLabelId} tracking="part">
+                Checks · optional
+              </SectionLabel>
+              <div role="group" aria-labelledby={checksLabelId}>
+                <ChecksEditor
+                  drafts={drafts}
+                  onChange={(next) => {
+                    // An edit answers the problems shown; submitting checks again.
+                    setDrafts(next);
+                    setCheckErrors({});
+                  }}
+                  errors={checkErrors}
+                  disabled={busy}
+                />
+              </div>
+            </div>
+          )}
           {error && <ErrorBanner word="Not started">{error}</ErrorBanner>}
         </form>
       )}

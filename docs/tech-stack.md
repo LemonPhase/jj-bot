@@ -36,6 +36,6 @@ A working integration is defined by these observations, in order:
 6. Stop prevents new launches and records what actually stopped.
 7. Event replay reconstructs activity without repeating work.
 8. A third bot routes through the same paths with no special case.
-9. Where the server reports the `verification` capability, a task with a verification plan cannot complete with a failed or inconclusive check; without it, a plan is refused.
+9. Where the server reports the `verification` capability, a task with a verification plan cannot complete with a failed or inconclusive check, and the engine itself runs the checks in the task's sandbox; without it, a plan is refused.
 
 Sources: [pi](https://github.com/earendil-works/pi), [pi coding agent on npm](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), [Daytona SDK](https://www.daytona.io/docs), [reference implementations](references.md).

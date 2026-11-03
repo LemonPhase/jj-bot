@@ -23,6 +23,11 @@ import {
   usageSchema,
 } from "./tasks";
 import { spendScopeSchema } from "./usage";
+import {
+  checkOutcomeSchema,
+  verificationCheckSchema,
+  verificationPlanSchema,
+} from "./verification";
 
 /** Whether a command was cut short. `unknown` means its effect may already have happened. */
 export const interruptedSchema = z.enum([
@@ -77,10 +82,18 @@ export const taskEventSchema = z.discriminatedUnion("type", [
     "task.updated",
     z.object({ task: taskSchema, previousStatus: taskStatusSchema }),
   ),
-  /** Marker: the goal changed. The record arrives in `task.updated`. */
+  /**
+   * Marker: the goal or its verification plan changed, starting a new goal
+   * version. The record arrives in `task.updated`; with these markers the
+   * event log is the task's version history.
+   */
   event(
     "task.goal_changed",
-    z.object({ goal: z.string().min(1), goalVersion: z.number().int().min(1) }),
+    z.object({
+      goal: z.string().min(1),
+      goalVersion: z.number().int().min(1),
+      verificationPlan: verificationPlanSchema.nullable().default(null),
+    }),
   ),
   /** Marker: a user message continued a waiting, completed or failed task. */
   event(
@@ -170,6 +183,35 @@ export const taskEventSchema = z.discriminatedUnion("type", [
       goalVersion: z.number().int().min(1),
       /** Injected into a running session, or queued for its next run. */
       delivered: z.enum(["injected", "queued"]),
+    }),
+  ),
+  /**
+   * Marker: the coordinator asked to complete a task with a plan, and its
+   * checks start (attempt `attempt` of goal version `goalVersion`).
+   */
+  event(
+    "verification.started",
+    z.object({
+      goalVersion: z.number().int().min(1),
+      attempt: z.number().int().min(1),
+      criteria: z.number().int().min(1),
+    }),
+  ),
+  /** One check finished; carries its whole record. */
+  event("verification.checked", z.object({ check: verificationCheckSchema })),
+  /**
+   * Marker: an attempt's checks finished. `passed` only when every criterion
+   * passed; the task completes only after such an attempt.
+   */
+  event(
+    "verification.finished",
+    z.object({
+      goalVersion: z.number().int().min(1),
+      attempt: z.number().int().min(1),
+      outcome: checkOutcomeSchema,
+      passed: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+      inconclusive: z.number().int().nonnegative(),
     }),
   ),
   /**
@@ -274,6 +316,11 @@ export const taskViewSchema = z.object({
   sessions: z.array(executionSessionSchema),
   messages: z.array(taskMessageSchema),
   artifacts: z.array(artifactSchema),
+  /**
+   * Verification evidence: the checks of the latest attempt of each goal
+   * version, oldest first. Earlier attempts are in the event log.
+   */
+  verificationChecks: z.array(verificationCheckSchema).default([]),
   usage: z.object({
     total: usageSchema,
     bySession: z.record(idSchema, usageSchema),
@@ -407,6 +454,14 @@ export function activityFromEvent(
           return { kind: "command", text: describe("Using ", tool), since };
       }
     }
+    case "verification.started": {
+      const { criteria } = event.payload;
+      return {
+        kind: "verifying",
+        text: `Running the verification checks (${criteria})`,
+        since,
+      };
+    }
     case "session.updated": {
       const { session } = event.payload;
       if (session.status === "waiting")
@@ -442,7 +497,7 @@ export function applyTaskEvent(
   if (event.sequence <= view.cursor) return view;
   if (!isKnownEvent(event)) return { ...view, cursor: event.sequence };
 
-  let { task, sessions, messages, artifacts, usage } = view;
+  let { task, sessions, messages, artifacts, verificationChecks, usage } = view;
   switch (event.type) {
     case "task.created":
     case "task.updated":
@@ -467,6 +522,19 @@ export function applyTaskEvent(
     case "artifact.created":
       artifacts = upsert(artifacts, event.payload.artifact);
       break;
+    case "verification.checked": {
+      // A newer attempt of a goal version supersedes that version's earlier one.
+      const { check } = event.payload;
+      verificationChecks = upsert(
+        verificationChecks.filter(
+          (existing) =>
+            existing.goalVersion !== check.goalVersion ||
+            existing.attempt >= check.attempt,
+        ),
+        check,
+      );
+      break;
+    }
     case "model.finished": {
       const added = event.payload.usage;
       const { sessionId } = event;
@@ -501,6 +569,7 @@ export function applyTaskEvent(
     sessions,
     messages,
     artifacts,
+    verificationChecks,
     usage,
     events,
     firstSequence: trimmed
