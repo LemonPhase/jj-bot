@@ -1,4 +1,5 @@
 import {
+  type ApprovalRuleTool,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
   describeApprovalRule,
@@ -377,10 +378,27 @@ export function ProfileEditor({
   );
 }
 
-const TOOL_OPTIONS: SelectOption<ToolName>[] = CODING_TOOLS.map((tool) => ({
-  value: tool,
-  label: tool,
-}));
+const TOOL_OPTIONS: SelectOption<ApprovalRuleTool>[] = CODING_TOOLS.map(
+  (tool) => ({ value: tool, label: tool }),
+);
+
+const isCodingTool = (tool: string) =>
+  TOOL_OPTIONS.some((option) => option.value === tool);
+
+/**
+ * The coding tools, plus the MCP tools the rules named when the form opened
+ * and name now, so a row shows what it holds, and a stored MCP rule switched
+ * to a coding tool can be switched back.
+ */
+const toolOptions = (
+  stored: readonly ApprovalRuleTool[],
+  current: readonly ApprovalRuleTool[],
+): SelectOption<ApprovalRuleTool>[] => [
+  ...TOOL_OPTIONS,
+  ...[...new Set([...stored, ...current])]
+    .filter((tool) => !isCodingTool(tool))
+    .map((tool) => ({ value: tool, label: tool })),
+];
 
 /**
  * The profile's approval rules: calls of its bots that wait for the user's
@@ -397,6 +415,11 @@ function ApprovalRules({
   onChange: (rules: ApprovalRuleDraft[]) => void;
 }) {
   const [sample, setSample] = useState("");
+  const [stored] = useState(() => rules.map((rule) => rule.tool));
+  const options = toolOptions(
+    stored,
+    rules.map((rule) => rule.tool),
+  );
   const update = (index: number, change: Partial<ApprovalRuleDraft>) =>
     onChange(
       rules.map((rule, at) => (at === index ? { ...rule, ...change } : rule)),
@@ -423,7 +446,7 @@ function ApprovalRules({
               <Select
                 label={`Rule ${index + 1} tool`}
                 value={rule.tool}
-                options={TOOL_OPTIONS}
+                options={options}
                 onChange={(tool) => update(index, { tool })}
               />
               <Input

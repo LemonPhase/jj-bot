@@ -134,7 +134,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.6.0",
+      contractVersion: "1.7.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -142,6 +142,9 @@ describe("bootstrap, models and drivers", () => {
         streaming: true,
         verification: true,
         secretStore: false,
+        // This build runs no MCP server or skill, so neither is claimed.
+        mcp: { stdio: false, remote: false },
+        skills: false,
         drivers: [{ id: "local", available: true, isolated: false }],
       },
     });
@@ -169,6 +172,7 @@ describe("bootstrap, models and drivers", () => {
       .parse(body);
     expect(drivers.map((driver) => driver.id)).toEqual(["local"]);
     expect(drivers[0]?.capabilities.filesystemIsolation).toBe(false);
+    expect(drivers[0]?.capabilities.spawn).toBe(false);
     expect(drivers[0]?.specJsonSchema).toHaveProperty("properties");
   });
 });
@@ -356,6 +360,124 @@ describe("runtime profiles", () => {
       await t.call("GET", `/api/runtime-profiles/${profile.id}`),
       404,
       "NOT_FOUND",
+    );
+  });
+
+  it("refuses MCP servers and skills it cannot run, and stores none", async () => {
+    const before = await t.call("GET", "/api/runtime-profiles");
+    const docs = {
+      name: "docs",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@example/docs-mcp"],
+    };
+    const tracker = {
+      name: "tracker",
+      transport: "http",
+      url: "https://mcp.example.com/mcp",
+    };
+    for (const fields of [
+      { mcpServers: [docs] },
+      { mcpServers: [tracker] },
+      { skills: ["pdf-tools"] },
+    ]) {
+      const refused = expectError(
+        await t.call("POST", "/api/runtime-profiles", {
+          name: "With MCP",
+          sandbox: spec,
+          ...fields,
+        }),
+        422,
+        "MCP_UNAVAILABLE",
+      );
+      expect(refused.error.message).toMatch(/^(mcpServers|skills): /);
+    }
+    // Nothing was created by the refused requests.
+    expect((await t.call("GET", "/api/runtime-profiles")).body).toEqual(
+      before.body,
+    );
+
+    // A config the contract refuses is a validation error first.
+    expectError(
+      await t.call("POST", "/api/runtime-profiles", {
+        name: "Ungranted",
+        sandbox: spec,
+        mcpServers: [{ ...docs, secretEnv: { DOCS_TOKEN: "DOCS_TOKEN" } }],
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+
+    // Empty lists are what every profile holds, and read back as such.
+    const created = await t.call("POST", "/api/runtime-profiles", {
+      name: "Plain",
+      sandbox: spec,
+      mcpServers: [],
+      skills: [],
+    });
+    expect(created.status).toBe(201);
+    const profile = runtimeProfileSchema.parse(created.body.profile);
+    expect(profile).toMatchObject({ mcpServers: [], skills: [] });
+
+    for (const patch of [
+      { mcpServers: [docs] },
+      { skills: ["pdf-tools"] },
+      { name: "Renamed", mcpServers: [tracker] },
+    ])
+      expectError(
+        await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, patch),
+        422,
+        "MCP_UNAVAILABLE",
+      );
+    const unchanged = await t.call(
+      "GET",
+      `/api/runtime-profiles/${profile.id}`,
+    );
+    expect(unchanged.body.profile).toEqual(created.body.profile);
+
+    // A rule on every tool of a server is stored; it matches nothing until one runs.
+    const ruled = await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+      approvals: [{ tool: "mcp__docs__*", match: "delete" }],
+    });
+    expect(ruled.status).toBe(200);
+    expect(ruled.body.profile.approvals).toEqual([
+      { tool: "mcp__docs__*", match: "delete" },
+    ]);
+    // An exact name must name a tool of its server's pinned snapshot, and none is pinned.
+    for (const approvals of [
+      [{ tool: "mcp__docs__search" }],
+      [{ tool: "bash" }, { tool: "mcp__docs__search", match: "x" }],
+    ]) {
+      const exact = expectError(
+        await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+          approvals,
+        }),
+        400,
+        "VALIDATION_FAILED",
+      );
+      expect(exact.error.message).toMatch(
+        /^approvals\.\d\.tool: mcp__docs__search names no tool of its MCP server's pinned snapshot/,
+      );
+    }
+    expectError(
+      await t.call("POST", "/api/runtime-profiles", {
+        name: "Exact rule",
+        sandbox: spec,
+        approvals: [{ tool: "mcp__docs__search" }],
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expect(
+      (await t.call("GET", `/api/runtime-profiles/${profile.id}`)).body.profile
+        .approvals,
+    ).toEqual([{ tool: "mcp__docs__*", match: "delete" }]);
+    expectError(
+      await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+        approvals: [{ tool: "mcp__Docs__*" }],
+      }),
+      400,
+      "VALIDATION_FAILED",
     );
   });
 

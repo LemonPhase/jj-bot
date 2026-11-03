@@ -22,6 +22,7 @@ const docker: DriverCapabilities = {
   exposePort: false,
   snapshot: false,
   metrics: false,
+  spawn: false,
 };
 const local: DriverCapabilities = {
   ...docker,
