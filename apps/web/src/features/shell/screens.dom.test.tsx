@@ -19,7 +19,7 @@ const chunks = vi.hoisted(() => {
     const arrived = new Promise<void>((resolve) => {
       arrive = resolve;
     });
-    return { started: 0, arrived, arrive: () => arrive() };
+    return { started: 0, done: false, arrived, arrive: () => arrive() };
   };
   return { tasks: held(), studio: held(), settings: held() };
 });
@@ -27,11 +27,13 @@ const chunks = vi.hoisted(() => {
 vi.mock("../tasks/TasksScreen", async () => {
   chunks.tasks.started += 1;
   await chunks.tasks.arrived;
+  chunks.tasks.done = true;
   return { TasksScreen: () => "Tasks screen" };
 });
 vi.mock("../settings/SettingsScreen", async () => {
   chunks.settings.started += 1;
   await chunks.settings.arrived;
+  chunks.settings.done = true;
   return { SettingsScreen: () => "Settings screen" };
 });
 // Studio's chunk fails to arrive, as after a redeploy replaced it.
@@ -67,19 +69,42 @@ async function loadingStatus(label: string) {
   return status;
 }
 
+/** Whether `text` is ever added to the page from now on, however briefly. */
+function watchFor(text: string) {
+  let seen = false;
+  const observer = new MutationObserver((records) => {
+    for (const record of records)
+      for (const node of record.addedNodes)
+        if (node.textContent?.includes(text)) seen = true;
+  });
+  observer.observe(document.body, { subtree: true, childList: true });
+  return {
+    seen: () => {
+      for (const record of observer.takeRecords())
+        for (const node of record.addedNodes)
+          if (node.textContent?.includes(text)) seen = true;
+      observer.disconnect();
+      return seen;
+    },
+  };
+}
+
 describe("lazy screens", () => {
-  it("preload the deep-linked screen's chunk before anything renders, and name it while it loads", async () => {
+  it("preload the deep-linked screen's chunk before anything renders, then show it without a spinner", async () => {
     preloadScreen(parseRoute("#/bots/bot-1"));
     preloadScreen(parseRoute("#/settings"));
     await vi.waitFor(() => expect(chunks.settings.started).toBe(1));
     expect(chunks.tasks.started).toBe(0);
     expect(chunks.studio.started).toBe(0);
 
+    // The chunk arrives while the workspace would still be loading.
+    chunks.settings.arrive();
+    await vi.waitFor(() => expect(chunks.settings.done).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const spinner = watchFor("Loading Settings…");
     renderAppAt("#/settings");
-    await loadingStatus("Loading Settings…");
-    act(() => chunks.settings.arrive());
     expect(await screen.findByText("Settings screen")).toBeTruthy();
-    expect(screen.queryByText("Loading Settings…")).toBeNull();
+    expect(spinner.seen()).toBe(false);
     expect(chunks.settings.started).toBe(1);
   });
 
