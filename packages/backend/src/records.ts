@@ -15,6 +15,9 @@ import {
   type RuntimeProfile,
   type RuntimeProfileStatus,
   type SandboxSpec,
+  type Schedule,
+  type ScheduleFire,
+  type StoredTrigger,
   sandboxSpecSchema,
   type Task,
   type TaskEvent,
@@ -30,6 +33,8 @@ import type {
   BotRow,
   ConversationMessageRow,
   RuntimeProfileRow,
+  ScheduleFireRow,
+  ScheduleRow,
   SessionRow,
   TaskEventRow,
   TaskMessageRow,
@@ -97,6 +102,7 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     verificationPlan: planOf(row.verificationPlan),
     spendCapUsd: row.spendCapUsd,
     templateId: row.templateId,
+    scheduleId: row.scheduleId,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     finishedAt: isoOrNull(row.finishedAt),
@@ -123,6 +129,44 @@ export function toTaskTemplate(
     problems,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
+  };
+}
+
+/** A stored schedule, with its latest fire. */
+export function toSchedule(
+  row: ScheduleRow,
+  lastFire: ScheduleFireRow | null,
+): Schedule {
+  return {
+    id: row.id,
+    name: row.name,
+    templateId: row.templateId,
+    trigger: row.trigger as unknown as StoredTrigger,
+    instructions: row.instructions,
+    enabled: row.enabled,
+    overlap: row.overlap,
+    keepWorkspaces: row.keepWorkspaces,
+    chatUpdates: row.chatUpdates,
+    nextFireAt: isoOrNull(row.nextFireAt),
+    pausedReason: row.pausedReason ?? null,
+    lastFire: lastFire ? toScheduleFire(lastFire) : null,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
+  };
+}
+
+export function toScheduleFire(row: ScheduleFireRow): ScheduleFire {
+  return {
+    id: row.id,
+    scheduleId: row.scheduleId,
+    scheduledFor: iso(row.scheduledFor),
+    recordedAt: iso(row.recordedAt),
+    outcome: row.outcome,
+    reason: row.reason,
+    missedCount: row.missedCount,
+    taskId: row.taskId,
+    code: (row.code as ScheduleFire["code"]) ?? null,
+    ...(row.details ? { details: row.details } : {}),
   };
 }
 

@@ -10,6 +10,7 @@ import {
   type DriverHealth,
   type ExecOptions,
   type ExecResult,
+  type RemoveWorkspaceRequest,
   resolveExecTimeoutMs,
   type Sandbox,
   SandboxCapabilityError,
@@ -22,6 +23,7 @@ import {
   SandboxRequestError,
   type SandboxSpec,
   type SandboxStat,
+  SandboxWorkspaceInUseError,
   type SpawnExit,
   type SpawnOptions,
   sandboxSpecSchema,
@@ -2052,6 +2054,50 @@ export class DockerSandboxDriver implements SandboxDriver {
           (removed.length > 0 ? `; removed ${removed.join(", ")}` : ""),
       );
     return { removed };
+  }
+
+  /**
+   * Deletes the named volume behind the `task` workspace of `workspaceKey`,
+   * only when it carries this driver's labels for that mode and key. The
+   * daemon refuses a volume a container still uses (409): that is
+   * `SandboxWorkspaceInUseError`.
+   */
+  async removeWorkspace(
+    request: RemoveWorkspaceRequest,
+  ): Promise<{ removed: boolean }> {
+    if (request.mode !== "task")
+      throw new SandboxRequestError(
+        `Only task workspaces are removed this way, not ${String(request.mode)}`,
+      );
+    const key = assertWorkspaceKey(request.workspaceKey);
+    const engine = this.requireEngine();
+    const name = `${this.namespace}-task-${key}`;
+    let volume: VolumeInfo;
+    try {
+      volume = await engine.json<VolumeInfo>("GET", `/volumes/${name}`);
+    } catch (error) {
+      if (isNotFound(error)) return { removed: false };
+      throw error;
+    }
+    const labels = volume.Labels ?? {};
+    if (
+      labels[LABELS.sandbox] !== "1" ||
+      labels[LABELS.namespace] !== this.namespace ||
+      labels[LABELS.mode] !== "task" ||
+      labels[LABELS.key] !== key
+    )
+      throw new SandboxRequestError(
+        `Volume ${name} is not a task workspace created by the docker driver; refusing to remove it`,
+      );
+    try {
+      await engine.json("DELETE", `/volumes/${name}`);
+    } catch (error) {
+      if (isNotFound(error)) return { removed: false };
+      if (error instanceof DockerApiError && error.status === 409)
+        throw new SandboxWorkspaceInUseError(key);
+      throw error;
+    }
+    return { removed: true };
   }
 
   async acquire(request: AcquireRequest): Promise<Sandbox> {

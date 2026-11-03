@@ -14,7 +14,9 @@ import {
 } from "@jj/contracts";
 import {
   bots,
+  type ChatUpdateMode,
   cancelWhere,
+  type Executor,
   notify,
   runs,
   type SessionRow,
@@ -64,6 +66,13 @@ export interface NewTaskInput {
   spendCapUsd?: number | null;
   /** The task template the user started the task from. */
   templateId?: string | null;
+  /** The schedule that started the task, and its chat updates setting. */
+  schedule?: {
+    id: string;
+    chatUpdates: ChatUpdateMode;
+    /** A line the coordinator's first input ends with, saying who started it and for when. */
+    note: string;
+  };
 }
 
 /**
@@ -94,6 +103,8 @@ export async function createTaskTx(
       verificationPlan: input.verificationPlan ?? null,
       spendCapUsd,
       templateId: input.templateId ?? null,
+      scheduleId: input.schedule?.id ?? null,
+      chatUpdates: input.schedule?.chatUpdates ?? "all",
       createdAt: now,
       updatedAt: now,
     })
@@ -139,7 +150,7 @@ export async function createTaskTx(
         input.verificationPlan
           ? `\n\nThe user set a verification plan; it is in your system prompt. The task completes only when every check passes.`
           : ""
-      }`,
+      }${input.schedule ? `\n\n${input.schedule.note}` : ""}`,
     },
     { wake: true, ctx },
   );
@@ -162,6 +173,30 @@ export function assertModel(
 }
 
 /**
+ * VALIDATION_FAILED unless every bot exists and is not archived, and
+ * MODEL_NOT_CONFIGURED unless each one's model can run: what task creation
+ * checks before it writes anything.
+ */
+export async function assertTaskBots(
+  exec: Executor,
+  ctx: EngineContext,
+  botIds: readonly string[],
+): Promise<void> {
+  const found = await exec
+    .select()
+    .from(bots)
+    .where(and(inArray(bots.id, [...botIds]), isNull(bots.archivedAt)));
+  const missing = botIds.filter((id) => !found.some((bot) => bot.id === id));
+  if (missing.length > 0)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      `Unknown bot: ${missing.join(", ")}.`,
+      { botIds: missing },
+    );
+  for (const bot of found) assertModel(ctx, bot);
+}
+
+/**
  * `POST /api/tasks`, and the start of a task template (`templateId`), which
  * makes the same task from the template's fields.
  */
@@ -171,22 +206,7 @@ export async function createTask(
   options: { templateId?: string } = {},
 ): Promise<{ task: Task }> {
   const command = parseCommand(createTaskCommandSchema, input);
-  const found = await ctx.db
-    .select()
-    .from(bots)
-    .where(
-      and(inArray(bots.id, command.participantBotIds), isNull(bots.archivedAt)),
-    );
-  const missing = command.participantBotIds.filter(
-    (id) => !found.some((bot) => bot.id === id),
-  );
-  if (missing.length > 0)
-    throw new DomainError(
-      "VALIDATION_FAILED",
-      `Unknown bot: ${missing.join(", ")}.`,
-      { botIds: missing },
-    );
-  for (const bot of found) assertModel(ctx, bot);
+  await assertTaskBots(ctx.db, ctx, command.participantBotIds);
   const { task } = await ctx.db.transaction((tx) =>
     createTaskTx(tx, ctx, { ...command, templateId: options.templateId }),
   );

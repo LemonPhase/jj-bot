@@ -1,6 +1,7 @@
 // The job loop: claims up to `concurrency` jobs, heartbeats their leases,
 // aborts runs on stop requests, and recovers what a crashed worker left.
-// Waiting sessions hold no job, so they never take a slot.
+// Waiting sessions hold no job, so they never take a slot. It also runs the
+// scheduler pass, at start and every `schedulerIntervalMs`.
 import { isFinishedStatus } from "@jj/contracts";
 import {
   type ClaimedJob,
@@ -26,6 +27,7 @@ import { refreshHolders, releaseHolder } from "./holders";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
 import { TaskSandboxes } from "./sandboxes";
+import { runSchedulerPass, type SchedulerPass } from "./scheduler";
 import { runSessionJob } from "./session-run";
 
 interface ActiveJob {
@@ -63,6 +65,12 @@ export interface Worker {
    * failing, so readiness checks use it as the worker's heartbeat.
    */
   readonly lastPollAt: Date | null;
+  /**
+   * Runs a scheduler pass now, after any pass in progress, at the engine
+   * clock's now. The loop runs one at start and every
+   * `schedulerIntervalMs`; tests call it to fire schedules on a fake clock.
+   */
+  runSchedulerPass(): Promise<SchedulerPass>;
 }
 
 export function createWorker(
@@ -108,6 +116,31 @@ export function createWorker(
   let crashing = false;
   let lastPollAt: Date | null = null;
   let lastBeatAt = 0;
+  let scheduling: Promise<SchedulerPass> | undefined;
+
+  /** One scheduler pass at a time in this worker; a request during one waits for it, then runs. */
+  async function schedulePass(): Promise<SchedulerPass> {
+    while (scheduling) await scheduling.catch(() => {});
+    const pass = runSchedulerPass(ctx, {
+      holds: (taskId) => sandboxes.holds(taskId),
+    });
+    scheduling = pass;
+    try {
+      return await pass;
+    } finally {
+      if (scheduling === pass) scheduling = undefined;
+    }
+  }
+
+  /** The loop's pass: skipped while one runs or the worker stops; a failure is logged. */
+  async function scheduleTick() {
+    if (stopping || scheduling) return;
+    await schedulePass().catch((error: unknown) =>
+      ctx.logger.warn("The scheduler pass failed; retrying at the next one", {
+        error: errorMessage(error),
+      }),
+    );
+  }
 
   const abortWhere = (
     match: (job: ClaimedJob) => boolean,
@@ -368,6 +401,7 @@ export function createWorker(
     for (const unsubscribe of unsubscribers.splice(0))
       await unsubscribe().catch(() => {});
     while (pumping) await new Promise((resolve) => setTimeout(resolve, 5));
+    await scheduling?.catch(() => {});
     for (const entry of active.values()) entry.control.abort(reason);
     await Promise.all([...active.values()].map((entry) => entry.done));
     await sandboxes.releaseAll();
@@ -388,6 +422,7 @@ export function createWorker(
     get lastPollAt() {
       return lastPollAt;
     },
+    runSchedulerPass: schedulePass,
     async start() {
       if (started) return;
       started = true;
@@ -430,7 +465,9 @@ export function createWorker(
       every(Math.min(ctx.config.sandboxIdleMs, 30_000), () =>
         sandboxes.sweep(),
       );
+      every(ctx.config.schedulerIntervalMs, scheduleTick);
       await pump();
+      void scheduleTick();
     },
     stop: () => shutDown("shutdown"),
     abandon: () => shutDown("crash"),

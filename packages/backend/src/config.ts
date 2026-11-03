@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { MAX_SPEND_CAP_USD, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import {
+  MAX_SPEND_CAP_USD,
+  SCHEDULE_MIN_INTERVAL_BOUNDS,
+  TOOL_OUTPUT_PREVIEW_LIMIT,
+} from "@jj/contracts";
 
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
@@ -76,6 +80,20 @@ export interface EngineConfig {
   streamPollMs: number;
   /** How long a driver probe result is reused. */
   probeTtlMs: number;
+  /** How often the worker runs a scheduler pass (and once when it starts). */
+  schedulerIntervalMs: number;
+  /**
+   * How late a schedule's due time may still start a task
+   * (`JJ_SCHEDULE_GRACE_MINUTES`, default 60); an older one is recorded
+   * missed.
+   */
+  scheduleGraceMinutes: number;
+  /**
+   * The least time between two runs of a schedule, on its wall clock
+   * (`JJ_SCHEDULE_MIN_INTERVAL_MINUTES`, default 60, 15–1440), checked at
+   * save and at every fire.
+   */
+  scheduleMinIntervalMinutes: number;
 }
 
 export type EngineConfigInput = Partial<Omit<EngineConfig, "artifacts">> & {
@@ -120,6 +138,9 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
+    schedulerIntervalMs: 30_000,
+    scheduleGraceMinutes: 60,
+    scheduleMinIntervalMinutes: 60,
     ...stripUndefined(rest),
     artifacts: {
       ...DEFAULT_ARTIFACT_LIMITS,
@@ -151,11 +172,22 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "chatMaxTurns",
     "ephemeralIdleMs",
     "maxHeldSandboxes",
+    "schedulerIntervalMs",
+    "scheduleGraceMinutes",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`${key} must be a positive integer.`);
   }
+  const { min, max } = SCHEDULE_MIN_INTERVAL_BOUNDS;
+  if (
+    !Number.isSafeInteger(config.scheduleMinIntervalMinutes) ||
+    config.scheduleMinIntervalMinutes < min ||
+    config.scheduleMinIntervalMinutes > max
+  )
+    throw new RangeError(
+      `JJ_SCHEDULE_MIN_INTERVAL_MINUTES must be a whole number of minutes from ${min} to ${max}.`,
+    );
   return config;
 }
 
@@ -206,6 +238,8 @@ export function configFromEnv(
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
+    scheduleGraceMinutes: int("JJ_SCHEDULE_GRACE_MINUTES"),
+    scheduleMinIntervalMinutes: int("JJ_SCHEDULE_MIN_INTERVAL_MINUTES"),
     persistence: !inMemory,
     workerHeartbeat: Boolean(env.DATABASE_URL?.trim()),
   };

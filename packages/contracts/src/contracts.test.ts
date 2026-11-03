@@ -77,6 +77,7 @@ const task = {
   verificationPlan: null,
   spendCapUsd: 5,
   templateId: null,
+  scheduleId: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,
@@ -248,6 +249,7 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     stderrTail: "Error: [redacted] is invalid",
     drift: ["search"],
   },
+  "workspace.removed": { scheduleId: "sched1", keepWorkspaces: 10 },
   "cancellation.requested": { reason: null },
   "cancellation.completed": {
     stopped: [
@@ -284,8 +286,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.9.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.0");
+  it("is version 1.11.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.11.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {

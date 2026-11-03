@@ -45,3 +45,15 @@ export async function readInstanceSetting(
     .where(eq(instanceSettings.key, key));
   return row?.value;
 }
+
+/** Stores the instance setting `key`, replacing any earlier value. */
+export async function writeInstanceSetting(
+  exec: Executor,
+  key: string,
+  value: string,
+): Promise<void> {
+  await exec
+    .insert(instanceSettings)
+    .values({ key, value })
+    .onConflictDoUpdate({ target: instanceSettings.key, set: { value } });
+}

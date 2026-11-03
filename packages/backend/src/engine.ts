@@ -11,6 +11,7 @@ import {
   type ConversationView,
   type CreateBotCommand,
   type CreateRuntimeProfileCommand,
+  type CreateScheduleCommand,
   type CreateTaskCommand,
   type CreateTaskTemplateCommand,
   type DecideApprovalCommand,
@@ -19,6 +20,9 @@ import {
   type PutSecretCommand,
   type RuntimeProfile,
   type SandboxDriverInfo,
+  type Schedule,
+  type ScheduleDetail,
+  type ScheduleList,
   type SecretInfo,
   type SecretsView,
   type SendBotMessageCommand,
@@ -34,6 +38,7 @@ import {
   type UpdateBotCommand,
   type UpdateBotMemoryCommand,
   type UpdateRuntimeProfileCommand,
+  type UpdateScheduleCommand,
   type UpdateTaskCommand,
   type UpdateTaskTemplateCommand,
   type UsageReport,
@@ -66,6 +71,7 @@ import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
 import { postTaskMessage } from "./services/messages";
 import * as profileService from "./services/profiles";
+import * as scheduleService from "./services/schedules";
 import * as secretService from "./services/secrets";
 import {
   subscribeTask,
@@ -224,6 +230,21 @@ export interface Engine {
       command: StartTemplateCommand,
     ): Promise<{ task: Task }>;
   };
+  /** Schedules: templates the worker's scheduler starts on a cron schedule. */
+  schedules: {
+    /** `GET /api/schedules`, oldest first, with the scheduler's state. */
+    list(): Promise<ScheduleList>;
+    /** `POST /api/schedules`: VALIDATION_FAILED or CONFLICT as the contract says. */
+    create(command: CreateScheduleCommand): Promise<{ schedule: Schedule }>;
+    /** `GET /api/schedules/:id`, with its latest fires. */
+    get(scheduleId: string): Promise<ScheduleDetail>;
+    update(
+      scheduleId: string,
+      command: UpdateScheduleCommand,
+    ): Promise<{ schedule: Schedule }>;
+    /** `DELETE /api/schedules/:id`: its tasks keep their `scheduleId`. */
+    delete(scheduleId: string): Promise<void>;
+  };
   worker: Worker;
   /** `GET /metrics`: the Prometheus metrics of this engine and its worker. */
   metrics: EngineMetrics;
@@ -331,6 +352,8 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
           mcp: { stdio: false, remote: false },
           skills: false,
+          // Every worker runs the scheduler; `lastPassAt` says whether one does.
+          schedules: true,
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,
@@ -401,6 +424,14 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       delete: (templateId) => templateService.deleteTemplate(ctx, templateId),
       start: (templateId, command) =>
         templateService.startTemplate(ctx, templateId, command),
+    },
+    schedules: {
+      list: () => scheduleService.listSchedules(ctx),
+      create: (command) => scheduleService.createSchedule(ctx, command),
+      get: (scheduleId) => scheduleService.getSchedule(ctx, scheduleId),
+      update: (scheduleId, command) =>
+        scheduleService.updateSchedule(ctx, scheduleId, command),
+      delete: (scheduleId) => scheduleService.deleteSchedule(ctx, scheduleId),
     },
     worker,
     metrics,
