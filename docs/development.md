@@ -124,8 +124,8 @@ The app fills the viewport at every width and only its panes scroll, never the p
 The built app is installable: `public/manifest.webmanifest`, its icons and the service worker `public/sw.js`. The icons are drawn from the brand mark in `public/favicon.svg` by `npm run icons -w @jj/web`, and `icons.test.ts` fails when a committed PNG no longer matches. `src/lib/serviceWorker.ts` registers the worker after the page loads, in production builds only, so `npm run dev` and the unit tests never run it. It caches the app shell and nothing else:
 
 - It never handles `/api/*`, `/health*`, other origins or any method but GET: API answers, the event streams and the token go to the network as without a service worker, and nothing from them is stored.
-- Page loads are network first: the server's `index.html` whenever it can be reached, so a deploy shows on the next load and nobody is left on a stale shell. Each one is stored (without the address it came from, so no `?token=`) and served only when the network fails, so the app still opens offline and says that the API cannot be reached.
-- `/assets/*`, Vite's content-hashed files, are served from the cache once stored, else fetched and stored. A shell that changed stores the assets it loads first and drops stored assets the server no longer has.
+- Page loads are network first: the server's `index.html` whenever it answers, so a deploy shows on the next load and nobody is left on a stale shell. Each one is stored (without the address it came from, so no `?token=`) and served only when the network fails or the server answers with a 5xx (down behind a proxy), so the app still opens and says that the API cannot be reached.
+- `/assets/*`, Vite's content-hashed files, are served from the cache once stored, else fetched and stored. A shell that changed is stored once the assets it loads first are, so the stored shell always has them, and then stored assets the server no longer has are dropped. Other screens' chunks are stored when first used.
 
 ## Configuration
 

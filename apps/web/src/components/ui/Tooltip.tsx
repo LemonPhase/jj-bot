@@ -23,7 +23,7 @@ const EDGE_PX = 8;
 /**
  * Where the bubble would be cut off above: the top of the nearest ancestor
  * that clips it (a scrolling pane, such as a panel under the phone top bar),
- * else the viewport's.
+ * or the viewport's when that is lower.
  */
 function clipTop(element: Element | null): number {
   for (
@@ -32,7 +32,7 @@ function clipTop(element: Element | null): number {
     parent = parent.parentElement
   )
     if (getComputedStyle(parent).overflowY !== "visible")
-      return parent.getBoundingClientRect().top;
+      return Math.max(0, parent.getBoundingClientRect().top);
   return 0;
 }
 

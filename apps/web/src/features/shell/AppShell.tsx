@@ -99,10 +99,9 @@ export function AppShell() {
       navigate(target, { replace: true });
   }, [loading, route, listedKey]);
 
-  // Growing past phone width puts the sidebar back in place.
-  useEffect(() => {
-    if (!narrow) setNavOpen(false);
-  }, [narrow]);
+  // Growing past phone width puts the sidebar back in place, and the drawer
+  // stays shut if the screen narrows again.
+  if (!narrow && navOpen) setNavOpen(false);
 
   // The Bots/Tasks switch keeps the drawer open on the other list; a link or
   // a row in it (NavDrawer) and the New actions (below) close it.

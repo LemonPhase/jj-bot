@@ -144,10 +144,17 @@ export function TaskOffice({
   const inspectId = useId();
   const viewRef = useRef<OfficeViewHandle | null>(null);
 
-  const setMode = (next: OfficeMode) => {
-    setModeState(next);
+  // Another view on screen, chosen or because the screen narrowed: it starts
+  // from a clean status and nobody picked, before it renders.
+  const [shown, setShown] = useState(mode);
+  if (shown !== mode) {
+    setShown(mode);
     setStatus(IDLE_STATUS);
     setPickedBotId(null);
+  }
+
+  const setMode = (next: OfficeMode) => {
+    setModeState(next);
     writeOfficeMode(next);
   };
 

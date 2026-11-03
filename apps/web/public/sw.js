@@ -5,18 +5,21 @@
  *   origins and every method but GET are never handled. They go to the
  *   network exactly as without a service worker, and nothing they return is
  *   stored, so the cache never holds API data or a token.
- * - Page loads are network first: the server's index.html whenever it can
- *   be reached, so a deploy shows on the next load as it would without a
+ * - Page loads are network first: the server's index.html whenever it
+ *   answers, so a deploy shows on the next load as it would without a
  *   service worker. Each one is stored as the shell; the stored shell is
- *   served only when the network fails, so the app still opens offline.
+ *   served only when the network fails or the server answers with a 5xx
+ *   (down behind a proxy), so the app still opens and says so.
  * - `/assets/*` are Vite's content-hashed files: a name never changes
  *   content, so a stored one is served without asking, and one not stored
  *   yet is fetched and stored.
  *
- * When a fetched shell differs from the stored one (a deploy), the assets it
- * loads first are stored, and stored assets the server no longer has are
- * dropped. Registered by src/lib/serviceWorker.ts in production builds only;
- * the browser suite checks this behaviour (apps/web/e2e/pwa.e2e.ts).
+ * A fetched shell that differs from the stored one (a deploy) is stored once
+ * the assets it loads first are, so the stored shell always has its assets
+ * (and a failed attempt is retried on the next load); then stored assets the
+ * server no longer has are dropped. Registered by src/lib/serviceWorker.ts
+ * in production builds only; the browser suite checks this behaviour
+ * (apps/web/e2e/pwa.e2e.ts).
  */
 const CACHE = "jj-shell-v1";
 const SHELL = "/index.html";
@@ -45,7 +48,18 @@ const shellAssets = (html) => [
 async function storeShell(html) {
   const cache = await caches.open(CACHE);
   const stored = await cache.match(SHELL);
-  const before = stored ? await stored.text() : null;
+  if (stored && (await stored.text()) === html) return;
+  const assets = shellAssets(html);
+  // Throws when one does not arrive: the old shell, whose assets are stored,
+  // stays until a later load stores this one whole.
+  await Promise.all(
+    assets.map(async (path) => {
+      if (await cache.match(path)) return;
+      const response = await fetch(path);
+      if (!response.ok) throw new Error(`${path}: ${response.status}`);
+      await cache.put(path, response);
+    }),
+  );
   // A response of its own, with no URL: the address it was loaded from, a
   // `?token=` included, never reaches the cache.
   await cache.put(
@@ -54,47 +68,48 @@ async function storeShell(html) {
       headers: { "content-type": "text/html; charset=utf-8" },
     }),
   );
-  if (html === before) return;
-  const assets = shellAssets(html);
+  const keep = new Set(assets);
+  const others = (await cache.keys()).filter((request) => {
+    const path = new URL(request.url).pathname;
+    return path.startsWith("/assets/") && !keep.has(path);
+  });
   await Promise.all(
-    assets.map(async (path) => {
-      if (await cache.match(path)) return;
-      const response = await fetch(path);
-      if (response.ok) await cache.put(path, response);
+    others.map(async (request) => {
+      const head = await fetch(request.url, {
+        method: "HEAD",
+        cache: "no-store",
+      }).catch(() => null);
+      if (head?.status === 404) await cache.delete(request);
     }),
   );
-  const keep = new Set(assets);
-  for (const request of await cache.keys()) {
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith("/assets/") || keep.has(path)) continue;
-    const head = await fetch(request.url, {
-      method: "HEAD",
-      cache: "no-store",
-    }).catch(() => null);
-    if (head?.status === 404) await cache.delete(request);
-  }
+}
+
+async function storedShell(path) {
+  return isPageRoute(path)
+    ? caches.match(SHELL, { cacheName: CACHE })
+    : undefined;
 }
 
 async function page(event) {
   const path = new URL(event.request.url).pathname;
+  let response;
   try {
-    const response = await fetch(event.request);
-    if (response.ok && isHtml(response) && isPageRoute(path))
-      event.waitUntil(
-        response
-          .clone()
-          .text()
-          .then(storeShell)
-          .catch(() => {}),
-      );
-    return response;
+    response = await fetch(event.request);
   } catch (error) {
-    const stored = isPageRoute(path)
-      ? await caches.match(SHELL, { cacheName: CACHE })
-      : undefined;
+    const stored = await storedShell(path);
     if (stored) return stored;
     throw error;
   }
+  if (response.status >= 500) return (await storedShell(path)) ?? response;
+  if (response.ok && isHtml(response) && isPageRoute(path))
+    event.waitUntil(
+      response
+        .clone()
+        .text()
+        .then(storeShell)
+        .catch(() => {}),
+    );
+  return response;
 }
 
 async function asset(event) {

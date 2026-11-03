@@ -220,4 +220,18 @@ test("a new deploy shows on the next load: the page comes from the network first
   await page.reload();
   await expect(page).toHaveTitle("JJ Bot, deployed again");
   await page.context().setOffline(false);
+
+  // So does a proxy's error page while the server is down.
+  await page.context().route(
+    (url) => url.pathname === "/",
+    (route) =>
+      route.fulfill({
+        status: 502,
+        contentType: "text/html",
+        body: "<title>Bad gateway</title>",
+      }),
+  );
+  await page.reload();
+  await expect(page).toHaveTitle("JJ Bot, deployed again");
+  await page.context().unrouteAll();
 });

@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { App } from "../../App";
 import { ApiProvider } from "../../api/ApiContext";
 import { createDemoApi } from "../../api/demoApi";
-import { NARROW_QUERY } from "../../lib/media";
+import { NARROW_QUERY, resetMediaQueries } from "../../lib/media";
 import { WorkspaceProvider } from "../../state/WorkspaceContext";
 
 // Whole-provider renders share CPU with the other suites in a full run.
@@ -53,10 +53,12 @@ beforeEach(() => {
   window.history.replaceState(null, "", "/#/bots/bot-juno");
   localStorage.clear();
   phoneWidth();
+  resetMediaQueries();
 });
 
 afterEach(() => {
   window.matchMedia = original;
+  resetMediaQueries();
 });
 
 describe("the phone menu", () => {

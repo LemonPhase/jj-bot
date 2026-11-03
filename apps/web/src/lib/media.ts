@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 /**
  * Phone widths: the layout breakpoint the stylesheets use (`max-width: 759px`).
@@ -7,26 +7,42 @@ import { useSyncExternalStore } from "react";
  */
 export const NARROW_QUERY = "(max-width: 759px)";
 
+/** One MediaQueryList per query, so renders do not build new ones. */
+const lists = new Map<string, MediaQueryList | null>();
+
 function mediaQuery(query: string): MediaQueryList | null {
+  if (lists.has(query)) return lists.get(query) ?? null;
+  let list: MediaQueryList | null = null;
   try {
-    return typeof window !== "undefined" &&
-      typeof window.matchMedia === "function"
-      ? window.matchMedia(query)
-      : null;
+    list =
+      typeof window !== "undefined" && typeof window.matchMedia === "function"
+        ? window.matchMedia(query)
+        : null;
   } catch {
-    return null;
+    list = null;
   }
+  lists.set(query, list);
+  return list;
+}
+
+/** Forgets the MediaQueryLists, for tests that replace `window.matchMedia`. */
+export function resetMediaQueries(): void {
+  lists.clear();
 }
 
 /** Whether `query` matches; follows changes live. False where it cannot be asked. */
 export function useMediaQuery(query: string): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      const media = mediaQuery(query);
-      media?.addEventListener("change", listener);
-      return () => media?.removeEventListener("change", listener);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const list = mediaQuery(query);
+      list?.addEventListener("change", listener);
+      return () => list?.removeEventListener("change", listener);
     },
-    () => mediaQuery(query)?.matches ?? false,
-    () => false,
+    [query],
   );
+  const matches = useCallback(
+    () => mediaQuery(query)?.matches ?? false,
+    [query],
+  );
+  return useSyncExternalStore(subscribe, matches, () => false);
 }
