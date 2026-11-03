@@ -63,6 +63,15 @@ export const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 /** Stores output over the cap. Returns the artifact id. */
 export type SpillOutput = (text: string, label: string) => Promise<string>;
 
+/**
+ * The ends of a text where a cut went through it, such as the end of output
+ * a sandbox's output limit stopped keeping.
+ */
+export interface CutEdges {
+  start?: boolean;
+  end?: boolean;
+}
+
 export interface OutputPolicy {
   /** UTF-8 bytes of tool output the model and the event preview receive. */
   capBytes: number;
@@ -70,9 +79,27 @@ export interface OutputPolicy {
   /**
    * Replaces the server's secrets. Applied to the whole output before it is
    * capped or spilled, so a cut can never leave part of a secret behind.
+   * Output already cut as it arrived (at the sandbox's output limit) is
+   * passed with `cut` naming that edge, where it also masks what the cut
+   * left of a secret.
    */
-  redact?: (text: string) => string;
+  redact?: (text: string, cut?: CutEdges) => string;
 }
+
+/**
+ * What a command printed, redacted. `cut`: the sandbox stopped keeping it at
+ * its output limit, so it ends where the cut went, perhaps through a secret.
+ */
+export const redactOutput = (
+  policy: OutputPolicy,
+  text: string,
+  cut: boolean,
+): string =>
+  policy.redact ? policy.redact(text, cut ? { end: true } : undefined) : text;
+
+/** A tool call's label (`bash: <command>`): redacted, then cut to 120 characters. */
+export const toolLabel = (policy: OutputPolicy, tool: string, value: string) =>
+  `${tool}: ${(policy.redact ? policy.redact(value) : value).slice(0, 120)}`;
 
 const encoder = new TextEncoder();
 export const byteLength = (text: string) => encoder.encode(text).length;

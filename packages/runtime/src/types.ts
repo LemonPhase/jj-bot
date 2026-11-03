@@ -7,6 +7,7 @@ import type {
 import type { ModelRef, ToolName, Usage } from "@jj/contracts";
 import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
 import type { RunErrorCode } from "./errors";
+import type { CutEdges } from "./tools";
 
 /**
  * A pi message as persisted in `session_entries` (as JSON). System messages
@@ -223,8 +224,10 @@ export interface RunInput {
    * Replaces the server's secret values. The runtime applies it to tool
    * output, tool summaries and model text before any cap, clip or spill, so
    * a cut never leaves part of a secret; the engine redacts again on write.
+   * Output a sandbox's output limit cut as it arrived is passed with `cut`
+   * naming the edge, where what is left of a secret is masked too.
    */
-  redact?: (text: string) => string;
+  redact?: (text: string, cut?: CutEdges) => string;
   /**
    * The user's answer to the call an earlier run held. Applied before the
    * first model call while the call is still unanswered in the transcript

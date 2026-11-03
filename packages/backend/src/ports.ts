@@ -16,6 +16,7 @@ import type {
   SandboxDriver,
   SandboxLimits,
 } from "@jj/sandbox/contract";
+import type { CutEdges } from "./redact";
 
 /**
  * One persisted transcript entry, opaque to the engine: a pi message, or a
@@ -180,8 +181,10 @@ export interface RunInput {
    * Replaces the server's secret values. The runtime applies it to tool
    * output, tool summaries and model text before any cap, clip or spill, so
    * a cut never leaves part of a secret; the engine redacts again on write.
+   * Output a sandbox's output limit cut as it arrived is passed with `cut`
+   * naming the edge, where what is left of a secret is masked too.
    */
-  redact?: (text: string) => string;
+  redact?: (text: string, cut?: CutEdges) => string;
   /**
    * The user's answer to the call an earlier run held, applied before the
    * first model call while the call is unanswered in the transcript: an
