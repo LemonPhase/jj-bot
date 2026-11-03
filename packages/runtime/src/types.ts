@@ -112,6 +112,12 @@ export type ExecutorEvent =
       artifactId?: string;
     };
 
+/** One tool call of a model response, as `RunHooks.reviewTurn` sees it. */
+export interface TurnCall {
+  toolCallId: string;
+  tool: string;
+}
+
 export interface RunHooks {
   onEvent(event: ExecutorEvent): void | Promise<void>;
   /**
@@ -139,6 +145,18 @@ export interface RunHooks {
    * and reports no events; the run ends with `budget` (`limit: "spend"`).
    */
   admitModelCall?(): Promise<string | undefined>;
+  /**
+   * Asked once for each model response that calls tools, with all of its
+   * calls, after the response is persisted and before any of them runs
+   * (absent: they all run). Returns text to end the run at this turn, or
+   * undefined to go on. With text, none of the calls runs: each is answered
+   * with the text as its error result (its tool events reported as usual),
+   * and the run ends `ended` with empty `finalText` once the batch is
+   * answered, without draining the inbox again. Not asked for a response cut
+   * at the output limit, whose calls pi refuses itself. A rejection ends the
+   * run with an error outcome, like `onEvent`'s.
+   */
+  reviewTurn?(calls: readonly TurnCall[]): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -187,7 +205,10 @@ export interface RunInput {
 }
 
 export type RunOutcome =
-  /** The model ended its turn (or a tool ended the run); `finalText` is its last text. */
+  /**
+   * The model ended its turn, or a tool or `reviewTurn` ended the run;
+   * `finalText` is its last text (empty when `reviewTurn` ended it).
+   */
   | { kind: "ended"; finalText: string }
   /** Woken with no inputs and an empty inbox: nothing was run. */
   | { kind: "idle" }

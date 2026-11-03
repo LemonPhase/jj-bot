@@ -207,6 +207,7 @@ export class PiSessionExecutor implements RunExecutor {
       signal,
       retry: this.retry,
       endRequested: () => endRequested,
+      ...(hooks.reviewTurn ? { reviewTurn: hooks.reviewTurn.bind(hooks) } : {}),
       ...(input.redact ? { redact: input.redact } : {}),
       getSteering: drain,
       persist: async (entries) => {

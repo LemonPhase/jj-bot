@@ -55,6 +55,7 @@ import type {
   PiMessage,
   RunOutcome,
   TranscriptEntry,
+  TurnCall,
 } from "./types";
 
 /** Largest delay a Node timer represents. */
@@ -189,6 +190,12 @@ export interface LoopSpec {
   retry: RetryPolicy;
   /** True once a tool asked to end the run. */
   endRequested(): boolean;
+  /**
+   * Asked for each response that calls tools, before any call runs: text
+   * ends the run at this turn, answering every call with it (see
+   * `RunHooks.reviewTurn`). Absent: every call runs.
+   */
+  reviewTurn?: (calls: readonly TurnCall[]) => Promise<string | undefined>;
   getSteering(): Promise<UserMessage[]>;
   persist(entries: TranscriptEntry[]): Promise<void>;
   onEvent(event: ExecutorEvent): Promise<void>;
@@ -343,6 +350,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   let cutWarning: string | undefined;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
+  /** Set when `reviewTurn` ended the run: the text that answers each call of that turn. */
+  let turnEnd: { text: string; calls: Set<string> } | undefined;
   const collabByName = new Map(
     spec.collabTools.map((tool) => [tool.name, tool]),
   );
@@ -394,7 +403,21 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
             ...(warning ? { warning } : {}),
           });
           // The call must be durable before its tools run.
-          if (persistable(message) && hasToolCalls(message)) await flush();
+          if (persistable(message) && hasToolCalls(message)) {
+            await flush();
+            // pi refuses every call of a response cut at the output limit.
+            if (spec.reviewTurn && message.stopReason !== "length") {
+              const batch = toolCallsOf(message);
+              const text = await spec.reviewTurn(
+                batch.map((call) => ({ toolCallId: call.id, tool: call.name })),
+              );
+              if (text !== undefined)
+                turnEnd = {
+                  text,
+                  calls: new Set(batch.map((call) => call.id)),
+                };
+            }
+          }
         }
         return;
       }
@@ -512,6 +535,11 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     // Keys come from the registry's env, per call; pi's own env lookup is never relied on.
     getApiKey: () => resolved.getApiKey(),
     toolExecution: "parallel",
+    // A turn `reviewTurn` ended runs none of its calls: each is answered with its text.
+    beforeToolCall: async ({ toolCall }) =>
+      turnEnd?.calls.has(toolCall.id)
+        ? { block: true, reason: turnEnd.text }
+        : undefined,
     prepareRequest: async (request) => {
       await flush();
       latestContext = request.context;
@@ -542,6 +570,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     finishTurn: async (turn) => {
       latestContext = turn.context;
       if (signal.aborted) return { action: "end" };
+      if (turnEnd) return { action: "end" };
       const wantsMore =
         hasToolCalls(turn.message) && turn.toolResults.length > 0;
       if (spec.endRequested()) return { action: "end" };
@@ -706,5 +735,6 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       overflowNote ?? (code === "context_overflow" ? compactionOff : undefined);
     return fail(code, note ? `${error} ${note}` : error);
   }
-  return { kind: "ended", finalText };
+  // A turn `reviewTurn` ended was not an answer: its text is not the run's.
+  return { kind: "ended", finalText: turnEnd ? "" : finalText };
 }

@@ -1,6 +1,7 @@
 import {
   fauxAssistantMessage,
   fauxProvider,
+  fauxText,
   fauxToolCall,
   type ToolResultMessage,
   Type,
@@ -29,10 +30,13 @@ import {
   serializeEntry,
 } from "./transcript";
 import type {
+  CollabTool,
   ExecutorEvent,
   PiMessage,
+  RunHooks,
   RunInput,
   TranscriptEntry,
+  TurnCall,
 } from "./types";
 
 type Faux = ReturnType<typeof fauxProvider>;
@@ -971,5 +975,161 @@ describe("PiSessionExecutor", () => {
     expect(repairTranscript(recorded.entries as PiMessage[])).toEqual(
       recorded.entries,
     );
+  });
+});
+
+describe("reviewTurn", () => {
+  const note = (noted: unknown[]): CollabTool => ({
+    name: "note",
+    description: "Record a note.",
+    parameters: Type.Object({ text: Type.String() }),
+    execute: async (args) => {
+      noted.push(args);
+      return { text: "noted" };
+    },
+  });
+
+  it("ends the run at a turn it ends: no call runs, each is answered with its text", async () => {
+    const recorded = recordingHooks();
+    const reviewed: TurnCall[][] = [];
+    const noted: unknown[] = [];
+    let persistedAtReview = -1;
+    let drainsAtReview = -1;
+    const hooks: RunHooks = {
+      ...recorded.hooks,
+      reviewTurn: async (calls) => {
+        reviewed.push([...calls]);
+        persistedAtReview = recorded.entries.length;
+        drainsAtReview = recorded.drains;
+        return reviewed.length === 2 ? "Parked: wait for results." : undefined;
+      },
+    };
+    faux.setResponses([
+      callTool("bash", { command: "echo one > one.txt" }),
+      fauxAssistantMessage(
+        [
+          fauxText("Checking again."),
+          fauxToolCall("bash", { command: "echo two > two.txt" }, { id: "b" }),
+          fauxToolCall("note", { text: "x" }, { id: "n" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks, collaborationTools: [note(noted)] }),
+    );
+    // Not an answer: the turn's text is not the run's final text.
+    expect(outcome).toEqual({ kind: "ended", finalText: "" });
+    expect(reviewed.map((calls) => calls.map((call) => call.tool))).toEqual([
+      ["bash"],
+      ["bash", "note"],
+    ]);
+    expect(reviewed[1]?.map((call) => call.toolCallId)).toEqual(["b", "n"]);
+    // Asked once the response that made the calls was persisted.
+    expect(recorded.entries[persistedAtReview - 1]?.role).toBe("assistant");
+    // The first turn ran; the second ran none of its calls.
+    expect((await workspace.sandbox.fs.read("one.txt")).toString()).toBe(
+      "one\n",
+    );
+    await expect(workspace.sandbox.fs.read("two.txt")).rejects.toThrow();
+    expect(noted).toEqual([]);
+    const results = toolResults(recorded.entries).slice(1);
+    expect(
+      results.map((result) => [result.toolCallId, result.isError]),
+    ).toEqual([
+      ["b", true],
+      ["n", true],
+    ]);
+    for (const result of results)
+      expect(textOf(result)).toBe("Parked: wait for results.");
+    const ended = recorded.events.filter(
+      (event): event is Extract<ExecutorEvent, { type: "tool.finished" }> =>
+        event.type === "tool.finished" &&
+        (event.toolCallId === "b" || event.toolCallId === "n"),
+    );
+    expect(ended.map((event) => [event.ok, event.output])).toEqual([
+      [false, "Parked: wait for results."],
+      [false, "Parked: wait for results."],
+    ]);
+    // No further model call, and the inbox is left for the engine.
+    expect(faux.getPendingResponseCount()).toBe(1);
+    expect(recorded.drains).toBe(drainsAtReview);
+    expect(recorded.entries.at(-1)?.role).toBe("toolResult");
+    expect(repairTranscript(recorded.entries as PiMessage[])).toEqual(
+      recorded.entries,
+    );
+  });
+
+  it("lets every call run when it answers undefined", async () => {
+    const recorded = recordingHooks();
+    let asked = 0;
+    faux.setResponses([
+      callTool("bash", { command: "echo one > one.txt" }),
+      say("Done."),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          reviewTurn: async () => {
+            asked += 1;
+            return undefined;
+          },
+        },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Done." });
+    // A response without tool calls is not reviewed.
+    expect(asked).toBe(1);
+    expect((await workspace.sandbox.fs.read("one.txt")).toString()).toBe(
+      "one\n",
+    );
+  });
+
+  it("is not asked about a response cut at the output limit", async () => {
+    const recorded = recordingHooks();
+    let asked = 0;
+    faux.setResponses([
+      fauxAssistantMessage(
+        fauxToolCall("bash", { command: "echo cut > cut.txt" }),
+        { stopReason: "length" },
+      ),
+      say("Done."),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          reviewTurn: async () => {
+            asked += 1;
+            return "Parked.";
+          },
+        },
+      }),
+    );
+    expect(asked).toBe(0);
+    expect(outcome).toEqual({ kind: "ended", finalText: "Done." });
+    await expect(workspace.sandbox.fs.read("cut.txt")).rejects.toThrow();
+  });
+
+  it("ends the run with an error when it rejects, running nothing", async () => {
+    const recorded = recordingHooks();
+    faux.setResponses([
+      callTool("bash", { command: "echo one > one.txt" }),
+      say("never reached"),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          reviewTurn: async () => {
+            throw new Error("lease lost");
+          },
+        },
+      }),
+    );
+    expect(outcome).toMatchObject({ kind: "error", error: "lease lost" });
+    await expect(workspace.sandbox.fs.read("one.txt")).rejects.toThrow();
   });
 });
