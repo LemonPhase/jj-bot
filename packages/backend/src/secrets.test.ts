@@ -18,8 +18,12 @@ import { DomainError } from "./errors";
 import type { EngineDriver } from "./ports";
 import { REDACTED } from "./redact";
 import { createKeyring } from "./secrets/keyring";
-import { RETIRED_SECRET_DAYS, SecretStore } from "./secrets/store";
-import { grantedSecrets } from "./services/secrets";
+import {
+  RETIRED_SECRET_DAYS,
+  RETIRED_VALUES_PER_NAME,
+  SecretStore,
+} from "./secrets/store";
+import { grantedSecrets, SERVER_SECRET_REFUSAL } from "./services/secrets";
 import { said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -204,7 +208,9 @@ describe("sandbox secrets", () => {
       ],
     });
     const { engine } = current;
-    const cases: [string, string, RegExp][] = [
+    // A server secret is refused in one message, whichever it is.
+    const server = `value: ${SERVER_SECRET_REFUSAL}`;
+    const cases: [string, string, RegExp | string][] = [
       ["GITHUB_TOKEN", "short-value", /at least 16 characters/],
       ["GITHUB_TOKEN", `${TOKEN}\nsecond line`, /one line/],
       ["github_token", TOKEN, /environment variable name/],
@@ -212,29 +218,25 @@ describe("sandbox secrets", () => {
       ["HTTPS_PROXY", TOKEN, /reserved/],
       ["JJ_ANYTHING", TOKEN, /reserved/],
       ["LD_PRELOAD", TOKEN, /reserved/],
-      ["OPENAI_KEY_COPY", ENV_KEY, /OPENAI_API_KEY, a server secret/],
+      ["OPENAI_KEY_COPY", ENV_KEY, server],
       // Containing a server secret, or part of one, is refused too.
-      ["AUTH_HEADER", `Bearer ${ENV_KEY}`, /OPENAI_API_KEY, a server secret/],
-      [
-        "NPMRC_LINE",
-        `//registry.npmjs.org/:_authToken=${API_TOKEN}`,
-        /API_TOKEN, a server secret/,
-      ],
-      ["KEY_PIECE", ENV_KEY.slice(3, 30), /OPENAI_API_KEY, a server secret/],
+      ["AUTH_HEADER", `Bearer ${ENV_KEY}`, server],
+      ["NPMRC_LINE", `//registry.npmjs.org/:_authToken=${API_TOKEN}`, server],
+      ["KEY_PIECE", ENV_KEY.slice(3, 30), server],
       // The database password: equal at any length, contained when long.
-      ["DB_PASSWORD", LONG_DB_PASSWORD, /DATABASE_URL password/],
-      [
-        "PG_URL",
-        `postgresql://jj:${LONG_DB_PASSWORD}@db/jj`,
-        /DATABASE_URL password/,
-      ],
+      ["DB_PASSWORD", LONG_DB_PASSWORD, server],
+      ["PG_URL", `postgresql://jj:${LONG_DB_PASSWORD}@db/jj`, server],
     ];
     for (const [name, value, message] of cases) {
       const refused = await rejection(engine.secrets.put(name, { value }));
       expect(refused.code).toBe("VALIDATION_FAILED");
-      expect(refused.message).toMatch(message);
+      if (typeof message === "string") expect(refused.message).toBe(message);
+      else expect(refused.message).toMatch(message);
       const text = JSON.stringify([refused.message, refused.details]);
       expect(text).not.toContain(value.slice(0, 10));
+      // It never says which server secret, nor how the value matched it.
+      for (const named of ["OPENAI_API_KEY", "API_TOKEN", "DATABASE_URL"])
+        expect(refused.message).not.toContain(named);
     }
     expect((await engine.secrets.list()).secrets).toEqual([]);
     // A short database password is an ordinary word: containing it is fine.
@@ -590,7 +592,11 @@ describe("stored provider keys", () => {
     const copied = await rejection(
       engine.secrets.put("OPENAI_COPY", { value: PROVIDER_KEY }),
     );
-    expect(copied.message).toContain("the stored openai key, a server secret");
+    expect(copied.code).toBe("VALIDATION_FAILED");
+    expect(copied.message).toBe(`value: ${SERVER_SECRET_REFUSAL}`);
+    expect(
+      (await engine.secrets.list()).secrets.map((secret) => secret.name),
+    ).not.toContain("OPENAI_COPY");
     await engine.secrets.put("GITHUB_TOKEN", { value: TOKEN });
     const reused = await rejection(
       engine.putProviderKey("anthropic", { value: TOKEN }),
@@ -1248,6 +1254,73 @@ describe("a value the store no longer holds, once no sandbox holds it", () => {
     ]);
   });
 
+  it(`keeps a name's ${RETIRED_VALUES_PER_NAME} most recently retired values`, async () => {
+    let now = Date.parse("2026-03-01T00:00:00Z");
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(),
+      clock: () => new Date(now),
+    });
+    const { engine } = current;
+    // Rotated hourly by a script: each write retires the value before it.
+    const values = Array.from(
+      { length: RETIRED_VALUES_PER_NAME + 5 },
+      (_, index) =>
+        `ghp_rotated${String(index).padStart(4, "0")}value0123456789abcdef`,
+    );
+    for (const value of values) {
+      await engine.secrets.put("GH_TOKEN", { value });
+      now += 60 * 60 * 1000;
+    }
+    // Another name's are its own.
+    await engine.secrets.put("NPM_TOKEN", { value: OLD });
+    await engine.secrets.put("NPM_TOKEN", { value: NEW });
+    const rows = await db.database.db.select().from(retiredTable);
+    expect(rows.filter((row) => row.name === "GH_TOKEN")).toHaveLength(
+      RETIRED_VALUES_PER_NAME,
+    );
+    expect(rows.filter((row) => row.name === "NPM_TOKEN")).toHaveLength(1);
+    const redact = await engine.context.redactor();
+    const retired = values.slice(0, -1);
+    for (const value of retired.slice(-RETIRED_VALUES_PER_NAME))
+      expect(redact(value)).toBe(REDACTED);
+    // The oldest, past the cap, are deleted and no longer redacted.
+    for (const value of retired.slice(0, -RETIRED_VALUES_PER_NAME))
+      expect(redact(value)).toBe(value);
+    expect(redact(`${values.at(-1)} ${OLD}`)).toBe(`${REDACTED} ${REDACTED}`);
+  });
+
+  it(`deletes at boot the retired values of a name past its newest ${RETIRED_VALUES_PER_NAME}`, async () => {
+    // Rows kept before the cap: the boot purge applies it.
+    const secretStore = store();
+    const start = Date.parse("2026-03-01T00:00:00Z");
+    const count = RETIRED_VALUES_PER_NAME + 3;
+    await db.database.db.insert(retiredTable).values(
+      Array.from({ length: count }, (_, index) => ({
+        id: `retired-${String(index).padStart(2, "0")}`,
+        ownerId: secretStore.owner,
+        kind: "sandbox" as const,
+        name: "GH_TOKEN",
+        keyId: "old",
+        nonce: new Uint8Array(12),
+        ciphertext: new Uint8Array(32),
+        retiredAt: new Date(start + index * 60 * 60 * 1000),
+      })),
+    );
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore,
+      clock: () => new Date(start + count * 60 * 60 * 1000),
+    });
+    const kept = await db.database.db.select().from(retiredTable);
+    expect(kept.map((row) => row.id).sort()).toEqual(
+      Array.from(
+        { length: RETIRED_VALUES_PER_NAME },
+        (_, index) => `retired-${String(index + 3).padStart(2, "0")}`,
+      ),
+    );
+  });
+
   it("keeps a replaced or removed model key out of every sandbox", async () => {
     const secretStore = store();
     current = await testEngine(db.database, {
@@ -1260,24 +1333,31 @@ describe("a value the store no longer holds, once no sandbox holds it", () => {
     await engine.putProviderKey("openai", {
       value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
     });
+    // The current key's refusal: a retired one's is the same, so it never
+    // tells a current value from a replaced one, nor names the provider.
+    const stored = await rejection(
+      engine.secrets.put("OPENAI_COPY", {
+        value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+      }),
+    );
+    expect(stored.message).toBe(`value: ${SERVER_SECRET_REFUSAL}`);
     // Rotated, perhaps not revoked yet: still a model key for 90 days.
     const copied = await rejection(
       engine.secrets.put("OPENAI_COPY", { value: PROVIDER_KEY }),
     );
-    expect(copied.message).toContain(
-      "a replaced or removed openai key, a server secret",
-    );
+    expect(copied.code).toBe("VALIDATION_FAILED");
+    expect(copied.message).toBe(stored.message);
     expect(copied.message).not.toContain(PROVIDER_KEY);
+    expect(copied.message).not.toContain("openai");
     await engine.deleteProviderKey("openai");
-    expect(
-      (
-        await rejection(
-          engine.secrets.put("OPENAI_COPY", {
-            value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
-          }),
-        )
-      ).message,
-    ).toContain("a replaced or removed openai key");
+    const removed = await rejection(
+      engine.secrets.put("OPENAI_COPY", {
+        value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+      }),
+    );
+    expect(removed.code).toBe("VALIDATION_FAILED");
+    expect(removed.message).toBe(stored.message);
+    expect((await engine.secrets.list()).secrets).toEqual([]);
     // A sandbox row that holds one (written before the key was retired) is
     // never handed to a sandbox either.
     const sealed = secretStore.seal("sandbox", "SNEAKY", PROVIDER_KEY);
@@ -1293,7 +1373,7 @@ describe("a value the store no longer holds, once no sandbox holds it", () => {
     await expect(
       grantedSecrets(engine.context, { name: "Sneaky", secrets: ["SNEAKY"] }),
     ).rejects.toThrow(
-      "The sandbox secret SNEAKY holds, or is part of, a replaced or removed openai key",
+      `The sandbox secret SNEAKY cannot be used: ${SERVER_SECRET_REFUSAL} Store another value for SNEAKY.`,
     );
   });
 });
