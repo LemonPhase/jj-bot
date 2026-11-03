@@ -78,6 +78,8 @@ const SINGLE_RUN: Record<
     keyName: "botId",
     pending: sql`${jobs.kind} = 'chat.reply' and ${jobs.status} = 'queued'`,
   },
+  // One job per discovery, which its payload names.
+  "mcp.discover": null,
 };
 
 /**

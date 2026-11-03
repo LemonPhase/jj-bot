@@ -70,7 +70,7 @@ export const APPROVAL_STATUSES = [
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 export const CHECK_METHODS = ["command", "file", "result"] as const;
 export const CHECK_OUTCOMES = ["passed", "failed", "inconclusive"] as const;
-export const JOB_KINDS = ["session.run", "chat.reply"] as const;
+export const JOB_KINDS = ["session.run", "chat.reply", "mcp.discover"] as const;
 /** What a stored secret is: a model provider's key, or a sandbox secret granted by name. */
 export const SECRET_KINDS = ["provider", "sandbox"] as const;
 export const JOB_STATUSES = [
@@ -79,6 +79,13 @@ export const JOB_STATUSES = [
   "done",
   "failed",
   "cancelled",
+] as const;
+/** Where one test of an MCP server configuration is (`mcp_discoveries.status`). */
+export const MCP_DISCOVERY_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
 ] as const;
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
@@ -99,6 +106,7 @@ export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
 export type SecretKind = (typeof SECRET_KINDS)[number];
+export type McpDiscoveryStatus = (typeof MCP_DISCOVERY_STATUSES)[number];
 
 /** Claims of a job before an expired lease is no longer reclaimed (see `claim`). */
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -145,6 +153,11 @@ export const runtimeProfiles = pgTable(
     approvals: jsonb("approvals").$type<JsonObject[]>().notNull().default([]),
     /** Names of the sandbox secrets this profile grants (`secrets.name`, kind `sandbox`). */
     secrets: jsonb("secrets").$type<string[]>().notNull().default([]),
+    /** MCP servers (`mcpServersSchema`), none by default. */
+    mcpServers: jsonb("mcp_servers")
+      .$type<JsonObject[]>()
+      .notNull()
+      .default([]),
     isDefault: boolean("is_default").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -925,6 +938,87 @@ export const retiredSecrets = pgTable(
 
 export type RetiredSecretRow = typeof retiredSecrets.$inferSelect;
 
+/**
+ * The reviewed tool list of one MCP server of one profile, for one
+ * configuration (`mcpToolSnapshotSchema`): written once by a discovery,
+ * never updated. A profile's server pins one by id. Deleted with its
+ * profile, or once neither the profile pins it nor a kept discovery holds it.
+ */
+export const mcpToolSnapshots = pgTable(
+  "mcp_tool_snapshots",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => runtimeProfiles.id, { onDelete: "cascade" }),
+    /** The server's name in the profile. */
+    server: text("server").notNull(),
+    /** SHA-256 of the configuration the tools were discovered with. */
+    configHash: text("config_hash").notNull(),
+    serverInfo: jsonb("server_info").$type<JsonObject>().notNull(),
+    /** Sanitized and redacted tools (`mcpToolSchema`), sorted by name. */
+    tools: jsonb("tools").$type<JsonObject[]>().notNull(),
+    warnings: jsonb("warnings").$type<string[]>().notNull().default([]),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("mcp_tool_snapshots_profile_idx").on(t.profileId, t.server)],
+);
+
+export type McpToolSnapshotRow = typeof mcpToolSnapshots.$inferSelect;
+export type NewMcpToolSnapshot = typeof mcpToolSnapshots.$inferInsert;
+
+/**
+ * One test of an MCP server configuration (`mcpDiscoverySchema`), run by an
+ * `mcp.discover` job: `config` is the configuration tested, saved in the
+ * profile or not (secrets by name only). `error` and `stderr_tail` are
+ * redacted. Deleted with its profile; a profile keeps its newest ones.
+ */
+export const mcpDiscoveries = pgTable(
+  "mcp_discoveries",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => runtimeProfiles.id, { onDelete: "cascade" }),
+    server: text("server").notNull(),
+    /** The configuration tested (`mcpServerSchema`). */
+    config: jsonb("config").$type<JsonObject>().notNull(),
+    configHash: text("config_hash").notNull(),
+    status: text("status")
+      .$type<McpDiscoveryStatus>()
+      .notNull()
+      .default("queued"),
+    error: text("error"),
+    stderrTail: text("stderr_tail"),
+    snapshotId: text("snapshot_id").references(() => mcpToolSnapshots.id, {
+      onDelete: "set null",
+    }),
+    durationMs: integer("duration_ms"),
+    createdAt: createdAt(),
+    startedAt: optionalTime("started_at"),
+    finishedAt: optionalTime("finished_at"),
+  },
+  (t) => [
+    index("mcp_discoveries_profile_idx").on(t.profileId, t.createdAt),
+    check(
+      "mcp_discoveries_status_check",
+      oneOf(t.status, MCP_DISCOVERY_STATUSES),
+    ),
+    // Only a succeeded discovery ever holds a snapshot.
+    check(
+      "mcp_discoveries_snapshot_check",
+      sql`${t.snapshotId} is null or ${t.status} = 'succeeded'`,
+    ),
+  ],
+);
+
+export type McpDiscoveryRow = typeof mcpDiscoveries.$inferSelect;
+export type NewMcpDiscovery = typeof mcpDiscoveries.$inferInsert;
+
 /** Every table, for `drizzle(client, { schema: tables })` and the `Db` type. */
 export const tables = {
   runtimeProfiles,
@@ -950,4 +1044,6 @@ export const tables = {
   workerHeartbeats,
   secrets,
   retiredSecrets,
+  mcpToolSnapshots,
+  mcpDiscoveries,
 };
