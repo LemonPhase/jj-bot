@@ -632,55 +632,135 @@ function createHintHub(connect: SseConnect, url: string, retryMs: number) {
 
 export type BackendProbe =
   | { ok: true; bootstrap: Bootstrap; models: ModelsView | null }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /**
+       * Whether the demo data may stand in: only when no JJ Bot backend is
+       * there at all (a static build of the app, or a scaffold API). An API
+       * that is unreachable, refuses or cannot be used is never replaced by
+       * demo data, which would pass for the user's workspace.
+       */
+      demo: boolean;
+    };
 
 const majorOf = (version: string) => version.split(".")[0];
 
 /**
+ * Whether `html` is this app's own index.html, as a static host answers
+ * every path with: it loads the page's own entry script (or, outside a
+ * built page, has the app's root and a module script).
+ */
+function isAppPage(html: string): boolean {
+  // Typed loosely: this module also runs in Node (the API's client tests).
+  const page = (
+    globalThis as {
+      document?: {
+        querySelector(selector: string): {
+          getAttribute(name: string): string | null;
+        } | null;
+      };
+    }
+  ).document;
+  const entry =
+    page?.querySelector('script[type="module"][src]')?.getAttribute("src") ??
+    null;
+  return entry
+    ? html.includes(`src="${entry}"`)
+    : html.includes('<div id="root">') &&
+        /<script\b[^>]*type="module"/.test(html);
+}
+
+const probeFailure = (demo: boolean, reason: string): BackendProbe => ({
+  ok: false,
+  demo,
+  reason,
+});
+
+const UNREACHABLE = "The JJ Bot API isn't reachable.";
+const NO_API = "No JJ Bot API answers here.";
+
+/**
  * Asks `/api/bootstrap` whether a compatible backend is there. Never throws:
- * the reason it is not usable is shown in the demo badge's tooltip.
+ * the reason it is not usable is shown in the demo badge's tooltip, or, when
+ * the demo data may not stand in, in place of the app. The demo data may
+ * stand in only for a 404, the app's own index.html (a static host) or a
+ * scaffold API; a redirect (a sign-in page), any other answer or none at all
+ * is a backend the app cannot use.
  */
 export async function probeBackend(
   options: HttpOptions,
 ): Promise<BackendProbe> {
-  const { request } = createHttp(options);
+  const { baseUrl = "", token, fetch: fetchImpl } = options;
+  const doFetch =
+    fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+  let response: Response;
   try {
-    const bootstrap = await request("GET", "/bootstrap", bootstrapSchema);
-    if (bootstrap.mode !== "backend")
-      return {
-        ok: false,
-        reason:
-          "The API is running in scaffold mode, with no backend behind it.",
-      };
-    if (majorOf(bootstrap.contractVersion) !== majorOf(CONTRACT_VERSION))
-      return {
-        ok: false,
-        reason: `The API speaks contract ${bootstrap.contractVersion}; this app needs ${CONTRACT_VERSION}.`,
-      };
-    const models = await request("GET", "/models", modelsViewSchema).catch(
-      () => null,
-    );
-    return { ok: true, bootstrap, models };
-  } catch (reason) {
-    const error =
-      reason instanceof ApiError
-        ? reason
-        : new ApiError("NETWORK_ERROR", errorText(reason));
-    if (error.code === "UNAUTHORIZED")
-      return {
-        ok: false,
-        reason:
-          "The API requires a token. Open the app once with ?token=<API_TOKEN> to keep it in this browser.",
-      };
-    if (
-      error.code === "NETWORK_ERROR" ||
-      (error.status !== undefined && error.status >= 500) ||
-      error.details === NOT_JSON
-    )
-      return { ok: false, reason: "The JJ Bot API isn't reachable." };
-    return {
-      ok: false,
-      reason: `The API's bootstrap doesn't match contract ${CONTRACT_VERSION}.`,
-    };
+    response = await doFetch(`${baseUrl}/api/bootstrap`, {
+      headers: {
+        Accept: "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      cache: "no-store",
+    });
+  } catch {
+    // Offline, or nothing listening.
+    return probeFailure(false, UNREACHABLE);
   }
+  const { status } = response;
+  if (status === 401)
+    return probeFailure(
+      false,
+      "The API requires a token. Open the app once with ?token=<API_TOKEN> to keep it in this browser.",
+    );
+  // The server down behind a proxy.
+  if (status >= 500) return probeFailure(false, UNREACHABLE);
+  if (response.redirected) {
+    const to = response.url ? ` to ${new URL(response.url).pathname}` : "";
+    return probeFailure(
+      false,
+      `The API's address was redirected${to} (HTTP ${status}) instead of answering, as to a sign-in page.`,
+    );
+  }
+  if (status === 404) return probeFailure(true, NO_API);
+  const text = await response.text().catch(() => "");
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    if (response.ok && isAppPage(text)) return probeFailure(true, NO_API);
+    return probeFailure(
+      false,
+      `The API's address answered HTTP ${status} with a web page, not the JJ Bot API.`,
+    );
+  }
+  if (!response.ok) {
+    const envelope = errorEnvelopeSchema.safeParse(data);
+    return probeFailure(
+      false,
+      `The JJ Bot API answered HTTP ${status}${envelope.success ? `: ${envelope.data.error.message}` : "."}`,
+    );
+  }
+  const parsed = bootstrapSchema.safeParse(data);
+  if (!parsed.success)
+    return probeFailure(
+      false,
+      `The API's bootstrap doesn't match contract ${CONTRACT_VERSION}.`,
+    );
+  const bootstrap = parsed.data;
+  if (bootstrap.mode !== "backend")
+    return probeFailure(
+      true,
+      "The API is running in scaffold mode, with no backend behind it.",
+    );
+  if (majorOf(bootstrap.contractVersion) !== majorOf(CONTRACT_VERSION))
+    return probeFailure(
+      false,
+      `The API speaks contract ${bootstrap.contractVersion}; this app needs ${CONTRACT_VERSION}.`,
+    );
+  const { request } = createHttp(options);
+  const models = await request("GET", "/models", modelsViewSchema).catch(
+    () => null,
+  );
+  return { ok: true, bootstrap, models };
 }

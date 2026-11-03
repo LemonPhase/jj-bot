@@ -70,6 +70,61 @@ describe("Tooltip", () => {
     fireEvent.click(trigger);
     expect(bubble()?.hidden).toBe(false);
   });
+
+  it("slides in from a side of the viewport it would pass, so the page never widens", () => {
+    // A 360px screen, and a bubble the trigger's centre puts at 330–410px.
+    const width = vi
+      .spyOn(document.documentElement, "clientWidth", "get")
+      .mockReturnValue(360);
+    const box = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const at = this.getAttribute("role") === "tooltip" ? 330 : 0;
+        return DOMRect.fromRect({ x: at, y: 0, width: 80, height: 20 });
+      });
+    try {
+      render(
+        <Tooltip content="Close profile">
+          <button type="button">×</button>
+        </Tooltip>,
+      );
+      fireEvent.focus(screen.getByRole("button", { name: "×" }));
+      // 410px − (360 − 8) = 58px to the left.
+      expect(bubble()?.style.getPropertyValue("--tip-shift")).toBe("-58px");
+    } finally {
+      width.mockRestore();
+      box.mockRestore();
+    }
+  });
+
+  it("with auto placement, opens below a trigger near the top of the pane that clips it", () => {
+    // A pane from 53px down (under the phone top bar), the trigger 16px into it.
+    const box = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const top = this.hasAttribute("data-pane")
+          ? 53
+          : this.classList.contains("ui-tooltip")
+            ? 69
+            : 0;
+        return DOMRect.fromRect({ x: 0, y: top, width: 40, height: 40 });
+      });
+    try {
+      render(
+        <div data-pane="" style={{ overflowY: "auto" }}>
+          <Tooltip content="Close profile" placement="auto">
+            <button type="button">×</button>
+          </Tooltip>
+        </div>,
+      );
+      fireEvent.focus(screen.getByRole("button", { name: "×" }));
+      expect(bubble()?.classList.contains("ui-tooltip__bubble--bottom")).toBe(
+        true,
+      );
+    } finally {
+      box.mockRestore();
+    }
+  });
 });
 
 describe("IconButton", () => {

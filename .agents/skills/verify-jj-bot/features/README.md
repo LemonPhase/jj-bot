@@ -38,3 +38,4 @@ Each feature file starts with an H1 and one paragraph describing the user-visibl
 - [Settings](settings.md): models, runtime profiles and sandbox drivers.
 - [Spend caps](spend-caps.md): a task stopped at its cap and continued, a bot at its daily cap, and usage reporting.
 - [Approvals](approvals.md): approval rules in a profile, a held call approved or denied in the task chat or from direct chat.
+- [Phone layout and the installable app](mobile.md): every screen at phone width, the menu drawer, the 2D-only office, the manifest and the shell-only service worker.

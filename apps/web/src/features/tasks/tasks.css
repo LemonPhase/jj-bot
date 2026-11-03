@@ -65,7 +65,9 @@
   flex: 1 1 280px;
 }
 
+/* Wraps when the column is narrow (the Office view), so Stop stays in reach. */
 .task-main .screen-header__actions {
+  flex-wrap: wrap;
   gap: var(--sp-6);
 }
 
@@ -877,6 +879,62 @@
     border-top: 1px solid var(--line-subtle);
     border-left: 0;
     overflow: visible;
+  }
+}
+
+/*
+ * ── Phones: the chat fills the first screen, the panel follows ───────────
+ * The header, the chat and its composer take the screen less the panel's
+ * tab row, which shows under the composer; choosing a tab scrolls the panel
+ * into view (TaskPanel). The chat scrolls on its own, so new messages keep
+ * the composer in reach.
+ */
+@media (max-width: 759px) {
+  .task-main,
+  .task-screen--office .task-main {
+    height: calc(100% - 60px);
+    min-height: 420px;
+  }
+
+  .task-chat {
+    padding: 6px 16px 0;
+  }
+
+  /* At least a screen tall, so a tab brings the panel's top into view. */
+  .task-panel,
+  .task-screen--graph .task-panel,
+  .task-screen--office .task-panel {
+    min-height: 100%;
+  }
+
+  .task-main .screen-header__lead {
+    flex-basis: 100%;
+  }
+
+  .task-main .screen-header__actions {
+    gap: var(--sp-4);
+  }
+
+  /* The usage badge takes the row beside the participants and wraps. */
+  .task-main .screen-header__actions > .ui-tooltip:has(> .task-spend) {
+    flex: 1 1 200px;
+    min-width: 0;
+  }
+
+  .task-spend {
+    width: 100%;
+    min-height: 44px;
+    white-space: normal;
+    text-align: left;
+  }
+
+  .progress__item {
+    min-height: 44px;
+  }
+
+  /* No room beside the 2D/3D switch: the tabs take a row of their own. */
+  .task-screen--office .task-panel > .ui-tabs {
+    position: static;
   }
 }
 

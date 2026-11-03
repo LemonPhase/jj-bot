@@ -811,7 +811,8 @@ button.ui-tooltip__trigger {
   font-size: var(--fs-mono);
   line-height: var(--lh-bubble);
   white-space: normal;
-  transform: translateX(-50%);
+  /* --tip-shift (Tooltip.tsx) keeps it inside the viewport's sides. */
+  transform: translateX(calc(-50% + var(--tip-shift, 0px)));
 }
 
 /* An invisible bridge over the 8px gap, so the pointer can move onto the bubble. */
@@ -1022,4 +1023,109 @@ button.ui-tooltip__trigger {
 /* The send button: opacity .45 while it cannot send (SPEC §4 proposal). */
 .ui-composer .ui-icon-btn--primary:disabled {
   opacity: 0.45;
+}
+
+/* ── Phone widths (NARROW_QUERY): 44px touch targets ───────────────────── */
+/*
+ * Below 760px every control is at least 44×44 CSS px (WCAG 2.5.5) with the
+ * C2 shapes kept: pills stay pills and icon buttons keep their radius; only
+ * the box grows. Text fields use 16px type there, the size at which phone
+ * browsers do not zoom in on focus.
+ */
+@media (max-width: 759px) {
+  .ui-btn,
+  .ui-btn--sm,
+  .ui-btn--lg,
+  .ui-chip {
+    height: auto;
+    min-height: 44px;
+  }
+
+  .ui-btn,
+  .ui-chip {
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  .ui-icon-btn,
+  .ui-icon-btn--lg,
+  .ui-error .ui-icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .ui-error .ui-icon-btn {
+    margin: -11px -10px -11px 0;
+  }
+
+  .ui-dialog__head .ui-icon-btn {
+    margin: -10px -12px 0 0;
+  }
+
+  .ui-seg__item,
+  .ui-seg--compact .ui-seg__item,
+  .ui-seg--mono .ui-seg__item {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .ui-seg--mono {
+    width: auto;
+  }
+
+  .ui-tab {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .ui-input,
+  .ui-select {
+    height: 44px;
+  }
+
+  .ui-input,
+  .ui-select,
+  .ui-textarea,
+  .ui-composer__field {
+    font-size: max(16px, var(--fs-body));
+  }
+
+  .ui-list-item {
+    min-height: 44px;
+  }
+
+  button.ui-tooltip__trigger {
+    min-height: 44px;
+    align-items: center;
+  }
+
+  .ui-composer__field {
+    min-height: 44px;
+    padding: 10px 0;
+  }
+
+  .ui-composer {
+    padding: 8px 12px 12px;
+  }
+
+  .ui-composer__box {
+    padding: 4px 4px 4px 16px;
+  }
+
+  .ui-composer--task .ui-composer__box {
+    padding: 4px;
+  }
+
+  .ui-panel {
+    padding: 16px;
+  }
+
+  .ui-dialog,
+  .ui-dialog__panel {
+    max-height: calc(100% - 24px);
+  }
+
+  .ui-dialog__panel {
+    padding: 16px;
+  }
 }

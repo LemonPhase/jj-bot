@@ -3,14 +3,17 @@ import {
   type ReactNode,
   Suspense,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { Button, ErrorBanner, Spinner } from "../../components/ui";
+import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
+import { NavDrawer, TopBar } from "./MobileNav";
 import {
   canonicalRoute,
   parseRoute,
@@ -20,7 +23,7 @@ import {
   sectionOf,
 } from "./router";
 import { type ShellActions, ShellContext } from "./ShellContext";
-import { Sidebar } from "./Sidebar";
+import { Sidebar, useModeBadge } from "./Sidebar";
 import {
   SCREEN_NAMES,
   SettingsScreen,
@@ -34,8 +37,10 @@ type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
- * It owns the URL bookkeeping: a list route without an id opens the first
- * item, and each list remembers its last selection for the Bots/Tasks switch.
+ * Below 760px (`NARROW_QUERY`) a top bar takes the sidebar's place and the
+ * sidebar opens from its menu button as a drawer. The shell owns the URL
+ * bookkeeping: a list route without an id opens the first item, and each list
+ * remembers its last selection for the Bots/Tasks switch.
  */
 export function AppShell() {
   const route = useRoute();
@@ -50,6 +55,11 @@ export function AppShell() {
     selectedBotId,
   } = useWorkspace();
   const [dialog, setDialog] = useState<OpenDialog>({ kind: "none" });
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const [navOpen, setNavOpen] = useState(false);
+  const badge = useModeBadge();
+  const menuId = useId();
+  const drawerId = useId();
   const lastSection = useRef<Section>("bots");
   const lastIds = useRef<Record<Section, string | null>>({
     bots: null,
@@ -89,6 +99,12 @@ export function AppShell() {
       navigate(target, { replace: true });
   }, [loading, route, listedKey]);
 
+  // Growing past phone width puts the sidebar back in place, and the drawer
+  // stays shut if the screen narrows again.
+  if (!narrow && navOpen) setNavOpen(false);
+
+  // The Bots/Tasks switch keeps the drawer open on the other list; a link or
+  // a row in it (NavDrawer) and the New actions (below) close it.
   const switchSection = (next: Section) => {
     const remembered = lastIds.current[next];
     const ids = next === "bots" ? botIds : taskIds;
@@ -102,8 +118,14 @@ export function AppShell() {
 
   const actions = useMemo<ShellActions>(
     () => ({
-      openNewBot: () => navigate({ name: "studio", botId: null }),
-      openNewTask: (botIds) =>
+      openNewBot: () => {
+        setNavOpen(false);
+        navigate({ name: "studio", botId: null });
+      },
+      openNewTask: (botIds) => {
+        // From the drawer: the dialog takes its place, and gives focus back
+        // to the menu button when it closes.
+        setNavOpen(false);
         setDialog({
           kind: "task",
           botIds: botIds?.length
@@ -111,7 +133,8 @@ export function AppShell() {
             : selectedBotId
               ? [selectedBotId]
               : [],
-        }),
+        });
+      },
     }),
     [selectedBotId],
   );
@@ -120,11 +143,38 @@ export function AppShell() {
   return (
     <ShellContext.Provider value={actions}>
       <div className="shell">
-        <Sidebar
-          route={route}
-          section={section}
-          onSwitchSection={switchSection}
-        />
+        {narrow ? (
+          <>
+            <TopBar
+              menuId={menuId}
+              drawerId={drawerId}
+              menuOpen={navOpen}
+              onMenu={() => setNavOpen(true)}
+              badge={badge}
+            />
+            <NavDrawer
+              id={drawerId}
+              open={navOpen}
+              onClose={() => setNavOpen(false)}
+              returnFocusTo={menuId}
+            >
+              <Sidebar
+                route={route}
+                section={section}
+                onSwitchSection={switchSection}
+                badge={badge}
+                onClose={() => setNavOpen(false)}
+              />
+            </NavDrawer>
+          </>
+        ) : (
+          <Sidebar
+            route={route}
+            section={section}
+            onSwitchSection={switchSection}
+            badge={badge}
+          />
+        )}
         <div className="shell-main">
           {error && (
             <div className="shell-alert">
@@ -176,8 +226,9 @@ function ShellLoadFailed({
 }
 
 /**
- * The app could not start: neither the backend nor the demo data is
- * available (`resolveApi` rejected). Says why, with a reload.
+ * The app could not start (`resolveApi` rejected): the backend is unreachable,
+ * asks for a token or cannot be used, or the demo data it was opened on did
+ * not load. Says why, with a reload.
  */
 export function StartFailed({ message }: { message: string }) {
   return (

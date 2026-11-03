@@ -5,6 +5,7 @@ import {
   Icon,
   IconButton,
   ModeBadge,
+  type ModeBadgeKind,
   SectionLabel,
   Segmented,
   ThemeToggle,
@@ -19,25 +20,17 @@ import { modeBadgeFor } from "./modeBadge";
 import { botHref, type Route, SETTINGS_HREF, type Section } from "./router";
 import { useShell } from "./ShellContext";
 
-export interface SidebarProps {
-  route: Route;
-  /** The list on show: the route's own, or the last one for Settings. */
-  section: Section;
-  onSwitchSection: (section: Section) => void;
-}
+/** What the mode badge says: the API in use and whether a model can run. */
+export type ShellBadge = { kind: ModeBadgeKind; title: string };
 
 /**
- * The sidebar (SPEC §3): brand and New button, the Bots/Tasks switch, the
- * section's list, then the mode badge, Settings and the theme toggle.
+ * The mode badge for the API in use. Live, it follows the models view, so a
+ * key stored in settings shows at once.
  */
-export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
+export function useModeBadge(): ShellBadge {
   const api = useApi();
-  const { bots, tasks } = useWorkspace();
-  const { openNewBot, openNewTask } = useShell();
-  const listLabelId = useId();
-  // Live: follows the models view, so a key stored in settings shows at once.
   const { models } = useModels();
-  const badge = modeBadgeFor(
+  return modeBadgeFor(
     api.mode === "live" && models
       ? liveBadge(
           {
@@ -49,6 +42,32 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
         )
       : api.badge,
   );
+}
+
+export interface SidebarProps {
+  route: Route;
+  /** The list on show: the route's own, or the last one for Settings. */
+  section: Section;
+  onSwitchSection: (section: Section) => void;
+  badge: ShellBadge;
+  /** In the phone menu drawer: closes it, from a button after the New one. */
+  onClose?: () => void;
+}
+
+/**
+ * The sidebar (SPEC §3): brand and New button, the Bots/Tasks switch, the
+ * section's list, then the mode badge, Settings and the theme toggle.
+ */
+export function Sidebar({
+  route,
+  section,
+  onSwitchSection,
+  badge,
+  onClose,
+}: SidebarProps) {
+  const { bots, tasks } = useWorkspace();
+  const { openNewBot, openNewTask } = useShell();
+  const listLabelId = useId();
 
   return (
     <aside className="shell-sidebar" aria-label="Navigation">
@@ -70,6 +89,14 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
             tone="ink"
             icon={<Icon name="plus" size={16} />}
             onClick={() => openNewTask()}
+          />
+        )}
+        {onClose && (
+          <IconButton
+            label="Close menu"
+            tooltip={false}
+            icon={<Icon name="close" size={16} />}
+            onClick={onClose}
           />
         )}
       </div>
