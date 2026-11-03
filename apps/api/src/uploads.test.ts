@@ -144,7 +144,7 @@ describe("POST /api/uploads", () => {
     expect(status).toBe(413);
     expect(refused(body)).toMatchObject({
       code: "UPLOAD_TOO_LARGE",
-      message: "big.bin is 1000 GB; a file can be at most 4.2 MB.",
+      message: "big.bin is 931.3 GB; a file can be at most 4 MB.",
     });
     expect(watched.pulled).toBe(false);
     const chunked = watchedBody();

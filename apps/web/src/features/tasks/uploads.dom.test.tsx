@@ -74,7 +74,7 @@ describe("the New task dialog's files", () => {
       name: "Files · optional",
     });
     expect(
-      within(files).getByText(/Up to 20 files of 16\.8 MB each/),
+      within(files).getByText(/Up to 20 files of 16 MB each, 64 MB in all\./),
     ).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Goal"), {
       target: { value: "Read the data" },
@@ -95,7 +95,7 @@ describe("the New task dialog's files", () => {
     Object.defineProperty(big, "size", { value: 17 * 1024 * 1024 });
     pick(fileInput("Files to upload"), [big]);
     expect((await within(list).findByRole("alert")).textContent).toMatch(
-      /Not uploaded 17\.8 MB is over the 16\.8 MB a file can be\./,
+      /Not uploaded 17 MB is over the 16 MB a file can be\./,
     );
     expect(stage).toHaveBeenCalledTimes(2);
     const start = screen.getByRole("button", { name: "Start task" });

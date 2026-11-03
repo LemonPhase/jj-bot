@@ -31,7 +31,7 @@ test("uploads two files with a new task, which finds them in its workspace, and 
   await dialog.getByRole("textbox", { name: "Goal" }).fill(goal);
   const field = dialog.getByRole("group", { name: "Files · optional" });
   await expect(
-    field.getByText(/Up to 20 files of 16\.8 MB each/),
+    field.getByText(/Up to 20 files of 16 MB each, 64 MB in all\./),
   ).toBeVisible();
   await dialog
     .getByLabel("Files to upload", { exact: true })

@@ -338,11 +338,11 @@ describe("limits and refusals", () => {
       },
     });
     const big = await refusal(
-      engine.uploads.stage({ name: "big.bin", sizeBytes: 1025, body: unread }),
+      engine.uploads.stage({ name: "big.bin", sizeBytes: 2048, body: unread }),
     );
     expect(big.code).toBe("UPLOAD_TOO_LARGE");
     expect(big.status).toBe(413);
-    expect(big.message).toBe("big.bin is 1 KB; a file can be at most 1 KB.");
+    expect(big.message).toBe("big.bin is 2 KB; a file can be at most 1 KB.");
     const huge = await refusal(
       engine.uploads.stage({
         name: "huge.bin",

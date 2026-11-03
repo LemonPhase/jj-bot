@@ -241,17 +241,21 @@ export const uploadLimitsSchema = z.object({
 /** Most bytes one command attaches in all. */
 export const UPLOAD_COMMAND_MAX_BYTES = 64 * 1024 * 1024;
 
-/** A size as the task log and the web app write it: `812 B`, `3.4 KB`, `1.2 MB`. */
+/**
+ * A size as the task log and the web app write it, in units of 1024 as the
+ * limits are set (`JJ_UPLOAD_MAX_FILE_MB=16` reads `16 MB`): `812 B`,
+ * `3.4 KB`, `1.2 MB`.
+ */
 export function formatUploadSize(bytes: number): string {
-  if (bytes < 1000) return `${bytes} B`;
+  if (bytes < 1024) return `${bytes} B`;
   const units = ["KB", "MB", "GB"];
-  let value = bytes / 1000;
+  let value = bytes / 1024;
   let unit = 0;
-  while (value >= 1000 && unit < units.length - 1) {
-    value /= 1000;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
     unit += 1;
   }
-  return `${value >= 100 ? Math.round(value) : Number(value.toFixed(1))} ${units[unit]}`;
+  return `${Number(value.toFixed(1))} ${units[unit]}`;
 }
 
 /** The task log's announcement of attached uploads: "Uploaded 2 files: uploads/a.csv (1.2 MB), …". */

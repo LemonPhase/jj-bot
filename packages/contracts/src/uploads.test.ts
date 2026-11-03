@@ -194,14 +194,16 @@ describe("upload commands", () => {
 
   it("words sizes and announcements", () => {
     expect(formatUploadSize(812)).toBe("812 B");
+    expect(formatUploadSize(1023)).toBe("1023 B");
     expect(formatUploadSize(1200)).toBe("1.2 KB");
     expect(formatUploadSize(1_234_567)).toBe("1.2 MB");
-    expect(formatUploadSize(16 * 1024 * 1024)).toBe("16.8 MB");
-    expect(formatUploadSize(250_000)).toBe("250 KB");
+    expect(formatUploadSize(16 * 1024 * 1024)).toBe("16 MB");
+    expect(formatUploadSize(250_000)).toBe("244.1 KB");
+    expect(formatUploadSize(3 * 1024 ** 3)).toBe("3 GB");
     expect(
       uploadAnnouncement([
-        { path: "uploads/a.csv", sizeBytes: 1_200_000 },
-        { path: "uploads/b.txt", sizeBytes: 3000 },
+        { path: "uploads/a.csv", sizeBytes: 1_258_291 },
+        { path: "uploads/b.txt", sizeBytes: 3072 },
       ]),
     ).toBe("Uploaded 2 files: uploads/a.csv (1.2 MB), uploads/b.txt (3 KB)");
   });

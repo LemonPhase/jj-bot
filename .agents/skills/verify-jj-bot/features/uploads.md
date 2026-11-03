@@ -23,12 +23,12 @@ Preconditions:
 - Two small files on disk, such as `printf 'id,name\n1,Ada\n' > "$RUN/table.csv"` and `printf '# Notes\n' > "$RUN/notes.md"`.
 
 - **Files with a new task.** Click `New task`, fill `Goal` with ``Check the files: run `sha256sum uploads/*` ``, then run `$P "$RUN" upload "$RUN/table.csv" "$RUN/notes.md"` right after `$P "$RUN" click "getByRole('button', { name: 'Choose files' })"` (the button opens the file chooser that `upload` answers). The list `Files to upload` shows `table.csv` with `14 B · ready` and `notes.md` with `8 B · ready`. Click `Start task`. The task opens; the log shows the article `You uploaded 2 files` with `In workspace · uploads/table.csv` and `In workspace · uploads/notes.md` once the task runs, and the task finishes. Confirm with `curl -s "$U/api/tasks/<taskId>"`: two artifacts with `upload.state` `placed`, and with `curl -s "$U/api/tasks/<taskId>/events?after=0"`: the `tool.finished` of `sha256sum uploads/*` prints both files' SHA-256 (compare with `sha256sum "$RUN/table.csv" "$RUN/notes.md"`), and every `artifact.updated` comes before the first `model.started`. On `local`, the files are in `$RUN/sandbox/task/<taskId>/uploads/`.
-- **A file over the limit.** In the dialog, choose a file over 16 MiB (`head -c 17000000 /dev/zero > "$RUN/big.bin"`). Its row shows the alert `Not uploaded 17 MB is over the 16.8 MB a file can be.` and `Start task` is disabled until you click `Remove big.bin`. Nothing reaches the server (`curl` shows no new task).
+- **A file over the limit.** In the dialog, choose a file over 16 MiB (`head -c 17825792 /dev/zero > "$RUN/big.bin"`, 17 MiB). Its row shows the alert `Not uploaded 17 MB is over the 16 MB a file can be.` and `Start task` is disabled until you click `Remove big.bin`. Nothing reaches the server (`curl` shows no new task).
 - **The paperclip.** In a finished task's chat, click `Attach files`, answer the chooser with a file, then click `Upload 1 file`. A new card `You uploaded 1 file` shows `Waiting for the next run`; the task stays `completed`. Send a message: the card turns to `In workspace · uploads/<name>` once the coordinator's run starts.
 
 ## Gotchas
 
-- Sizes are shown in decimal units (`16.8 MB` is the 16 MiB limit).
+- Sizes are shown in units of 1024, as the limits are set: `16 MB` is `JJ_UPLOAD_MAX_FILE_MB=16`.
 - Files are staged as they are picked; closing the dialog unsent, or leaving the task with files picked, removes the staged copies (`DELETE /api/uploads/:id`).
 - The scripted coordinator runs the command its goal quotes after "run", after writing its notes, so its first command shows what the workspace held.
 - The group and the paperclip are hidden on a server that reports no `capabilities.uploads` (`JJ_UPLOADS=off`, or a server older than uploads).
