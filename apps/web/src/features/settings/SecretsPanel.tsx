@@ -75,9 +75,11 @@ export function SecretsPanel({ drivers }: { drivers: DriversState }) {
         Model keys never enter a sandbox.
       </p>
       <p className="settings-warning">
-        Files are not redacted: a command that writes a granted secret to a file
-        (<code className="settings-code">env &gt; env.txt</code>) leaves it in
-        the task's workspace and in the file artifacts taken from it.
+        Files are not redacted: a command that writes a granted secret into a
+        file or a file name (
+        <code className="settings-code">env &gt; env.txt</code>) leaves it in
+        the task's workspace and in the file artifacts taken from it, names
+        included.
       </p>
       {unisolated && (
         <p className="settings-warning">
