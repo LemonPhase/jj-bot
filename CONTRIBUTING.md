@@ -29,7 +29,7 @@ Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, seman
 ## Checks
 
 - `npm run lint` and `npm test` are the quick baseline; `npm run format` applies Biome's formatting and safe fixes.
-- `npm run verify` (alias `npm run check`) is the gate CI runs: lint, all-package typecheck, tests and the web build. Set `JJ_TEST_DATABASE_URL` and build the sandbox image to run the PostgreSQL and Docker tests that otherwise skip.
+- `npm run verify` (alias `npm run check`) is the gate CI runs: lint, all-package typecheck, tests, the web build and its size budget. Set `JJ_TEST_DATABASE_URL` and build the sandbox image to run the PostgreSQL and Docker tests that otherwise skip.
 - `npm run smoke:e2e` runs the whole server over HTTP on the scripted model; with `JJ_SMOKE_BASE_URL` it drives a running stack instead, such as the compose one.
 - `npm run test:browser` drives the web app's main user paths in headless Chromium on the scripted model, each test on an isolated instance; CI runs it as the "Browser" job. Run it for changes a user sees in the web app.
 - `npm run smoke:runtime` runs one live pi tool cycle in a local sandbox on a real model (`JJ_SMOKE_MODEL` and its key), and `JJ_SMOKE_MODEL=<provider/model> npm run smoke:e2e` runs the whole flow on one. These are the only checks that call a live model; CI runs neither.

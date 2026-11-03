@@ -17,7 +17,7 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "build": "npm run typecheck && npm run build -w @jj/web",
-    "verify": "npm run lint && npm run typecheck && npm run test && npm run build -w @jj/web",
+    "verify": "npm run lint && npm run typecheck && npm run test && npm run build -w @jj/web && npm run size -w @jj/web",
     "check": "npm run verify",
     "smoke:runtime": "node --import tsx --env-file-if-exists=.env scripts/smoke-runtime.ts",
     "sandbox:image": "docker build -t jj-sandbox:base-1 packages/sandbox/images/base",
@@ -34,5 +34,10 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vitest": "5.0.5"
+  },
+  "overrides": {
+    "@earendil-works/pi-coding-agent@1.4.0": {
+      "undici": "8.12.2"
+    }
   }
 }
