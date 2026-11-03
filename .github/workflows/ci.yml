@@ -178,6 +178,13 @@ jobs:
           address() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q "$1")" | cut -d' ' -f1; }
           echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,$(address app):3001,$(address postgres):5432" >> "$GITHUB_ENV"
 
+      # A new install has no task workspace yet: its backup holds the
+      # database alone.
+      - name: Back up the new stack, before any task
+        run: |
+          scripts/backup.sh "$RUNNER_TEMP/fresh"
+          grep -F '"volumes": [],' "$RUNNER_TEMP/fresh/manifest.json"
+
       # Through the published loopback port, as a browser on the host would.
       # Includes backup survival: after its first task the running stack is
       # backed up, wiped (`down -v`, its sandboxes and workspace volumes too)
@@ -221,6 +228,28 @@ jobs:
           echo "lines with the token: $carrying; Open JJ Bot lines: $opening"
           test "$opening" -ge 2
           test "$carrying" = "$opening"
+
+      # A tampered backup (an archive its manifest does not list, aimed at the
+      # PostgreSQL volume) is refused before anything changes; --force then
+      # replaces the stack's data with the backup's, which the app serves.
+      - name: Refuse a tampered backup, then restore with --force
+        run: |
+          cp -a "$RUNNER_TEMP/backup" "$RUNNER_TEMP/tampered"
+          (cd "$RUNNER_TEMP/tampered" &&
+            cp volumes/jj-bot-task-*.tar volumes/jj-bot_jj_postgres.tar &&
+            sha256sum volumes/jj-bot_jj_postgres.tar >>SHA256SUMS)
+          if scripts/restore.sh --force "$RUNNER_TEMP/tampered" 2>restore.err; then
+            echo "restored a tampered backup"
+            exit 1
+          fi
+          cat restore.err
+          grep -F "is not a workspace its manifest lists" restore.err
+          test -n "$(docker compose ps --status running --quiet app)"
+          scripts/restore.sh --force "$RUNNER_TEMP/backup"
+          docker compose up -d --wait --wait-timeout 180
+          bots=$(curl -fsS -H "Authorization: Bearer $JJ_SMOKE_TOKEN" http://127.0.0.1:3001/api/bots | jq '.bots | length')
+          echo "bots after the restore: $bots"
+          test "$bots" = 3
 
       - name: Show the stack's state and logs
         if: ${{ failure() }}
