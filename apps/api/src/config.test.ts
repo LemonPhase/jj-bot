@@ -3,6 +3,7 @@
 // token.test.ts.
 import { createServer } from "node:net";
 import { join } from "node:path";
+import { bootstrapSchema } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
 import {
   ConfigError,
@@ -189,9 +190,9 @@ describe("JJ_DEFAULT_MODEL", () => {
       expect(warnings).toEqual([
         'JJ_DEFAULT_MODEL "mistral/mistral-nemo" is not used: Unknown model "mistral/mistral-nemo". Bots without a model use openai/gpt-6-luna instead.',
       ]);
-      const bootstrap = await (
-        await fetch(`${server.url}/api/bootstrap`)
-      ).json();
+      const bootstrap = bootstrapSchema.parse(
+        await (await fetch(`${server.url}/api/bootstrap`)).json(),
+      );
       expect(bootstrap.defaultModel).toBe("openai/gpt-6-luna");
     } finally {
       await server.close();
