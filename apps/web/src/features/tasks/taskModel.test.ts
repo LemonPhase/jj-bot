@@ -324,6 +324,8 @@ describe("tool calls per session", () => {
         summary: "npm test",
         state: "failed",
         exitCode: 1,
+        outputGone: false,
+        savedCopy: null,
       },
       {
         id: "t3",
@@ -331,6 +333,8 @@ describe("tool calls per session", () => {
         summary: "",
         state: "running",
         exitCode: null,
+        outputGone: false,
+        savedCopy: null,
       },
     ]);
     expect(tools.calls.map(formatToolCall)).toEqual([

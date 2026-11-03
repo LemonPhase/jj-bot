@@ -786,7 +786,9 @@ describe("measurement", () => {
     });
     executor.brain(ada, (view) =>
       said.turns(view) < 199
-        ? { calls: [{ name: "bash", args: { command: "seq 1 300" } }] }
+        ? // About 1 KB of output a call, reported without a process, so
+          // the 200 calls cost database writes alone.
+          { calls: [{ name: "raw_output", args: { bytes: 1100 } }] }
         : { calls: [{ name: "complete_task", args: { result: "Listed." } }] },
     );
     const { task } = await engine.tasks.create({
@@ -818,7 +820,7 @@ describe("measurement", () => {
     console.info(
       `200-call task: ${before.events} events, ${before.bytes} payload bytes before compaction; ${after.events} events, ${after.bytes} bytes after (${Math.round(saved * 100)}% saved)`,
     );
-    // Measured: 810 events of 363 KB down to 407 of 68 KB (81% saved).
+    // Measured: 810 events of 299 KB down to 407 of 63 KB (79% saved).
     expect(after.events).toBeLessThan(before.events * 0.55);
     expect(saved).toBeGreaterThan(0.75);
   }, 180_000);
