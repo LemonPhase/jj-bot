@@ -251,10 +251,11 @@ export async function taskSummaries(
     .from(usage)
     .where(inArray(usage.taskId, ids))
     .orderBy(asc(usage.createdAt), asc(usage.id));
+  const redact = options.redact ?? ((text: string) => text);
   const questions = await waitingQuestions(
     exec,
     taskRows.filter((row) => row.status === "waiting").map((row) => row.id),
-    options.redact ?? ((text) => text),
+    redact,
   );
   const pending = await pendingApprovals(exec, ids);
   const outcomes = await latestOutcomes(
@@ -285,9 +286,21 @@ export async function taskSummaries(
         .map(usageOf)
         .reduce(addUsage, emptyUsage()),
       ...(question ? { question } : {}),
+      // Redacted again as read, like the question: a secret stored since
+      // the call was held is not shown either.
       pendingApprovals: pending
         .filter((approval) => approval.taskId === row.id)
-        .map((approval) => pendingApprovalOf(toApproval(approval))),
+        .map((approval) => {
+          const pendingOne = pendingApprovalOf(toApproval(approval));
+          const summary = redact(pendingOne.summary);
+          // A summary redaction changed no longer shows what runs.
+          return {
+            ...pendingOne,
+            summary,
+            shownInFull:
+              pendingOne.shownInFull && summary === pendingOne.summary,
+          };
+        }),
       ...(verification ? { verification } : {}),
     };
   });

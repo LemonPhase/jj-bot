@@ -13,6 +13,7 @@ import {
   type DecideApprovalCommand,
   decideApprovalCommandSchema,
   describeApprovalRule,
+  visibleText,
 } from "@jj/contracts";
 import {
   type ApprovalRow,
@@ -103,11 +104,12 @@ async function updateApproval(
 }
 
 /** What the coordinator's chat is told about a request. */
+/** What the coordinator's chat is told, hidden characters written out as on the cards. */
 function updateText(row: ApprovalRow, botName: string): string {
   return [
-    `${botName} wants to run ${row.tool}: ${row.summary}`,
+    `${botName} wants to run ${row.tool}: ${visibleText(row.summary)}`,
     `It needs approval under the rule for ${describeApprovalRule(approvalRuleSchema.parse(row.rule))}.`,
-    ...(row.text ? [`${botName} wrote with it: ${row.text}`] : []),
+    ...(row.text ? [`${botName} wrote with it: ${visibleText(row.text)}`] : []),
   ].join("\n");
 }
 

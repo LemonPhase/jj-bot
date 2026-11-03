@@ -62,7 +62,6 @@ task list, chat task card); edit approval rules in the profile editor. Done in t
 **Action required (backend):** none beyond this change; a client built against 1.5.0 that parses
 sessions strictly must accept `waitingFor: "approval"`.
 
-
 ## 1.5.0 — 2026-11-03 — Secrets store: encrypted provider keys and sandbox secrets
 
 **Changed by:** backend and frontend ([#30](https://github.com/LemonPhase/jj-bot/issues/30), design agreed on the issue) · **Compatibility:** additive
@@ -98,6 +97,7 @@ sessions strictly must accept `waitingFor: "approval"`.
 replaces or removes one; a Secrets section lists, stores and removes sandbox secrets; the profile
 editor grants them. Values are typed once and never shown again.
 **Action required (backend):** none beyond this change.
+
 ## 1.4.0 — 2026-11-03 — Verification plans and checks
 
 **Changed by:** backend & frontend ([#31](https://github.com/LemonPhase/jj-bot/issues/31), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/31#issuecomment-6594684999)) · **Compatibility:** additive (one reshaped command schema; see below)

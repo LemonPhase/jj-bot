@@ -478,6 +478,40 @@ describe("approvals", () => {
     expect(update?.text).not.toContain(token);
   });
 
+  it("redacts a secret stored after the call was held from the task list", async () => {
+    const root = await workspace();
+    const token = "ghp_laterStoredToken0123456789abcdefXYZ";
+    const command = `git push https://bot:${token}@example.com/repo.git`;
+    const secretStore = new SecretStore({
+      db: db.database.db,
+      keyring: createKeyring(randomBytes(32)),
+    });
+    const { engine } = await start(root, [callTool("bash", { command })], {
+      secretStore,
+    });
+    const { task } = await heldTask(engine);
+    await engine.secrets.put("LATER_TOKEN", { value: token });
+    const { tasks } = await engine.tasks.list();
+    const [listed] =
+      tasks.find((t) => t.id === task.id)?.pendingApprovals ?? [];
+    expect(listed?.summary).toBe(command.replace(token, REDACTED));
+    // What chat shows is no longer what runs: approve it in the task.
+    expect(listed?.shownInFull).toBe(false);
+  });
+
+  it("writes hidden characters out in the chat update", async () => {
+    const root = await workspace();
+    const command = "echo ok \u202E# hsup tig # git push";
+    const { engine } = await start(root, [callTool("bash", { command })]);
+    const { approval } = await heldTask(engine);
+    const [update] = await db.database.db
+      .select()
+      .from(chatTaskUpdates)
+      .where(eq(chatTaskUpdates.approvalId, approval.id));
+    expect(update?.text).toContain("echo ok ⟨U+202E⟩# hsup tig # git push");
+    expect(update?.text).not.toContain("\u202E");
+  });
+
   it("answers concurrent decisions once", async () => {
     const root = await workspace();
     const { engine } = await start(root, [
