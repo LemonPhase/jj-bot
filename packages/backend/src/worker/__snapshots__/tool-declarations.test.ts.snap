@@ -1,0 +1,117 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`engine tool declarations > stay byte-stable 1`] = `
+{
+  "chat": [
+    {
+      "description": "Start a task that you coordinate, for work that needs commands or files. Call it once per request.",
+      "name": "create_task",
+      "parameters": "{"type":"object","properties":{"goal":{"type":"string","description":"What the task must achieve, with any acceptance criteria."},"title":{"type":"string","description":"A short title (optional)."},"participants":{"type":"array","items":{"type":"string","enum":["Ada","Bob"]},"description":"Teammates who should help, by name. You are always included."}},"required":["goal","participants"],"additionalProperties":false}",
+    },
+    {
+      "description": "Your tasks (the ones you take part in), newest first: each with its id, title, status, your role, when it last changed and its result or error on one line.",
+      "name": "list_tasks",
+      "parameters": "{"type":"object","properties":{"status":{"type":"string","enum":["queued","running","waiting","completed","failed","cancelled","unfinished","finished"],"description":"Only tasks in this status; unfinished is queued, running or waiting, finished is completed, failed or cancelled."},"limit":{"type":"integer","description":"At most this many tasks (default 10, at most 50)."}},"additionalProperties":false}",
+    },
+    {
+      "description": "One of your tasks in detail: its goal and goal version, status, result or error, every session (bot, role, status, the first line of its brief) and its latest task log entries. Open an entry in full with \`read_task_log\`.",
+      "name": "get_task",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The task's id (task_…), as \`list_tasks\` shows it."}},"required":["id"],"additionalProperties":false}",
+    },
+    {
+      "description": "One of your tasks' log: the user's messages, briefs, reports and every message between its bots, as an index (entry id msg_…, [kind], author → recipients, preview), newest entries by default; or, with \`entry\`, that entry in full. Session transcripts are private and never shown.",
+      "name": "read_task_log",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The task's id (task_…), as \`list_tasks\` shows it."},"entry":{"type":"string","description":"An entry's id (msg_…): return that entry in full instead of a page."},"kind":{"type":"string","enum":["user","brief","report","message"],"description":"Only entries of this kind: user (the user's messages), brief (assignments), report (results and failures), message (messages between bots, and the coordinator's replies to the user)."},"query":{"type":"string","description":"Only entries whose text contains this, ignoring case."},"newest":{"type":"boolean","description":"List the newest entries (the default; still shown oldest first). False lists from the oldest."},"after":{"type":"string","description":"An entry id: list the entries after it (next page)."},"before":{"type":"string","description":"An entry id: list the entries before it (previous page)."},"limit":{"type":"integer","description":"At most this many entries (default 50, at most 200)."}},"required":["id"],"additionalProperties":false}",
+    },
+    {
+      "description": "Pass the user's message on to one of your tasks; its coordinator picks it up. A waiting, completed or failed task continues, in the same workspace and with its history. A cancelled or stopping task cannot.",
+      "name": "send_to_task",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The task's id (task_…), as \`list_tasks\` shows it."},"text":{"type":"string","description":"What to tell the task."}},"required":["id","text"],"additionalProperties":false}",
+    },
+    {
+      "description": "Stop a task you coordinate, as the user's Stop button does: its work is interrupted and nothing new starts, and it cannot be continued afterwards. Only when the user asks.",
+      "name": "stop_task",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The task's id (task_…), as \`list_tasks\` shows it."},"reason":{"type":"string","description":"Why, in a few words (optional)."}},"required":["id"],"additionalProperties":false}",
+    },
+  ],
+  "coordinator": [
+    {
+      "description": "Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Name the files the teammate owns in the brief. Never delegate work that is already assigned: while a delegation is open, wait for its result, or \`message\` that teammate. This tool's result, and each result you receive, lists your open delegations.
+Teammates:
+- Bob: Researcher
+- Cy",
+      "name": "delegate",
+      "parameters": "{"type":"object","properties":{"bot":{"type":"string","enum":["Bob","Cy"],"description":"The teammate to give the work to."},"brief":{"type":"string","description":"What to do, the files it owns (it edits only those), and what to report back."}},"required":["bot","brief"],"additionalProperties":false}",
+    },
+    {
+      "description": "Post a message to the task chat. Addressed to a teammate, it is delivered to that teammate's active session, and refused if the teammate has none; with no \`to\`, to every other active session on the task. Recipients read it at their next turn; it never starts new work. Teammates:
+- Bob: Researcher
+- Cy",
+      "name": "message",
+      "parameters": "{"type":"object","properties":{"text":{"type":"string","description":"The message."},"to":{"type":"string","enum":["Bob","Cy"],"description":"The teammate it is for; omit to send it to every other active session on the task."}},"required":["text"],"additionalProperties":false}",
+    },
+    {
+      "description": "Finish the task with the consolidated result for the user. Only when the goal is met, every delegation has reported, and you have checked the work against the current goal. If the task has a verification plan, its checks run when your turn ends, and the task completes only if every one passes.",
+      "name": "complete_task",
+      "parameters": "{"type":"object","properties":{"result":{"type":"string","description":"The final result: what was done, where the files are, anything left open."}},"required":["result"],"additionalProperties":false}",
+    },
+    {
+      "description": "This task's current state: its goal and goal version, its status (with the result or error once there is one), and every session on it with its id, bot, role, status and the first line of its brief. Not for waiting on delegations: their results arrive as messages.",
+      "name": "task_state",
+      "parameters": "{"type":"object","properties":{},"additionalProperties":false}",
+    },
+    {
+      "description": "List or search this task's log, shown oldest first: the user's messages, briefs, reports and every teammate message, including those not addressed to you. Each line is one entry: its id (msg_…), [kind], author (→ recipients) and a short preview. Open an entry in full with \`read_entry\`.",
+      "name": "task_log",
+      "parameters": "{"type":"object","properties":{"kind":{"type":"string","enum":["user","brief","report","message"],"description":"Only entries of this kind: user (the user's messages), brief (assignments), report (results and failures), message (messages between bots, and the coordinator's replies to the user)."},"query":{"type":"string","description":"Only entries whose text contains this, ignoring case."},"newest":{"type":"boolean","description":"List the newest entries instead of the oldest (still shown oldest first)."},"after":{"type":"string","description":"An entry id: list the entries after it (next page)."},"before":{"type":"string","description":"An entry id: list the entries before it (previous page)."},"limit":{"type":"integer","description":"At most this many entries (default 50, at most 200)."}},"additionalProperties":false}",
+    },
+    {
+      "description": "One entry of this task's log in full, by its id: the msg_… that starts its \`task_log\` line.",
+      "name": "read_entry",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The entry's id (msg_…), as \`task_log\` shows it."}},"required":["id"],"additionalProperties":false}",
+    },
+    {
+      "description": "A session's brief and its report (or result) in full: by session id (sess_…), or by bot name for each of that bot's sessions on this task, oldest first. Other sessions' transcripts are private and never shown.",
+      "name": "read_report",
+      "parameters": "{"type":"object","properties":{"session":{"type":"string","description":"A session id (sess_…), as \`task_state\` shows it."},"bot":{"type":"string","description":"A bot's name, for all of its sessions on this task. Ignored when \`session\` is given."}},"additionalProperties":false}",
+    },
+  ],
+  "worker": [
+    {
+      "description": "Give a bounded piece of the task to a teammate. It runs in its own session in the shared workspace, and its result comes back to you as a message. Name the files the teammate owns in the brief. Never delegate work that is already assigned: while a delegation is open, wait for its result, or \`message\` that teammate. This tool's result, and each result you receive, lists your open delegations.
+Teammates:
+- Bob: Researcher
+- Cy",
+      "name": "delegate",
+      "parameters": "{"type":"object","properties":{"bot":{"type":"string","enum":["Bob","Cy"],"description":"The teammate to give the work to."},"brief":{"type":"string","description":"What to do, the files it owns (it edits only those), and what to report back."}},"required":["bot","brief"],"additionalProperties":false}",
+    },
+    {
+      "description": "Post a message to the task chat. Addressed to a teammate, it is delivered to that teammate's active session, and refused if the teammate has none; with no \`to\`, to every other active session on the task. Recipients read it at their next turn; it never starts new work. Teammates:
+- Bob: Researcher
+- Cy",
+      "name": "message",
+      "parameters": "{"type":"object","properties":{"text":{"type":"string","description":"The message."},"to":{"type":"string","enum":["Bob","Cy"],"description":"The teammate it is for; omit to send it to every other active session on the task."}},"required":["text"],"additionalProperties":false}",
+    },
+    {
+      "description": "This task's current state: its goal and goal version, its status (with the result or error once there is one), and every session on it with its id, bot, role, status and the first line of its brief. Not for waiting on delegations: their results arrive as messages.",
+      "name": "task_state",
+      "parameters": "{"type":"object","properties":{},"additionalProperties":false}",
+    },
+    {
+      "description": "List or search this task's log, shown oldest first: the user's messages, briefs, reports and every teammate message, including those not addressed to you. Each line is one entry: its id (msg_…), [kind], author (→ recipients) and a short preview. Open an entry in full with \`read_entry\`.",
+      "name": "task_log",
+      "parameters": "{"type":"object","properties":{"kind":{"type":"string","enum":["user","brief","report","message"],"description":"Only entries of this kind: user (the user's messages), brief (assignments), report (results and failures), message (messages between bots, and the coordinator's replies to the user)."},"query":{"type":"string","description":"Only entries whose text contains this, ignoring case."},"newest":{"type":"boolean","description":"List the newest entries instead of the oldest (still shown oldest first)."},"after":{"type":"string","description":"An entry id: list the entries after it (next page)."},"before":{"type":"string","description":"An entry id: list the entries before it (previous page)."},"limit":{"type":"integer","description":"At most this many entries (default 50, at most 200)."}},"additionalProperties":false}",
+    },
+    {
+      "description": "One entry of this task's log in full, by its id: the msg_… that starts its \`task_log\` line.",
+      "name": "read_entry",
+      "parameters": "{"type":"object","properties":{"id":{"type":"string","description":"The entry's id (msg_…), as \`task_log\` shows it."}},"required":["id"],"additionalProperties":false}",
+    },
+    {
+      "description": "A session's brief and its report (or result) in full: by session id (sess_…), or by bot name for each of that bot's sessions on this task, oldest first. Other sessions' transcripts are private and never shown.",
+      "name": "read_report",
+      "parameters": "{"type":"object","properties":{"session":{"type":"string","description":"A session id (sess_…), as \`task_state\` shows it."},"bot":{"type":"string","description":"A bot's name, for all of its sessions on this task. Ignored when \`session\` is given."}},"additionalProperties":false}",
+    },
+  ],
+}
+`;
