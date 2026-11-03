@@ -87,6 +87,9 @@ services:
       # when unset. Raising it, raise JJ_STOP_GRACE_PERIOD (stop_grace_period
       # below) with it, to at least 25 s more.
       JJ_DRAIN_TIMEOUT_SEC: ${JJ_DRAIN_TIMEOUT_SEC:-}
+      # The same value as stop_grace_period below, so the app warns at boot
+      # when it is too short for the drain.
+      JJ_STOP_GRACE_PERIOD: ${JJ_STOP_GRACE_PERIOD:-45s}
       # JSON lines by default; `pretty` for reading by eye.
       JJ_LOG_LEVEL: ${JJ_LOG_LEVEL:-}
       JJ_LOG_FORMAT: ${JJ_LOG_FORMAT:-}

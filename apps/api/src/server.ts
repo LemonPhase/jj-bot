@@ -14,6 +14,7 @@ import {
   loadServerConfig,
   redactEndpoint,
   type ServerConfig,
+  stopGraceWarning,
 } from "./config";
 import { sendsHsts } from "./headers";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
@@ -137,6 +138,8 @@ export async function startServer(
     );
     const defaultModelWarning = services.models.defaultModelWarning();
     if (defaultModelWarning) logger.warn(defaultModelWarning);
+    const graceWarning = stopGraceWarning(config);
+    if (graceWarning) logger.warn(graceWarning);
     // The one line that carries a generated token: the user opens it once,
     // and the web app keeps the token and drops it from the address bar.
     // Every other line redacts it, from now on even one generated just now.

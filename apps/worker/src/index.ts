@@ -4,7 +4,12 @@
 // exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set; it serves no
 // metrics, so its runs are not in the API's `/metrics`. SIGINT and SIGTERM
 // drain it as they drain the API's embedded worker.
-import { ConfigError, loadWorkerConfig, redactEndpoint } from "@jj/api/config";
+import {
+  ConfigError,
+  loadWorkerConfig,
+  redactEndpoint,
+  stopGraceWarning,
+} from "@jj/api/config";
 import {
   exitOnUncaught,
   SHUTDOWN_AFTER_DRAIN_MS,
@@ -37,6 +42,8 @@ async function main() {
   );
   const defaultModelWarning = models.defaultModelWarning();
   if (defaultModelWarning) logger.warn(defaultModelWarning);
+  const graceWarning = stopGraceWarning(config);
+  if (graceWarning) logger.warn(graceWarning);
 
   const { drainTimeoutMs } = config;
   stopOnSignals(logger, {

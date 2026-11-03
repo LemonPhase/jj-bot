@@ -59,12 +59,58 @@ export interface ServicesConfig {
    * reach a turn boundary before the rest is interrupted as a lost lease is.
    */
   drainTimeoutMs: number;
+  /**
+   * `JJ_STOP_GRACE_PERIOD` (compose passes its `stop_grace_period`): how
+   * long the platform waits before it kills the process; unknown when unset.
+   */
+  stopGracePeriodMs?: number;
 }
 
 /** `JJ_DRAIN_TIMEOUT_SEC` when unset. */
 export const DEFAULT_DRAIN_TIMEOUT_SEC = 20;
 /** The longest drain `JJ_DRAIN_TIMEOUT_SEC` may ask for. */
 const MAX_DRAIN_TIMEOUT_SEC = 3600;
+/**
+ * What a stop needs beyond the drain: the process's own 20 s to release
+ * sandboxes and close (`SHUTDOWN_AFTER_DRAIN_MS`), and some slack.
+ */
+export const STOP_GRACE_MARGIN_MS = 25_000;
+
+const DURATION_UNITS: Record<string, number> = {
+  h: 3_600_000,
+  m: 60_000,
+  s: 1_000,
+  ms: 1,
+  us: 0.001,
+  ns: 0.000001,
+};
+
+/** A duration as compose writes one (`45s`, `1m30s`, `2m`), in milliseconds. */
+export function parseDuration(text: string): number | undefined {
+  const parts = [...text.matchAll(/(\d+(?:\.\d+)?)(ms|us|ns|h|m|s)/g)];
+  if (parts.length === 0 || parts.map((part) => part[0]).join("") !== text)
+    return undefined;
+  return parts.reduce(
+    (total, [, value, unit]) =>
+      total + Number(value) * (DURATION_UNITS[unit as string] ?? 0),
+    0,
+  );
+}
+
+/**
+ * The boot warning when the platform would kill a stop before its drain and
+ * shutdown end: its sessions would then resume as after a crash, once their
+ * leases run out.
+ */
+export function stopGraceWarning(config: ServicesConfig): string | undefined {
+  const grace = config.stopGracePeriodMs;
+  if (
+    grace === undefined ||
+    config.drainTimeoutMs + STOP_GRACE_MARGIN_MS <= grace
+  )
+    return undefined;
+  return `JJ_STOP_GRACE_PERIOD (${grace / 1000} s) is less than JJ_DRAIN_TIMEOUT_SEC (${config.drainTimeoutMs / 1000} s) plus ${STOP_GRACE_MARGIN_MS / 1000} s: a stop can be killed before it drains and shuts down, and its sessions then resume only once their leases run out. Raise the stop grace period (compose: JJ_STOP_GRACE_PERIOD) or lower JJ_DRAIN_TIMEOUT_SEC.`;
+}
 
 /** `JJ_SECRET_KEY` and `JJ_SECRET_KEY_PREVIOUS`, decoded, with their text for redaction. */
 export interface SecretKeys {
@@ -134,6 +180,17 @@ function seconds(env: Env, name: string, fallback: number, max: number) {
       `${name} must be a whole number of seconds from 0 to ${max}; got "${value}".`,
     );
   return number;
+}
+
+function stopGracePeriod(env: Env): { stopGracePeriodMs?: number } {
+  const value = text(env, "JJ_STOP_GRACE_PERIOD");
+  if (value === undefined) return {};
+  const ms = parseDuration(value);
+  if (ms === undefined)
+    throw new ConfigError(
+      `JJ_STOP_GRACE_PERIOD must be a duration such as 45s or 1m30s; got "${value}".`,
+    );
+  return { stopGracePeriodMs: ms };
 }
 
 const fromRoot = (path: string) =>
@@ -249,6 +306,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
         DEFAULT_DRAIN_TIMEOUT_SEC,
         MAX_DRAIN_TIMEOUT_SEC,
       ) * 1000,
+    ...stopGracePeriod(env),
   };
 }
 
