@@ -230,12 +230,12 @@ describe("task templates: create, read, update, delete", () => {
 
     await engine.templates.delete(template.id);
     for (const call of [
-      engine.templates.get(template.id),
-      engine.templates.update(template.id, { title: "Gone" }),
-      engine.templates.delete(template.id),
-      engine.templates.start(template.id, {}),
+      () => engine.templates.get(template.id),
+      () => engine.templates.update(template.id, { title: "Gone" }),
+      () => engine.templates.delete(template.id),
+      () => engine.templates.start(template.id, {}),
     ])
-      expect((await refusal(call)).code).toBe("NOT_FOUND");
+      expect((await refusal(call())).code).toBe("NOT_FOUND");
 
     await until(() => templateHints(hints) >= 5);
     await unsubscribe();
