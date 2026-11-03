@@ -17,7 +17,7 @@ The second line is optional. It gives the server the master key that encrypts pr
 
 Open the logged link, `http://127.0.0.1:3001/?token=…`. The token is generated on first boot and kept with the data, so the same link works after restarts; the web app remembers it and removes it from the address bar. If you set `API_TOKEN` in `.env`, no link is logged: open `http://127.0.0.1:3001/?token=<API_TOKEN>` instead.
 
-The stack is PostgreSQL and one app container (the API serving the web app, with the worker embedded); each task runs in its own sandbox container on the host's Docker daemon. The app mounts the host's Docker socket, which is root-equivalent on the host, and publishes its port on loopback only. `docker compose down` stops it, and `-v` also deletes the data and the token. See [Docker Compose](docs/development.md#docker-compose) for the details.
+The stack is PostgreSQL and one app container (the API serving the web app, with the worker embedded); each task runs in its own sandbox container on the host's Docker daemon. The app mounts the host's Docker socket, which is root-equivalent on the host, and publishes its port on loopback only. `docker compose down` stops it, and `-v` also deletes the data and the token. Two optional compose files go with it: `compose.image.yaml` runs a published release (`ghcr.io/lemonphase/jj-bot`) instead of building, and `compose.socket-proxy.yaml` gives the Docker socket to a filtering proxy instead of the app. See [Docker Compose](docs/development.md#docker-compose) for the details.
 
 ### Backup, restore and upgrades
 
