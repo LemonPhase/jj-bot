@@ -199,11 +199,34 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
   };
 }
 
-function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
+/**
+ * The refusal for a message to a teammate with no active session in the task:
+ * nothing would read it, so it is not posted. `finished` is false when the
+ * teammate never had a session in the task.
+ */
+function noActiveSession(
+  name: string,
+  finished: boolean,
+  canDelegate: boolean,
+): string {
+  const why = finished
+    ? `${name}'s session on this task has finished`
+    : `${name} has no session on this task`;
+  const instead = canDelegate
+    ? `To have ${name} act on it, \`delegate\` to ${name}.`
+    : "Put it in your report instead.";
+  return `Not sent: ${why}, so no bot would read the message. ${instead}`;
+}
+
+function messageTool(
+  rc: RunContext,
+  team: readonly Teammate[],
+  canDelegate: boolean,
+): CollabTool {
   const { ctx } = rc.deps;
   return {
     name: "message",
-    description: `Post a message to the task chat. Addressed to a teammate, it is delivered to that teammate's active session; with no \`to\`, to every other active session on the task. Recipients read it at their next turn; it never starts new work. Teammates:\n${describeTeam(team)}`,
+    description: `Post a message to the task chat. Addressed to a teammate, it is delivered to that teammate's active session, and refused if the teammate has none; with no \`to\`, to every other active session on the task. Recipients read it at their next turn; it never starts new work. Teammates:\n${describeTeam(team)}`,
     parameters: {
       type: "object",
       properties: {
@@ -230,23 +253,25 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         return refuse(`${String(args.to)} is not on this task.`);
       return writeRun(rc, async (tx) => {
         await lockTask(tx, rc.task.id);
-        const message = await postMessage(
-          tx,
-          ctx,
-          {
-            taskId: rc.task.id,
-            authorKind: "bot",
-            authorBotId: rc.bot.id,
-            sessionId: rc.session.id,
-            // A broadcast is a notification, so it can be told apart from a
-            // coordinator's reply to the user, which has no recipient either.
-            intent: to ? "discussion" : "notification",
-            text,
-            recipientBotIds: to ? [to.botId] : [],
-          },
-          attributionOf(rc),
-        );
+        const post = (recipient?: Teammate) =>
+          postMessage(
+            tx,
+            ctx,
+            {
+              taskId: rc.task.id,
+              authorKind: "bot",
+              authorBotId: rc.bot.id,
+              sessionId: rc.session.id,
+              // A broadcast is a notification, so it can be told apart from a
+              // coordinator's reply to the user, which has no recipient either.
+              intent: recipient ? "discussion" : "notification",
+              text,
+              recipientBotIds: recipient ? [recipient.botId] : [],
+            },
+            attributionOf(rc),
+          );
         if (!to) {
+          const message = await post();
           // A broadcast reaches every other active session as a notification.
           const targets = await tx
             .select()
@@ -289,10 +314,23 @@ function messageTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
           )
           .orderBy(desc(sessions.createdAt))
           .limit(1);
-        if (!target)
-          return {
-            text: `Posted to the task chat, but ${to.name} has no active session on this task, so it does not receive the message. Delegate to ${to.name} if it should act on it.`,
-          };
+        if (!target) {
+          // No bot would read it: refuse it, and post nothing.
+          const [earlier] = await tx
+            .select({ id: sessions.id })
+            .from(sessions)
+            .where(
+              and(
+                eq(sessions.taskId, rc.task.id),
+                eq(sessions.botId, to.botId),
+              ),
+            )
+            .limit(1);
+          return refuse(
+            noActiveSession(to.name, earlier !== undefined, canDelegate),
+          );
+        }
+        const message = await post(to);
         await deliver(
           tx,
           target,
@@ -377,12 +415,10 @@ export function sessionTools(
   team: readonly Teammate[],
 ): CollabTool[] {
   const tools: CollabTool[] = [];
-  if (
-    team.length > 0 &&
-    rc.session.depth < rc.deps.ctx.config.maxDelegationDepth
-  )
-    tools.push(delegateTool(rc, team));
-  if (team.length > 0) tools.push(messageTool(rc, team));
+  const canDelegate =
+    team.length > 0 && rc.session.depth < rc.deps.ctx.config.maxDelegationDepth;
+  if (canDelegate) tools.push(delegateTool(rc, team));
+  if (team.length > 0) tools.push(messageTool(rc, team, canDelegate));
   if (rc.session.parentSessionId === null) tools.push(completeTaskTool(rc));
   tools.push(...lookupTools(rc));
   return tools;
