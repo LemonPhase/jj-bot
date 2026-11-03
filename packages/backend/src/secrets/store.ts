@@ -17,7 +17,7 @@ import {
   type SecretRow,
   secrets,
 } from "@jj/db";
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import type { Logger } from "../context";
 import type { Secret } from "../redact";
 import type { Keyring, Sealed } from "./keyring";
@@ -130,7 +130,7 @@ export class SecretStore {
     );
   }
 
-  private openRetired(row: RetiredSecretRow): string | undefined {
+  private openRetired(row: SealedSecret): string | undefined {
     return this.keyring?.open(
       { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
       this.retiredAad(row.kind, row.name),
@@ -143,6 +143,16 @@ export class SecretStore {
    */
   opens(row: SealedSecret): boolean {
     return this.open(row) !== undefined;
+  }
+
+  /** `opens` for a row of `retired_secrets`. */
+  opensRetired(row: SealedSecret): boolean {
+    return (
+      this.keyring?.open(
+        { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
+        this.retiredAad(row.kind, row.name),
+      ) !== undefined
+    );
   }
 
   /** The columns a value is stored as. Throws without a master key. */
@@ -159,16 +169,61 @@ export class SecretStore {
   }
 
   /**
-   * The columns that keep `row`'s value retired once `replacement` (none
-   * when it is removed) takes its place: sealed again, bound to the retired
-   * table. Undefined when there is nothing to keep: the value is unchanged,
-   * or no configured key opens it, so it was redacted nowhere anyway.
+   * Retires `row`'s value once `replacement` (none when it is removed)
+   * takes its place: sealed again into `retired_secrets`, bound to that
+   * table, retired `at`. A name keeps one row per value: retiring a value
+   * it already holds moves that row's time instead. Nothing is kept when the
+   * value is unchanged, or no configured key opens it, so it was redacted
+   * nowhere anyway.
    */
-  sealRetired(row: SecretRow, replacement?: string): Sealed | undefined {
+  async retire(
+    exec: Executor,
+    row: SecretRow,
+    at: Date,
+    id: string,
+    replacement?: string,
+  ): Promise<void> {
+    const keyring = this.keyring;
     const value = this.open(row);
-    if (value === undefined || value === replacement || !this.keyring)
-      return undefined;
-    return this.keyring.seal(value, this.retiredAad(row.kind, row.name));
+    if (!keyring || value === undefined || value === replacement) return;
+    const earlier = await exec
+      .select()
+      .from(retiredSecrets)
+      .where(
+        and(
+          eq(retiredSecrets.ownerId, row.ownerId),
+          eq(retiredSecrets.kind, row.kind),
+          eq(retiredSecrets.name, row.name),
+        ),
+      );
+    const [same, ...duplicates] = earlier.filter(
+      (retired) => this.openRetired(retired) === value,
+    );
+    if (same) {
+      await exec
+        .update(retiredSecrets)
+        .set({ retiredAt: at })
+        .where(eq(retiredSecrets.id, same.id));
+      if (duplicates.length > 0)
+        await exec.delete(retiredSecrets).where(
+          inArray(
+            retiredSecrets.id,
+            duplicates.map((duplicate) => duplicate.id),
+          ),
+        );
+      return;
+    }
+    const sealed = keyring.seal(value, this.retiredAad(row.kind, row.name));
+    await exec.insert(retiredSecrets).values({
+      id,
+      ownerId: row.ownerId,
+      kind: row.kind,
+      name: row.name,
+      keyId: sealed.keyId,
+      nonce: sealed.nonce,
+      ciphertext: sealed.ciphertext,
+      retiredAt: at,
+    });
   }
 
   /** Deletes the values retired before `before`. */
@@ -290,16 +345,16 @@ export class SecretStore {
    * The readable retired values, from the last refresh: for redaction only.
    * They are never injected, and no answer carries them.
    */
-  retiredValues(): Secret[] {
+  retiredValues(kind?: SecretKind): Secret[] {
     return [...this.retired.values()].flatMap((entry) =>
-      entry.value === undefined
+      entry.value === undefined || (kind && entry.kind !== kind)
         ? []
         : [
             {
               name:
                 entry.kind === "provider"
-                  ? `a retired ${entry.name} key`
-                  : `a retired value of ${entry.name}`,
+                  ? `a replaced or removed ${entry.name} key`
+                  : `a replaced or removed value of ${entry.name}`,
               value: entry.value,
             },
           ],

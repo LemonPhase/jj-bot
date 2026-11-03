@@ -14,7 +14,6 @@ import {
   z,
 } from "@jj/contracts";
 import {
-  retiredSecrets,
   runtimeProfiles,
   type SecretKind,
   type SecretRow,
@@ -88,18 +87,26 @@ async function retire(
 ): Promise<void> {
   const now = ctx.clock();
   await ctx.secretStore.purgeRetired(retiredBefore(now), tx);
-  const sealed = ctx.secretStore.sealRetired(row, replacement);
-  if (!sealed) return;
-  await tx.insert(retiredSecrets).values({
-    id: ctx.ids("retiredSecret"),
-    ownerId: row.ownerId,
-    kind: row.kind,
-    name: row.name,
-    keyId: sealed.keyId,
-    nonce: sealed.nonce,
-    ciphertext: sealed.ciphertext,
-    retiredAt: now,
-  });
+  await ctx.secretStore.retire(
+    tx,
+    row,
+    now,
+    ctx.ids("retiredSecret"),
+    replacement,
+  );
+}
+
+/**
+ * What no sandbox value may hold or be part of: the server's own secrets,
+ * the stored provider keys, and those replaced or removed in the last 90
+ * days, which may not be revoked yet.
+ */
+async function serverValues(ctx: EngineContext): Promise<Secret[]> {
+  return [
+    ...(await ctx.serverSecrets()),
+    ...ctx.secretStore.values("provider"),
+    ...ctx.secretStore.retiredValues("provider"),
+  ];
 }
 
 /** Stores `value` under (kind, name), replacing what is there. True when it is new. */
@@ -164,11 +171,7 @@ export async function putSecret(
   const { value } = parseCommand(putSecretCommandSchema, input);
   requireStore(ctx);
   await ctx.secretStore.refresh();
-  const server = [
-    ...(await ctx.serverSecrets()),
-    ...ctx.secretStore.values("provider"),
-  ];
-  const match = overlappingSecret(value, server);
+  const match = overlappingSecret(value, await serverValues(ctx));
   if (match)
     throw new DomainError(
       "VALIDATION_FAILED",
@@ -325,10 +328,7 @@ export async function grantedSecrets(
       }. Store ${unreadable.length === 1 ? "it" : "them"} again in Settings → Secrets, or remove the grant.`,
     );
   await ctx.secretStore.refresh();
-  const server = [
-    ...(await ctx.serverSecrets()),
-    ...ctx.secretStore.values("provider"),
-  ];
+  const server = await serverValues(ctx);
   for (const [name, value] of Object.entries(values)) {
     const match = overlappingSecret(value, server);
     if (match)

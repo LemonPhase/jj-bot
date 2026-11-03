@@ -19,6 +19,7 @@ import type { EngineDriver } from "./ports";
 import { REDACTED } from "./redact";
 import { createKeyring } from "./secrets/keyring";
 import { RETIRED_SECRET_DAYS, SecretStore } from "./secrets/store";
+import { grantedSecrets } from "./services/secrets";
 import { said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -1221,5 +1222,78 @@ describe("a value the store no longer holds, once no sandbox holds it", () => {
     expect(await db.database.db.select().from(retiredTable)).toHaveLength(1);
     expect(await boot(RETIRED_SECRET_DAYS * day + 1)).toBe(OLD);
     expect(await db.database.db.select().from(retiredTable)).toEqual([]);
+  });
+
+  it("is kept once per value of a name, at its latest retirement", async () => {
+    let now = Date.parse("2026-02-01T00:00:00Z");
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(),
+      clock: () => new Date(now),
+    });
+    const { engine } = current;
+    // Toggled every hour between two values.
+    for (const value of [OLD, NEW, OLD, NEW, OLD, NEW]) {
+      await engine.secrets.put("GH_TOKEN", { value });
+      now += 60 * 60 * 1000;
+    }
+    const rows = await db.database.db.select().from(retiredTable);
+    expect(rows).toHaveLength(2);
+    const redact = await engine.context.redactor();
+    expect(redact(`${OLD} ${NEW}`)).toBe(`${REDACTED} ${REDACTED}`);
+    // OLD was last retired by the fifth write's successor, the sixth.
+    expect(rows.map((row) => row.retiredAt.getTime()).sort()).toEqual([
+      Date.parse("2026-02-01T04:00:00Z"),
+      Date.parse("2026-02-01T05:00:00Z"),
+    ]);
+  });
+
+  it("keeps a replaced or removed model key out of every sandbox", async () => {
+    const secretStore = store();
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore,
+      models: new ModelRegistry({ env: {}, storedKeys: secretStore }),
+    });
+    const { engine } = current;
+    await engine.putProviderKey("openai", { value: PROVIDER_KEY });
+    await engine.putProviderKey("openai", {
+      value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+    });
+    // Rotated, perhaps not revoked yet: still a model key for 90 days.
+    const copied = await rejection(
+      engine.secrets.put("OPENAI_COPY", { value: PROVIDER_KEY }),
+    );
+    expect(copied.message).toContain(
+      "a replaced or removed openai key, a server secret",
+    );
+    expect(copied.message).not.toContain(PROVIDER_KEY);
+    await engine.deleteProviderKey("openai");
+    expect(
+      (
+        await rejection(
+          engine.secrets.put("OPENAI_COPY", {
+            value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+          }),
+        )
+      ).message,
+    ).toContain("a replaced or removed openai key");
+    // A sandbox row that holds one (written before the key was retired) is
+    // never handed to a sandbox either.
+    const sealed = secretStore.seal("sandbox", "SNEAKY", PROVIDER_KEY);
+    await db.database.db.insert(secretsTable).values({
+      ownerId: secretStore.owner,
+      kind: "sandbox",
+      name: "SNEAKY",
+      keyId: sealed.keyId,
+      nonce: sealed.nonce,
+      ciphertext: sealed.ciphertext,
+      hint: sealed.hint,
+    });
+    await expect(
+      grantedSecrets(engine.context, { name: "Sneaky", secrets: ["SNEAKY"] }),
+    ).rejects.toThrow(
+      "The sandbox secret SNEAKY holds, or is part of, a replaced or removed openai key",
+    );
   });
 });
