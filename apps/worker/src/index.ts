@@ -11,7 +11,7 @@ async function main() {
   const env = process.env;
   const config = loadWorkerConfig(env);
   const proxy = configureOutboundProxy(env);
-  const { engine, database } = await openServices(config, env);
+  const { engine, database, models } = await openServices(config, env);
   await engine.worker.start();
   const { drivers } = await engine.drivers();
   console.info(
@@ -19,6 +19,8 @@ async function main() {
       .map((info) => `${info.id}${info.available ? "" : " (unavailable)"}`)
       .join(", ")} · concurrency ${engine.context.config.concurrency}`,
   );
+  const defaultModelWarning = models.defaultModelWarning();
+  if (defaultModelWarning) console.warn(`[worker] ${defaultModelWarning}`);
 
   let stopping = false;
   const shutdown = (signal: string) => {

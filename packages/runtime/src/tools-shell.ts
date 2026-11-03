@@ -1,11 +1,11 @@
 import { posix } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
 import {
   type ExecResult,
   resolveExecTimeoutMs,
   type Sandbox,
 } from "@jj/sandbox";
+import { Type } from "typebox";
 import {
   boundedInt,
   finalizeResult,

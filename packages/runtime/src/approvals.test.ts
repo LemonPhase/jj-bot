@@ -359,6 +359,44 @@ describe("approval holds", () => {
     ]);
   });
 
+  it("reviews the arguments pi coerces, and never a call pi refuses", async () => {
+    faux.setResponses([
+      fauxAssistantMessage(
+        [
+          // pi coerces the numeric string before the tool, or the review, sees it.
+          fauxToolCall(
+            "bash",
+            { command: "echo ok", timeout: "30" },
+            { id: "coerced" },
+          ),
+          // pi refuses a call without its required `command`.
+          fauxToolCall("bash", { timeout: 5 }, { id: "invalid" }),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      expecting((context) => {
+        expect(textOf(resultOf(context, "coerced"))).toContain("ok");
+        // pi's validation error, as the model receives it.
+        const refusal = textOf(resultOf(context, "invalid"));
+        expect(refusal).toContain('Validation failed for tool "bash"');
+        expect(refusal).toContain("- command: missing");
+      }, say("Noted.")),
+    ]);
+    const recorded = recordingHooks();
+    const review = reviewing(recorded.hooks);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({ hooks: review.hooks }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Noted." });
+    expect(
+      review.asked.map(({ toolCallId, args }) => [toolCallId, args]),
+    ).toEqual([["coerced", { command: "echo ok", timeout: 30 }]]);
+    expect(toolEvents(recorded.events, "invalid")).toMatchObject([
+      { type: "tool.started" },
+      { type: "tool.finished", ok: false },
+    ]);
+  });
+
   it("keeps the inputs when a stop interrupts the approved call", async () => {
     const controller = new AbortController();
     faux.setResponses([
