@@ -1,9 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskView } from "@jj/contracts";
-import { secrets as secretsTable, sessionEntries } from "@jj/db";
+import {
+  retiredSecrets as retiredTable,
+  secrets as secretsTable,
+  sessionEntries,
+} from "@jj/db";
 import { ModelRegistry } from "@jj/runtime";
 import { LocalSandboxDriver } from "@jj/sandbox";
 import type { AcquireRequest } from "@jj/sandbox/contract";
@@ -14,7 +18,8 @@ import { DomainError } from "./errors";
 import type { EngineDriver } from "./ports";
 import { REDACTED } from "./redact";
 import { createKeyring } from "./secrets/keyring";
-import { SecretStore } from "./secrets/store";
+import { RETIRED_SECRET_DAYS, SecretStore } from "./secrets/store";
+import { grantedSecrets } from "./services/secrets";
 import { said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -23,6 +28,7 @@ import {
   type TestDatabase,
   type TestEngine,
   testEngine,
+  until,
   untilTask,
 } from "./testing/harness";
 import { createTeam, lastResult } from "./testing/scenarios";
@@ -39,6 +45,7 @@ afterEach(async () => {
   current = undefined;
   // Each test starts from an empty store.
   await db.database.db.delete(secretsTable);
+  await db.database.db.delete(retiredTable);
   await Promise.all(
     roots.map((root) => rm(root, { recursive: true, force: true })),
   );
@@ -988,5 +995,305 @@ describe("a value another sandbox of this worker still holds", () => {
     expect(view.task.result).toBe(`read ${REDACTED}`);
     for (const text of await persisted(engine, view))
       expect(text).not.toContain(TOKEN);
+  });
+});
+
+describe("a value the store no longer holds, once no sandbox holds it", () => {
+  const OLD = "ghp_retiredValue0123456789abcdefOLD";
+  const NEW = "ghp_currentValue0123456789abcdefNEW";
+
+  for (const change of ["replace", "delete"] as const)
+    it(`is still redacted from a file that holds it after the secret is ${change === "replace" ? "replaced" : "removed"} and its sandbox released`, async () => {
+      const recording = await recordingDriver();
+      current = await testEngine(db.database, {
+        registry: createDriverRegistry([
+          { driver: recording.driver, label: "Local (unisolated)" },
+        ]),
+        secretStore: store(),
+      });
+      const { engine, executor } = current;
+      await engine.secrets.put("GH_TOKEN", { value: OLD });
+      const { profile } = await engine.profiles.create({
+        name: uniqueProfile("Retire"),
+        sandbox: {
+          driver: "local",
+          network: { mode: "open" },
+          workspace: "task",
+        },
+        secrets: ["GH_TOKEN"],
+      });
+      const team = await createTeam(engine, ["Ada"]);
+      const [ada] = team.names as [string];
+      await engine.bots.update(team.byName[ada] as string, {
+        runtimeProfileId: profile.id,
+      });
+      executor.brain(ada, (view) => {
+        const last = view.messages.at(-1);
+        if (last?.role === "tool" && last.name === "complete_task")
+          return { text: "done" };
+        if (last?.role === "tool" && last.name === "bash")
+          return said.heard(view, "print")
+            ? {
+                calls: [
+                  {
+                    name: "complete_task",
+                    args: { result: `printed ${last.text}` },
+                  },
+                ],
+              }
+            : { text: "Wrote it; waiting." };
+        if (last?.role === "user" && last.text.includes("print"))
+          return {
+            calls: [{ name: "bash", args: { command: "cat tok.txt" } }],
+          };
+        if (last?.role === "user" && last.text.includes("finish"))
+          return {
+            calls: [{ name: "complete_task", args: { result: "wrote it" } }],
+          };
+        return {
+          calls: [
+            {
+              name: "bash",
+              args: { command: 'printf %s "$GH_TOKEN" > tok.txt' },
+            },
+          ],
+        };
+      });
+      const { task } = await engine.tasks.create({
+        goal: "Keep the token in a file",
+        coordinatorBotId: team.byName[ada] as string,
+      });
+      await untilTask(engine, task.id, (v) => v.task.status === "waiting");
+      // Replaced (or removed) while the sandbox that started with it is held.
+      if (change === "replace")
+        await engine.secrets.put("GH_TOKEN", { value: NEW });
+      else await engine.secrets.delete("GH_TOKEN");
+      await engine.tasks.postMessage(task.id, { text: "finish" });
+      await untilTask(engine, task.id, (v) => v.task.status === "completed");
+      // The task finished, so its sandbox is released: nothing holds OLD.
+      await until(() => engine.context.heldSecrets().length === 0, {
+        what: "the sandbox's release",
+      });
+      await engine.tasks.postMessage(task.id, { text: "print" });
+      const view = await untilTask(
+        engine,
+        task.id,
+        (v) =>
+          (v.task.status === "completed" && v.task.result !== "wrote it") ||
+          v.task.status === "failed",
+      );
+      expect(view.task.status).toBe("completed");
+      // A second sandbox, started with what the store holds now.
+      expect(recording.requests.map((request) => request.secrets)).toEqual([
+        { GH_TOKEN: OLD },
+        change === "replace" ? { GH_TOKEN: NEW } : undefined,
+      ]);
+      const page = await engine.tasks.events(task.id);
+      const printed = page.events.flatMap((event) =>
+        event.type === "tool.finished" &&
+        event.payload.summary === "cat tok.txt"
+          ? [event.payload.output]
+          : [],
+      );
+      expect(printed).toEqual([REDACTED]);
+      expect(view.task.result).toBe(`printed ${REDACTED}`);
+      for (const text of await persisted(engine, view))
+        expect(text).not.toContain(OLD);
+      // The file itself is the user's, and still holds the old value.
+      expect(
+        (
+          await readFile(join(recording.root, "task", task.id, "tok.txt"))
+        ).toString(),
+      ).toBe(OLD);
+    });
+
+  it("is kept sealed for redaction only: never listed, injected or opened as a current value", async () => {
+    const secretStore = store();
+    current = await testEngine(db.database, { start: false, secretStore });
+    const { engine } = current;
+    await engine.secrets.put("GH_TOKEN", { value: OLD });
+    await engine.secrets.put("GH_TOKEN", { value: NEW });
+    // Storing the same value again retires nothing.
+    await engine.secrets.put("GH_TOKEN", { value: NEW });
+    expect((await engine.secrets.list()).secrets).toMatchObject([
+      { name: "GH_TOKEN", hint: NEW.slice(-4), readable: true },
+    ]);
+    expect(await secretStore.sandboxValues(["GH_TOKEN"])).toMatchObject({
+      values: { GH_TOKEN: NEW },
+    });
+    const retired = await db.database.db.select().from(retiredTable);
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toMatchObject({ kind: "sandbox", name: "GH_TOKEN" });
+    // Encrypted, like a stored value.
+    expect(Buffer.from(retired[0]?.ciphertext ?? []).toString()).not.toContain(
+      OLD,
+    );
+    const redact = await engine.context.redactor();
+    expect(redact(`old ${OLD}, new ${NEW}`)).toBe(
+      `old ${REDACTED}, new ${REDACTED}`,
+    );
+    // A retired ciphertext copied onto the current row does not open there.
+    await db.database.db
+      .update(secretsTable)
+      .set({
+        keyId: retired[0]?.keyId as string,
+        nonce: retired[0]?.nonce as Uint8Array,
+        ciphertext: retired[0]?.ciphertext as Uint8Array,
+      })
+      .where(eq(secretsTable.name, "GH_TOKEN"));
+    expect(await secretStore.sandboxValues(["GH_TOKEN"])).toMatchObject({
+      values: {},
+      unreadable: ["GH_TOKEN"],
+    });
+  });
+
+  it("stays readable for redaction after the master key rotates", async () => {
+    const old = randomBytes(32);
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(old),
+    });
+    await current.engine.secrets.put("GH_TOKEN", { value: OLD });
+    await current.engine.secrets.put("GH_TOKEN", { value: NEW });
+    const [before] = await db.database.db.select().from(retiredTable);
+    await current.dispose();
+    // A new key, with the old one kept as a previous key for the rotation.
+    const next = randomBytes(32);
+    quietLogger.infos.length = 0;
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(next, [old]),
+    });
+    expect(quietLogger.infos).toContain(
+      "Re-encrypted 1 replaced or removed secret value, kept for redaction, with the current JJ_SECRET_KEY.",
+    );
+    const [after] = await db.database.db.select().from(retiredTable);
+    expect(after?.id).toBe(before?.id);
+    expect(after?.keyId).not.toBe(before?.keyId);
+    await current.dispose();
+    // The previous key is gone: the retired value is still redacted.
+    quietLogger.warnings.length = 0;
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(next),
+    });
+    expect(quietLogger.warnings).toEqual([]);
+    const redact = await current.engine.context.redactor();
+    expect(redact(`echo ${OLD}`)).toBe(`echo ${REDACTED}`);
+    await current.dispose();
+    // Under a key that never sealed it, it is named in a warning (never its value).
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(),
+    });
+    expect(
+      quietLogger.warnings.some((line) =>
+        line.startsWith(
+          "1 replaced or removed secret value cannot be decrypted with JJ_SECRET_KEY, so it is no longer redacted",
+        ),
+      ),
+    ).toBe(true);
+    expect(quietLogger.warnings.join("\n")).not.toContain(OLD);
+  });
+
+  it(`is deleted ${RETIRED_SECRET_DAYS} days after it was retired`, async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const start = Date.parse("2026-01-01T00:00:00Z");
+    const master = randomBytes(32);
+    const at = (offset: number) => () => new Date(start + offset);
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(master),
+      clock: at(0),
+    });
+    await current.engine.secrets.put("GH_TOKEN", { value: OLD });
+    await current.engine.secrets.delete("GH_TOKEN");
+    await current.dispose();
+    const boot = async (offset: number) => {
+      await current?.dispose();
+      current = await testEngine(db.database, {
+        start: false,
+        secretStore: store(master),
+        clock: at(offset),
+      });
+      return (await current.engine.context.redactor())(OLD);
+    };
+    expect(await boot(RETIRED_SECRET_DAYS * day - 1)).toBe(REDACTED);
+    expect(await db.database.db.select().from(retiredTable)).toHaveLength(1);
+    expect(await boot(RETIRED_SECRET_DAYS * day + 1)).toBe(OLD);
+    expect(await db.database.db.select().from(retiredTable)).toEqual([]);
+  });
+
+  it("is kept once per value of a name, at its latest retirement", async () => {
+    let now = Date.parse("2026-02-01T00:00:00Z");
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore: store(),
+      clock: () => new Date(now),
+    });
+    const { engine } = current;
+    // Toggled every hour between two values.
+    for (const value of [OLD, NEW, OLD, NEW, OLD, NEW]) {
+      await engine.secrets.put("GH_TOKEN", { value });
+      now += 60 * 60 * 1000;
+    }
+    const rows = await db.database.db.select().from(retiredTable);
+    expect(rows).toHaveLength(2);
+    const redact = await engine.context.redactor();
+    expect(redact(`${OLD} ${NEW}`)).toBe(`${REDACTED} ${REDACTED}`);
+    // OLD was last retired by the fifth write's successor, the sixth.
+    expect(rows.map((row) => row.retiredAt.getTime()).sort()).toEqual([
+      Date.parse("2026-02-01T04:00:00Z"),
+      Date.parse("2026-02-01T05:00:00Z"),
+    ]);
+  });
+
+  it("keeps a replaced or removed model key out of every sandbox", async () => {
+    const secretStore = store();
+    current = await testEngine(db.database, {
+      start: false,
+      secretStore,
+      models: new ModelRegistry({ env: {}, storedKeys: secretStore }),
+    });
+    const { engine } = current;
+    await engine.putProviderKey("openai", { value: PROVIDER_KEY });
+    await engine.putProviderKey("openai", {
+      value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+    });
+    // Rotated, perhaps not revoked yet: still a model key for 90 days.
+    const copied = await rejection(
+      engine.secrets.put("OPENAI_COPY", { value: PROVIDER_KEY }),
+    );
+    expect(copied.message).toContain(
+      "a replaced or removed openai key, a server secret",
+    );
+    expect(copied.message).not.toContain(PROVIDER_KEY);
+    await engine.deleteProviderKey("openai");
+    expect(
+      (
+        await rejection(
+          engine.secrets.put("OPENAI_COPY", {
+            value: "sk-next-zyxwvutsrqponmlkjihgfedcba9876543210",
+          }),
+        )
+      ).message,
+    ).toContain("a replaced or removed openai key");
+    // A sandbox row that holds one (written before the key was retired) is
+    // never handed to a sandbox either.
+    const sealed = secretStore.seal("sandbox", "SNEAKY", PROVIDER_KEY);
+    await db.database.db.insert(secretsTable).values({
+      ownerId: secretStore.owner,
+      kind: "sandbox",
+      name: "SNEAKY",
+      keyId: sealed.keyId,
+      nonce: sealed.nonce,
+      ciphertext: sealed.ciphertext,
+      hint: sealed.hint,
+    });
+    await expect(
+      grantedSecrets(engine.context, { name: "Sneaky", secrets: ["SNEAKY"] }),
+    ).rejects.toThrow(
+      "The sandbox secret SNEAKY holds, or is part of, a replaced or removed openai key",
+    );
   });
 });

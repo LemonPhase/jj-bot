@@ -14,6 +14,7 @@ import {
   type SandboxLimits,
 } from "@jj/sandbox/contract";
 import { errorMessage } from "../errors";
+import type { CutEdges } from "../redact";
 import { ISOLATED_TIME_LIMIT_MS, runIsolated } from "./isolated";
 
 export interface CheckRun {
@@ -23,7 +24,10 @@ export interface CheckRun {
   durationMs: number;
   /** What was observed, in a sentence or two. */
   detail: string;
-  /** A command's combined output as kept (not yet redacted); null for other methods. */
+  /**
+   * A command's combined output as kept, redacted where it was cut (see
+   * `headTailCollector`); null for other methods. The gate redacts it whole.
+   */
   output: string | null;
 }
 
@@ -35,8 +39,11 @@ export interface CheckEnv {
   deadline: Date;
   /** The result text passed to `complete_task`. */
   result: string;
-  /** Applied to anything of the work a detail quotes. */
-  redact: (text: string) => string;
+  /**
+   * Applied to anything of the work a detail quotes, and to command output
+   * with `cut` naming the edges where the output limit cut it.
+   */
+  redact: (text: string, cut?: CutEdges) => string;
 }
 
 const seconds = (ms: number) =>
@@ -53,7 +60,10 @@ const isNamed = (error: unknown, name: string) =>
 /**
  * Keeps at most `maxBytes` of a command's output: its head and, once it runs
  * over, a rolling tail, so the end of the output (where test runners print
- * their failures) is always kept.
+ * their failures) is always kept. `text(redact, stopped)` redacts what it
+ * kept: a cut ends the head and starts the tail, and a command stopped
+ * (timed out or aborted) ends where it was killed, perhaps inside a secret,
+ * so those edges are named to `redact`, which masks what is left of one there.
  */
 export function headTailCollector(maxBytes: number) {
   const headMax = Math.ceil(maxBytes / 2);
@@ -95,13 +105,16 @@ export function headTailCollector(maxBytes: number) {
     get cut() {
       return total > headBytes + tailBytes;
     },
-    text() {
+    text(
+      redact: (text: string, cut?: CutEdges) => string = (value) => value,
+      stopped = false,
+    ) {
       const start = Buffer.concat(head).toString("utf8");
       const end = Buffer.concat(tail).toString("utf8");
       const omitted = total - headBytes - tailBytes;
       return omitted > 0
-        ? `${start}\n[… ${omitted} bytes of output left out: the sandbox keeps ${Math.floor(maxBytes / 1024)} KiB, its head and its tail …]\n${end}`
-        : `${start}${end}`;
+        ? `${redact(start, { end: true })}\n[… ${omitted} bytes of output left out: the sandbox keeps ${Math.floor(maxBytes / 1024)} KiB, its head and its tail …]\n${redact(end, { start: true, end: stopped })}`
+        : redact(`${start}${end}`, stopped ? { end: true } : undefined);
     },
   };
 }
@@ -145,10 +158,18 @@ async function runCommand(
       detail: `The command could not run: ${env.redact(errorMessage(error))}`,
     };
   }
+  // Output of a command stopped mid-way ends where it was killed; from a
+  // driver that never calls onData, it may also end where the driver's own
+  // output limit cut it.
+  const stopped = result.interrupted !== "no";
+  const cut = result.truncated || stopped ? { end: true } : undefined;
   let text =
     output.bytes > 0
-      ? output.text()
-      : [result.stdout, result.stderr].filter(Boolean).join("\n");
+      ? output.text(env.redact, stopped)
+      : [result.stdout, result.stderr]
+          .map((part) => env.redact(part, cut))
+          .filter(Boolean)
+          .join("\n");
   if (output.bytes === 0 && result.truncated)
     text += `\n[Output cut at ${Math.floor(env.limits.maxOutputBytes / 1024)} KiB, the sandbox's output limit.]`;
   const run = {
@@ -205,7 +226,7 @@ export async function assertText(
   text: string,
   criterion: Assertion,
   subject: string,
-  redact: (text: string) => string = (value) => value,
+  redact: (text: string, cut?: CutEdges) => string = (value) => value,
   timeLimitMs = ISOLATED_TIME_LIMIT_MS,
 ): Promise<{ outcome: CheckOutcome; detail: string }> {
   switch (criterion.expect) {
@@ -246,7 +267,9 @@ export async function assertText(
       return run.result.kind === "match"
         ? {
             outcome: "passed",
-            detail: `${subject} matches ${shown} at line ${lineOf(text, run.result.index)}: ${JSON.stringify(clipLine(redact(run.result.text), 120))}.`,
+            // The match is cut out of the text at both ends, perhaps out of a
+            // secret: what it holds of one is masked, a middle piece included.
+            detail: `${subject} matches ${shown} at line ${lineOf(text, run.result.index)}: ${JSON.stringify(clipLine(redact(run.result.text, { start: true, end: true }), 120))}.`,
           }
         : {
             outcome: "failed",

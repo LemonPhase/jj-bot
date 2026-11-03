@@ -6,7 +6,7 @@ import type { Sandbox, SandboxDirEntry, SandboxFs } from "@jj/sandbox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createSandboxTools } from "./sandbox-tools";
 import { localSandbox } from "./test-support";
-import { capToolOutput, type OutputPolicy } from "./tools";
+import { type CutEdges, capToolOutput, type OutputPolicy } from "./tools";
 
 const policy = (capBytes = 65_536, spilled: string[] = []): OutputPolicy => ({
   capBytes,
@@ -234,5 +234,141 @@ describe("capToolOutput with a redactor", () => {
     }
     // Without the redactor some alignment does leave a fragment.
     expect(fragmentWithout).toBe(true);
+  });
+});
+
+describe("output a sandbox's output limit cut", () => {
+  const KEY = "sk-test-0123456789abcdefghijklmn";
+  const PREFIX = KEY.slice(0, 4);
+  /**
+   * Like the engine's redactor: whole keys anywhere, and at a cut edge
+   * `cut` names, a leading piece of one of at least four characters.
+   */
+  const redact = (text: string, cut?: CutEdges) => {
+    const out = text.split(KEY).join("[redacted]");
+    if (cut?.end)
+      for (let length = KEY.length - 1; length >= 4; length -= 1)
+        if (out.endsWith(KEY.slice(0, length)))
+          return `${out.slice(0, -length)}[redacted]`;
+    return out;
+  };
+  const limits = { execTimeoutMs: 10_000, maxOutputBytes: 1024 };
+  const done = (stdout: string, stderr = "") => ({
+    exitCode: 0,
+    stdout,
+    stderr,
+    truncated: true,
+    durationMs: 1,
+    interrupted: "no" as const,
+  });
+
+  /** A sandbox whose commands print what `exec` says. */
+  function printing(exec: Sandbox["exec"]): Sandbox {
+    return { ...memorySandbox("/workspace", {}), exec };
+  }
+
+  function tools(sandbox: Sandbox, names: ("bash" | "grep" | "find")[]) {
+    const spilled: { text: string; label: string }[] = [];
+    const built = createSandboxTools(
+      sandbox,
+      names,
+      {
+        capBytes: 512,
+        spill: async (text, label) => {
+          spilled.push({ text, label });
+          return `artifact-${spilled.length}`;
+        },
+        redact,
+      },
+      { limits, onReleased: () => {} },
+    );
+    return { built, spilled };
+  }
+
+  it("bash masks a key the limit cut at the cut: in what the model sees, the spill and its label", async () => {
+    // Nine characters of the key fit under the limit.
+    const head = `${"x".repeat(limits.maxOutputBytes - 9)}${KEY.slice(0, 5)}`;
+    const sandbox = printing(async (_command, options) => {
+      options?.onData?.(Buffer.from(head), "stdout");
+      options?.onData?.(Buffer.from(`${KEY.slice(5)} and more`), "stdout");
+      return done(`${head}${KEY.slice(5, 9)}`);
+    });
+    const { built, spilled } = tools(sandbox, ["bash"]);
+    // The label cuts the command at 120 characters, inside the key.
+    const command = `echo ${"z".repeat(110)}${KEY}`;
+    const result = await tool(built, "bash").execute("1", { command });
+    expect(textOf(result)).toContain(`xxxx[redacted]\n\n[Output was cut`);
+    expect(spilled).toHaveLength(1);
+    for (const text of [textOf(result), spilled[0]?.text, spilled[0]?.label])
+      expect(text).not.toContain(PREFIX);
+  });
+
+  it("bash masks it at the end of stdout and of stderr from a driver that does not stream", async () => {
+    const sandbox = printing(async () =>
+      done(`out ${KEY.slice(0, 10)}`, `err ${KEY.slice(0, 6)}`),
+    );
+    const result = await tool(tools(sandbox, ["bash"]).built, "bash").execute(
+      "1",
+      { command: "cat" },
+    );
+    expect(textOf(result)).toMatch(/^out \[redacted\]\nerr \[redacted\]\n\n/);
+  });
+
+  it("bash masks it at the end of the output of a command killed mid-way", async () => {
+    const printed = `out ${KEY.slice(0, 10)}`;
+    const killed = {
+      ...done(printed),
+      truncated: false,
+      exitCode: null,
+      interrupted: "yes" as const,
+      interruptReason: "timeout",
+    };
+    const streaming = printing(async (_command, options) => {
+      options?.onData?.(Buffer.from(printed), "stdout");
+      return killed;
+    });
+    const silent = printing(async () => killed);
+    for (const sandbox of [streaming, silent]) {
+      const result = await tool(tools(sandbox, ["bash"]).built, "bash").execute(
+        "1",
+        { command: "cat" },
+      );
+      expect(textOf(result)).toMatch(/^out \[redacted\]\n\nCommand timed out/);
+    }
+  });
+
+  it("grep redacts lines before cutting them, and masks the last one the limit cut", async () => {
+    const sandbox = printing(async () =>
+      done(
+        [
+          `a.txt:1:${KEY}`,
+          // Cut to 500 characters seven characters into the key.
+          `a.txt:2:${"y".repeat(485)}${KEY}`,
+          `a.txt:3:${KEY.slice(0, 9)}`,
+        ].join("\n"),
+      ),
+    );
+    const { built, spilled } = tools(sandbox, ["grep"]);
+    const result = await tool(built, "grep").execute("1", { pattern: "sk" });
+    // Over the cap: the model sees its head and tail, the spill all of it.
+    const whole = spilled[0]?.text ?? "";
+    expect(whole).toMatch(
+      /^a\.txt:1:\[redacted\]\na\.txt:2:y{485}\[redact…\na\.txt:3:\[redacted\]\n/,
+    );
+    for (const text of [textOf(result), whole])
+      expect(text).not.toContain(PREFIX);
+  });
+
+  it("find drops the entry the limit cut, a piece of a path", async () => {
+    const sandbox = printing(async () =>
+      done(`./notes.txt\n./${KEY.slice(0, 12)}`),
+    );
+    const result = await tool(tools(sandbox, ["find"]).built, "find").execute(
+      "1",
+      { pattern: "*" },
+    );
+    expect(textOf(result)).toBe(
+      "notes.txt\n\n[the sandbox stopped capturing output at its limit]",
+    );
   });
 });
