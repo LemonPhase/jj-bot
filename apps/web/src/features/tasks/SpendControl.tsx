@@ -1,8 +1,4 @@
-import {
-  isFinishedStatus,
-  MAX_SPEND_CAP_USD,
-  type TaskView,
-} from "@jj/contracts";
+import { MAX_SPEND_CAP_USD, type TaskView } from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
@@ -38,6 +34,21 @@ export function readCapInput(
   return { ok: true, value };
 }
 
+/**
+ * True while the task waits because its own cap refused a model call: a
+ * `spend.capped` of the task's scope since the user last continued it.
+ */
+export function stoppedAtCap(view: TaskView): boolean {
+  if (view.task.status !== "waiting") return false;
+  for (let index = view.events.length - 1; index >= 0; index -= 1) {
+    const event = view.events[index];
+    if (event?.type === "task.reopened") return false;
+    if (event?.type === "spend.capped" && event.payload.scope === "task")
+      return true;
+  }
+  return false;
+}
+
 const LEVEL_TONE = {
   ok: undefined,
   warning: "verifying",
@@ -62,9 +73,11 @@ export function SpendControl({ view }: { view: TaskView }) {
     usageDetail(usage.total),
     cap === null
       ? "No spend cap."
-      : level === "reached"
+      : stoppedAtCap(view)
         ? `Stopped at its spend cap of ${formatCap(cap)}: no further model call starts until it is raised.`
-        : `Spend cap ${formatCap(cap)}; it counts priced calls only.`,
+        : level === "reached"
+          ? `At or past its spend cap of ${formatCap(cap)}: no further model call starts until it is raised.`
+          : `Spend cap ${formatCap(cap)}; it counts priced calls only.`,
     ...(unpriced ? [`${unpriced}.`] : []),
   ].join(" ");
 
@@ -74,9 +87,12 @@ export function SpendControl({ view }: { view: TaskView }) {
         <button
           type="button"
           className={`ui-badge task-spend task-spend--${level}`}
-          onClick={() => setEditing(true)}
-          disabled={!editable}
-          aria-haspopup="dialog"
+          // Not disabled: the tip, with the usage breakdown, stays reachable.
+          onClick={() => {
+            if (editable) setEditing(true);
+          }}
+          aria-disabled={editable ? undefined : true}
+          aria-haspopup={editable ? "dialog" : undefined}
         >
           {LEVEL_TONE[level] && <StatusSquare tone={LEVEL_TONE[level]} />}
           <span className="visually-hidden">Usage: </span>
@@ -116,9 +132,7 @@ function SpendCapDialog({
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const stoppedAtCap =
-    spendLevel(usage.total.costUsd, task.spendCapUsd) === "reached" &&
-    !isFinishedStatus(task.status);
+  const stopped = stoppedAtCap(view);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -174,7 +188,7 @@ function SpendCapDialog({
           value={text}
           onChange={(event) => setText(event.target.value)}
         />
-        {stoppedAtCap && (
+        {stopped && (
           <p className="new-task-form__note">
             The task stopped at its cap. After raising it, send a message in the
             task chat to continue.

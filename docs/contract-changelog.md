@@ -58,6 +58,9 @@ rather than landing it and announcing it afterwards.
 - New `usageReportSchema` for `GET /api/usage`: `{ asOf, instance: { last24h, last7d, last30d,
   capUsdPerDay }, bots: [{ botId, name, archived, last24h, last30d, chatLast30d, capUsdPerDay }],
   models: [{ model, last30d }] }`.
+- New pure helpers `formatUsd` and `formatSpendAgainstCap`, so the server's cap messages and the
+  clients show amounts alike: spend next to a cap gets enough places that over never reads as at or
+  under it (`$4.996 of $5.00`).
 
 **Action required (frontend):** none beyond this change, which shows the cap in the task header and
 new-task dialog, the caps in the profile editor, spend on the bot inspector and a Usage tab in

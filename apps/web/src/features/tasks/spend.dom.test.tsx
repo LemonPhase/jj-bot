@@ -18,8 +18,27 @@ import { readCapInput, SpendControl } from "./SpendControl";
 
 const at = "2026-11-03T12:00:00.000Z";
 
+const cappedEvent = {
+  id: "e-capped",
+  taskId: "task-1",
+  sequence: 9,
+  occurredAt: at,
+  botId: "bot-1",
+  sessionId: "s-1",
+  runId: "r-1",
+  causedBy: null,
+  type: "spend.capped" as const,
+  payload: { scope: "task" as const, spentUsd: 0.6, capUsd: 0.5 },
+};
+
 /** A task view with this much priced spend and this cap. */
-function viewWith(costUsd: number, spendCapUsd: number | null): TaskView {
+function viewWith(
+  costUsd: number,
+  spendCapUsd: number | null,
+  patch: Partial<Pick<TaskView["task"], "status">> & {
+    events?: TaskView["events"];
+  } = {},
+): TaskView {
   const usage = {
     ...emptyUsage(),
     modelCalls: 4,
@@ -36,7 +55,7 @@ function viewWith(costUsd: number, spendCapUsd: number | null): TaskView {
       goalVersion: 1,
       coordinatorBotId: "bot-1",
       participantBotIds: ["bot-1"],
-      status: "waiting",
+      status: patch.status ?? "waiting",
       result: null,
       error: null,
       cancelReason: null,
@@ -50,7 +69,7 @@ function viewWith(costUsd: number, spendCapUsd: number | null): TaskView {
     messages: [],
     artifacts: [],
     usage: { total: usage, bySession: {} },
-    events: [],
+    events: patch.events ?? [],
     firstSequence: 1,
     hasEarlier: false,
     cursor: 0,
@@ -77,7 +96,11 @@ describe("spend formats", () => {
     expect(spendLevel(5, 5)).toBe("reached");
     expect(spendLine(0.42, 5)).toBe("$0.42 of $5.00");
     expect(spendLine(0.42, null)).toBe("$0.42 · no cap");
-    expect(spendLine(0.004789, 0.004)).toBe("$0.0048 of $0.004");
+    expect(spendLine(0.004789, 0.004)).toBe("$0.004789 of $0.004");
+    // Near the cap, places enough that over never reads as at or under.
+    expect(spendLine(4.996, 5)).toBe("$4.996 of $5.00");
+    expect(spendLine(5.0004, 5)).toBe("$5.0004 of $5.00");
+    expect(spendLine(0.015, 0.01)).toBe("$0.015 of $0.01");
   });
 
   it("never shows calls with no listed price as free", () => {
@@ -100,7 +123,10 @@ describe("spend formats", () => {
 describe("the task header's spend control", () => {
   it("says the cap was reached and raises it through the API", async () => {
     const updateTask = vi.fn(async () => viewWith(0.6, 2).task);
-    renderWith({ updateTask }, <SpendControl view={viewWith(0.6, 0.5)} />);
+    renderWith(
+      { updateTask },
+      <SpendControl view={viewWith(0.6, 0.5, { events: [cappedEvent] })} />,
+    );
     const control = screen.getByRole("button", { name: /Usage:/ });
     expect(control.textContent).toContain("$0.60 of $0.50");
     expect(control.textContent).toContain("cap reached");
@@ -144,6 +170,38 @@ describe("the task header's spend control", () => {
   });
 });
 
+describe("the usage badge's wording and reach", () => {
+  const tipOf = (control: HTMLElement) =>
+    document.getElementById(control.getAttribute("aria-describedby") ?? "")
+      ?.textContent ?? "";
+
+  it("says stopped only when the cap stopped the task, else at or past it", () => {
+    renderWith(
+      {},
+      <SpendControl view={viewWith(0.6, 0.5, { status: "completed" })} />,
+    );
+    const control = screen.getByRole("button", { name: /Usage:/ });
+    expect(tipOf(control)).toContain("At or past its spend cap of $0.50");
+    expect(tipOf(control)).not.toContain("Stopped");
+  });
+
+  it("keeps the breakdown reachable on a cancelled task, and opens no dialog", () => {
+    const updateTask = vi.fn();
+    renderWith(
+      { updateTask },
+      <SpendControl view={viewWith(0.2, 5, { status: "cancelled" })} />,
+    );
+    const control = screen.getByRole("button", { name: /Usage:/ });
+    expect((control as HTMLButtonElement).disabled).toBe(false);
+    expect(control.getAttribute("aria-disabled")).toBe("true");
+    expect(tipOf(control)).toContain("4 model calls");
+    fireEvent.focus(control);
+    expect(screen.getByRole("tooltip").hidden).toBe(false);
+    fireEvent.click(control);
+    expect(screen.queryByLabelText("Spend cap (USD)")).toBeNull();
+  });
+});
+
 describe("Settings → Usage", () => {
   it("lists the windows, each bot against its cap, and models", async () => {
     const zero = emptyUsage();
@@ -174,9 +232,9 @@ describe("Settings → Usage", () => {
           botId: "b",
           name: "Bob",
           archived: true,
-          last24h: zero,
+          last24h: { ...zero, modelCalls: 2, unpricedCalls: 2 },
           last30d: spent(2),
-          chatLast30d: zero,
+          chatLast30d: { ...zero, modelCalls: 2, unpricedCalls: 2 },
           capUsdPerDay: null,
         },
       ],
@@ -190,9 +248,11 @@ describe("Settings → Usage", () => {
     expect(ada.textContent).toContain("$20.50 of $20.00");
     expect(ada.textContent).toContain("cap reached");
     expect(ada.textContent).toContain("$1.25");
-    expect(screen.getByRole("row", { name: /Bob/ }).textContent).toContain(
-      "(archived)",
-    );
+    const bob = screen.getByRole("row", { name: /Bob/ });
+    expect(bob.textContent).toContain("(archived)");
+    // Unpriced calls are named in every cell that has them, never shown as free.
+    expect(bob.textContent).toContain("$0.00 · no cap + 2 unpriced");
+    expect(bob.textContent).toContain("$0.00 + 2 unpriced");
     expect(screen.getByText(/\$20\.50 of \$50\.00/)).toBeDefined();
     expect(
       screen.getByText(

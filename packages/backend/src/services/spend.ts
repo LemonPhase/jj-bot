@@ -4,6 +4,7 @@
 // the priced spend already recorded in `usage`. Calls on models with no listed
 // price record no cost, so no cap can bound them; they are counted apart.
 import {
+  formatSpendAgainstCap,
   profileBudgetsSchema,
   SPEND_SOFT_THRESHOLD,
   type SpendCapReachedDetails,
@@ -25,17 +26,6 @@ export interface SpendStop extends SpendCapReachedDetails {
   message: string;
   /** What lets the work go on. */
   advice: string;
-}
-
-/**
- * US dollars as people read them: cents from a dollar up, else up to four
- * places (six below a cent) without trailing zeros, so a cap of $0.035 is
- * not shown as $0.04.
- */
-export function formatUsd(value: number): string {
-  if (value >= 1) return `$${value.toFixed(2)}`;
-  const [whole, fraction = ""] = value.toFixed(value < 0.01 ? 6 : 4).split(".");
-  return `$${whole}.${fraction.replace(/0+$/, "").padEnd(2, "0")}`;
 }
 
 async function spent(exec: Executor, where: SQL | undefined): Promise<number> {
@@ -145,7 +135,8 @@ function describe(
   botId?: string,
   botName = "The bot",
 ): SpendStop {
-  const amounts = `${formatUsd(spentUsd)} of ${formatUsd(capUsd)}`;
+  const shown = formatSpendAgainstCap(spentUsd, capUsd);
+  const amounts = `${shown.spent} of ${shown.cap}`;
   switch (scope) {
     case "task":
       return {

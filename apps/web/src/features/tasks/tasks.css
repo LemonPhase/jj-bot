@@ -122,11 +122,11 @@
   background: none;
 }
 
-.task-spend:hover:not(:disabled) {
+.task-spend:hover:not([aria-disabled="true"]) {
   border-color: var(--ink-muted);
 }
 
-.task-spend:disabled {
+.task-spend[aria-disabled="true"] {
   cursor: default;
 }
 

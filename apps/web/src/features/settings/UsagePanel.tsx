@@ -4,10 +4,10 @@ import { useApi } from "../../api/ApiContext";
 import { Card, ErrorBanner, Spinner, StatusSquare } from "../../components/ui";
 import { useUsageReport } from "../../state/useUsageReport";
 import {
-  formatCap,
   formatCost,
   formatCount,
   spendLevel,
+  spendLine,
   tokenTotal,
   unpricedNote,
 } from "../tasks/format";
@@ -21,16 +21,24 @@ const LEVEL_TONE = {
   reached: "failed",
 } as const;
 
+/** " + 3 unpriced": calls whose cost is unknown, never shown as free. */
+const unpricedSuffix = (usage: Usage) =>
+  usage.unpricedCalls > 0 ? ` + ${usage.unpricedCalls} unpriced` : "";
+
+/** A cost, with the calls it leaves out because their cost is unknown. */
+const costText = (usage: Usage) =>
+  `${formatCost(usage.costUsd)}${unpricedSuffix(usage)}`;
+
 /** "$1.20 of $20.00", red at the cap, amber past the soft threshold. */
-function SpendCell({ spent, cap }: { spent: number; cap: number | null }) {
-  const level = spendLevel(spent, cap);
+function SpendCell({ usage, cap }: { usage: Usage; cap: number | null }) {
+  const level = spendLevel(usage.costUsd, cap);
   const tone = LEVEL_TONE[level];
   return (
     <span className="settings-spend">
       {tone && <StatusSquare tone={tone} />}
-      {formatCost(spent)}
-      {cap === null ? " · no cap" : ` of ${formatCap(cap)}`}
+      {spendLine(usage.costUsd, cap)}
       {level === "reached" && " · cap reached"}
+      {unpricedSuffix(usage)}
     </span>
   );
 }
@@ -90,12 +98,9 @@ function Report({ report }: { report: UsageReport }) {
               <dt>{term}</dt>
               <dd>
                 {term === "Last 24 hours" ? (
-                  <SpendCell
-                    spent={usage.costUsd}
-                    cap={instance.capUsdPerDay}
-                  />
+                  <SpendCell usage={usage} cap={instance.capUsdPerDay} />
                 ) : (
-                  formatCost(usage.costUsd)
+                  costText(usage)
                 )}{" "}
                 · {calls(usage)} · {formatCount(tokenTotal(usage))} tokens
               </dd>
@@ -126,17 +131,12 @@ function Report({ report }: { report: UsageReport }) {
                   </span>
                 </th>
                 <td>
-                  <SpendCell
-                    spent={bot.last24h.costUsd}
-                    cap={bot.capUsdPerDay}
-                  />
+                  <SpendCell usage={bot.last24h} cap={bot.capUsdPerDay} />
                 </td>
                 <td>
-                  {formatCost(bot.last30d.costUsd)} · {calls(bot.last30d)}
-                  {bot.last30d.unpricedCalls > 0 &&
-                    ` (${bot.last30d.unpricedCalls} unpriced)`}
+                  {costText(bot.last30d)} · {calls(bot.last30d)}
                 </td>
-                <td>{formatCost(bot.chatLast30d.costUsd)}</td>
+                <td>{costText(bot.chatLast30d)}</td>
               </tr>
             ))}
           </tbody>
@@ -170,7 +170,7 @@ function Report({ report }: { report: UsageReport }) {
                 <td>
                   {model.last30d.unpricedCalls === model.last30d.modelCalls
                     ? "no listed price"
-                    : formatCost(model.last30d.costUsd)}
+                    : costText(model.last30d)}
                 </td>
                 <td>{model.last30d.modelCalls}</td>
                 <td>{formatCount(tokenTotal(model.last30d))}</td>

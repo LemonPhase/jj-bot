@@ -13,6 +13,8 @@ import {
   defaultAppearanceFor,
   type ExecutionSession,
   emptyUsage,
+  formatSpendAgainstCap,
+  formatUsd,
   modelRefSchema,
   parseTaskEvent,
   postTaskMessageCommandSchema,
@@ -784,6 +786,30 @@ describe("spend caps and usage (1.3.0)", () => {
         spendCapUsd: 2.5,
       }).spendCapUsd,
     ).toBe(2.5);
+  });
+
+  it("formats spend against a cap without changing which is larger", () => {
+    expect([5, 12.5, 0.035, 0.5, 0.004789, 0].map(formatUsd)).toEqual([
+      "$5.00",
+      "$12.50",
+      "$0.035",
+      "$0.50",
+      "$0.004789",
+      "$0.00",
+    ]);
+    const cases: [number, number, string, string][] = [
+      [4.996, 5, "$4.996", "$5.00"],
+      [5.0000001, 5, "$5.0000001", "$5.00"],
+      [0.015, 0.01, "$0.015", "$0.01"],
+      [0.004779, 0.004, "$0.004779", "$0.004"],
+      [5, 5, "$5.00", "$5.00"],
+      [0.42, 5, "$0.42", "$5.00"],
+    ];
+    for (const [spent, cap, shownSpent, shownCap] of cases)
+      expect(formatSpendAgainstCap(spent, cap)).toEqual({
+        spent: shownSpent,
+        cap: shownCap,
+      });
   });
 
   it("parses a usage report", () => {

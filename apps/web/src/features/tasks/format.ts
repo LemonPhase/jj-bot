@@ -1,5 +1,10 @@
 /** Number formats for the Tasks screen: token counts, cost, spend caps and file sizes. */
-import { SPEND_SOFT_THRESHOLD, type Usage } from "@jj/contracts";
+import {
+  formatSpendAgainstCap,
+  formatUsd,
+  SPEND_SOFT_THRESHOLD,
+  type Usage,
+} from "@jj/contracts";
 
 const compact = (value: number, unit: number, suffix: string) => {
   const scaled = value / unit;
@@ -19,15 +24,8 @@ export function formatCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
-/**
- * A cap as it was set: cents from a dollar up, else up to four places
- * without trailing zeros. "$5.00", "$0.035", "$0.50".
- */
-export function formatCap(usd: number): string {
-  if (usd >= 1) return `$${usd.toFixed(2)}`;
-  const [whole, fraction = ""] = usd.toFixed(4).split(".");
-  return `$${whole}.${fraction.replace(/0+$/, "").padEnd(2, "0")}`;
-}
+/** A cap as it was set: "$5.00", "$0.035", "$0.50" (the contract's `formatUsd`). */
+export const formatCap = (usd: number): string => formatUsd(usd);
 
 /** Spend against a cap: below the soft threshold, past it, or at the cap. */
 export type SpendLevel = "ok" | "warning" | "reached";
@@ -41,15 +39,15 @@ export function spendLevel(
   return spentUsd >= capUsd * SPEND_SOFT_THRESHOLD ? "warning" : "ok";
 }
 
-/** Spend next to a cap: cents, or the places below a cent that a small cap needs. */
-const formatSpent = (usd: number): string =>
-  usd > 0 && usd < 0.01 ? formatCap(usd) : formatCost(usd);
-
-/** "$0.42 of $5.00", "$0.0048 of $0.004", or "$0.42 · no cap". */
-export const spendLine = (spentUsd: number, capUsd: number | null): string =>
-  capUsd === null
-    ? `${formatCost(spentUsd)} · no cap`
-    : `${formatSpent(spentUsd)} of ${formatCap(capUsd)}`;
+/**
+ * "$0.42 of $5.00", "$4.996 of $5.00", or "$0.42 · no cap": as the server
+ * words it, never showing spend over a cap as at or under it.
+ */
+export function spendLine(spentUsd: number, capUsd: number | null): string {
+  if (capUsd === null) return `${formatCost(spentUsd)} · no cap`;
+  const shown = formatSpendAgainstCap(spentUsd, capUsd);
+  return `${shown.spent} of ${shown.cap}`;
+}
 
 /**
  * Calls on models with no listed price: their cost is unknown, not zero, and
