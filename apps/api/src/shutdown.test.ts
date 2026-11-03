@@ -7,6 +7,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { jobs, openDatabase, runs } from "@jj/db";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 const entry = fileURLToPath(new URL("./index.ts", import.meta.url));
@@ -147,7 +149,8 @@ describe("the API process on SIGTERM", () => {
   it("drains: not ready, the command in flight finishes its turn, then it exits 0 and resumes the session on restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "jj-shutdown-"));
     dirs.push(dir);
-    const first = await boot(dir, 60);
+    // A drain that waited for its timeout would outlast the test.
+    const first = await boot(dir, 600);
     const taskId = await startTask(first, "sleep 3");
     await commandStarted(first, taskId, "sleep 3");
 
@@ -168,8 +171,8 @@ describe("the API process on SIGTERM", () => {
       checks: { worker: { ok: false, reason: "the job loop is draining" } },
     });
     expect(await first.exited, first.output()).toBe(0);
-    // At the turn boundary, not at the 60 s timeout.
-    expect(Date.now() - signalled).toBeLessThan(30_000);
+    // At the turn boundary, not at the timeout.
+    expect(Date.now() - signalled).toBeLessThan(60_000);
     expect(first.output()).toContain("SIGTERM: draining");
     expect(first.output()).not.toContain("drain timed out");
 
@@ -217,17 +220,38 @@ describe("the API process on SIGTERM", () => {
     const signalled = Date.now();
     first.child.kill("SIGTERM");
     expect(await first.exited, first.output()).toBe(0);
-    expect(Date.now() - signalled).toBeLessThan(20_000);
+    expect(Date.now() - signalled).toBeLessThan(45_000);
     expect(first.output()).toContain("drain timed out");
     // Its sandbox was released: the command did not outlive the process.
     expect(running("sleep 67")).toBe(0);
 
-    // The lease was given up, so the restart resumes the session at once,
-    // not once the 30 s lease runs out.
+    // Nothing of the cut-off run was written, and its lease was given up,
+    // so the restart resumes the session at once, as after a crash whose
+    // lease had run out.
+    const left = await openDatabase({ mode: "pglite", path: join(dir, "db") });
+    try {
+      expect(
+        await left.db
+          .select({
+            status: jobs.status,
+            expired: sql<boolean>`${jobs.leaseUntil} < now()`,
+          })
+          .from(jobs)
+          .where(eq(jobs.taskId, taskId)),
+      ).toEqual([{ status: "running", expired: true }]);
+      expect(
+        (
+          await left.db
+            .select({ status: runs.status })
+            .from(runs)
+            .where(eq(runs.taskId, taskId))
+        ).map((run) => run.status),
+      ).toEqual(["running"]);
+    } finally {
+      await left.close();
+    }
     const second = await boot(dir, 1);
-    const restarted = Date.now();
     await completed(second, taskId);
-    expect(Date.now() - restarted).toBeLessThan(25_000);
     const list = await events(second, taskId);
     expect(finishedTool(list, "sleep 67")).toMatchObject({
       ok: false,

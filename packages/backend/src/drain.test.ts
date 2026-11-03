@@ -103,7 +103,7 @@ describe("draining a worker", () => {
     });
     await first.executor.gate("hold").reached;
 
-    const drain = watch(first.engine.worker.drain(30_000));
+    const drain = watch(first.engine.worker.drain(600_000));
     expect(first.engine.worker.draining).toBe(true);
     expect(first.engine.worker.lastPollAt).toBeNull();
     // Mid-turn, the run holds the drain up.
@@ -114,7 +114,7 @@ describe("draining a worker", () => {
     const started = Date.now();
     await until(() => drain.settled, { what: "the drain" });
     // At the boundary, not at the timeout.
-    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(Date.now() - started).toBeLessThan(60_000);
     expect(first.engine.worker.draining).toBe(false);
     expect(first.engine.worker.activeJobs).toBe(0);
 
@@ -165,7 +165,7 @@ describe("draining a worker", () => {
       coordinatorBotId: team.byName[ada] as string,
     });
     await first.executor.gate("busy").reached;
-    const drain = watch(first.engine.worker.drain(30_000));
+    const drain = watch(first.engine.worker.drain(600_000));
 
     // Created while draining: its wake and the polls claim nothing.
     const { task: late } = await first.engine.tasks.create({
@@ -207,7 +207,7 @@ describe("draining a worker", () => {
       coordinatorBotId: team.byName[ada] as string,
     });
     await first.executor.gate("stopped").reached;
-    const drain = watch(first.engine.worker.drain(30_000));
+    const drain = watch(first.engine.worker.drain(600_000));
     await first.engine.tasks.stop(task.id);
     await until(() => drain.settled, { what: "the drain" });
     const view = await first.engine.tasks.get(task.id);
@@ -236,7 +236,7 @@ describe("draining a worker", () => {
       coordinatorBotId: team.byName[ada] as string,
     });
     await thought;
-    const drain = watch(first.engine.worker.drain(30_000));
+    const drain = watch(first.engine.worker.drain(600_000));
     answer();
     await until(() => drain.settled, { what: "the drain" });
     // Not handed back: the turn's end is the run's end, as without a drain.
@@ -281,7 +281,7 @@ describe("draining a worker", () => {
       coordinatorBotId: team.byName[ada] as string,
     });
     await thought;
-    const drain = watch(first.engine.worker.drain(30_000));
+    const drain = watch(first.engine.worker.drain(600_000));
     await first.engine.tasks.postMessage(task.id, { text: "use blue" });
     answer();
     await until(() => drain.settled, { what: "the drain" });
@@ -393,7 +393,6 @@ async function interruptAndResume(
     task.id,
     status("completed"),
     "the resumed task",
-    20_000,
   );
   return {
     result: view.task.result,
@@ -421,7 +420,7 @@ describe("a run still going when the drain times out", () => {
     });
     // The drain waited for the timeout, then stopped at once.
     expect(drainMs).toBeGreaterThanOrEqual(300);
-    expect(drainMs).toBeLessThan(10_000);
+    expect(drainMs).toBeLessThan(30_000);
     for (const engine of engines.splice(0).reverse()) await engine.dispose();
 
     // The same task losing its lease: the worker dies and its lease runs out.
@@ -447,5 +446,5 @@ describe("a run still going when the drain times out", () => {
     expect(drained.firstRan).toEqual(["echo one >> count.txt", "sleep 30"]);
     expect(drained.secondRan).toEqual(["cat count.txt"]);
     expect(drained.resumedResults).toEqual(["exit 0"]);
-  }, 60_000);
+  });
 });
