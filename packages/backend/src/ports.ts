@@ -105,8 +105,12 @@ export interface RunHooks {
    * lease) ends the run.
    */
   onTurnComplete(entries: PiMessage[]): void | Promise<void>;
-  /** Undelivered inbox items, injected as user messages at the next turn boundary. */
-  drainInbox(): Promise<string[]>;
+  /**
+   * Undelivered inbox items, injected as user messages at the next turn
+   * boundary. `turnEnded`: the model just ended its turn (a turn that called
+   * no tools), so what this returns makes it take another.
+   */
+  drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores tool output over the cap as an `output` artifact; returns its id. */
   spillOutput(text: string, label: string): Promise<string>;
   /**

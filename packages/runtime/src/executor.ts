@@ -140,8 +140,8 @@ export class PiSessionExecutor implements RunExecutor {
         }),
       ),
     ];
-    const drain = async () =>
-      (await hooks.drainInbox())
+    const drain = async (turnEnded = false) =>
+      (await hooks.drainInbox(turnEnded))
         .filter((text) => text.trim().length > 0)
         .map((text) => userMessage(text));
 

@@ -30,6 +30,7 @@ import {
 } from "../services/spend";
 import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
+import { CONTINUING_KINDS } from "./runs";
 import type { TaskSandboxes } from "./sandboxes";
 
 /** Why the worker stopped a job: the user stopped it, the worker is stopping, the lease was lost, or a simulated crash. */
@@ -391,7 +392,10 @@ export function runHooks(rc: RunContext): RunHooks {
         await markDelivered(tx, rc);
       });
     },
-    drainInbox: () => takeInbox(rc),
+    // Once the model ended its turn, only input that continues a run is
+    // taken: a message waits for the session's next run.
+    drainInbox: (turnEnded) =>
+      takeInbox(rc, turnEnded ? CONTINUING_KINDS : undefined),
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
     admitModelCall: () => admitModelCall(rc),

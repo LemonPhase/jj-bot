@@ -196,7 +196,8 @@ export interface LoopSpec {
    * `RunHooks.reviewTurn`). Absent: every call runs.
    */
   reviewTurn?: (calls: readonly TurnCall[]) => Promise<string | undefined>;
-  getSteering(): Promise<UserMessage[]>;
+  /** The inbox at a turn boundary; `turnEnded` after a turn that called no tools. */
+  getSteering(turnEnded: boolean): Promise<UserMessage[]>;
   persist(entries: TranscriptEntry[]): Promise<void>;
   onEvent(event: ExecutorEvent): Promise<void>;
   /** Replaces the server's secrets in summaries, model text and output previews, before any clip. */
@@ -350,6 +351,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   let cutWarning: string | undefined;
   const calls = new Map<string, { tool: string; summary: string }>();
   const answered = new Set<string>();
+  /** The latest turn was answered without tool calls: the model ended its turn. */
+  let turnEnded = false;
   /** Set when `reviewTurn` ended the run: the text that answers each call of that turn. */
   let turnEnd: { text: string; calls: Set<string> } | undefined;
   const collabByName = new Map(
@@ -569,6 +572,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     },
     finishTurn: async (turn) => {
       latestContext = turn.context;
+      turnEnded = persistable(turn.message) && !hasToolCalls(turn.message);
       if (signal.aborted) return { action: "end" };
       if (turnEnd) return { action: "end" };
       const wantsMore =
@@ -584,7 +588,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       }
       return undefined;
     },
-    getSteeringMessages: async () => (signal.aborted ? [] : spec.getSteering()),
+    getSteeringMessages: async () =>
+      signal.aborted ? [] : spec.getSteering(turnEnded),
   };
 
   const tools = spec.tools;

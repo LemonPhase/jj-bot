@@ -134,8 +134,11 @@ export interface RunHooks {
    * New inbox items (results, steering, messages). Called before the first
    * model call and at every turn boundary while the run continues; returned
    * texts are injected as user messages before the next model call.
+   * `turnEnded` is true at the boundary after a model turn that called no
+   * tools, where the model ended its turn: anything returned there makes it
+   * take another, so the engine returns only input that continues a run.
    */
-  drainInbox(): Promise<string[]>;
+  drainInbox(turnEnded?: boolean): Promise<string[]>;
   /** Stores output over the cap in full. Returns the artifact id. */
   spillOutput(text: string, label: string): Promise<string>;
   /**

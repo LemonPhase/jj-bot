@@ -230,7 +230,7 @@ export class FakeExecutor implements RunExecutor {
       messages.push(assistant);
       if (calls.length === 0) {
         await hooks.onTurnComplete([assistant]);
-        const steering = await this.drain(input, messages);
+        const steering = await this.drain(input, messages, true);
         if (steering) continue;
         return { kind: "ended", finalText: text };
       }
@@ -289,8 +289,12 @@ export class FakeExecutor implements RunExecutor {
     return { kind: "budget", limit: "turns", finalText: lastText };
   }
 
-  private async drain(input: RunInput, messages: FakeMessage[]) {
-    const steering = (await input.hooks.drainInbox()).map(
+  private async drain(
+    input: RunInput,
+    messages: FakeMessage[],
+    turnEnded = false,
+  ) {
+    const steering = (await input.hooks.drainInbox(turnEnded)).map(
       (text): FakeMessage => ({ role: "user", text }),
     );
     if (steering.length === 0) return false;

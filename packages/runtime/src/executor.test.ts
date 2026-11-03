@@ -832,6 +832,43 @@ describe("PiSessionExecutor", () => {
     expect(faux.state.callCount).toBe(0);
   });
 
+  it("tells drainInbox when the model has ended its turn", async () => {
+    const recorded = recordingHooks();
+    const asked: { turnEnded: boolean | undefined; calls: number }[] = [];
+    faux.setResponses([
+      callTool("bash", { command: "echo one" }),
+      say("First answer."),
+      say("Second answer."),
+    ]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: {
+          ...recorded.hooks,
+          drainInbox: async (turnEnded) => {
+            asked.push({ turnEnded, calls: faux.state.callCount });
+            // Input there (a result) makes the model take another turn.
+            return turnEnded && faux.state.callCount === 2
+              ? ["A result arrived."]
+              : [];
+          },
+        },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "ended", finalText: "Second answer." });
+    // Before the first call and after the tool turn: false. After each
+    // answer without tool calls: true.
+    expect(asked.filter((drain) => drain.turnEnded)).toEqual([
+      { turnEnded: true, calls: 2 },
+      { turnEnded: true, calls: 3 },
+    ]);
+    expect(
+      asked.filter((drain) => !drain.turnEnded).map((drain) => drain.calls),
+    ).toEqual(expect.arrayContaining([0, 1]));
+    expect(
+      asked.filter((drain) => !drain.turnEnded && drain.calls > 1),
+    ).toEqual([]);
+  });
+
   it("is idle when woken with no inputs and an empty inbox", async () => {
     for (const transcript of [[], [say("All done earlier.")]]) {
       const recorded = recordingHooks();
