@@ -43,11 +43,10 @@ import {
   type TimelineEntry,
   taskTimeline,
 } from "./taskModel";
+import { UploadCard, uploadsByMessage } from "./UploadCard";
 import {
   FileInput,
-  UploadCard,
   UploadDraftList,
-  uploadsByMessage,
   useDiscardOnUnmount,
   useUploadDrafts,
 } from "./uploads";
