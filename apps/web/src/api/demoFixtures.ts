@@ -298,6 +298,25 @@ export const DEMO_TASKS: readonly DemoTaskSeed[] = [
   },
 ];
 
+/** Templates the demo starts with (scaffold data, like the tasks). */
+export const DEMO_TEMPLATES: readonly {
+  id: string;
+  title: string;
+  goal: string;
+  coordinatorBotId: string;
+  participantBotIds: string[];
+  minutesAgo: number;
+}[] = [
+  {
+    id: "tmpl-demo-1",
+    title: "Weekly contract review",
+    goal: "Review this week's contract changes and summarise what the web app must change.",
+    coordinatorBotId: "bot-kite",
+    participantBotIds: ["bot-kite", "bot-vesper"],
+    minutesAgo: 60 * 24,
+  },
+];
+
 export interface DemoConversationSeed {
   botId: string;
   messages: {

@@ -4,12 +4,16 @@ import {
   type ConversationMessage,
   type ConversationView,
   type CreateBotCommand,
+  type CreateTaskTemplateCommand,
   emptyUsage,
   type RuntimeProfile,
+  type StartTemplateCommand,
   type Task,
   type TaskSummary,
+  type TaskTemplate,
   type TaskView,
   type UpdateBotCommand,
+  type UpdateTaskTemplateCommand,
   type VerificationPlan,
   verificationSummary,
 } from "@jj/contracts";
@@ -80,6 +84,12 @@ interface WorkspaceValue {
   bots: Bot[];
   tasks: TaskSummary[];
   profiles: RuntimeProfile[];
+  /**
+   * The task templates, oldest first, each with its problems as the server
+   * last derived them; null until loaded, and while the server serves none
+   * (one older than templates).
+   */
+  templates: TaskTemplate[] | null;
   /** The open bot's conversation (the last one seen for others). */
   conversations: Record<string, ConversationView>;
   /**
@@ -123,6 +133,22 @@ interface WorkspaceValue {
   saveMemory: (botId: string, text: string) => Promise<BotMemory>;
   /** Creates the task and opens it. */
   createTask: (input: NewTaskInput) => Promise<Task>;
+  /** Saves a new task template. */
+  createTemplate: (command: CreateTaskTemplateCommand) => Promise<TaskTemplate>;
+  updateTemplate: (
+    templateId: string,
+    command: UpdateTaskTemplateCommand,
+  ) => Promise<TaskTemplate>;
+  /** Tasks started from it keep their link to it. */
+  deleteTemplate: (templateId: string) => Promise<void>;
+  /**
+   * Starts a task from the template and opens it. Rejects with
+   * TEMPLATE_UNUSABLE while the template has problems.
+   */
+  startTemplate: (
+    templateId: string,
+    command: StartTemplateCommand,
+  ) => Promise<Task>;
 
   /** Loads a bot's memory; a failure lands in `memoryErrors`, not `error`. */
   loadMemory: (botId: string) => Promise<void>;
@@ -194,6 +220,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [bots, setBots] = useState<Bot[]>([]);
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[] | null>(null);
   const [conversations, setConversations] = useState<
     Record<string, ConversationView>
   >({});
@@ -302,6 +329,16 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const ignore = () => {};
     const delayMs = 200;
+    // A template's problems follow its bots and their models, so bot and
+    // key changes refetch the templates too. A server without templates
+    // answers NOT_FOUND: the list stays null and the UI offers none.
+    const templatesRefetch = createRefetcher(api.listTemplates, setTemplates, {
+      delayMs,
+      onError: (reason) => {
+        if (toApiError(reason).code === "NOT_FOUND") setTemplates(null);
+      },
+    });
+    void templatesRefetch.now();
     const botsRefetch = createRefetcher(api.listBots, setBots, {
       delayMs,
       onError: ignore,
@@ -322,8 +359,15 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
     const unsubscribe = api.subscribeHints(
       (hint) => {
-        if (hint.type === "bots.changed") botsRefetch.schedule();
-        else if (hint.type === "profiles.changed") profilesRefetch.schedule();
+        if (hint.type === "bots.changed") {
+          botsRefetch.schedule();
+          templatesRefetch.schedule();
+        } else if (hint.type === "profiles.changed") profilesRefetch.schedule();
+        else if (
+          hint.type === "templates.changed" ||
+          hint.type === "secrets.changed"
+        )
+          templatesRefetch.schedule();
         else if (hintNeedsTaskList(hint, streamed())) tasksRefetch.schedule();
       },
       {
@@ -331,6 +375,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           botsRefetch.schedule();
           profilesRefetch.schedule();
           tasksRefetch.schedule();
+          templatesRefetch.schedule();
         },
       },
     );
@@ -338,6 +383,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       botsRefetch.cancel();
       profilesRefetch.cancel();
       tasksRefetch.cancel();
+      templatesRefetch.cancel();
       unsubscribe();
     };
   }, [api, applyTaskList]);
@@ -459,6 +505,35 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /** A task the server just created: listed at once, then opened. */
+  const openCreated = useCallback(
+    (task: Task) => {
+      const verification = verificationSummary(task, []);
+      setTasks((current) =>
+        upsert(current, {
+          ...task,
+          activeSessionCount: 0,
+          sessionCount: 0,
+          usage: emptyUsage(),
+          pendingApprovals: [],
+          ...(verification ? { verification } : {}),
+        }),
+      );
+      selectTask(task.id);
+    },
+    [selectTask],
+  );
+  const putTemplate = useCallback(
+    (template: TaskTemplate) =>
+      setTemplates((current) => {
+        const list = current ?? [];
+        return list.some((entry) => entry.id === template.id)
+          ? list.map((entry) => (entry.id === template.id ? template : entry))
+          : [...list, template];
+      }),
+    [],
+  );
+
   const value = useMemo<WorkspaceValue>(
     () => ({
       loading,
@@ -469,6 +544,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       bots,
       tasks,
       profiles,
+      templates,
       conversations,
       taskViews,
       taskStreamState,
@@ -560,18 +636,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           ...(verificationPlan ? { verificationPlan } : {}),
           ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
         });
-        const verification = verificationSummary(task, []);
-        setTasks((current) =>
-          upsert(current, {
-            ...task,
-            activeSessionCount: 0,
-            sessionCount: 0,
-            usage: emptyUsage(),
-            pendingApprovals: [],
-            ...(verification ? { verification } : {}),
-          }),
+        openCreated(task);
+        return task;
+      },
+      createTemplate: async (command) => {
+        const template = await api.createTemplate(command);
+        putTemplate(template);
+        return template;
+      },
+      updateTemplate: async (templateId, command) => {
+        const template = await api.updateTemplate(templateId, command);
+        putTemplate(template);
+        return template;
+      },
+      deleteTemplate: async (templateId) => {
+        await api.deleteTemplate(templateId);
+        setTemplates(
+          (current) =>
+            current?.filter((template) => template.id !== templateId) ??
+            current,
         );
-        selectTask(task.id);
+      },
+      startTemplate: async (templateId, command) => {
+        const task = await api.startTemplate(templateId, command);
+        openCreated(task);
         return task;
       },
       postTaskMessage: async (taskId, text, changesGoal, plan) => {
@@ -629,6 +717,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       bots,
       tasks,
       profiles,
+      templates,
       conversations,
       taskViews,
       taskStreamState,
@@ -643,6 +732,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       pendingTaskSends,
       selectTask,
       selectBot,
+      openCreated,
+      putTemplate,
       refreshProfiles,
       refreshBots,
       report,

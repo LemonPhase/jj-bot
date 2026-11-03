@@ -20,6 +20,13 @@ import {
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { planOf, toVerificationCheck } from "../records";
 
+/**
+ * This build accepts and enforces verification plans
+ * (`capabilities.verification`): bootstrap reports it, and a template with a
+ * plan is unusable without it.
+ */
+export const VERIFICATION_ENFORCED = true;
+
 const quoted = (text: string) => JSON.stringify(text);
 
 /** What one criterion requires, in a line: "command `npm test` exits with code 0". */

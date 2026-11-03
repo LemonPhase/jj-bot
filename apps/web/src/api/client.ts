@@ -22,6 +22,7 @@ import type {
   CreateBotCommand,
   CreateRuntimeProfileCommand,
   CreateTaskCommand,
+  CreateTaskTemplateCommand,
   DecideApprovalCommand,
   McpDiscovery,
   McpToolSnapshot,
@@ -34,15 +35,18 @@ import type {
   SecretsView,
   SendBotMessageCommand,
   StartMcpDiscoveryCommand,
+  StartTemplateCommand,
   StopTaskCommand,
   Task,
   TaskMessage,
   TaskSummary,
+  TaskTemplate,
   TaskView,
   UpdateBotCommand,
   UpdateBotMemoryCommand,
   UpdateRuntimeProfileCommand,
   UpdateTaskCommand,
+  UpdateTaskTemplateCommand,
   UsageReport,
   WorkspaceHint,
 } from "@jj/contracts";
@@ -243,6 +247,29 @@ export interface JJApi {
    * configured), which a plain link cannot send: fetch the content instead.
    */
   fetchArtifact?(taskId: string, artifactId: string): Promise<Blob>;
+
+  // Task templates
+  /** `GET /api/task-templates`, oldest first. Rejects with `NOT_FOUND` on a server without templates. */
+  listTemplates(): Promise<TaskTemplate[]>;
+  getTemplate(templateId: string): Promise<TaskTemplate>;
+  /** Rejects with `VALIDATION_FAILED` for an unknown or archived bot, `CONFLICT` past the limit. */
+  createTemplate(command: CreateTaskTemplateCommand): Promise<TaskTemplate>;
+  updateTemplate(
+    templateId: string,
+    command: UpdateTaskTemplateCommand,
+  ): Promise<TaskTemplate>;
+  /** Tasks started from it keep their `templateId`. */
+  deleteTemplate(templateId: string): Promise<void>;
+  /**
+   * `POST /api/task-templates/:id/tasks`: the task, as `createTask` makes it.
+   * Rejects with `TEMPLATE_UNUSABLE` (its `details.problems`) while the
+   * template has problems, and with `SPEND_CAP_REACHED` for a coordinator at
+   * its cap.
+   */
+  startTemplate(
+    templateId: string,
+    command: StartTemplateCommand,
+  ): Promise<Task>;
 
   /** Demo only: run the next scripted step of a demo task now. */
   advanceDemoTask?(taskId: string): Promise<void>;

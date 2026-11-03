@@ -250,6 +250,11 @@ export const tasks = pgTable(
      */
     sandboxHolder: text("sandbox_holder"),
     sandboxHolderUntil: optionalTime("sandbox_holder_until"),
+    /**
+     * The task template the task was started from (attribution, not a
+     * foreign key): deleting the template leaves it set.
+     */
+    templateId: text("template_id"),
     /** Last allocated `task_events.sequence`; see `appendEvent`. */
     eventSeq: integer("event_seq").notNull().default(0),
     /** Last allocated `task_messages.sequence`; see `nextMessageSequence`. */
@@ -265,7 +270,45 @@ export const tasks = pgTable(
     uniqueIndex("tasks_created_from_message_unique")
       .on(t.createdByBotId, t.createdFromMessageId)
       .where(sql`${t.createdFromMessageId} is not null`),
+    index("tasks_template_idx").on(t.templateId),
     check("tasks_status_check", oneOf(t.status, TASK_STATUSES)),
+  ],
+);
+
+/**
+ * A saved task setup the user starts again (`taskTemplateSchema`). Its
+ * problems are derived on read, never stored.
+ */
+export const taskTemplates = pgTable(
+  "task_templates",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    title: text("title").notNull(),
+    goal: text("goal").notNull(),
+    /**
+     * Like the participants, a plain id checked against `bots` at save and
+     * at start, not a foreign key: bots are archived, never deleted.
+     */
+    coordinatorBotId: text("coordinator_bot_id").notNull(),
+    /** Every participant, the coordinator first; checked against `bots` at save and at start. */
+    participantBotIds: jsonb("participant_bot_ids").$type<string[]>().notNull(),
+    /** The contract's `verificationPlanSchema`; null for none. */
+    verificationPlan: jsonb("verification_plan").$type<JsonObject[]>(),
+    /** The task cap a start sets when `spend_cap_inherit` is false; null for none. */
+    spendCapUsd: doublePrecision("spend_cap_usd"),
+    /** True: a start takes the coordinator's profile's cap, read then. */
+    spendCapInherit: boolean("spend_cap_inherit").notNull().default(true),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("task_templates_owner_created_idx").on(t.ownerId, t.createdAt),
+    index("task_templates_coordinator_idx").on(t.coordinatorBotId),
+    check(
+      "task_templates_cap_check",
+      sql`not (${t.spendCapInherit} and ${t.spendCapUsd} is not null)`,
+    ),
   ],
 );
 
@@ -821,6 +864,8 @@ export type RuntimeProfileRow = typeof runtimeProfiles.$inferSelect;
 export type NewRuntimeProfile = typeof runtimeProfiles.$inferInsert;
 export type TaskRow = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
+export type TaskTemplateRow = typeof taskTemplates.$inferSelect;
+export type NewTaskTemplate = typeof taskTemplates.$inferInsert;
 export type TaskParticipantRow = typeof taskParticipants.$inferSelect;
 export type NewTaskParticipant = typeof taskParticipants.$inferInsert;
 export type TaskGoalVersionRow = typeof taskGoalVersions.$inferSelect;
@@ -1029,6 +1074,7 @@ export const tables = {
   bots,
   botMemory,
   tasks,
+  taskTemplates,
   conversationMessages,
   chatTaskUpdates,
   taskParticipants,

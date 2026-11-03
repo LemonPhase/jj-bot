@@ -24,6 +24,8 @@ import {
   type Task,
   type TaskEvent,
   type TaskMessage,
+  type TaskTemplate,
+  type TemplateProblem,
   type ToolName,
   type VerificationCheck,
   type VerificationPlan,
@@ -39,6 +41,7 @@ import type {
   TaskEventRow,
   TaskMessageRow,
   TaskRow,
+  TaskTemplateRow,
   VerificationCheckRow,
 } from "@jj/db";
 
@@ -100,9 +103,33 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     cancelRequestedAt: isoOrNull(row.cancelRequestedAt),
     verificationPlan: planOf(row.verificationPlan),
     spendCapUsd: row.spendCapUsd,
+    templateId: row.templateId,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     finishedAt: isoOrNull(row.finishedAt),
+  };
+}
+
+/** A stored template with the problems derived for it now. */
+export function toTaskTemplate(
+  row: TaskTemplateRow,
+  problems: TemplateProblem[],
+): TaskTemplate {
+  return {
+    id: row.id,
+    title: row.title,
+    goal: row.goal,
+    coordinatorBotId: row.coordinatorBotId,
+    participantBotIds: participantOrder(
+      row.coordinatorBotId,
+      row.participantBotIds,
+    ),
+    verificationPlan: planOf(row.verificationPlan),
+    // Omitted while a start takes the coordinator's profile's cap.
+    ...(row.spendCapInherit ? {} : { spendCapUsd: row.spendCapUsd }),
+    problems,
+    createdAt: iso(row.createdAt),
+    updatedAt: iso(row.updatedAt),
   };
 }
 

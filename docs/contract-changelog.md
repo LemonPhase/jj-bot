@@ -31,6 +31,49 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.9.0 — 2026-11-03 — Task templates
+
+**Changed by:** backend and frontend ([#91](https://github.com/LemonPhase/jj-bot/issues/91), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/91#issuecomment-6613485332)) · **Compatibility:** additive
+
+- New `templates.ts`. `taskTemplateSchema`: `id`, `title` (1–120 characters), `goal` (at most
+  `COMMAND_TEXT_LIMIT`), `coordinatorBotId` and `participantBotIds` (the coordinator included, the
+  same refinement as tasks, `coordinatorParticipates`), `verificationPlan` (null by default),
+  `spendCapUsd` (omitted: the coordinator's profile's `maxUsdPerTask` at start; null: no cap; the
+  `createTaskCommandSchema` semantics), `problems` (derived on read, empty by default) and
+  `createdAt`, `updatedAt`. `MAX_TASK_TEMPLATES` = 200.
+- `templateProblemSchema`, a union on `kind`: `bot_archived` (`botId`, `name`),
+  `model_not_configured` (`botId`, `message`) and `verification_unavailable`. An empty list means
+  the template can start now; spend caps are checked at start and are not problems.
+  `describeTemplateProblem` words one.
+- Commands: `createTaskTemplateCommandSchema` (the create-task fields with `title` required, and
+  the same coordinator transform, now the exported `withCoordinator`);
+  `updateTaskTemplateCommandSchema` (partial, at least one field; `participantBotIds` replaced
+  whole; `spendCapUsd` also takes `PROFILE_SPEND_CAP` = `"profile"` to go back to the profile's cap,
+  which a patch could not otherwise say); `startTemplateCommandSchema` (`instructions` of 1 to
+  `TEMPLATE_INSTRUCTIONS_LIMIT` = 4000 characters, `title`, `spendCapUsd`, all optional).
+- `templateRunGoal` appends a run's instructions to the goal under
+  `TEMPLATE_INSTRUCTIONS_HEADING` (`Instructions for this run:`); `templateTaskCommand` builds the
+  `CreateTaskCommand` a start makes; `templateGoalTooLong` says when the combined goal is over
+  `COMMAND_TEXT_LIMIT`, which a start answers with 422 `VALIDATION_FAILED`.
+- `taskObjectSchema.templateId` (and so tasks, summaries and `task.created`): the template a task
+  was started from, null otherwise and for records stored before 1.9.0.
+- Routes: `GET /api/task-templates` → `taskTemplateListSchema` (`{ templates }`, oldest first);
+  `POST` → 201 `taskTemplateResultSchema` (`{ template }`); `GET` and `PATCH
+  /api/task-templates/:id` → `{ template }`; `DELETE` → 204, leaving its tasks and their
+  `templateId` as they are; `POST /api/task-templates/:id/tasks` with `startTemplateCommandSchema` →
+  201 `{ task }`.
+- API error code `TEMPLATE_UNUSABLE` (409, `details` per `templateUnusableDetailsSchema`:
+  `{ problems }`), answered to a start while the template has any problem. Saves answer
+  `VALIDATION_FAILED` for an unknown or archived bot and `CONFLICT` past the limit; a start can
+  also answer `SPEND_CAP_REACHED` for a coordinator at its cap, as task creation does.
+- `workspaceHintSchema`: adds `templates.changed`, sent when a template is saved, changed or
+  deleted. Older clients ignore it.
+
+**Action required (frontend):** list, edit, delete and start templates, save a task as one, and
+show "From template X" on a task. Done in the same change, the demo included.
+**Action required (backend):** none beyond this change; a client built against 1.8.0 that parses
+tasks strictly must accept `templateId`.
+
 ## 1.8.0 — 2026-11-03 — Bot names and roles are a single line
 
 **Changed by:** backend and frontend ([#100](https://github.com/LemonPhase/jj-bot/issues/100), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6607691571) and amended in [this one](https://github.com/LemonPhase/jj-bot/issues/100#issuecomment-6613746021)) · **Compatibility:** tightens validation: a 1.7.0 writer that sends a multi-line name or role is now refused, and a 1.8.0 reader refuses a bot record holding one, which a 1.8.0 server never sends

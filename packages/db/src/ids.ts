@@ -7,6 +7,7 @@ export const ID_PREFIXES = {
   conversationMessage: "cmsg",
   taskUpdate: "upd",
   task: "task",
+  template: "tmpl",
   session: "sess",
   run: "run",
   inboxItem: "inbox",

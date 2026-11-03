@@ -16,6 +16,7 @@ import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotList } from "../bots/BotList";
 import { useModels } from "../bots/useModels";
 import { TaskList } from "../tasks/TaskList";
+import { TemplateList } from "../templates/TemplateList";
 import { modeBadgeFor } from "./modeBadge";
 import { botHref, type Route, SETTINGS_HREF, type Section } from "./router";
 import { useShell } from "./ShellContext";
@@ -127,7 +128,10 @@ export function Sidebar({
         {section === "bots" ? (
           <BotList labelledBy={listLabelId} />
         ) : (
-          <TaskList labelledBy={listLabelId} />
+          <>
+            <TaskList labelledBy={listLabelId} />
+            <TemplateList />
+          </>
         )}
       </div>
 
