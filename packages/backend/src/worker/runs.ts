@@ -157,6 +157,10 @@ export function assistantText(entry: unknown): string | undefined {
 /** Input kinds that start or continue a run; plain messages wait for the next activation. */
 export const CONTINUING_KINDS = ["brief", "result", "steering"] as const;
 
+/** A brief, result or steering: input that starts or continues a run. */
+export const isContinuing = (kind: string) =>
+  (CONTINUING_KINDS as readonly string[]).includes(kind);
+
 /** Undelivered input that starts or continues a run (briefs, results, steering). */
 export async function hasContinuingInput(tx: Tx, sessionId: string) {
   const [row] = await tx
