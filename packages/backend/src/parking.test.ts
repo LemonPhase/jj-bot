@@ -13,6 +13,7 @@ import {
 } from "@jj/runtime/testing";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Engine } from "./engine";
+import type { RunExecutor, RunInput } from "./ports";
 import {
   fauxTeamEngine,
   gate as openable,
@@ -51,8 +52,8 @@ afterAll(async () => {
   await db?.close();
 });
 
-async function setup() {
-  const team = await fauxTeamEngine(db.database);
+async function setup(wrap?: Parameters<typeof fauxTeamEngine>[1]) {
+  const team = await fauxTeamEngine(db.database, wrap);
   current = team;
   return { engine: team.engine, faux: team.faux };
 }
@@ -393,5 +394,184 @@ describe("parking a session that only looks things up", () => {
     );
     expect(done.task.status).toBe("completed");
     expect(calls[bob]).toBe(2 + PARK_AFTER_TURNS);
+  });
+  it("does not count turns that only read the workspace, nor start the count over with them", async () => {
+    const { engine, faux } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const worker = gate();
+    const read = (path: string) => turn([fauxToolCall("read", { path })]);
+    const state = () => turn([fauxToolCall("task_state", {})]);
+    // Exploring the workspace while Bob works: never parked. Then polls
+    // with reads between them: parked at the PARK_AFTER_TURNS-th poll.
+    const script = [
+      read("a.txt"),
+      turn([fauxToolCall("grep", { pattern: "x" })]),
+      read("b.txt"),
+      turn([fauxToolCall("find", { pattern: "*" })]),
+      turn([fauxToolCall("ls", {})]),
+      state(),
+      read("c.txt"),
+      state(),
+      turn([fauxToolCall("grep", { pattern: "y" })]),
+      state(),
+    ];
+    const calls = route(faux, {
+      [ada]: (context, n) => {
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (resultArrived(context, bob))
+          return callTool("complete_task", { result: "Done." });
+        return script[n - 1] ?? say("");
+      },
+      [bob]: async () => {
+        await worker.opened;
+        return say("Bob is done.");
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await untilRootWaits(engine, task.id, () => calls[ada] ?? 0, 20);
+    expect(calls[ada]).toBe(1 + script.length);
+    const finished = await toolFinished(engine, task.id);
+    const parked = finished.filter(
+      (event) => event.payload.output === parkedText(1),
+    );
+    expect(parked.map((event) => event.payload.tool)).toEqual(["task_state"]);
+    // Every read ran.
+    expect(
+      finished.filter((event) =>
+        ["read", "grep", "find", "ls"].includes(event.payload.tool),
+      ),
+    ).toHaveLength(7);
+
+    worker.open();
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+  });
+
+  it("does not start the count over for a message, which wakes no one", async () => {
+    const { engine, faux } = await setup();
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const polled = gate();
+    const worker = gate();
+    const seen: TranscriptContext[] = [];
+    const calls = route(faux, {
+      [ada]: async (context, n) => {
+        seen.push({ ...context, messages: [...context.messages] });
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (resultArrived(context, bob))
+          return callTool("complete_task", { result: "Done." });
+        // Bob messages Ada during her first poll; she reads it at its end.
+        if (n === 1) await polled.opened;
+        return callTool("task_state", {});
+      },
+      [bob]: async (_context, n) => {
+        if (n === 0)
+          return callTool("message", { to: ada, text: "Still on it." });
+        polled.open();
+        await worker.opened;
+        return say("Bob wrote bob.txt.");
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    await untilRootWaits(engine, task.id, () => calls[ada] ?? 0, 15);
+    expect(calls[ada]).toBe(1 + PARK_AFTER_TURNS);
+    expect(textOf(lastMessage(seen[2] as TranscriptContext))).toBe(
+      `Message from ${bob}:\nStill on it.`,
+    );
+
+    worker.open();
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+  });
+
+  it("continues the run when a result lands between the decision to park and the run's end", async () => {
+    let afterDecision: (() => Promise<void>) | undefined;
+    // Runs `afterDecision` once, right after the engine decided to park.
+    const wrap = (inner: RunExecutor): RunExecutor => ({
+      run: (input: RunInput) =>
+        inner.run({
+          ...input,
+          hooks: {
+            ...input.hooks,
+            reviewTurn: async (calls) => {
+              const verdict = await input.hooks.reviewTurn?.(calls);
+              const hook = afterDecision;
+              if (verdict !== undefined && hook) {
+                afterDecision = undefined;
+                await hook();
+              }
+              return verdict;
+            },
+          },
+        }),
+    });
+    const { engine, faux } = await setup(wrap);
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    const worker = gate();
+    let taskId = "";
+    afterDecision = async () => {
+      // Bob finishes, and his result is delivered, before Ada's run ends.
+      worker.open();
+      await until(
+        async () =>
+          (await engine.tasks.get(taskId)).sessions.find(
+            (session) => session.parentSessionId !== null,
+          )?.status === "completed",
+        { what: "Bob to complete" },
+      );
+    };
+    const calls = route(faux, {
+      [ada]: (context, n) => {
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (resultArrived(context, bob))
+          return callTool("complete_task", { result: "Bob wrote bob.txt." });
+        return callTool("task_state", {});
+      },
+      [bob]: async (_context, n) => {
+        if (n > 0) return say("Bob wrote bob.txt.");
+        await worker.opened;
+        return callTool("write", { path: "bob.txt", content: "bob\n" });
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    taskId = task.id;
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+    expect(calls[ada]).toBe(2 + PARK_AFTER_TURNS);
+    // In the same run: the end-of-run write-back found the result.
+    expect(rootOf(done)?.runCount).toBe(1);
+    const parked = (await toolFinished(engine, task.id)).filter(
+      (event) => event.payload.output === parkedText(1),
+    );
+    expect(parked).toHaveLength(1);
   });
 });

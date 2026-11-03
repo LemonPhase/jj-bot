@@ -20,6 +20,7 @@ import {
   textOf,
 } from "@jj/runtime/testing";
 import type { Engine } from "../engine";
+import type { RunExecutor } from "../ports";
 import { promptBot } from "./fake-executor";
 import { type TestEngine, testEngine } from "./harness";
 
@@ -51,15 +52,21 @@ export function route(faux: Faux, scripts: Record<string, Script>) {
   return calls;
 }
 
-/** An engine whose sessions run on the pi runtime with one faux provider. */
+/**
+ * An engine whose sessions run on the pi runtime with one faux provider;
+ * `wrap` can put a test's own hooks around that executor.
+ */
 export async function fauxTeamEngine(
   database: Database,
+  wrap: (executor: RunExecutor) => RunExecutor = (executor) => executor,
 ): Promise<TestEngine & { faux: Faux }> {
   const faux = fauxProvider();
   const engine = await testEngine(database, {
-    runExecutor: new PiSessionExecutor({
-      models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
-    }),
+    runExecutor: wrap(
+      new PiSessionExecutor({
+        models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+      }),
+    ),
   });
   return { ...engine, faux };
 }
