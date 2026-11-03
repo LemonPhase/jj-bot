@@ -283,35 +283,40 @@ describe("liveApi against the real server", () => {
 });
 
 describe("startServer", () => {
-  it("shuts down gracefully with streams still open", async () => {
-    const extraRoot = await mkdtemp(join(tmpdir(), "jj-web-client-close-"));
-    const other = await startServer({
-      logger: quietLogger,
-      env: {
-        API_PORT: "0",
-        JJ_DATABASE_PATH: "memory://",
-        JJ_SANDBOX_DRIVERS: "local",
-        JJ_SANDBOX_ROOT: extraRoot,
-        JJ_ENABLE_SCRIPTED_MODEL: "true",
-      },
-    });
-    try {
-      const response = await fetch(`${other.url}/api/stream`);
-      expect(response.status).toBe(200);
-      const reader = response.body?.getReader();
-      await reader?.read();
-      const started = Date.now();
-      await other.close();
-      expect(Date.now() - started).toBeLessThan(2_000);
-      // The stream ended instead of hanging the shutdown.
-      for (;;) {
-        const chunk = await reader?.read().catch(() => ({ done: true }));
-        if (!chunk || chunk.done) break;
+  // It opens a server of its own, so it gets the budget the suite's setup has.
+  it(
+    "shuts down gracefully with streams still open",
+    async () => {
+      const extraRoot = await mkdtemp(join(tmpdir(), "jj-web-client-close-"));
+      const other = await startServer({
+        logger: quietLogger,
+        env: {
+          API_PORT: "0",
+          JJ_DATABASE_PATH: "memory://",
+          JJ_SANDBOX_DRIVERS: "local",
+          JJ_SANDBOX_ROOT: extraRoot,
+          JJ_ENABLE_SCRIPTED_MODEL: "true",
+        },
+      });
+      try {
+        const response = await fetch(`${other.url}/api/stream`);
+        expect(response.status).toBe(200);
+        const reader = response.body?.getReader();
+        await reader?.read();
+        const started = Date.now();
+        await other.close();
+        expect(Date.now() - started).toBeLessThan(2_000);
+        // The stream ended instead of hanging the shutdown.
+        for (;;) {
+          const chunk = await reader?.read().catch(() => ({ done: true }));
+          if (!chunk || chunk.done) break;
+        }
+        await expect(fetch(`${other.url}/health`)).rejects.toThrow();
+      } finally {
+        await other.close();
+        await rm(extraRoot, { recursive: true, force: true });
       }
-      await expect(fetch(`${other.url}/health`)).rejects.toThrow();
-    } finally {
-      await other.close();
-      await rm(extraRoot, { recursive: true, force: true });
-    }
-  });
+    },
+    OPEN_TIMEOUT,
+  );
 });
