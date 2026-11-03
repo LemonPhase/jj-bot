@@ -11,8 +11,29 @@ export interface Tracing {
   tracer: Tracer;
   /** Where spans are sent: `<OTEL_EXPORTER_OTLP_ENDPOINT>/v1/traces`, or the traces endpoint. */
   url: string;
-  /** Exports what is still buffered, then stops. */
+  /**
+   * Exports what is still buffered, then stops. Never rejects and never
+   * takes much longer than the export timeout: a collector that refuses or
+   * does not answer is logged as a warning, and the spans it did not take
+   * are dropped, so a shutdown is never held up or failed by it.
+   */
   shutdown(): Promise<void>;
+}
+
+/** How long one batch export, and the flush at shutdown, may take. */
+export const EXPORT_TIMEOUT_MS = 5_000;
+
+/** The variables the OTLP trace exporter reads headers from, generic first. */
+export const OTLP_HEADER_VARIABLES = [
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+] as const;
+
+export interface TracingOptions {
+  /** Imports the SDK; replaced in tests to see whether it is called. */
+  load?: () => Promise<Modules>;
+  /** Default `EXPORT_TIMEOUT_MS`. */
+  exportTimeoutMs?: number;
 }
 
 type Modules = [
@@ -33,12 +54,10 @@ export const loadTracingModules = (): Promise<Modules> =>
 
 const text = (env: Env, name: string) => env[name]?.trim() || undefined;
 
-/** `OTEL_EXPORTER_OTLP_HEADERS`: `key=value` pairs, comma-separated, values URL-encoded. */
-export function otlpHeaders(env: Env): Record<string, string> {
+/** One headers variable: `key=value` pairs, comma-separated, values URL-encoded. */
+export function headersOf(env: Env, name: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const pair of (text(env, "OTEL_EXPORTER_OTLP_HEADERS") ?? "").split(
-    ",",
-  )) {
+  for (const pair of (text(env, name) ?? "").split(",")) {
     const at = pair.indexOf("=");
     if (at <= 0) continue;
     const key = pair.slice(0, at).trim();
@@ -52,6 +71,17 @@ export function otlpHeaders(env: Env): Record<string, string> {
     if (key && value) headers[key] = value;
   }
   return headers;
+}
+
+/**
+ * The headers sent with every export: `OTEL_EXPORTER_OTLP_HEADERS`, and
+ * `OTEL_EXPORTER_OTLP_TRACES_HEADERS` over them, as the exporter reads them.
+ */
+export function otlpHeaders(env: Env): Record<string, string> {
+  return Object.assign(
+    {},
+    ...OTLP_HEADER_VARIABLES.map((name) => headersOf(env, name)),
+  );
 }
 
 /** The traces endpoint, or undefined when OTEL_EXPORTER_OTLP_ENDPOINT is unset (no export). */
@@ -74,11 +104,14 @@ export async function startTracing(
   env: Env,
   service: string,
   logger: Logger,
-  load: () => Promise<Modules> = loadTracingModules,
+  options: TracingOptions = {},
 ): Promise<Tracing | undefined> {
   const url = tracesUrl(env);
   if (!url) return undefined;
-  const [sdk, otlp, resources, api] = await load();
+  const timeoutMs = options.exportTimeoutMs ?? EXPORT_TIMEOUT_MS;
+  const [sdk, otlp, resources, api] = await (
+    options.load ?? loadTracingModules
+  )();
   api.diag.setLogger(
     {
       error: (message, ...args) =>
@@ -105,13 +138,48 @@ export async function startTracing(
         exporter: new otlp.OTLPTraceExporter({
           url,
           headers: otlpHeaders(env),
+          timeoutMillis: timeoutMs,
         }),
+        exportTimeoutMillis: timeoutMs,
       }),
     ],
   });
+  let stopping: Promise<void> | undefined;
   return {
     tracer: provider.getTracer("jj-bot"),
     url,
-    shutdown: () => provider.shutdown(),
+    shutdown: () => {
+      stopping ??= flush(provider.shutdown(), timeoutMs, logger);
+      return stopping;
+    },
   };
+}
+
+/** `done` or, past `timeoutMs` (with a second's grace), a warning; never a rejection. */
+async function flush(
+  done: Promise<void>,
+  timeoutMs: number,
+  logger: Logger,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), timeoutMs + 1_000);
+    timer.unref();
+  });
+  try {
+    const result = await Promise.race([done.then(() => "done" as const), late]);
+    if (result === "late")
+      logger.warn(
+        `Flushing the traces did not finish within ${timeoutMs} ms; the spans not yet exported are dropped`,
+      );
+  } catch (error) {
+    logger.warn(
+      "Flushing the traces failed; the spans not yet exported are dropped",
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }

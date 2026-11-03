@@ -25,7 +25,7 @@ import {
   type ServicesConfig,
 } from "./config";
 import { GENERATED_TOKEN_KEY } from "./token";
-import { otlpHeaders } from "./tracing";
+import { headersOf, OTLP_HEADER_VARIABLES } from "./tracing";
 
 export interface Services {
   database: Database;
@@ -52,18 +52,21 @@ export function databasePassword(connectionString: string): string[] {
 }
 
 /**
- * The values of `OTEL_EXPORTER_OTLP_HEADERS` (a collector's API key), and
- * the credential after a scheme such as `Bearer `.
+ * The header values the OTLP exporter sends (`OTEL_EXPORTER_OTLP_HEADERS`
+ * and `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, such as a collector's API key),
+ * and the credential after a scheme such as `Bearer `.
  */
 export function otlpHeaderSecrets(env: Env): Secret[] {
-  return Object.values(otlpHeaders(env)).flatMap((value) => {
-    const credential = value.split(/\s+/).at(-1) ?? "";
-    return [
-      ...new Set(
-        credential && credential !== value ? [value, credential] : [value],
-      ),
-    ].map((text) => ({ name: "OTEL_EXPORTER_OTLP_HEADERS", value: text }));
-  });
+  return OTLP_HEADER_VARIABLES.flatMap((name) =>
+    Object.values(headersOf(env, name)).flatMap((value) => {
+      const credential = value.split(/\s+/).at(-1) ?? "";
+      return [
+        ...new Set(
+          credential && credential !== value ? [value, credential] : [value],
+        ),
+      ].map((text) => ({ name, value: text }));
+    }),
+  );
 }
 
 /**

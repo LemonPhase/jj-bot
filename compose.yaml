@@ -88,6 +88,7 @@ services:
       # the host is host.docker.internal:4318).
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${OTEL_EXPORTER_OTLP_TRACES_HEADERS:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}
     # Healthy while GET /health/ready answers 200: the database, migrations
     # at this build's level, the embedded worker polling and the docker

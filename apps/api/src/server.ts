@@ -10,7 +10,7 @@ import { createApp, type JJApp } from "./app";
 import {
   type Env,
   loadServerConfig,
-  redactUrl,
+  redactEndpoint,
   type ServerConfig,
 } from "./config";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
@@ -69,7 +69,7 @@ export async function startServer(
 
   const tracing = await startTracing(env, "jj-api", logger);
   if (tracing)
-    logger.info(`Exporting traces over OTLP to ${redactUrl(tracing.url)}`);
+    logger.info(`Exporting traces over OTLP to ${redactEndpoint(tracing.url)}`);
   const proxy = configureOutboundProxy(env);
   if (proxy)
     logger.info(
@@ -79,8 +79,9 @@ export async function startServer(
     ...(tracing ? { tracer: tracing.tracer } : {}),
     processMetrics: true,
   }).catch(async (error) => {
-    await proxy?.restore();
-    await tracing?.shutdown();
+    // The boot error is the one reported, whatever the flush does.
+    await proxy?.restore().catch(() => {});
+    await tracing?.shutdown().catch(() => {});
     throw error;
   });
   const { engine, database } = services;
@@ -153,11 +154,9 @@ export async function startServer(
         if ("closeAllConnections" in http) http.closeAllConnections();
         await database.close();
         await proxy?.restore();
-        await tracing?.shutdown().catch((error: unknown) =>
-          logger.warn("Flushing the traces failed", {
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
+        // Bounded, and logs its own failure: a dead collector never holds
+        // the shutdown up or fails it.
+        await tracing?.shutdown();
       })();
       return closing;
     };
