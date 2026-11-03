@@ -1,9 +1,14 @@
 // A message never continues a run (architecture: Visibility is separate from
 // activation), on the real pi runtime: one that reaches a session while the
 // model is ending its turn rides along with input that continues the run
-// anyway, or waits for the session's next run instead of giving the model
-// another turn; a session that finishes first hands it to its parent.
+// anyway, in the order it arrived, or waits for the session's next run
+// instead of giving the model another turn, after a crash too; a session
+// that finishes first hands it to its parent.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
+import { runs } from "@jj/db";
 import {
   callTool,
   conversation,
@@ -12,7 +17,9 @@ import {
   say,
   textOf,
 } from "@jj/runtime/testing";
+import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { promptBot } from "./testing/fake-executor";
 import {
   fauxTeamEngine,
   gate,
@@ -33,6 +40,7 @@ import { createTeam } from "./testing/scenarios";
 let db: TestDatabase;
 let current: TestEngine | undefined;
 const opened: (() => void)[] = [];
+const roots: string[] = [];
 
 beforeAll(async () => {
   db = await openTestDatabase();
@@ -41,6 +49,8 @@ afterEach(async () => {
   for (const open of opened.splice(0)) open();
   await current?.dispose();
   current = undefined;
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true });
 });
 afterAll(async () => {
   await db?.close();
@@ -339,4 +349,198 @@ describe("a message that arrives as the model ends its turn", () => {
     expect(continued.at(-2)).toBe(`Message from ${bob}:\nFYI: lower case.`);
     expect(continued.at(-1)).toMatch(/^Result from .+ \(session /);
   });
+
+  it("keeps the inbox's order when a result that lands after the turn ended continues the run", async () => {
+    let adaName = "";
+    let afterTurn: (() => Promise<void>) | undefined;
+    // Holds Ada's run once her executor call has ended, past the turn-end
+    // drain, until Bob has reported.
+    const team0 = await fauxTeamEngine(db.database, (inner) => ({
+      run: async (input) => {
+        const outcome = await inner.run(input);
+        const hook = afterTurn;
+        if (
+          hook &&
+          promptBot(input.systemPrompt) === adaName &&
+          outcome.kind === "ended"
+        ) {
+          afterTurn = undefined;
+          await hook();
+        }
+        return outcome;
+      },
+    }));
+    current = team0;
+    const { engine, faux } = team0;
+    const team = await createTeam(engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    adaName = ada;
+    const ending = held();
+    const messaged = held();
+    const report = held();
+    const seen: string[][] = [];
+    let taskId = "";
+    afterTurn = async () => {
+      report.open();
+      await until(
+        async () =>
+          (await engine.tasks.get(taskId)).sessions.find(
+            (session) => session.parentSessionId !== null,
+          )?.status === "completed",
+        { what: "Bob to report" },
+      );
+    };
+    const calls = route(faux, {
+      [ada]: async (context, n) => {
+        seen.push(conversation(context).map((message) => textOf(message)));
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (n === 1) {
+          // Bob messages Ada while she ends her turn.
+          ending.open();
+          await messaged.opened;
+          return say("Waiting for Bob.");
+        }
+        return callTool("complete_task", { result: "Done." });
+      },
+      [bob]: async (_context, n) => {
+        if (n === 0) {
+          await ending.opened;
+          return callTool("message", { to: ada, text: "FYI: lower case." });
+        }
+        messaged.open();
+        await report.opened;
+        return say("Bob's report.");
+      },
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    taskId = task.id;
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+    );
+    expect(done.task.status).toBe("completed");
+    // The result continued Ada's run, and the message she was sent first
+    // comes first.
+    expect(calls[ada]).toBe(3);
+    expect(rootOf(done)?.runCount).toBe(1);
+    const continued = seen[2] ?? [];
+    expect(continued.at(-2)).toBe(`Message from ${bob}:\nFYI: lower case.`);
+    expect(continued.at(-1)).toMatch(/^Result from .+ \(session /);
+  });
+});
+
+describe("a message a worker finished without reading", () => {
+  it("is not read after a crash either: the worker's report stands, and its parent gets the message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "jj-unread-crash-"));
+    roots.push(root);
+    let bobName = "";
+    let crash: Promise<void> | undefined;
+    // The worker dies once Bob's final model call is saved, before the
+    // run's write-back.
+    const first = await fauxTeamEngine(
+      db.database,
+      (inner) => ({
+        run: async (input) => {
+          const outcome = await inner.run(input);
+          if (
+            !crash &&
+            promptBot(input.systemPrompt) === bobName &&
+            outcome.kind === "ended"
+          ) {
+            crash = first.engine.worker.abandon();
+            await until(() => input.signal.aborted, { what: "the crash" });
+          }
+          return outcome;
+        },
+      }),
+      { workspaceRoot: root, config: { leaseMs: 1_000 } },
+    );
+    current = first;
+    const team = await createTeam(first.engine, ["Ada", "Bob"]);
+    const [ada, bob] = team.names as [string, string];
+    bobName = bob;
+    const reporting = held();
+    let taskId = "";
+    route(first.faux, {
+      [ada]: async (_context, n) => {
+        if (n === 0)
+          return callTool("delegate", { bot: bob, brief: "Write bob.txt." });
+        if (n === 1) {
+          await reporting.opened;
+          return callTool("message", { to: bob, text: "Also add line 2." });
+        }
+        return say("");
+      },
+      [bob]: async (_context, n) => {
+        if (n === 0)
+          return callTool("write", { path: "bob.txt", content: "bob\n" });
+        reporting.open();
+        // The message reaches Bob during his final call.
+        await until(
+          async () =>
+            rootOf(await first.engine.tasks.get(taskId))?.status === "waiting",
+          { what: "Ada to wait" },
+        );
+        return say("Bob's report.");
+      },
+    });
+    const { task } = await first.engine.tasks.create({
+      goal: "Get bob.txt written",
+      coordinatorBotId: team.byName[ada] as string,
+      participantBotIds: team.ids,
+    });
+    taskId = task.id;
+    await until(() => crash !== undefined, { what: "the crash" });
+    await crash;
+
+    const second = await fauxTeamEngine(db.database, undefined, {
+      workspaceRoot: root,
+      config: { leaseMs: 1_000 },
+    });
+    current = second;
+    const adaSaw: TranscriptContext[] = [];
+    const calls = route(second.faux, {
+      [ada]: async (context) => {
+        adaSaw.push({ ...context, messages: [...context.messages] });
+        return resultArrived(context, bob)
+          ? callTool("complete_task", { result: "Done." })
+          : say("");
+      },
+      [bob]: async () => say("Noted: added line 2."),
+    });
+    const done = await untilTask(
+      second.engine,
+      task.id,
+      (v) => v.task.status === "completed" || v.task.status === "failed",
+      "the recovered task",
+      30_000,
+    );
+    expect(done.task.status).toBe("completed");
+    // Bob's turn had ended: his recovery makes no model call.
+    expect(calls[bob]).toBeUndefined();
+    const bobSession = done.sessions.find(
+      (session) => session.parentSessionId !== null,
+    );
+    expect(bobSession?.result).toBe("Bob's report.");
+    const bobRuns = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.sessionId, bobSession?.id as string))
+      .orderBy(asc(runs.number));
+    expect(bobRuns.map((run) => [run.reason, run.status])).toEqual([
+      ["start", "failed"],
+      ["recovery", "completed"],
+    ]);
+    const result = textOf(lastMessage(adaSaw.at(-1) as TranscriptContext));
+    expect(result).toMatch(/^Result from .+ \(session /);
+    expect(result).toContain(
+      `${bob} finished before reading a message sent to it, so it is handed to you (each is in the task log):\n\n> Message from ${ada}:\n> Also add line 2.`,
+    );
+  }, 60_000);
 });

@@ -57,8 +57,8 @@ import {
   type WorkerDeps,
 } from "./run-context";
 import {
-  CONTINUING_KINDS,
   closeStaleRun,
+  endsWithAnswer,
   hasContinuingInput,
   runningRun,
 } from "./runs";
@@ -453,22 +453,28 @@ export async function runSessionJob(
       return;
     }
     const { call, deadline } = prepared;
-    // Each executor call takes the inbox; input that arrives as a call ends
-    // continues the run, even when it lands just before the write-back.
+    // Each executor call takes the inbox, in order; input that arrives as a
+    // call ends continues the run, even when it lands just before the
+    // write-back. Where the model has ended its turn (a continuation, or a
+    // recovery whose transcript ends with its answer), the inbox is taken
+    // only when a brief, result or steering is in it, so a message alone
+    // never gives the model another turn: a recovery with none finishes the
+    // turn as the run would have (the executor is idle).
     for (let calls = 1; ; calls += 1) {
       let outcome: RunOutcome;
       let inputs: string[] = [];
       let gateFailed = false;
       try {
         rc.claimed.clear();
-        inputs = await takeInbox(
-          rc,
-          calls === 1 ? undefined : CONTINUING_KINDS,
-        );
+        const turnEnded =
+          calls > 1 ||
+          (rc.reason === "recovery" &&
+            (await endsWithAnswer(ctx.db, rc.session.id)));
+        inputs = await takeInbox(rc, turnEnded);
         outcome = await call(inputs);
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
-          inputs = await takeInbox(rc, CONTINUING_KINDS);
+          inputs = await takeInbox(rc, true);
           if (inputs.length === 0) break;
           calls += 1;
           outcome = await call(inputs);

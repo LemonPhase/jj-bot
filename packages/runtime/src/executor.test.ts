@@ -869,6 +869,30 @@ describe("PiSessionExecutor", () => {
     ).toEqual([]);
   });
 
+  it("tells drainInbox the model ended its turn on a wake whose transcript ends with its answer", async () => {
+    const asked: (boolean | undefined)[] = [];
+    for (const transcript of [[], [say("All done earlier.")]]) {
+      const recorded = recordingHooks();
+      const outcome = await new PiSessionExecutor({ models: registry }).run(
+        input({
+          hooks: {
+            ...recorded.hooks,
+            drainInbox: async (turnEnded) => {
+              asked.push(turnEnded);
+              return [];
+            },
+          },
+          inputs: [],
+          transcript,
+        }),
+      );
+      expect(outcome).toEqual({ kind: "idle" });
+    }
+    // A first start has no turn to have ended.
+    expect(asked).toEqual([false, true]);
+    expect(faux.state.callCount).toBe(0);
+  });
+
   it("is idle when woken with no inputs and an empty inbox", async () => {
     for (const transcript of [[], [say("All done earlier.")]]) {
       const recorded = recordingHooks();

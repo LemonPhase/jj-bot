@@ -3,6 +3,7 @@
 // interrupted with an unknown outcome and never re-run), the transcript's last
 // text and input that continues a run.
 import {
+  type Executor,
   type RunRow,
   type RunStatus,
   runs,
@@ -120,11 +121,11 @@ export async function closeStaleRun(
 }
 
 /**
- * The text of the transcript's last message when it is a final assistant
- * message. Compaction entries are checkpoints, not messages, and are skipped.
+ * The transcript's last message. Compaction entries are checkpoints, not
+ * messages, and are skipped.
  */
-export async function lastAssistantText(tx: Tx, sessionId: string) {
-  const [row] = await tx
+async function lastEntry(exec: Executor, sessionId: string) {
+  const [row] = await exec
     .select({ entry: sessionEntries.entry })
     .from(sessionEntries)
     .where(
@@ -135,7 +136,32 @@ export async function lastAssistantText(tx: Tx, sessionId: string) {
     )
     .orderBy(desc(sessionEntries.seq))
     .limit(1);
-  return row ? assistantText(row.entry) : undefined;
+  return row?.entry;
+}
+
+/** The text of the transcript's last message when it is a final assistant message. */
+export async function lastAssistantText(tx: Tx, sessionId: string) {
+  const entry = await lastEntry(tx, sessionId);
+  return entry ? assistantText(entry) : undefined;
+}
+
+/**
+ * Whether the transcript ends with the model's answer: an assistant message
+ * that calls no tools, so the model had ended its turn.
+ */
+export async function endsWithAnswer(exec: Executor, sessionId: string) {
+  const entry = (await lastEntry(exec, sessionId)) as
+    | { role?: unknown; content?: unknown }
+    | undefined;
+  return (
+    entry?.role === "assistant" &&
+    !(
+      Array.isArray(entry.content) &&
+      entry.content.some(
+        (block: { type?: unknown }) => block?.type === "toolCall",
+      )
+    )
+  );
 }
 
 /** A pi assistant message's text blocks, joined; undefined for any other entry. */
