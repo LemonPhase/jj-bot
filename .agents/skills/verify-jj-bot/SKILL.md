@@ -8,7 +8,7 @@ description: Launch an isolated JJ Bot instance (API, embedded worker and built 
 
 Drive the real product the way a user does: launch your own instance, check it with doctor, drive the web UI with `playwright-cli`, read the API for side effects, keep the evidence, then clean up. The feature recipes are in [features/README.md](features/README.md). Read the matching feature file before driving.
 
-This complements, never replaces, `npm run verify` (lint, typecheck, tests, build) and `npm run smoke:e2e` (the whole server over HTTP, no browser). Use those for the gate; use this skill for what a user sees. `npm run test:browser` automates the main user paths with this skill's launch and stop scripts, one instance per test, and CI runs it; this skill proves a specific change by hand.
+This complements, never replaces, `npm run verify` (lint, typecheck, tests, build, bundle budget) and `npm run smoke:e2e` (the whole server over HTTP, no browser). Use those for the gate; use this skill for what a user sees. `npm run test:browser` automates the main user paths with this skill's launch and stop scripts, one instance per test, and CI runs it; this skill proves a specific change by hand.
 
 Every command below runs from the repository root. `$RUN` is the run dir that `launch.sh` prints.
 

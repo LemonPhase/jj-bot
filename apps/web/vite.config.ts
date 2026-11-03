@@ -39,6 +39,12 @@ export default defineConfig(({ mode }) => {
   const target = apiTarget(mode);
   return {
     plugins: [react()],
+    build: {
+      // The largest chunk is the 3D office, Three.js itself (about 620 kB),
+      // which loads only when someone opens that view. What every visit
+      // loads has its own, tighter budget: `npm run size` (bundleSize.ts).
+      chunkSizeWarningLimit: 700,
+    },
     server: {
       port: 5173,
       strictPort: true,

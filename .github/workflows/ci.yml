@@ -76,8 +76,15 @@ jobs:
         run: npm test
 
       - name: Build web
+        id: build-web
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build -w @jj/web
+
+      # Prints every chunk's size and fails when the initial JavaScript is
+      # over its budget (apps/web/bundleSize.ts).
+      - name: Web bundle size
+        if: ${{ !cancelled() && steps.build-web.outcome == 'success' }}
+        run: npm run size -w @jj/web
 
       # The whole server over HTTP: PGlite, the local driver and the scripted model.
       - name: Smoke (end to end)
