@@ -122,3 +122,21 @@ export function teamLine(
   const lead = `${nameOf(template.coordinatorBotId)} coordinates`;
   return others.length > 0 ? `${lead}, with ${others.join(", ")}` : lead;
 }
+
+/**
+ * What a task's header says about the template it was started from;
+ * undefined for a task created otherwise. "Deleted" only when the loaded list
+ * lacks it: while the list is unknown (loading, or a failed load) it says
+ * no more than that the task came from a template.
+ */
+export function templateOrigin(
+  templateId: string | null,
+  templates: readonly Pick<TaskTemplate, "id" | "title">[] | null,
+): string | undefined {
+  if (templateId === null) return undefined;
+  if (templates === null) return "From a template";
+  const template = templates.find((entry) => entry.id === templateId);
+  return template
+    ? `From template ${template.title}`
+    : "From a deleted template";
+}

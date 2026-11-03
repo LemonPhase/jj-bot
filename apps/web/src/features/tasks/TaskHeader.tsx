@@ -13,6 +13,7 @@ import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { useShell } from "../shell/ShellContext";
+import { templateOrigin } from "../templates/templateModel";
 import { pendingLabel, pendingOf } from "./approvals";
 import { SpendControl } from "./SpendControl";
 import {
@@ -33,11 +34,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
   const { getBot, taskStreamState, templates } = useWorkspace();
   const { openTemplateDialog } = useShell();
   const { task } = view;
-  const origin =
-    task.templateId === null
-      ? null
-      : (templates?.find((template) => template.id === task.templateId)
-          ?.title ?? null);
+  const origin = templateOrigin(task.templateId, templates);
   const { heading, goal } = headingFor(task);
   const approvals = pendingLabel(pendingOf(view.approvals));
   // Say so while the live event stream is down, instead of looking current.
@@ -66,11 +63,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
               </Badge>
             )}
             <VerificationBadge view={view} />
-            {task.templateId !== null && (
-              <span className="task-head__template">
-                {origin ? `From template ${origin}` : "From a deleted template"}
-              </span>
-            )}
+            {origin && <span className="task-head__template">{origin}</span>}
             {reconnecting && (
               <span className="task-head__stream" role="status">
                 reconnecting…

@@ -464,6 +464,56 @@ describe("the task header", () => {
   it("says nothing about templates for a task created by hand", async () => {
     await headerFor(null);
     await screen.findByRole("button", { name: "Save as template" });
-    expect(screen.queryByText(/^From (template|a deleted)/)).toBeNull();
+    expect(
+      screen.queryByText(/^From (template|a deleted|a template)/),
+    ).toBeNull();
+  });
+
+  /** The header while the template list is `listTemplates`' answer: never deleted until it is known. */
+  async function headerWhile(listTemplates: JJApi["listTemplates"]) {
+    const base = createDemoApi({ autoplay: false });
+    const view: TaskView = await base.getTask("task-102");
+    const api: JJApi = { ...base, listTemplates };
+    function Loaded({ children }: { children: ReactNode }) {
+      return useWorkspace().loading ? null : <>{children}</>;
+    }
+    render(
+      <ApiProvider api={api}>
+        <WorkspaceProvider>
+          <TestShell>
+            <Loaded>
+              <TaskHeader
+                view={{ ...view, task: { ...view.task, templateId: SEEDED } }}
+              />
+            </Loaded>
+          </TestShell>
+        </WorkspaceProvider>
+      </ApiProvider>,
+    );
+    expect(await screen.findByText("From a template")).toBeTruthy();
+  }
+
+  it("says only that a task came from a template while the list is loading", async () => {
+    const listTemplates = vi.fn(() => new Promise<never>(() => {}));
+    await headerWhile(listTemplates);
+    expect(listTemplates).toHaveBeenCalled();
+    expect(screen.queryByText("From a deleted template")).toBeNull();
+  });
+
+  it("never calls a template deleted when the list failed to load", async () => {
+    const listTemplates = vi.fn(() =>
+      Promise.reject(
+        Object.assign(new Error("The server failed."), {
+          code: "INTERNAL",
+          status: 500,
+        }),
+      ),
+    );
+    await headerWhile(listTemplates);
+    await waitFor(() => expect(listTemplates).toHaveBeenCalled());
+    // Let the rejection land before checking what the header says.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.getByText("From a template")).toBeTruthy();
+    expect(screen.queryByText("From a deleted template")).toBeNull();
   });
 });
