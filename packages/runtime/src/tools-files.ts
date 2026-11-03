@@ -12,6 +12,7 @@ import {
   guarded,
   type OutputPolicy,
   type SandboxToolOptions,
+  toolLabel,
   workspacePath,
 } from "./tools";
 
@@ -101,7 +102,7 @@ function readTool(
       const buffer = await guarded(options, () =>
         readFileInSandbox(sandbox, path),
       );
-      const label = `read: ${args.path.slice(0, 120)}`;
+      const label = toolLabel(policy, "read", args.path);
       const mime = sniffImage(buffer);
       if (mime)
         return finalizeResult(
@@ -292,7 +293,7 @@ function editTool(
             details: undefined,
           },
           policy,
-          `edit: ${args.path.slice(0, 120)}`,
+          toolLabel(policy, "edit", args.path),
         );
       });
     },
@@ -332,7 +333,7 @@ function writeTool(
           details: undefined,
         },
         policy,
-        `write: ${args.path.slice(0, 120)}`,
+        toolLabel(policy, "write", args.path),
       );
     },
   };

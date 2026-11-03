@@ -11,10 +11,12 @@ import {
   finalizeResult,
   guarded,
   type OutputPolicy,
+  redactOutput,
   type SandboxToolOptions,
   seconds,
   shellQuote,
   statOrThrow,
+  toolLabel,
   workspacePath,
 } from "./tools";
 
@@ -92,7 +94,7 @@ function bashTool(
       };
       if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0))
         throw new Error("Invalid timeout: use a positive number of seconds.");
-      const label = `bash: ${command.slice(0, 120)}`;
+      const label = toolLabel(policy, "bash", command);
       if (signal?.aborted)
         return finalizeResult(
           {
@@ -117,13 +119,23 @@ function bashTool(
         }),
       );
       if (result.interruptReason === "release") options.onReleased();
+      const limited = output.cut || result.truncated;
+      // Output ends where a cut went: the output limit, or the kill of a
+      // command stopped mid-way. Redacted before anything is added after it,
+      // since the cut may have gone through a secret.
+      const stopped = result.interrupted !== "no";
       let body =
         output.bytes > 0
-          ? output.text()
-          : [result.stdout, result.stderr].filter(Boolean).join("\n");
+          ? redactOutput(policy, output.text(), limited || stopped)
+          : [result.stdout, result.stderr]
+              .map((part) =>
+                redactOutput(policy, part, result.truncated || stopped),
+              )
+              .filter(Boolean)
+              .join("\n");
       body = body.replace(/\n$/, "");
       const status: string[] = [];
-      if (output.cut || result.truncated)
+      if (limited)
         status.push(
           `[Output was cut at ${Math.floor(maxBytes / 1024)} KiB, the sandbox's output limit; the rest was not kept.]`,
         );
@@ -248,7 +260,7 @@ function grepTool(
         ),
       );
       if (result.interruptReason === "release") options.onReleased();
-      const label = `grep: ${args.pattern.slice(0, 120)}`;
+      const label = toolLabel(policy, "grep", args.pattern);
       const details = execDetails(result);
       if (result.interrupted !== "no")
         return finalizeResult(
@@ -273,7 +285,7 @@ function grepTool(
           {
             content: [
               text(
-                result.stderr.trim() ||
+                redactOutput(policy, result.stderr, result.truncated).trim() ||
                   `Search failed with exit code ${result.exitCode}`,
               ),
             ],
@@ -284,11 +296,13 @@ function grepTool(
           label,
           details,
         );
+      // Redacted whole, before lines are cut to GREP_MAX_LINE.
+      const stdout = redactOutput(policy, result.stdout, result.truncated);
       const lines: string[] = [];
       let matches = 0;
       let limited = false;
       let cutLines = false;
-      for (const raw of result.stdout.split("\n")) {
+      for (const raw of stdout.split("\n")) {
         if (raw.length === 0) continue;
         const line = raw.startsWith("./") ? raw.slice(2) : raw;
         // Match lines are path:N:text; context lines path-N-text; group separators "--".
@@ -404,7 +418,7 @@ function findTool(
         sandbox.exec(command, { cwd: target, ...(signal ? { signal } : {}) }),
       );
       if (result.interruptReason === "release") options.onReleased();
-      const label = `find: ${pattern.slice(0, 120)}`;
+      const label = toolLabel(policy, "find", pattern);
       const details = execDetails(result);
       if (result.interrupted !== "no")
         return finalizeResult(
@@ -417,9 +431,11 @@ function findTool(
           label,
           details,
         );
-      const entries = result.stdout
-        .split("\n")
-        .filter((line) => line.length > 0);
+      const lines = result.stdout.split("\n");
+      // Output cut at the sandbox's limit ends inside its last entry (which
+      // may be a path holding a secret): a piece of a path is no result.
+      if (result.truncated) lines.pop();
+      const entries = lines.filter((line) => line.length > 0);
       const scanLimited = entries.length > FIND_SCAN_LIMIT;
       const matches: string[] = [];
       for (const entry of entries.slice(0, FIND_SCAN_LIMIT)) {

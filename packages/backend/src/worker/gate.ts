@@ -25,6 +25,7 @@ import {
 import { and, eq, max, sql } from "drizzle-orm";
 import { emit } from "../events";
 import { planOf, toVerificationCheck } from "../records";
+import type { CutEdges } from "../redact";
 import { deliver, postMessage } from "../services/messages";
 import { getSession, lockTask } from "../services/sessions";
 import {
@@ -171,7 +172,7 @@ export async function runVerificationGate(
   rc.verificationAttempts += 1;
   const { plan, request, attempt } = pending;
   const goalVersion = request.goalVersion;
-  const redact = (text: string) => rc.redact(text);
+  const redact = (text: string, cut?: CutEdges) => rc.redact(text, cut);
   const previewBytes = Math.min(
     CHECK_OUTPUT_PREVIEW_LIMIT,
     ctx.config.outputCapBytes,

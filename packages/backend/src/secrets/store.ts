@@ -5,16 +5,19 @@
 // chat reply builds its redactor through it, so a standalone worker sees
 // writes the API made), and what writes go through: sealing a value for its
 // row. No value ever leaves it except to the model registry (provider keys)
-// and to sandbox acquisition (granted secrets).
+// and to sandbox acquisition (granted secrets). Replaced and removed values
+// are kept as well, retired (`retired_secrets`), for redaction alone.
 import type { SecretInfo } from "@jj/contracts";
 import {
   type Executor,
   LOCAL_OWNER,
+  type RetiredSecretRow,
+  retiredSecrets,
   type SecretKind,
   type SecretRow,
   secrets,
 } from "@jj/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import type { Logger } from "../context";
 import type { Secret } from "../redact";
 import type { Keyring, Sealed } from "./keyring";
@@ -39,6 +42,27 @@ interface Entry {
   stamp: string;
 }
 
+/** A retired value as the snapshot keeps it. */
+interface RetiredEntry {
+  kind: SecretKind;
+  name: string;
+  value: string | undefined;
+  stamp: string;
+}
+
+/**
+ * How long a replaced or removed value is still redacted. Long enough to
+ * outlive the sandboxes and the work of the tasks that ran with it and the
+ * time a rotated credential takes to be revoked where it was issued; after
+ * that its plaintext is no longer a credential worth hiding.
+ */
+export const RETIRED_SECRET_DAYS = 90;
+const RETIRED_SECRET_MS = RETIRED_SECRET_DAYS * 24 * 60 * 60 * 1000;
+
+/** Retired values older than this, at `now`, are deleted. */
+export const retiredBefore = (now: Date) =>
+  new Date(now.getTime() - RETIRED_SECRET_MS);
+
 /** The value's last four characters, shown in settings in place of the value. */
 export const secretHint = (value: string) => value.slice(-4);
 
@@ -46,6 +70,9 @@ const entryKey = (kind: SecretKind, name: string) => `${kind}:${name}`;
 
 const stampOf = (row: SecretRow) =>
   `${row.keyId}:${row.updatedAt.getTime()}:${Buffer.from(row.nonce).toString("hex")}`;
+
+const retiredStampOf = (row: RetiredSecretRow) =>
+  `${row.keyId}:${Buffer.from(row.nonce).toString("hex")}`;
 
 /** The columns of a `secrets` row that seal its value. */
 export type SealedSecret = Pick<
@@ -62,6 +89,8 @@ export interface SecretStoreOptions {
 
 export class SecretStore {
   private entries = new Map<string, Entry>();
+  /** Retired values by row id. */
+  private retired = new Map<string, RetiredEntry>();
   /** Refreshes started, and the newest whose read has been applied. */
   private started = 0;
   private applied = 0;
@@ -86,10 +115,25 @@ export class SecretStore {
     return `jj-bot/secret/v1\u0000${this.owner}\u0000${kind}\u0000${name}`;
   }
 
+  /**
+   * Associated data of a retired value: another table's, so a retired
+   * ciphertext opens as nothing else, and never as a current value.
+   */
+  private retiredAad(kind: SecretKind, name: string): string {
+    return `jj-bot/retired-secret/v1\u0000${this.owner}\u0000${kind}\u0000${name}`;
+  }
+
   private open(row: SealedSecret): string | undefined {
     return this.keyring?.open(
       { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
       this.aad(row.kind, row.name),
+    );
+  }
+
+  private openRetired(row: SealedSecret): string | undefined {
+    return this.keyring?.open(
+      { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
+      this.retiredAad(row.kind, row.name),
     );
   }
 
@@ -99,6 +143,16 @@ export class SecretStore {
    */
   opens(row: SealedSecret): boolean {
     return this.open(row) !== undefined;
+  }
+
+  /** `opens` for a row of `retired_secrets`. */
+  opensRetired(row: SealedSecret): boolean {
+    return (
+      this.keyring?.open(
+        { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
+        this.retiredAad(row.kind, row.name),
+      ) !== undefined
+    );
   }
 
   /** The columns a value is stored as. Throws without a master key. */
@@ -115,9 +169,81 @@ export class SecretStore {
   }
 
   /**
-   * Reads every stored row again, decrypting only those that changed. A read
-   * that finishes after a later-started one has been applied is dropped, so
-   * an older snapshot never replaces a newer one.
+   * Retires `row`'s value once `replacement` (none when it is removed)
+   * takes its place: sealed again into `retired_secrets`, bound to that
+   * table, retired `at`. A name keeps one row per value: retiring a value
+   * it already holds moves that row's time instead. Nothing is kept when the
+   * value is unchanged, or no configured key opens it, so it was redacted
+   * nowhere anyway.
+   */
+  async retire(
+    exec: Executor,
+    row: SecretRow,
+    at: Date,
+    id: string,
+    replacement?: string,
+  ): Promise<void> {
+    const keyring = this.keyring;
+    const value = this.open(row);
+    if (!keyring || value === undefined || value === replacement) return;
+    const earlier = await exec
+      .select()
+      .from(retiredSecrets)
+      .where(
+        and(
+          eq(retiredSecrets.ownerId, row.ownerId),
+          eq(retiredSecrets.kind, row.kind),
+          eq(retiredSecrets.name, row.name),
+        ),
+      );
+    const [same, ...duplicates] = earlier.filter(
+      (retired) => this.openRetired(retired) === value,
+    );
+    if (same) {
+      await exec
+        .update(retiredSecrets)
+        .set({ retiredAt: at })
+        .where(eq(retiredSecrets.id, same.id));
+      if (duplicates.length > 0)
+        await exec.delete(retiredSecrets).where(
+          inArray(
+            retiredSecrets.id,
+            duplicates.map((duplicate) => duplicate.id),
+          ),
+        );
+      return;
+    }
+    const sealed = keyring.seal(value, this.retiredAad(row.kind, row.name));
+    await exec.insert(retiredSecrets).values({
+      id,
+      ownerId: row.ownerId,
+      kind: row.kind,
+      name: row.name,
+      keyId: sealed.keyId,
+      nonce: sealed.nonce,
+      ciphertext: sealed.ciphertext,
+      retiredAt: at,
+    });
+  }
+
+  /** Deletes the values retired before `before`. */
+  async purgeRetired(before: Date, exec: Executor = this.db): Promise<number> {
+    const deleted = await exec
+      .delete(retiredSecrets)
+      .where(
+        and(
+          eq(retiredSecrets.ownerId, this.owner),
+          lt(retiredSecrets.retiredAt, before),
+        ),
+      )
+      .returning({ id: retiredSecrets.id });
+    return deleted.length;
+  }
+
+  /**
+   * Reads every stored row again, the retired ones included, decrypting only
+   * those that changed. A read that finishes after a later-started one has
+   * been applied is dropped, so an older snapshot never replaces a newer one.
    */
   async refresh(exec: Executor = this.db): Promise<void> {
     const generation = ++this.started;
@@ -125,6 +251,10 @@ export class SecretStore {
       .select()
       .from(secrets)
       .where(eq(secrets.ownerId, this.owner));
+    const retiredRows = await exec
+      .select()
+      .from(retiredSecrets)
+      .where(eq(retiredSecrets.ownerId, this.owner));
     if (generation < this.applied) return;
     const next = new Map<string, Entry>();
     for (const row of rows) {
@@ -147,7 +277,24 @@ export class SecretStore {
             },
       );
     }
+    const retired = new Map<string, RetiredEntry>();
+    for (const row of retiredRows) {
+      const stamp = retiredStampOf(row);
+      const previous = this.retired.get(row.id);
+      retired.set(
+        row.id,
+        previous && previous.stamp === stamp
+          ? previous
+          : {
+              kind: row.kind,
+              name: row.name,
+              value: this.openRetired(row),
+              stamp,
+            },
+      );
+    }
     this.entries = next;
+    this.retired = retired;
     this.applied = generation;
   }
 
@@ -194,6 +341,33 @@ export class SecretStore {
     );
   }
 
+  /**
+   * The readable retired values, from the last refresh: for redaction only.
+   * They are never injected, and no answer carries them.
+   */
+  retiredValues(kind?: SecretKind): Secret[] {
+    return [...this.retired.values()].flatMap((entry) =>
+      entry.value === undefined || (kind && entry.kind !== kind)
+        ? []
+        : [
+            {
+              name:
+                entry.kind === "provider"
+                  ? `a replaced or removed ${entry.name} key`
+                  : `a replaced or removed value of ${entry.name}`,
+              value: entry.value,
+            },
+          ],
+    );
+  }
+
+  /** How many retired values no current key opens, from the last refresh. */
+  unreadableRetired(): number {
+    return [...this.retired.values()].filter(
+      (entry) => entry.value === undefined,
+    ).length;
+  }
+
   /** Names of the stored rows no current key opens, from the last refresh. */
   unreadable(): { kind: SecretKind; name: string }[] {
     return [...this.entries.values()]
@@ -235,9 +409,9 @@ export class SecretStore {
   }
 
   /**
-   * Seals again, under the current key, every row a previous key sealed.
-   * Idempotent across processes: a row is rewritten only while it still
-   * carries the old key id.
+   * Seals again, under the current key, every row a previous key sealed,
+   * retired values included. Idempotent across processes: a row is
+   * rewritten only while it still carries the old key id.
    */
   async rotate(logger: Logger, exec: Executor = this.db): Promise<number> {
     const keyring = this.keyring;
@@ -271,6 +445,37 @@ export class SecretStore {
         .returning({ name: secrets.name });
       count += updated.length;
     }
+    const retiredRows = await exec
+      .select()
+      .from(retiredSecrets)
+      .where(eq(retiredSecrets.ownerId, this.owner));
+    let retired = 0;
+    for (const row of retiredRows) {
+      if (row.keyId === keyring.currentKeyId || !keyring.knows(row.keyId))
+        continue;
+      const value = this.openRetired(row);
+      if (value === undefined) continue;
+      const sealed = keyring.seal(value, this.retiredAad(row.kind, row.name));
+      const updated = await exec
+        .update(retiredSecrets)
+        .set({
+          keyId: sealed.keyId,
+          nonce: sealed.nonce,
+          ciphertext: sealed.ciphertext,
+        })
+        .where(
+          and(
+            eq(retiredSecrets.id, row.id),
+            eq(retiredSecrets.keyId, row.keyId),
+          ),
+        )
+        .returning({ id: retiredSecrets.id });
+      retired += updated.length;
+    }
+    if (retired > 0)
+      logger.info(
+        `Re-encrypted ${retired} replaced or removed secret ${retired === 1 ? "value" : "values"}, kept for redaction, with the current JJ_SECRET_KEY.`,
+      );
     if (count > 0)
       logger.info(
         `Re-encrypted ${count} stored ${count === 1 ? "secret" : "secrets"} with the current JJ_SECRET_KEY. Remove JJ_SECRET_KEY_PREVIOUS once every process runs with this key.`,
@@ -281,6 +486,13 @@ export class SecretStore {
 
 /** Warns, by name only, about stored values the server cannot use. */
 export function warnUnreadable(store: SecretStore, logger: Logger): void {
+  const retired = store.unreadableRetired();
+  if (retired > 0)
+    logger.warn(
+      store.available
+        ? `${retired} replaced or removed secret ${retired === 1 ? "value cannot" : "values cannot"} be decrypted with JJ_SECRET_KEY, so ${retired === 1 ? "it is" : "they are"} no longer redacted from task history. Set the key that sealed ${retired === 1 ? "it" : "them"} in JJ_SECRET_KEY_PREVIOUS to keep redacting ${retired === 1 ? "it" : "them"}.`
+        : `JJ_SECRET_KEY is not set, so ${retired} replaced or removed secret ${retired === 1 ? "value is" : "values are"} no longer redacted from task history.`,
+    );
   const unreadable = store.unreadable();
   if (unreadable.length === 0) return;
   const names = unreadable

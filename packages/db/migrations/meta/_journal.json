@@ -71,6 +71,13 @@
       "when": 1793693103066,
       "tag": "0009_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793705189031,
+      "tag": "0010_retired_secrets",
+      "breakpoints": true
     }
   ]
 }
