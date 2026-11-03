@@ -40,6 +40,12 @@ export const bootstrapSchema = z.object({
   contractVersion: z.string().min(1),
   capabilities: capabilitiesSchema,
   defaultModel: modelRefSchema.nullable(),
+  /**
+   * `JJ_EVENT_RETENTION_DAYS`: a finished task's events are compacted this
+   * many days after it finished; 0 means never. Absent from servers before
+   * event retention.
+   */
+  eventRetentionDays: z.number().int().min(0).max(3650).optional(),
   bots: z.array(botSchema),
   tasks: z.array(taskSummarySchema),
   profiles: z.array(runtimeProfileSchema),

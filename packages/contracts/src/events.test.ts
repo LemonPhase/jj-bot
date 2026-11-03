@@ -321,7 +321,10 @@ const withoutPreviews = (view: TaskView): TaskView => ({
 
 /** Builds a snapshot the way the server serves it: wire JSON, parsed by the contract. */
 const snapshot = (
-  fields: Omit<TaskView, "events" | "firstSequence" | "hasEarlier" | "cursor">,
+  fields: Omit<
+    TaskView,
+    "events" | "firstSequence" | "hasEarlier" | "cursor" | "compactedThrough"
+  >,
   cursor: number,
 ): TaskView =>
   taskViewSchema.parse(
@@ -338,6 +341,7 @@ const snapshot = (
           firstSequence: 1,
           hasEarlier: false,
           cursor,
+          compactedThrough: 0,
         }),
       ),
     ),

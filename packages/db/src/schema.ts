@@ -70,7 +70,11 @@ export const APPROVAL_STATUSES = [
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 export const CHECK_METHODS = ["command", "file", "result"] as const;
 export const CHECK_OUTCOMES = ["passed", "failed", "inconclusive"] as const;
-export const JOB_KINDS = ["session.run", "chat.reply"] as const;
+export const JOB_KINDS = [
+  "session.run",
+  "chat.reply",
+  "maintenance.compact",
+] as const;
 /** What a stored secret is: a model provider's key, or a sandbox secret granted by name. */
 export const SECRET_KINDS = ["provider", "sandbox"] as const;
 export const JOB_STATUSES = [
@@ -241,6 +245,15 @@ export const tasks = pgTable(
     eventSeq: integer("event_seq").notNull().default(0),
     /** Last allocated `task_messages.sequence`; see `nextMessageSequence`. */
     messageSeq: integer("message_seq").notNull().default(0),
+    /**
+     * Events at or below this sequence were compacted (the view's
+     * `compactedThrough`); 0 for none. A pass sets it to `event_seq` and
+     * appends `task.compacted` right after, so a task with nothing new since
+     * has `event_seq = events_compacted_through + 1`.
+     */
+    eventsCompactedThrough: integer("events_compacted_through")
+      .notNull()
+      .default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     finishedAt: optionalTime("finished_at"),
@@ -252,6 +265,10 @@ export const tasks = pgTable(
     uniqueIndex("tasks_created_from_message_unique")
       .on(t.createdByBotId, t.createdFromMessageId)
       .where(sql`${t.createdFromMessageId} is not null`),
+    // The compaction pass's candidates: finished tasks, oldest finish first.
+    index("tasks_finished_idx")
+      .on(t.finishedAt)
+      .where(sql`${t.status} in ('completed', 'failed', 'cancelled')`),
     check("tasks_status_check", oneOf(t.status, TASK_STATUSES)),
   ],
 );
@@ -545,12 +562,18 @@ export const taskEvents = pgTable(
       .references(() => tasks.id, { onDelete: "cascade" }),
     sequence: integer("sequence").notNull(),
     type: text("type").notNull(),
-    // Attribution, not foreign keys: the log is append-only and leaves with its task.
+    // Attribution, not foreign keys: the log is appended to (only compaction
+    // deletes or rewrites, once its task finished) and leaves with its task.
     botId: text("bot_id"),
     sessionId: text("session_id"),
     runId: text("run_id"),
     causedBy: text("caused_by"),
     payload: jsonb("payload").$type<JsonObject>().notNull().default({}),
+    /**
+     * The `output` artifact holding the full payload when it was over the
+     * payload cap; `payload` is then the clipped copy. An attribution id.
+     */
+    payloadArtifactId: text("payload_artifact_id"),
     // clock_timestamp(), not now(): the row is written after the task row lock
     // is taken, so occurred_at never runs backwards against sequence.
     occurredAt: timestamp("occurred_at", { withTimezone: true })
@@ -777,6 +800,15 @@ export const jobs = pgTable(
     uniqueIndex("jobs_chat_reply_running")
       .on(t.botId)
       .where(sql`${t.kind} = 'chat.reply' and ${t.status} = 'running'`),
+    // One compaction pass queued and one running, instance-wide.
+    uniqueIndex("jobs_maintenance_compact_queued")
+      .on(t.kind)
+      .where(sql`${t.kind} = 'maintenance.compact' and ${t.status} = 'queued'`),
+    uniqueIndex("jobs_maintenance_compact_running")
+      .on(t.kind)
+      .where(
+        sql`${t.kind} = 'maintenance.compact' and ${t.status} = 'running'`,
+      ),
     check(
       "jobs_session_run_session_check",
       sql`${t.kind} <> 'session.run' or ${t.sessionId} is not null`,

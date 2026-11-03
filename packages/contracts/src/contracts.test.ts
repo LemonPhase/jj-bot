@@ -158,6 +158,7 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     verificationPlan: null,
   },
   "task.reopened": { previous: "completed" },
+  "task.compacted": { through: 40, removed: 25, stripped: 6 },
   "task.finished": { status: "completed", result: "Done.", error: null },
   "message.posted": { message },
   "session.created": { session },
@@ -282,7 +283,7 @@ const loneSurrogate =
 
 describe("contracts 1.0", () => {
   it("is version 1.7.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.7.0");
+    expect(CONTRACT_VERSION).toBe("1.8.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -851,6 +852,7 @@ describe("spend caps and usage (1.3.0)", () => {
       firstSequence: 1,
       hasEarlier: false,
       cursor: 0,
+      compactedThrough: 0,
     };
     const folded = applyTaskEvent(
       view,

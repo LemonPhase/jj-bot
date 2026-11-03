@@ -72,12 +72,17 @@ const leaseExpiry = (leaseMs: number) =>
 
 /**
  * Kinds that run one at a time per key: at most one queued and one running
- * job per session (`session.run`) or bot (`chat.reply`), enforced by the
+ * job per session (`session.run`), bot (`chat.reply`) or kind
+ * (`maintenance.compact`, one pass for the whole instance), enforced by the
  * partial unique indexes on `jobs`. A new kind must choose (null: no key).
  */
 const SINGLE_RUN: Record<
   JobKind,
-  { key: AnyPgColumn; keyName: "sessionId" | "botId"; pending: SQL } | null
+  {
+    key: AnyPgColumn;
+    keyName: "sessionId" | "botId" | "kind";
+    pending: SQL;
+  } | null
 > = {
   "session.run": {
     key: jobs.sessionId,
@@ -88,6 +93,11 @@ const SINGLE_RUN: Record<
     key: jobs.botId,
     keyName: "botId",
     pending: sql`${jobs.kind} = 'chat.reply' and ${jobs.status} = 'queued'`,
+  },
+  "maintenance.compact": {
+    key: jobs.kind,
+    keyName: "kind",
+    pending: sql`${jobs.kind} = 'maintenance.compact' and ${jobs.status} = 'queued'`,
   },
 };
 
