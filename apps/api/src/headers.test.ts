@@ -1,9 +1,8 @@
 // Security headers on every answer: pages, files, API answers and errors,
-// streams, health and metrics; framing refused; HSTS only over https; and
-// the policy's script hash matching the web app's inline script. Artifact
-// downloads keep their own sandbox policy (routes.test.ts).
+// streams, health and metrics; framing refused; HSTS only over https beyond
+// loopback; and the policy's script hash matching the web app's inline
+// script. Artifact downloads keep their own sandbox policy (routes.test.ts).
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +14,7 @@ import {
   CONTENT_SECURITY_POLICY,
   INLINE_SCRIPT_HASHES,
   securityHeaders,
+  sendsHsts,
 } from "./headers";
 import { type RunningServer, startServer } from "./server";
 import { OPEN_TIMEOUT, quietLogger, type TestApp, testApp } from "./testing";
@@ -209,17 +209,28 @@ const sha256Source = (text: string) =>
 
 describe("the web app's inline script", () => {
   it("is allowed by its hash, and nothing else inline is", async () => {
-    const files = [join(REPO_ROOT, "apps/web/index.html")];
-    // The build keeps the script as written; check it too when it exists.
-    const built = join(REPO_ROOT, "apps/web/dist/index.html");
-    if (existsSync(built)) files.push(built);
-    for (const file of files) {
-      const scripts = inlineScripts(await readFile(file, "utf8"));
-      expect(scripts.length, file).toBeGreaterThan(0);
-      expect(scripts.map(sha256Source), file).toEqual([
-        ...INLINE_SCRIPT_HASHES,
-      ]);
-    }
+    // The source; the browser suite runs the built app under the policy and
+    // fails on any violation, so a build that rewrote the script fails there.
+    const html = await readFile(join(REPO_ROOT, "apps/web/index.html"), "utf8");
+    const scripts = inlineScripts(html);
+    expect(scripts.length).toBeGreaterThan(0);
+    expect(scripts.map(sha256Source)).toEqual([...INLINE_SCRIPT_HASHES]);
+  });
+});
+
+describe("sendsHsts", () => {
+  it("is true only for an https address beyond loopback", () => {
+    for (const url of ["https://jj.example.com", "https://jj.tail1234.ts.net"])
+      expect(sendsHsts(url), url).toBe(true);
+    for (const url of [
+      undefined,
+      "http://jj.example.com",
+      "http://127.0.0.1:3001",
+      "https://localhost:8443",
+      "https://127.0.0.1",
+      "https://[::1]:8443",
+    ])
+      expect(sendsHsts(url), String(url)).toBe(false);
   });
 });
 

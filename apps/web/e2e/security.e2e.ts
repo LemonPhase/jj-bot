@@ -7,19 +7,37 @@ import { expect, test } from "./fixtures";
 // a violation, see fixtures.ts), and another site cannot frame it, so its
 // buttons, such as Approve on a held call, cannot be clickjacked.
 
-/** A page of another site (`localhost`, not the app's `127.0.0.1`) on this machine. */
+/**
+ * A page of another site (`localhost`, not the app's `127.0.0.1`) on this
+ * machine, on both loopback addresses, whichever `localhost` resolves to.
+ */
 async function otherSite(html: string) {
-  const server: Server = createServer((_request, response) => {
-    response.writeHead(200, { "Content-Type": "text/html" });
-    response.end(html);
-  });
-  await new Promise<void>((resolve) =>
-    server.listen(0, "127.0.0.1", () => resolve()),
-  );
-  const { port } = server.address() as AddressInfo;
+  const serve = () =>
+    createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/html" });
+      response.end(html);
+    });
+  const listen = (server: Server, port: number, host: string) =>
+    new Promise<boolean>((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(port, host, () => resolve(true));
+    });
+  const v4 = serve();
+  if (!(await listen(v4, 0, "127.0.0.1")))
+    throw new Error("cannot listen on 127.0.0.1");
+  const { port } = v4.address() as AddressInfo;
+  // Without IPv6, or with the port taken there, IPv4 alone serves it.
+  const v6 = serve();
+  const servers = (await listen(v6, port, "::1")) ? [v4, v6] : [v4];
   return {
     url: `http://localhost:${port}/`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () =>
+      Promise.all(
+        servers.map(
+          (server) =>
+            new Promise<void>((resolve) => server.close(() => resolve())),
+        ),
+      ),
   };
 }
 

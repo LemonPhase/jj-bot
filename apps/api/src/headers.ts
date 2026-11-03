@@ -13,8 +13,10 @@
 //   stops browsers guessing types, so only what is declared a script or a
 //   style sheet runs as one.
 // - `Strict-Transport-Security` only when the app is opened over https
-//   (API_PUBLIC_URL), so a browser that has seen it uses https only.
+//   beyond loopback (API_PUBLIC_URL), so a browser that has seen it uses
+//   https only.
 import type { MiddlewareHandler } from "hono";
+import { isLoopbackHost } from "./config";
 
 /**
  * The web app's one inline script (apps/web/index.html: before the modules
@@ -69,6 +71,13 @@ export function securityHeaders(
   };
 }
 
-/** Whether the address users open is https, so HSTS applies. */
-export const isHttpsUrl = (url: string | undefined) =>
-  url !== undefined && new URL(url).protocol === "https:";
+/**
+ * Whether HSTS applies: users open the app at an https address beyond
+ * loopback. Never for `https://localhost`, which would pin every local
+ * service on that name, such as the Vite dev server, to https for a year.
+ */
+export function sendsHsts(url: string | undefined): boolean {
+  if (url === undefined) return false;
+  const { protocol, hostname } = new URL(url);
+  return protocol === "https:" && !isLoopbackHost(hostname);
+}
