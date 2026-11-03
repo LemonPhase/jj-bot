@@ -112,7 +112,7 @@ jobs:
         run: npx playwright install --with-deps --only-shell chromium
 
       - name: Browser tests
-        run: npm run test:browser -- --repeat-each=20
+        run: npm run test:browser
 
       # A failed test's trace, screenshot and server log, and the HTML report.
       # A hung run fails on the suite's 8-minute global timeout, before the
