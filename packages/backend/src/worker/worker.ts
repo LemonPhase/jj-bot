@@ -61,8 +61,10 @@ export function createWorker(
 ): Worker {
   const sandboxes = new TaskSandboxes(ctx, {
     // A crash writes nothing, the final snapshot included.
-    onFinished: (taskId, sandbox) =>
-      snapshotFinishedTask(
+    onFinished: async (taskId, sandbox, secrets) => {
+      // Built before any transaction: it reads the stored secrets.
+      const redact = await ctx.redactor(secrets);
+      await snapshotFinishedTask(
         ctx,
         (fn) =>
           crashing
@@ -70,7 +72,9 @@ export function createWorker(
             : ctx.db.transaction(fn),
         taskId,
         sandbox,
-      ),
+        (text) => redact(text),
+      );
+    },
     onRelease: (taskId, spec) => {
       if (spec.workspace !== "ephemeral") return;
       void releaseHolder(ctx, taskId).catch((error: unknown) =>
@@ -80,6 +84,8 @@ export function createWorker(
       );
     },
   });
+  // Every redactor of this worker covers the values its sandboxes hold.
+  ctx.heldSecrets = () => sandboxes.heldSecrets();
   const deps = { ctx, sandboxes };
   const active = new Map<string, ActiveJob>();
   const timers: NodeJS.Timeout[] = [];

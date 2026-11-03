@@ -8,7 +8,7 @@ description: Launch an isolated JJ Bot instance (API, embedded worker and built 
 
 Drive the real product the way a user does: launch your own instance, check it with doctor, drive the web UI with `playwright-cli`, read the API for side effects, keep the evidence, then clean up. The feature recipes are in [features/README.md](features/README.md). Read the matching feature file before driving.
 
-This complements, never replaces, `npm run verify` (lint, typecheck, tests, build) and `npm run smoke:e2e` (the whole server over HTTP, no browser). Use those for the gate; use this skill for what a user sees. `npm run test:browser` automates the main user paths with this skill's launch and stop scripts, one instance per test, and CI runs it; this skill proves a specific change by hand.
+This complements, never replaces, `npm run verify` (lint, typecheck, tests, build, bundle budget) and `npm run smoke:e2e` (the whole server over HTTP, no browser). Use those for the gate; use this skill for what a user sees. `npm run test:browser` automates the main user paths with this skill's launch and stop scripts, one instance per test, and CI runs it; this skill proves a specific change by hand.
 
 Every command below runs from the repository root. `$RUN` is the run dir that `launch.sh` prints.
 
@@ -25,13 +25,14 @@ Every command below runs from the repository root. `$RUN` is the run dir that `l
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh)            # builds apps/web, local driver
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --no-build) # reuse apps/web/dist
 RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --driver docker)
+RUN=$(.agents/skills/verify-jj-bot/scripts/launch.sh --secret-store) # a fresh JJ_SECRET_KEY: Settings can store keys and secrets
 ```
 
 It builds the web app (a few seconds), then starts one process, `node --import tsx apps/api/src/index.ts`, serving the API, the embedded worker and `apps/web/dist` on a free loopback port. It prints `$RUN` (`$TMPDIR/jj-verify/<id>`, `/tmp/jj-verify/<id>` without `TMPDIR`, or under `$JJ_VERIFY_ROOT`) once `/health/ready` answers 200: database open, migrations applied, worker polling, a driver available. The URL is in `$RUN/url` and the server log in `$RUN/server.log`. When startup fails, readiness doesn't pass within 60 s or the launch is interrupted (Ctrl-C), it prints the run dir and the log tail on stderr, stops the server itself and exits 1, so a failed launch leaves no process behind.
 
 Isolation, by construction:
 
-- The environment is cleared (`env -i`), and the repository's `.env` is never read. Provider keys, `API_TOKEN` and `DATABASE_URL` never reach the instance. The only model is the keyless scripted test model (`scripted/team`), and the UI badge reads "Scripted model".
+- The environment is cleared (`env -i`), and the repository's `.env` is never read. Provider keys, `API_TOKEN`, `DATABASE_URL` and `JJ_SECRET_KEY` never reach the instance; `--secret-store` gives it a fresh random `JJ_SECRET_KEY` of its own, held only in its environment. The only model is the keyless scripted test model (`scripted/team`), and the UI badge reads "Scripted model".
 - Data is a fresh PGlite dir at `$RUN/data`. The workspace starts empty: no bots, no tasks, one default runtime profile.
 - Sandbox workspaces are under `$RUN/sandbox`. `--driver docker` uses the namespace `jj-verify-<id>`, because a docker worker reaps every container of its own namespace that another process started, and a shared namespace would destroy your dev stack's sandboxes. The docker driver also needs the base image (`npm run sandbox:image`).
 - Several runs can live side by side: separate ports, data dirs, namespaces and browser sessions. Never drive an instance this run didn't start, such as `npm run dev` on 5173/3001.
@@ -99,9 +100,9 @@ It closes the run's browser session, checks that the recorded pid still carries 
 
 ## Helpers
 
-| Script                                                        | Use                                                   |
-| ------------------------------------------------------------- | ----------------------------------------------------- |
-| `scripts/launch.sh [--no-build] [--driver local\|docker]`     | Start an isolated instance; prints `$RUN` when ready  |
-| `scripts/doctor.sh <run>`                                     | Read-only health check; exit 0 when worth driving     |
-| `scripts/pw.sh <run> open [hash] \| <playwright-cli command>` | Drive the run's browser session from its evidence dir |
-| `scripts/stop.sh <run>`                                       | Tear down; keep evidence                              |
+| Script                                                                     | Use                                                   |
+| -------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `scripts/launch.sh [--no-build] [--driver local\|docker] [--secret-store]` | Start an isolated instance; prints `$RUN` when ready  |
+| `scripts/doctor.sh <run>`                                                  | Read-only health check; exit 0 when worth driving     |
+| `scripts/pw.sh <run> open [hash] \| <playwright-cli command>`              | Drive the run's browser session from its evidence dir |
+| `scripts/stop.sh <run>`                                                    | Tear down; keep evidence                              |

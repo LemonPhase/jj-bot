@@ -117,6 +117,43 @@
   background: var(--status-verifying);
 }
 
+/* ── Keys and secrets ──────────────────────────────────────────────────── */
+.settings-store-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.settings-store-notice p {
+  margin: 0;
+}
+
+.settings-command {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--r-xs);
+  background: var(--bg-app);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.settings-key {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.settings-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  max-width: 480px;
+}
+
 /* ── Lists of cards ────────────────────────────────────────────────────── */
 .settings-list {
   display: flex;

@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { useApi } from "../../api/ApiContext";
+import { liveBadge } from "../../api/liveApi";
 import {
   Icon,
   IconButton,
@@ -12,6 +13,7 @@ import {
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotList } from "../bots/BotList";
+import { useModels } from "../bots/useModels";
 import { TaskList } from "../tasks/TaskList";
 import { modeBadgeFor } from "./modeBadge";
 import { botHref, type Route, SETTINGS_HREF, type Section } from "./router";
@@ -33,7 +35,20 @@ export function Sidebar({ route, section, onSwitchSection }: SidebarProps) {
   const { bots, tasks } = useWorkspace();
   const { openNewBot, openNewTask } = useShell();
   const listLabelId = useId();
-  const badge = modeBadgeFor(api.badge);
+  // Live: follows the models view, so a key stored in settings shows at once.
+  const { models } = useModels();
+  const badge = modeBadgeFor(
+    api.mode === "live" && models
+      ? liveBadge(
+          {
+            capabilities: api.capabilities,
+            contractVersion: api.contractVersion,
+            defaultModel: models.defaultModel,
+          },
+          models,
+        )
+      : api.badge,
+  );
 
   return (
     <aside className="shell-sidebar" aria-label="Navigation">

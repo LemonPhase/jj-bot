@@ -11,6 +11,7 @@ import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
 import { inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
+import type { Secret } from "../redact";
 
 interface Entry {
   acquiring: Promise<Sandbox>;
@@ -18,6 +19,8 @@ interface Entry {
   controller: AbortController;
   sandbox?: Sandbox;
   spec: SandboxSpec;
+  /** The secrets given to the driver when it started, by name. */
+  secrets: Record<string, string>;
   refs: number;
   idleSince: number;
   /** Release once the last run lets go (the task finished). */
@@ -27,6 +30,12 @@ interface Entry {
 export interface SandboxHold {
   sandbox: Sandbox;
   spec: SandboxSpec;
+  /**
+   * The values injected into this sandbox when it started. Its commands see
+   * them for as long as it lives, even after the stored secret is replaced
+   * or removed, so whatever a run persists from it is redacted for them.
+   */
+  secrets: Secret[];
   /** Ends this run's use; the sandbox stays for the task's other runs. */
   done(): void;
 }
@@ -53,6 +62,13 @@ const dbStatuses =
       .where(inArray(tasks.id, taskIds));
     return new Map(rows.map((row) => [row.id, row.status]));
   };
+
+/** The values a sandbox was started with, as secrets to redact. */
+const injected = (entry: Entry): Secret[] =>
+  Object.entries(entry.secrets).map(([name, value]) => ({
+    name: `the sandbox secret ${name}`,
+    value,
+  }));
 
 /** Waits for `promise`, rejecting early when `signal` aborts. */
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -88,6 +104,7 @@ export class TaskSandboxes {
   private readonly onFinished?: (
     taskId: string,
     sandbox: Sandbox,
+    secrets: Secret[],
   ) => Promise<void>;
 
   constructor(
@@ -96,13 +113,29 @@ export class TaskSandboxes {
       statuses?: TaskStatusLookup;
       /** Called when a sandbox is released (its holder record is cleared). */
       onRelease?: (taskId: string, spec: SandboxSpec) => void;
-      /** Runs before the sandbox of a finished task is released (a final snapshot). */
-      onFinished?: (taskId: string, sandbox: Sandbox) => Promise<void>;
+      /**
+       * Runs before the sandbox of a finished task is released (a final
+       * snapshot), with the values the sandbox was started with.
+       */
+      onFinished?: (
+        taskId: string,
+        sandbox: Sandbox,
+        secrets: Secret[],
+      ) => Promise<void>;
     } = {},
   ) {
     this.statuses = options.statuses ?? dbStatuses(ctx);
     this.onRelease = options.onRelease;
     this.onFinished = options.onFinished;
+  }
+
+  /**
+   * The values injected into every sandbox this worker holds. Any of them
+   * can reach another task's output (on `local`, through a shared file), so
+   * every redactor of this worker covers them while they are held.
+   */
+  heldSecrets(): Secret[] {
+    return [...this.entries.values()].flatMap((entry) => injected(entry));
   }
 
   /** Tasks whose ephemeral sandbox this worker holds live. */
@@ -127,12 +160,15 @@ export class TaskSandboxes {
   /**
    * The task's sandbox, starting it on first use. `signal` (the run's) stops
    * waiting; when no run waits any more the driver's acquire is aborted too.
+   * `secrets` is read only when this starts the sandbox: its values go to the
+   * driver, which injects them into every command.
    */
   async acquire(
     taskId: string,
     sessionId: string,
     spec: SandboxSpec,
     signal?: AbortSignal,
+    secrets?: () => Promise<Record<string, string>>,
   ): Promise<SandboxHold> {
     signal?.throwIfAborted();
     let entry = this.entries.get(taskId);
@@ -145,17 +181,22 @@ export class TaskSandboxes {
       const controller = new AbortController();
       const created: Entry = {
         spec,
+        secrets: {},
         controller,
         refs: 0,
         idleSince: Date.now(),
         finishing: false,
-        acquiring: driver
-          .acquire({
-            taskId,
-            sessionId,
-            spec,
-            workspaceKey: taskId,
-            signal: controller.signal,
+        acquiring: (secrets ? secrets() : Promise.resolve({}))
+          .then((values) => {
+            created.secrets = values;
+            return driver.acquire({
+              taskId,
+              sessionId,
+              spec,
+              workspaceKey: taskId,
+              signal: controller.signal,
+              ...(Object.keys(values).length > 0 ? { secrets: values } : {}),
+            });
           })
           .then((sandbox) => {
             created.sandbox = sandbox;
@@ -199,6 +240,7 @@ export class TaskSandboxes {
     return {
       sandbox,
       spec: held.spec,
+      secrets: injected(held),
       done: () => {
         if (released) return;
         released = true;
@@ -282,11 +324,12 @@ export class TaskSandboxes {
     const done = entry.acquiring
       .then(async (sandbox) => {
         if (finished && this.onFinished)
-          await this.onFinished(taskId, sandbox).catch((error: unknown) =>
-            this.ctx.logger.warn(
-              `The final artifact snapshot of ${taskId} failed`,
-              { error: errorMessage(error) },
-            ),
+          await this.onFinished(taskId, sandbox, injected(entry)).catch(
+            (error: unknown) =>
+              this.ctx.logger.warn(
+                `The final artifact snapshot of ${taskId} failed`,
+                { error: errorMessage(error) },
+              ),
           );
         await sandbox.release();
       })

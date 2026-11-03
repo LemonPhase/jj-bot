@@ -2,8 +2,8 @@ import type { ModelInfo, ModelsView, ProviderInfo } from "@jj/contracts";
 
 /**
  * Presentation helpers for `ModelsView` (GET /api/models), shared by Settings
- * and the Studio model select. Keys are never entered in the UI: a provider is
- * configured when one of its `envVars` is set on the server.
+ * and the Studio model select. A provider is configured when one of its
+ * `envVars` is set on the server or its key is stored (`keySource`).
  */
 
 /**

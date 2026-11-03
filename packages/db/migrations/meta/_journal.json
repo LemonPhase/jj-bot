@@ -57,6 +57,13 @@
       "when": 1793679781772,
       "tag": "0007_verification_gates",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793688951567,
+      "tag": "0008_secrets",
+      "breakpoints": true
     }
   ]
 }

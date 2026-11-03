@@ -13,8 +13,11 @@ import {
   type CreateTaskCommand,
   type ModelsView,
   type PostTaskMessageCommand,
+  type PutSecretCommand,
   type RuntimeProfile,
   type SandboxDriverInfo,
+  type SecretInfo,
+  type SecretsView,
   type SendBotMessageCommand,
   type SendBotMessageResult,
   type StopTaskCommand,
@@ -51,11 +54,13 @@ import {
   type Secret,
   tooShortToRedact,
 } from "./redact";
+import { SecretStore, warnUnreadable } from "./secrets/store";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
 import { postTaskMessage } from "./services/messages";
 import * as profileService from "./services/profiles";
+import * as secretService from "./services/secrets";
 import {
   subscribeTask,
   type TaskStreamOptions,
@@ -83,6 +88,11 @@ export interface EngineOptions {
    * are replaced with `[redacted]` in everything a run persists.
    */
   secrets?: () => readonly Secret[] | Promise<readonly Secret[]>;
+  /**
+   * The stored secrets. Omitted: a store with no master key over `db`, so
+   * nothing can be stored and stored rows are reported unreadable.
+   */
+  secretStore?: SecretStore;
 }
 
 export interface Engine {
@@ -126,7 +136,25 @@ export interface Engine {
   /** `GET /api/sandbox-drivers`. */
   drivers(): Promise<{ drivers: SandboxDriverInfo[] }>;
   /** `GET /api/models`. */
-  models(): ModelsView;
+  models(): Promise<ModelsView>;
+  /** `PUT /api/models/providers/:providerId/key`: CONFLICT while a server variable configures it. */
+  putProviderKey(
+    providerId: string,
+    command: PutSecretCommand,
+  ): Promise<ModelsView>;
+  /** `DELETE /api/models/providers/:providerId/key`. */
+  deleteProviderKey(providerId: string): Promise<ModelsView>;
+  secrets: {
+    /** `GET /api/secrets`. */
+    list(): Promise<SecretsView>;
+    /** `PUT /api/secrets/:name`; `created` when it was not stored before. */
+    put(
+      name: string,
+      command: PutSecretCommand,
+    ): Promise<{ secret: SecretInfo; created: boolean }>;
+    /** `DELETE /api/secrets/:name`, with every profile's grant of it. */
+    delete(name: string): Promise<void>;
+  };
   /** `GET /api/usage`. */
   usage(): Promise<UsageReport>;
   tasks: {
@@ -167,6 +195,7 @@ export interface Engine {
  */
 export async function createEngine(options: EngineOptions): Promise<Engine> {
   const secrets = async () => (await options.secrets?.()) ?? [];
+  const store = options.secretStore ?? new SecretStore({ db: options.db.db });
   const ctx: EngineContext = {
     db: options.db.db,
     bus: options.db.bus,
@@ -176,12 +205,26 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger: options.logger ?? consoleLogger,
-    redactor: async () => createRedactor(await secrets()),
+    redactor: async (extra = []) => {
+      await store.refresh();
+      return createRedactor([
+        ...(await secrets()),
+        ...store.values(),
+        ...ctx.heldSecrets(),
+        ...extra,
+      ]);
+    },
+    secretStore: store,
+    serverSecrets: secrets,
+    heldSecrets: () => [],
   };
   for (const name of tooShortToRedact(await secrets()))
     ctx.logger.warn(
       `${name} is shorter than ${MIN_BARE_SECRET_LENGTH} characters, so it is not redacted from task history: a value that short is too likely to be an ordinary word. Use a longer value.`,
     );
+  await store.rotate(ctx.logger);
+  await store.refresh();
+  warnUnreadable(store, ctx.logger);
   await profileService.seedDefaultProfiles(ctx);
   const worker = createWorker(ctx, options.executor, options.chat);
 
@@ -194,6 +237,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
         profileService.listProfiles(ctx),
         ctx.drivers.list(),
       ]);
+      await store.refresh();
       const providers = ctx.models.providers();
       return {
         mode: "backend",
@@ -203,6 +247,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           persistence: ctx.config.persistence,
           streaming: true,
           verification: true,
+          secretStore: store.available,
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,
@@ -236,7 +281,16 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       delete: (profileId) => profileService.deleteProfile(ctx, profileId),
     },
     drivers: async () => ({ drivers: await ctx.drivers.list() }),
-    models: () => profileService.modelsView(ctx),
+    models: () => secretService.modelsView(ctx),
+    putProviderKey: (providerId, command) =>
+      secretService.putProviderKey(ctx, providerId, command),
+    deleteProviderKey: (providerId) =>
+      secretService.deleteProviderKey(ctx, providerId),
+    secrets: {
+      list: () => secretService.listSecrets(ctx),
+      put: (name, command) => secretService.putSecret(ctx, name, command),
+      delete: (name) => secretService.deleteSecret(ctx, name),
+    },
     usage: () => usageReport(ctx),
     tasks: {
       list: async () => ({

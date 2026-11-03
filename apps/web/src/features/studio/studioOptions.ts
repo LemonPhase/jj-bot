@@ -15,7 +15,7 @@ export const DEFAULT_VALUE = "";
 /**
  * Model choices: "Server default" (null) first, then the models of configured
  * providers, then one disabled entry per unconfigured provider naming the env
- * var that enables it (keys are never entered in the UI). The bot's current
+ * var that enables it (Settings → Models can also store a key). The bot's current
  * model stays selectable even when its provider is unconfigured or the server
  * no longer lists it, so saving other fields never drops it.
  */
