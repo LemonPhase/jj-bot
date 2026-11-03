@@ -1,0 +1,159 @@
+// Verification plans and their evidence as the engine reads them: the plan's
+// text for prompts and messages, the latest checks of a goal version, and the
+// summary every view and lookup uses. The gate that runs checks is in
+// worker/gate.ts.
+import {
+  latestAttemptChecks,
+  type VerificationCheck,
+  type VerificationCriterion,
+  type VerificationPlan,
+  type VerificationSummary,
+  verificationSummary,
+} from "@jj/contracts";
+import { type Executor, type TaskRow, verificationChecks } from "@jj/db";
+import { and, asc, eq, inArray } from "drizzle-orm";
+import { planOf, toVerificationCheck } from "../records";
+
+const quoted = (text: string) => JSON.stringify(text);
+
+/** What one criterion requires, in a line: "command `npm test` exits with code 0". */
+export function criterionRule(criterion: VerificationCriterion): string {
+  if (criterion.method === "command")
+    return `the command \`${criterion.command}\` exits with code 0${
+      criterion.timeoutSeconds ? ` within ${criterion.timeoutSeconds} s` : ""
+    }`;
+  const subject =
+    criterion.method === "file"
+      ? `the file \`${criterion.path}\``
+      : "the result you pass to `complete_task`";
+  switch (criterion.expect) {
+    case "exists":
+      return `${subject} exists`;
+    case "contains":
+      return `${subject} contains ${quoted(criterion.value ?? "")}`;
+    case "matches":
+      return `${subject} matches the regular expression /${criterion.value ?? ""}/${criterion.flags ?? ""}`;
+    case "json":
+      return criterion.schema
+        ? `${subject} is JSON valid against this JSON Schema: ${JSON.stringify(criterion.schema)}`
+        : `${subject} is valid JSON`;
+  }
+}
+
+/** The plan as lines: `- <id>: <description> (<rule>)`. */
+export function describePlan(plan: VerificationPlan): string {
+  return plan
+    .map(
+      (criterion) =>
+        `- ${criterion.id}: ${criterion.description} (${criterionRule(criterion)})`,
+    )
+    .join("\n");
+}
+
+/** JSON with object keys sorted, so a plan read back from jsonb compares equal. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`)
+      .join(",")}}`;
+  return JSON.stringify(value ?? null);
+}
+
+/** Whether two plans are the same (a message that repeats the plan changes nothing). */
+export function samePlan(
+  a: VerificationPlan | null,
+  b: VerificationPlan | null,
+): boolean {
+  return canonical(a ?? null) === canonical(b ?? null);
+}
+
+/**
+ * Checks of the latest attempt of each goal version of these tasks, ordered
+ * by task, goal version and plan position (as a task view carries them).
+ */
+export async function latestChecks(
+  exec: Executor,
+  taskIds: readonly string[],
+): Promise<Map<string, VerificationCheck[]>> {
+  const result = new Map<string, VerificationCheck[]>();
+  if (taskIds.length === 0) return result;
+  const rows = await exec
+    .select()
+    .from(verificationChecks)
+    .where(inArray(verificationChecks.taskId, [...taskIds]))
+    .orderBy(
+      asc(verificationChecks.taskId),
+      asc(verificationChecks.goalVersion),
+      asc(verificationChecks.attempt),
+      asc(verificationChecks.position),
+    );
+  const all = new Map<string, VerificationCheck[]>();
+  for (const row of rows) {
+    const list = all.get(row.taskId) ?? [];
+    list.push(toVerificationCheck(row));
+    all.set(row.taskId, list);
+  }
+  for (const [taskId, checks] of all) {
+    const versions = [...new Set(checks.map((check) => check.goalVersion))];
+    result.set(
+      taskId,
+      versions.flatMap((version) => latestAttemptChecks(checks, version)),
+    );
+  }
+  return result;
+}
+
+/** The checks of one attempt of one goal version, in plan order. */
+export async function attemptChecks(
+  exec: Executor,
+  taskId: string,
+  goalVersion: number,
+  attempt: number,
+): Promise<VerificationCheck[]> {
+  const rows = await exec
+    .select()
+    .from(verificationChecks)
+    .where(
+      and(
+        eq(verificationChecks.taskId, taskId),
+        eq(verificationChecks.goalVersion, goalVersion),
+        eq(verificationChecks.attempt, attempt),
+      ),
+    )
+    .orderBy(asc(verificationChecks.position));
+  return rows.map(toVerificationCheck);
+}
+
+/** The task's verification summary for its current goal version; undefined without a plan. */
+export async function taskVerification(
+  exec: Executor,
+  task: Pick<TaskRow, "id" | "goalVersion" | "verificationPlan">,
+): Promise<VerificationSummary | undefined> {
+  const plan = planOf(task.verificationPlan);
+  if (!plan) return undefined;
+  const checks = (await latestChecks(exec, [task.id])).get(task.id) ?? [];
+  return verificationSummary(
+    { goalVersion: task.goalVersion, verificationPlan: plan },
+    checks,
+  );
+}
+
+/** "passed 3 of 3 checks (goal version 2, attempt 1)", for task state and updates. */
+export function summaryLine(summary: VerificationSummary): string {
+  const where = `goal version ${summary.goalVersion}${summary.attempt ? `, attempt ${summary.attempt}` : ""}`;
+  switch (summary.state) {
+    case "pending":
+      return summary.attempt
+        ? `checks running or incomplete (${where})`
+        : `not checked yet for goal version ${summary.goalVersion}`;
+    case "passed":
+      return `passed ${summary.passed} of ${summary.total} checks (${where})`;
+    case "failed":
+      return `failed: ${summary.failed} of ${summary.total} checks failed${summary.inconclusive ? `, ${summary.inconclusive} inconclusive` : ""} (${where})`;
+    case "inconclusive":
+      return `inconclusive: ${summary.inconclusive} of ${summary.total} checks could not be evaluated (${where})`;
+  }
+}

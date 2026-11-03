@@ -10,7 +10,11 @@ export const capabilitiesSchema = z.object({
   agentExecution: z.boolean(),
   persistence: z.boolean(),
   streaming: z.boolean(),
-  /** Verification plans are enforced. False in 1.0: plans are rejected. */
+  /**
+   * Verification plans are accepted and enforced: a task with a plan
+   * completes only when every check passes. While false, a plan is refused
+   * with VERIFICATION_UNAVAILABLE.
+   */
   verification: z.boolean(),
   drivers: z.array(
     z.object({ id: idSchema, available: z.boolean(), isolated: z.boolean() }),

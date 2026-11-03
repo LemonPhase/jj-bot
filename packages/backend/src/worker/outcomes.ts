@@ -2,7 +2,7 @@
 // cancelled, results go to the parent's inbox (waking it), and the task
 // completes, waits for the user, fails or finishes its stop. One lease-fenced
 // transaction per outcome.
-import { isFinishedStatus } from "@jj/contracts";
+import { isFinishedStatus, type VerificationPlan } from "@jj/contracts";
 import {
   bots,
   complete,
@@ -11,11 +11,13 @@ import {
   type SessionRow,
   type TaskRow,
   type Tx,
+  verificationChecks,
 } from "@jj/db";
-import { eq } from "drizzle-orm";
+import { and, eq, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import type { RunOutcome } from "../ports";
+import { planOf } from "../records";
 import { deliver, postMessage } from "../services/messages";
 import {
   cancelOpenSessions,
@@ -27,6 +29,11 @@ import {
 } from "../services/sessions";
 import { recordTaskUpdate } from "../services/task-updates";
 import { settleCancellation } from "../services/tasks";
+import {
+  attemptChecks,
+  summaryLine,
+  taskVerification,
+} from "../services/verification";
 import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import {
@@ -39,6 +46,44 @@ import {
 export interface CompletionRequest {
   result: string;
   goalVersion: number;
+  /**
+   * Set by the verification gate (gate.ts) when every check of the task's
+   * plan passed: the attempt that passed. A task with a plan never
+   * completes without it.
+   */
+  verification?: { attempt: number };
+}
+
+/**
+ * Whether every criterion of the task's current plan passed at the attempt
+ * the request records, and that attempt is its goal version's latest. Read
+ * in the transaction that completes the task.
+ */
+async function gatePassed(
+  tx: Tx,
+  task: TaskRow,
+  plan: VerificationPlan,
+  request: CompletionRequest,
+): Promise<boolean> {
+  const attempt = request.verification?.attempt;
+  if (attempt === undefined) return false;
+  const [latest] = await tx
+    .select({ value: max(verificationChecks.attempt) })
+    .from(verificationChecks)
+    .where(
+      and(
+        eq(verificationChecks.taskId, task.id),
+        eq(verificationChecks.goalVersion, task.goalVersion),
+      ),
+    );
+  if (latest?.value !== attempt) return false;
+  const checks = await attemptChecks(tx, task.id, task.goalVersion, attempt);
+  return plan.every((criterion) =>
+    checks.some(
+      (check) =>
+        check.criterionId === criterion.id && check.outcome === "passed",
+    ),
+  );
 }
 
 const BUDGET_NOTE = "\n\n(Stopped at the turn budget.)";
@@ -149,8 +194,9 @@ async function endTurn(
   rc: RunContext,
   task: TaskRow,
   session: SessionRow,
-  text: string,
+  finalText: string,
 ) {
+  let text = finalText;
   const { ctx } = rc.deps;
   const attribution = attributionOf(rc);
   if ((await openChildren(tx, session)).length > 0) {
@@ -185,7 +231,15 @@ async function endTurn(
   }
   if (session.parentSessionId === null) {
     const request = session.completionRequested as CompletionRequest | null;
-    if (request && request.goalVersion === task.goalVersion) {
+    const plan = planOf(task.verificationPlan);
+    // The one place a task completes: with a plan, only on passing evidence
+    // for the current goal version, read again here.
+    const unverified =
+      request !== null &&
+      request.goalVersion === task.goalVersion &&
+      plan !== null &&
+      !(await gatePassed(tx, task, plan, request));
+    if (request && request.goalVersion === task.goalVersion && !unverified) {
       await postMessage(
         tx,
         ctx,
@@ -223,21 +277,42 @@ async function endTurn(
         payload: { status: "completed", result: request.result, error: null },
         ...attribution,
       });
-      await recordTaskUpdate(tx, ctx, task, "completed", request.result);
+      const verification = plan ? await taskVerification(tx, task) : undefined;
+      await recordTaskUpdate(
+        tx,
+        ctx,
+        task,
+        "completed",
+        verification
+          ? `Verification: ${summaryLine(verification)}.\n\n${request.result}`
+          : request.result,
+      );
       rc.taskFinished = true;
       return;
     }
+    // An unverified completion is not the coordinator's answer to the user:
+    // its last words ("done") would mislead, so the engine says what holds.
+    if (unverified)
+      text = `Not completed: the verification checks have not all passed for goal version ${task.goalVersion}.`;
     await postMessage(
       tx,
       ctx,
-      {
-        taskId: task.id,
-        authorKind: "bot",
-        authorBotId: session.botId,
-        sessionId: session.id,
-        intent: "discussion",
-        text,
-      },
+      unverified
+        ? {
+            taskId: task.id,
+            authorKind: "system",
+            sessionId: session.id,
+            intent: "notification",
+            text,
+          }
+        : {
+            taskId: task.id,
+            authorKind: "bot",
+            authorBotId: session.botId,
+            sessionId: session.id,
+            intent: "discussion",
+            text,
+          },
       attribution,
     );
     await updateSession(

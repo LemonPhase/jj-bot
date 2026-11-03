@@ -28,6 +28,7 @@ const task = (
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  verificationPlan: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,

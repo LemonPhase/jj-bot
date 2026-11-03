@@ -188,6 +188,7 @@ describe("steering", () => {
     ).toEqual({
       goal: "New goal",
       goalVersion: 2,
+      verificationPlan: null,
     });
     const versions = await db.database.db
       .select()
@@ -205,15 +206,16 @@ describe("steering", () => {
       }),
     );
     expect(budget.code).toBe("GOAL_VERSION_BUDGET");
+    // A plan change, like a goal change, needs the version the user saw.
     const plan = await refusal(
       engine.tasks.postMessage(task.id, {
         text: "verify",
         verificationPlan: [
-          { id: "c1", description: "d", method: "m", expectedEvidence: "e" },
+          { id: "c1", description: "d", method: "command", command: "true" },
         ],
       }),
     );
-    expect(plan.code).toBe("VERIFICATION_UNAVAILABLE");
+    expect(plan.code).toBe("VALIDATION_FAILED");
   });
 });
 

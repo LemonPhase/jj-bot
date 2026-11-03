@@ -11,6 +11,7 @@ import {
   type TaskSummary,
   type TaskView,
   type Usage,
+  verificationSummary,
 } from "@jj/contracts";
 import {
   artifacts,
@@ -34,6 +35,7 @@ import {
   toTask,
   toTaskEvent,
 } from "../records";
+import { latestChecks } from "./verification";
 
 const usageOf = (row: UsageRow): Usage => ({
   modelCalls: 1,
@@ -107,6 +109,7 @@ export async function taskView(
         .orderBy(desc(taskEvents.sequence))
         .limit(TASK_VIEW_EVENT_LIMIT);
       const events = latest.reverse().map(toTaskEvent).map(withoutOutput);
+      const checks = (await latestChecks(tx, [taskId])).get(taskId) ?? [];
 
       let total = emptyUsage();
       const bySession: Record<string, Usage> = {};
@@ -128,6 +131,7 @@ export async function taskView(
         sessions: sessionRows.map(toSession),
         messages: messageRows.map(toMessage),
         artifacts: artifactRows.map(toArtifact),
+        verificationChecks: checks,
         usage: { total, bySession },
         events,
         firstSequence,
@@ -247,16 +251,22 @@ export async function taskSummaries(
     taskRows.filter((row) => row.status === "waiting").map((row) => row.id),
     options.redact ?? ((text) => text),
   );
+  const checks = await latestChecks(
+    exec,
+    taskRows.filter((row) => row.verificationPlan).map((row) => row.id),
+  );
   return taskRows.map((row) => {
     const own = sessionRows.filter((session) => session.taskId === row.id);
     const question = questions.get(row.id);
+    const task = toTask(
+      row,
+      participants
+        .filter((participant) => participant.taskId === row.id)
+        .map((participant) => participant.botId),
+    );
+    const verification = verificationSummary(task, checks.get(row.id) ?? []);
     return {
-      ...toTask(
-        row,
-        participants
-          .filter((participant) => participant.taskId === row.id)
-          .map((participant) => participant.botId),
-      ),
+      ...task,
       sessionCount: own.length,
       activeSessionCount: own.filter(
         (session) =>
@@ -269,6 +279,7 @@ export async function taskSummaries(
         .map(usageOf)
         .reduce(addUsage, emptyUsage()),
       ...(question ? { question } : {}),
+      ...(verification ? { verification } : {}),
     };
   });
 }

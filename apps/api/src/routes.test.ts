@@ -133,13 +133,13 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.2.0",
+      contractVersion: "1.3.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
         persistence: false,
         streaming: true,
-        verification: false,
+        verification: true,
         drivers: [{ id: "local", available: true, isolated: false }],
       },
     });
@@ -478,7 +478,8 @@ describe("tasks", () => {
       400,
       "VALIDATION_FAILED",
     );
-    expectError(
+    // The free-text plan of 1.0 is not a plan; a field error says where.
+    const plan = expectError(
       await t.call("POST", "/api/tasks", {
         goal: "Checked",
         coordinatorBotId: bots.Ada,
@@ -491,9 +492,10 @@ describe("tasks", () => {
           },
         ],
       }),
-      422,
-      "VERIFICATION_UNAVAILABLE",
+      400,
+      "VALIDATION_FAILED",
     );
+    expect(JSON.stringify(plan.error.details)).toContain("verificationPlan");
     expectError(
       await t.call("GET", "/api/tasks/task_missing"),
       404,
@@ -532,6 +534,47 @@ describe("tasks", () => {
       }),
       422,
       "MODEL_NOT_CONFIGURED",
+    );
+  });
+
+  it("accepts a verification plan and serves its evidence", async () => {
+    const created = await t.call("POST", "/api/tasks", {
+      goal: "Checked work",
+      coordinatorBotId: bots.Linus,
+      verificationPlan: [
+        {
+          id: "lists",
+          description: "The workspace lists",
+          method: "command",
+          command: "ls -la",
+        },
+      ],
+    });
+    expect(created.status).toBe(201);
+    const task = taskSchema.parse(created.body.task);
+    expect(task.verificationPlan).toHaveLength(1);
+    const view = await untilTask(
+      t,
+      task.id,
+      (current) => current.task.status === "completed",
+    );
+    expect(view.verificationChecks).toMatchObject([
+      { criterionId: "lists", outcome: "passed", exitCode: 0, attempt: 1 },
+    ]);
+    const list = z
+      .object({ tasks: z.array(taskSummarySchema) })
+      .parse((await t.call("GET", "/api/tasks")).body);
+    expect(
+      list.tasks.find((entry) => entry.id === task.id)?.verification,
+    ).toMatchObject({ state: "passed", passed: 1, total: 1 });
+    // A plan change needs the version the client saw.
+    expectError(
+      await t.call("POST", `/api/tasks/${task.id}/messages`, {
+        text: "Drop the check",
+        verificationPlan: null,
+      }),
+      400,
+      "VALIDATION_FAILED",
     );
   });
 

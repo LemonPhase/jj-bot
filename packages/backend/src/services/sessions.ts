@@ -50,6 +50,7 @@ type TaskPatch = Partial<
     | "status"
     | "goal"
     | "goalVersion"
+    | "verificationPlan"
     | "result"
     | "error"
     | "cancelReason"

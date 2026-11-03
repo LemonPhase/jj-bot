@@ -53,6 +53,8 @@ export const CONVERSATION_ROLES = ["user", "assistant"] as const;
 /** What a task update tells its coordinator's chat: the task completed, failed or waits for the user. */
 export const TASK_UPDATE_EVENTS = ["completed", "failed", "waiting"] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
+export const CHECK_METHODS = ["command", "file", "result"] as const;
+export const CHECK_OUTCOMES = ["passed", "failed", "inconclusive"] as const;
 export const JOB_KINDS = ["session.run", "chat.reply"] as const;
 export const JOB_STATUSES = [
   "queued",
@@ -74,6 +76,8 @@ export type AuthorKind = (typeof AUTHOR_KINDS)[number];
 export type ConversationRole = (typeof CONVERSATION_ROLES)[number];
 export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+export type CheckMethod = (typeof CHECK_METHODS)[number];
+export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
@@ -195,6 +199,12 @@ export const tasks = pgTable(
     cancelReason: text("cancel_reason"),
     /** Set when a stop is requested; the task is cancelled once nothing of it runs. */
     cancelRequestedAt: optionalTime("cancel_requested_at"),
+    /**
+     * The user's verification plan for the current goal version (the
+     * contract's `verificationPlanSchema`); null for none. Its history is in
+     * `task_goal_versions`.
+     */
+    verificationPlan: jsonb("verification_plan").$type<JsonObject[]>(),
     /**
      * The worker holding the task's ephemeral sandbox, which no other worker
      * can reach, and until when (refreshed while held, cleared on release).
@@ -325,6 +335,8 @@ export const taskGoalVersions = pgTable(
     version: integer("version").notNull(),
     ownerId: ownerId(),
     goal: text("goal").notNull(),
+    /** The verification plan this version is checked against; null for none. */
+    verificationPlan: jsonb("verification_plan").$type<JsonObject[]>(),
     reason: text("reason"),
     /** `user` or a bot id. */
     author: text("author").notNull(),
@@ -547,6 +559,58 @@ export const artifacts = pgTable(
   ],
 );
 
+/**
+ * Verification evidence, append-only: one criterion of a plan evaluated once,
+ * at one gate attempt of one goal version (`attempt` counts that version's
+ * gate runs from 1). `position` is the criterion's index in its plan.
+ */
+export const verificationChecks = pgTable(
+  "verification_checks",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    goalVersion: integer("goal_version").notNull(),
+    attempt: integer("attempt").notNull(),
+    position: integer("position").notNull(),
+    criterionId: text("criterion_id").notNull(),
+    method: text("method").$type<CheckMethod>().notNull(),
+    outcome: text("outcome").$type<CheckOutcome>().notNull(),
+    exitCode: integer("exit_code"),
+    interrupted: text("interrupted"),
+    durationMs: integer("duration_ms").notNull(),
+    detail: text("detail").notNull(),
+    output: text("output"),
+    truncated: boolean("truncated").notNull().default(false),
+    // Attribution, not foreign keys.
+    artifactId: text("artifact_id"),
+    sessionId: text("session_id"),
+    runId: text("run_id"),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    unique("verification_checks_attempt_criterion").on(
+      t.taskId,
+      t.goalVersion,
+      t.attempt,
+      t.criterionId,
+    ),
+    check("verification_checks_method_check", oneOf(t.method, CHECK_METHODS)),
+    check(
+      "verification_checks_outcome_check",
+      oneOf(t.outcome, CHECK_OUTCOMES),
+    ),
+    // A command check passes only on exit code 0 with no interruption.
+    check(
+      "verification_checks_command_pass_check",
+      sql`${t.method} <> 'command' or ${t.outcome} <> 'passed' or (${t.exitCode} = 0 and ${t.interrupted} = 'no')`,
+    ),
+  ],
+);
+
 export const usage = pgTable(
   "usage",
   {
@@ -664,6 +728,8 @@ export type NewTask = typeof tasks.$inferInsert;
 export type TaskParticipantRow = typeof taskParticipants.$inferSelect;
 export type NewTaskParticipant = typeof taskParticipants.$inferInsert;
 export type TaskGoalVersionRow = typeof taskGoalVersions.$inferSelect;
+export type VerificationCheckRow = typeof verificationChecks.$inferSelect;
+export type NewVerificationCheck = typeof verificationChecks.$inferInsert;
 export type NewTaskGoalVersion = typeof taskGoalVersions.$inferInsert;
 export type SessionRow = typeof sessions.$inferSelect;
 export type NewSession = typeof sessions.$inferInsert;
@@ -713,6 +779,7 @@ export const tables = {
   taskMessages,
   taskEvents,
   artifacts,
+  verificationChecks,
   usage,
   jobs,
   instanceSettings,

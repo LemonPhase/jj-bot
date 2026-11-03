@@ -48,6 +48,7 @@ const task: Task = {
   error: null,
   cancelReason: null,
   cancelRequestedAt: null,
+  verificationPlan: null,
   createdAt: at(0),
   updatedAt: at(0),
   finishedAt: null,
@@ -91,6 +92,7 @@ const view = (
   sessions,
   messages: [],
   artifacts: [],
+  verificationChecks: [],
   usage: { total: emptyUsage(), bySession: {} },
   events: [],
   firstSequence: 1,
@@ -500,7 +502,11 @@ describe("chat timeline", () => {
       {
         ...base(10),
         type: "task.goal_changed",
-        payload: { goal: "New goal text", goalVersion: 2 },
+        payload: {
+          goal: "New goal text",
+          goalVersion: 2,
+          verificationPlan: null,
+        },
       },
       posted(11, steer),
       posted(12, reply),

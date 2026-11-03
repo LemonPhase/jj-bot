@@ -90,7 +90,8 @@ describe("bootstrap", () => {
       agentExecution: true,
       persistence: false,
       streaming: true,
-      verification: false,
+      // Plans are accepted and enforced (verification.test.ts).
+      verification: true,
       drivers: [
         { id: "local", available: true, isolated: false },
         { id: "docker", available: false, isolated: true },
@@ -328,18 +329,19 @@ describe("bots", () => {
           engine.tasks.create({
             goal: "verified",
             coordinatorBotId: adaId,
+            // The 1.0 free-text shape is not a plan any more.
             verificationPlan: [
               {
                 id: "c1",
                 description: "d",
                 method: "m",
                 expectedEvidence: "e",
-              },
+              } as never,
             ],
           }),
         )
       ).code,
-    ).toBe("VERIFICATION_UNAVAILABLE");
+    ).toBe("VALIDATION_FAILED");
     expect(
       (
         await refusal(

@@ -43,6 +43,13 @@
       "when": 1793674078234,
       "tag": "0005_chat_task_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793676892797,
+      "tag": "0006_verification_gates",
+      "breakpoints": true
     }
   ]
 }

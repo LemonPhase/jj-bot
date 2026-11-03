@@ -15,3 +15,4 @@ export * from "./common";
 export * from "./events";
 export * from "./profiles";
 export * from "./tasks";
+export * from "./verification";
