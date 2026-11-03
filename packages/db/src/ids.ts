@@ -14,6 +14,8 @@ export const ID_PREFIXES = {
   taskMessage: "msg",
   taskEvent: "evt",
   artifact: "art",
+  /** A staged upload; its artifact keeps the id once attached. */
+  stagedUpload: "upl",
   usage: "use",
   approval: "appr",
   check: "chk",
