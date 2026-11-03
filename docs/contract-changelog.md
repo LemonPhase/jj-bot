@@ -46,8 +46,9 @@ rather than landing it and announcing it afterwards.
 - `approvalSchema`, `approvalStatusSchema` (`pending`, `approved`, `denied`, `expired`,
   `cancelled`), `approvalOutcomeSchema` (`ok`, `exitCode`, `interrupted`, and `refused` for an
   approved call refused before it ran) and `pendingApprovalSchema` (with `shownInFull`: the
-  summary is the whole call, so a client may offer Approve from it). `pendingApprovalOf` and
-  `shownInFull` build them.
+  summary is the whole call, with no character a reader cannot see, so a client may offer
+  Approve from it). `pendingApprovalOf` and `shownInFull` build them; `visibleText` writes the
+  characters a reader cannot see as code points, and `hasInvisible` finds them.
 - `taskSummarySchema.pendingApprovals` and `taskViewSchema.approvals`, both parsed as empty from
   servers before approvals; `applyTaskEvent` folds approvals into the view.
 - Events `approval.requested` and `approval.updated`, each carrying the whole record.
