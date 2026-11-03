@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { eq, getTableName, sql } from "drizzle-orm";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { Client } from "pg";
@@ -15,6 +16,7 @@ import { type Database, openDatabase } from "./database";
 import { appendEvent } from "./events";
 import {
   migrationStatus,
+  migrationsFolder,
   readSchemaLevel,
   type SchemaLevel,
   SchemaTooNewError,
@@ -145,6 +147,50 @@ async function schemaOf(query: Query) {
     ),
   };
 }
+
+/**
+ * The SHA-256 of each migration the previous release shipped, as its
+ * databases record them. A migration applied in the field never changes:
+ * the migrator would not apply the edit to those databases.
+ */
+const RELEASED_MIGRATIONS: Record<string, string> = {
+  "0000_init":
+    "345b9c16f2d2d2a7d836252aac06476da02f2f073a7a29cc474aec60f500bc46",
+  "0001_chat_idempotency":
+    "05fdd4dbc59e77f601b893682775b5c31e6307e58dd6d9f3003ae192c95746be",
+  "0002_sandbox_holder":
+    "cc4dfa791caf2a9a7002590b0efdc4377eac924f14c7768ebf1e1998fb626666",
+  "0003_instance_settings":
+    "72d7ffb5fb4507bfa6a3850e98ebdabbf065dcd2431ee03a963622a6c8ff82ba",
+  "0004_run_snapshots":
+    "cbb5c45a5cc45446464791067722f06fcd1028258029d72bb910ce911061c166",
+};
+
+describe("released migrations", () => {
+  it(`are unchanged since ${PREVIOUS_RELEASE.name} shipped them, and only appended to`, () => {
+    const shipped = shippedMigrations();
+    const released = shipped.slice(
+      0,
+      shipped.findIndex((entry) => entry.tag === PREVIOUS_RELEASE.migration) +
+        1,
+    );
+    expect(released.map((entry) => entry.tag)).toEqual(
+      Object.keys(RELEASED_MIGRATIONS),
+    );
+    const hashes = readMigrationFiles({ migrationsFolder }).map(
+      (file) => file.hash,
+    );
+    expect(
+      Object.fromEntries(
+        released.map((entry, index) => [entry.tag, hashes[index]]),
+      ),
+    ).toEqual(RELEASED_MIGRATIONS);
+    // Journal timestamps only grow: the newer-schema check relies on it.
+    for (const [index, entry] of shipped.entries())
+      if (index > 0)
+        expect(entry.when).toBeGreaterThan(shipped[index - 1]?.when ?? 0);
+  });
+});
 
 describe.each(targets)("upgrades on $name", (target) => {
   describe(`from the ${PREVIOUS_RELEASE.name} database`, () => {

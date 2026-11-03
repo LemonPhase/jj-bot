@@ -6,10 +6,11 @@ import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type SchemaLevel, shippedMigrations } from "@jj/db";
+import { openDatabase, type SchemaLevel, shippedMigrations } from "@jj/db";
 import { PREVIOUS_RELEASE, seedPreviousRelease } from "@jj/db/testing";
+import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
-import { secretKeys } from "./config";
+import { dockerNamespace, secretKeys } from "./config";
 import {
   formatEnv,
   formatReport,
@@ -156,6 +157,47 @@ describe("readDataReport", () => {
         JJ_SECRET_KEY_PREVIOUS: sealedWith,
       });
       expect(rotating.secrets?.unreadable).toEqual([]);
+
+      // Read with SQL, not this build's schema: a `secrets` table of another
+      // shape (an older release's, or one a later migration changed) still
+      // reports which rows the key opens.
+      const database = await openDatabase({ mode: "pglite", path });
+      await database.db.execute(
+        sql`alter table secrets drop column hint, drop column created_at, drop column updated_at`,
+      );
+      await database.close();
+      const reshaped = await read({ JJ_SECRET_KEY: other });
+      expect(reshaped.secrets?.stored).toBe(2);
+      expect(
+        reshaped.secrets?.unreadable.map((entry) => entry.name).sort(),
+      ).toEqual(["GITHUB_TOKEN", "openai"]);
+      expect(
+        (await read({ JJ_SECRET_KEY: sealedWith })).secrets?.unreadable,
+      ).toEqual([]);
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "lists every migration this build ships, for the restore's level check",
+    async () => {
+      const path = await directory();
+      await seedPreviousRelease({ mode: "pglite", path });
+      const report = await readDataReport({ mode: "pglite", path }, {});
+      const tags = shippedMigrations().map((migration) => migration.tag);
+      expect(report.build.migrationTags).toEqual(tags);
+      expect(formatEnv(report)).toContain(
+        `\nbuild_migration_tags=${tags.join(",")}\n`,
+      );
+      expect(report.dockerNamespace).toBe("jj-sandbox");
+      expect(
+        (
+          await readDataReport(
+            { mode: "pglite", path },
+            { JJ_DOCKER_NAMESPACE: "jj-bot" },
+          )
+        ).dockerNamespace,
+      ).toBe(dockerNamespace({ JJ_DOCKER_NAMESPACE: "jj-bot" }));
     },
     OPEN_TIMEOUT,
   );
