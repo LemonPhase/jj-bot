@@ -69,8 +69,9 @@ import {
  * also scans `/proc` for the command's session and for marked processes,
  * which finds descendants that left the group or session; a descendant that
  * both leaves the session and clears its environment escapes detection. A
- * process the scan cannot read (such as a non-dumpable one owned by the same
- * user) or a scan that fails makes the result `"unknown"`. Without `/proc`
+ * running process the scan cannot read (such as a non-dumpable one owned by
+ * the same user) or a scan that fails makes the result `"unknown"`; one that
+ * exits while it is read counts as gone. Without `/proc`
  * (macOS) only the process groups are stopped, and an interrupted command
  * reports `"unknown"`. Windows is not supported.
  */
@@ -300,6 +301,33 @@ const statFields = (line: string) =>
   line.slice(line.lastIndexOf(")") + 2).split(" ");
 /** Index of field 22, `starttime`, in `statFields`. */
 const STARTTIME = 19;
+/** Index of field 9, `flags`, in `statFields`. */
+const FLAGS = 6;
+/**
+ * The kernel's PF_EXITING task flag: the task has begun to exit and runs no
+ * more user code. `/proc/<pid>/stat` shows the main thread's flags, so this
+ * holds for the main thread only: other threads of a multi-threaded process
+ * may still run. Known limit, the same as for a zombie thread-group leader,
+ * which the scan also counts as gone.
+ */
+const PF_EXITING = 0x4;
+
+/** Whether a process is gone, a zombie, or has begun to exit. */
+async function hasExited(pid: number): Promise<boolean> {
+  try {
+    const fields = statFields(await readFile(`/proc/${pid}/stat`, "latin1"));
+    const [state] = fields;
+    return (
+      state === "Z" ||
+      // Dead: shown only for the moment between the process being reaped and
+      // its pid leaving /proc, so rare, but it can be read.
+      state === "X" ||
+      (Number(fields[FLAGS]) & PF_EXITING) !== 0
+    );
+  } catch (error) {
+    return exited(error);
+  }
+}
 
 /** `/proc` start time of a live or unreaped process, in clock ticks since boot; 0 when unknown. */
 function startTime(pid: number | undefined): number {
@@ -327,8 +355,15 @@ async function inspect(pid: number, target: StopTarget): Promise<Inspection> {
     const uid = /^Uid:\s*(\d+)/m.exec(status)?.[1];
     if (uid === undefined) return "unverified";
     if (Number(uid) !== UID) return "unrelated"; // Commands run as this user.
-    // EACCES here (a non-dumpable process of this user) cannot rule it out.
-    const environ = await readFile(`/proc/${pid}/environ`, "latin1");
+    // EACCES here (a non-dumpable process of this user) cannot rule it out,
+    // unless the process exited meanwhile: one without memory has its environ
+    // owned by root, so a server not running as root gets EACCES for it too.
+    const environ = await readFile(`/proc/${pid}/environ`, "latin1").catch(
+      async (error: unknown) => {
+        if (!exited(error) && (await hasExited(pid))) return "";
+        throw error;
+      },
+    );
     const prefix = `${MARKER}=`;
     const entry = environ.split("\0").find((item) => item.startsWith(prefix));
     return entry !== undefined && target.marked(entry.slice(prefix.length))

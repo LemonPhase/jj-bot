@@ -799,7 +799,10 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
       }
     });
 
-    describe("network mode allowlist", () => {
+    // Each allowlist sandbox is a network and two containers, which a daemon
+    // other suites share creates slowly: the conformance suite's budget, not
+    // the 20 s default meant for PGlite suites.
+    describe("network mode allowlist", { timeout: 60_000 }, () => {
       const allowlist = (...hosts: string[]): Partial<SandboxSpecInput> => ({
         network: { mode: "allowlist", hosts },
       });
@@ -993,28 +996,30 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           { name: `${namespace}-victim-compose`, network: victimNetwork },
         ];
         try {
-          for (const victim of victims) {
-            await engine.json("POST", "/containers/create", {
-              query: { name: victim.name },
-              body: {
-                Image: image,
-                Entrypoint: ["node", "-e", server],
-                Cmd: [],
-                User: "1000:1000",
-                Labels: labels,
-                HostConfig: { NetworkMode: victim.network },
-                NetworkingConfig: {
-                  EndpointsConfig: {
-                    [victim.network]:
-                      victim.network === "bridge"
-                        ? {}
-                        : { Aliases: ["postgres", "app"] },
+          await Promise.all(
+            victims.map(async (victim) => {
+              await engine.json("POST", "/containers/create", {
+                query: { name: victim.name },
+                body: {
+                  Image: image,
+                  Entrypoint: ["node", "-e", server],
+                  Cmd: [],
+                  User: "1000:1000",
+                  Labels: labels,
+                  HostConfig: { NetworkMode: victim.network },
+                  NetworkingConfig: {
+                    EndpointsConfig: {
+                      [victim.network]:
+                        victim.network === "bridge"
+                          ? {}
+                          : { Aliases: ["postgres", "app"] },
+                    },
                   },
                 },
-              },
-            });
-            await engine.json("POST", `/containers/${victim.name}/start`);
-          }
+              });
+              await engine.json("POST", `/containers/${victim.name}/start`);
+            }),
+          );
           const details = await Promise.all(
             victims.map((v) => inspect(v.name)),
           );
@@ -1191,13 +1196,20 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
           ...options,
           instanceId: "current-worker",
         });
-        const orphan = (await crashed.acquire(
-          request(allowlist("example.com")),
-        )) as DockerSandbox;
-        const mine = (await current.acquire(
-          request(allowlist("example.com")),
-        )) as DockerSandbox;
-        live.push(orphan, mine);
+        // Independent, so acquired together: each is two containers and a
+        // network, which a daemon other suites share is slow to make.
+        const made = await Promise.allSettled([
+          crashed.acquire(request(allowlist("example.com"))),
+          current.acquire(request(allowlist("example.com"))),
+        ]);
+        // Released after the test even when the other acquire failed.
+        for (const result of made)
+          if (result.status === "fulfilled") live.push(result.value);
+        const [orphan, mine] = made.map((result) => {
+          if (result.status === "rejected") throw result.reason;
+          return result.value as DockerSandbox;
+        });
+        if (!orphan || !mine) throw new Error("no sandboxes");
 
         const { removed } = await current.reapOrphans();
         expect([...removed].sort()).toEqual(
@@ -1333,8 +1345,8 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         throw new Error("No /27 in 10.214.0.0/16 is free on this daemon");
       };
 
-      // Three allowlist sandboxes of two containers each: on a daemon another
-      // suite is busy with, more than the default 20 s.
+      // Three allowlist sandboxes in a row, while other suites on the daemon
+      // may be in the pool test above: twice this block's budget.
       it("skips subnets other networks hold, and says so when its pool is full", async () => {
         // Two /28s; another network already holds the first.
         const blocker = `${namespace}-blocker`;
@@ -1440,6 +1452,117 @@ describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
         } finally {
           await engine.json("DELETE", `/networks/${v6}`).catch(() => {});
         }
+      });
+
+      it("waits for the engine to record a proxy's exit before saying it did not start listening", async () => {
+        // The engine reads a container as running until it has handled its
+        // exit, a moment after the process ended, and a dying proxy fails the
+        // start-up check within that moment. Here the proxy is killed as the
+        // check starts, and the first read after the check is a stale one.
+        const lagging = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+        });
+        const lagEngine = (lagging as unknown as { engine: DockerEngine })
+          .engine;
+        const json = lagEngine.json.bind(lagEngine);
+        const run = lagEngine.run.bind(lagEngine);
+        const isProxy = (name: string) => /-egress-[0-9a-f-]{36}$/.test(name);
+        let lastRunning: unknown;
+        let stale = false;
+        lagEngine.json = (async (
+          method: string,
+          path: string,
+          init?: Parameters<DockerEngine["json"]>[2],
+        ) => {
+          const read = /^\/containers\/([^/]+)\/json$/.exec(path)?.[1];
+          const proxyRead = method === "GET" && read && isProxy(read);
+          if (proxyRead && stale) {
+            stale = false;
+            return lastRunning;
+          }
+          const result = await json(method, path, init);
+          if (
+            proxyRead &&
+            (result as { State?: { Running?: boolean } }).State?.Running
+          )
+            lastRunning = result;
+          return result;
+        }) as DockerEngine["json"];
+        lagEngine.run = async (...args: Parameters<DockerEngine["run"]>) => {
+          const [container] = args;
+          if (isProxy(container) && lastRunning) {
+            await json("POST", `/containers/${container}/kill`);
+            await json("POST", `/containers/${container}/wait`);
+            stale = true;
+          }
+          return run(...args);
+        };
+        const taskId = `lagging-${Math.random().toString(36).slice(2)}`;
+        await expect(
+          lagging.acquire(
+            request(allowlist("example.com"), uniqueKey("lagging"), {
+              taskId,
+            }),
+          ),
+        ).rejects.toThrow(/exited as it started \(exit code 137\)/);
+        expect(stale).toBe(false);
+        expect(await ownedBy(taskId)).toEqual({
+          containers: [],
+          networks: [],
+        });
+      });
+
+      it("cleans up a failed sandbox at once while its proxy's check still waits for it to listen", async () => {
+        // A proxy that runs but never listens holds its check for 15 s, then
+        // 5 s more while the engine may record an exit. Here the sandbox's
+        // start fails meanwhile: the acquire must not wait for the check.
+        const stuck = new DockerSandboxDriver({
+          namespace,
+          labels,
+          egressProxyImage: image,
+        });
+        const stuckEngine = (stuck as unknown as { engine: DockerEngine })
+          .engine;
+        const json = stuckEngine.json.bind(stuckEngine);
+        let failedAt = Number.NaN;
+        stuckEngine.json = (async (
+          method: string,
+          path: string,
+          init?: Parameters<DockerEngine["json"]>[2],
+        ) => {
+          const name = String(init?.query?.name ?? "");
+          if (path === "/containers/create" && /-egress-/.test(name))
+            return json(method, path, {
+              ...init,
+              body: {
+                ...(init?.body as object),
+                Entrypoint: ["sleep", "3600"],
+              },
+            });
+          const result = await json(method, path, init);
+          if (
+            method === "POST" &&
+            /^\/containers\/[0-9a-f]{64}\/start$/.test(path)
+          ) {
+            failedAt = Date.now();
+            throw new Error("injected sandbox start failure");
+          }
+          return result;
+        }) as DockerEngine["json"];
+        const taskId = `stuck-${Math.random().toString(36).slice(2)}`;
+        await expect(
+          stuck.acquire(
+            request(allowlist("example.com"), uniqueKey("stuck"), { taskId }),
+          ),
+        ).rejects.toThrow("injected sandbox start failure");
+        // The removals alone: far less than what is left of the check's wait.
+        expect(Date.now() - failedAt).toBeLessThan(10_000);
+        expect(await ownedBy(taskId)).toEqual({
+          containers: [],
+          networks: [],
+        });
       });
 
       it("explains that the egress proxy's image needs node, and leaves nothing behind", async () => {
