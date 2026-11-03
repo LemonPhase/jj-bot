@@ -2,6 +2,7 @@
 // or SIGTERM. A second signal, or a shutdown that hangs, exits at once.
 import { createLogger, logSettings } from "@jj/backend";
 import { ConfigError } from "./config";
+import { exitOnUncaught } from "./process";
 import { startServer } from "./server";
 
 const SHUTDOWN_TIMEOUT_MS = 20_000;
@@ -9,6 +10,7 @@ const SHUTDOWN_TIMEOUT_MS = 20_000;
 // The process's log; a JJ_LOG_* value that cannot work is the ConfigError
 // startServer reports, printed here with the defaults.
 const logger = createLogger(logSettings(process.env, true));
+exitOnUncaught(logger);
 
 let server: Awaited<ReturnType<typeof startServer>>;
 try {

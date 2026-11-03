@@ -3,7 +3,8 @@
 // PGlite is single-process, so it is refused. It logs like the API and
 // exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set; it serves no
 // metrics, so its runs are not in the API's `/metrics`.
-import { ConfigError, loadWorkerConfig, redactUrl } from "@jj/api/config";
+import { ConfigError, loadWorkerConfig, redactEndpoint } from "@jj/api/config";
+import { exitOnUncaught } from "@jj/api/process";
 import { startTracing } from "@jj/api/tracing";
 import { openServices } from "@jj/api/wiring";
 import { createLogger, logSettings } from "@jj/backend";
@@ -12,13 +13,14 @@ import { configureOutboundProxy } from "@jj/runtime";
 const SHUTDOWN_TIMEOUT_MS = 20_000;
 
 const logger = createLogger(logSettings(process.env, true));
+exitOnUncaught(logger);
 
 async function main() {
   const env = process.env;
   const config = loadWorkerConfig(env);
   const tracing = await startTracing(env, "jj-worker", logger);
   if (tracing)
-    logger.info(`Exporting traces over OTLP to ${redactUrl(tracing.url)}`);
+    logger.info(`Exporting traces over OTLP to ${redactEndpoint(tracing.url)}`);
   const proxy = configureOutboundProxy(env);
   const { engine, database, models } = await openServices(config, env, logger, {
     ...(tracing ? { tracer: tracing.tracer } : {}),
@@ -49,7 +51,13 @@ async function main() {
       await engine.worker.stop();
       await database.close();
       await proxy?.restore();
-      await tracing?.shutdown();
+      // Bounded, and logs its own failure: a dead collector never holds the
+      // shutdown up or fails it.
+      await tracing
+        ?.shutdown()
+        .catch((error: unknown) =>
+          logger.warn("Flushing the traces failed", { error }),
+        );
     })().then(
       () => process.exit(0),
       (error: unknown) => {

@@ -11,6 +11,7 @@ import {
   loadServerConfig,
   loadWorkerConfig,
   REPO_ROOT,
+  redactEndpoint,
 } from "./config";
 import { startServer } from "./server";
 import { quietLogger } from "./testing";
@@ -39,6 +40,22 @@ describe("isLoopbackHost", () => {
   });
 });
 
+describe("redactEndpoint", () => {
+  it("masks the user, the password and every query value", () => {
+    expect(
+      redactEndpoint(
+        "https://team:s3cret@collector.example:4318/v1/traces?api_key=k-123&region=eu",
+      ),
+    ).toBe(
+      "https://***:***@collector.example:4318/v1/traces?api_key=***&region=***",
+    );
+    expect(redactEndpoint("http://collector:4318/v1/traces")).toBe(
+      "http://collector:4318/v1/traces",
+    );
+    expect(redactEndpoint("not a url")).toBe("(unparseable URL)");
+  });
+});
+
 describe("loadServerConfig", () => {
   it("defaults to loopback, port 3001, PGlite at .jj-data and an embedded worker", () => {
     const config = loadServerConfig({});
@@ -55,6 +72,8 @@ describe("loadServerConfig", () => {
     // The local driver's own default, outside the repository.
     expect(config.localRoot).toBeUndefined();
     expect(config.engine.persistence).toBe(true);
+    // No other process can open PGlite, so no worker heartbeat is written.
+    expect(config.engine.workerHeartbeat).toBe(false);
   });
 
   it("uses PostgreSQL when DATABASE_URL is set", () => {
@@ -72,6 +91,8 @@ describe("loadServerConfig", () => {
       embedWorker: false,
       drivers: ["local"],
       localRoot: "/srv/jj/workspaces",
+      // Another process (an API without a worker) reads its heartbeat.
+      engine: { workerHeartbeat: true },
     });
   });
 

@@ -2,7 +2,7 @@
 // `/health`, Prometheus metrics at `/metrics`, and the built web app when
 // there is one. Process boot (database, drivers, models, listening, signals)
 // is in server.ts, so tests drive this with `app.request`.
-import { createLogger, type Engine, type Logger } from "@jj/backend";
+import type { Engine, Logger } from "@jj/backend";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { originGuard, requireJson } from "./guard";
@@ -51,7 +51,7 @@ export type JJApp = Hono & {
 export function createApp({
   engine,
   config,
-  logger = createLogger(),
+  logger = engine.context.logger,
 }: AppOptions): JJApp {
   const app = new Hono();
   const streams = new StreamRegistry();

@@ -296,3 +296,20 @@ export function redactUrl(url: string): string {
     return "(unparseable URL)";
   }
 }
+
+/**
+ * An endpoint for a log line, such as the OTLP collector's: its user name,
+ * password and every query value replaced, since any of them can carry a key.
+ */
+export function redactEndpoint(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username) parsed.username = "***";
+    if (parsed.password) parsed.password = "***";
+    for (const key of new Set(parsed.searchParams.keys()))
+      parsed.searchParams.set(key, "***");
+    return parsed.toString();
+  } catch {
+    return "(unparseable URL)";
+  }
+}

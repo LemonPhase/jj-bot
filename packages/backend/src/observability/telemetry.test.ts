@@ -77,7 +77,8 @@ describe("ActivityTrace", () => {
       },
       {
         type: "tool.started",
-        toolCallId: "call_2",
+        // Not an id a provider gives: the model's text, kept out of the span.
+        toolCallId: "call 2: cat /secret",
         tool: "made_up_tool",
         summary: "x",
       },
@@ -93,7 +94,7 @@ describe("ActivityTrace", () => {
       },
       {
         type: "tool.finished",
-        toolCallId: "call_2",
+        toolCallId: "call 2: cat /secret",
         tool: "made_up_tool",
         summary: "x",
         ok: false,
@@ -141,6 +142,13 @@ describe("ActivityTrace", () => {
       .map((span) => span.attributes["gen_ai.tool.name"]);
     // A name the model made up is not a span attribute or a label.
     expect(tools.sort()).toEqual(["bash", "delegate", "other"]);
+    // Call ids are kept only when they look like one.
+    expect(
+      children
+        .filter((span) => span.name === SPANS.toolCall)
+        .map((span) => span.attributes["gen_ai.tool.call.id"])
+        .sort(),
+    ).toEqual(["call_1", "call_3", undefined]);
     expect(
       children.find((span) => span.attributes["gen_ai.tool.name"] === "bash")
         ?.attributes["jj.tool.exit_code"],
@@ -291,6 +299,29 @@ describe("the worker's heartbeat", () => {
       await crashed.engine.worker.abandon();
       expect(await row(crashedId)).toBeDefined();
       await crashed.dispose();
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "is not recorded where no other process could read it (PGlite)",
+    async () => {
+      const engine = await testEngine(db.database, {
+        config: { workerHeartbeat: false },
+      });
+      const id = engine.engine.context.config.workerId;
+      // Polling, but no row.
+      await until(() => engine.engine.worker.lastPollAt, {
+        what: "a claim pass",
+      });
+      await until(
+        async () =>
+          engine.engine.worker.lastPollAt &&
+          Date.now() - engine.engine.worker.lastPollAt.getTime() < 1_000,
+      );
+      expect(await row(id)).toBeUndefined();
+      await engine.engine.worker.stop();
+      await engine.dispose();
     },
     OPEN_TIMEOUT,
   );

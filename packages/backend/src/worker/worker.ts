@@ -235,6 +235,7 @@ export function createWorker(
    * worker is ready only while some worker's row is fresh.
    */
   async function beat() {
+    if (!ctx.config.workerHeartbeat) return;
     const now = Date.now();
     if (now - lastBeatAt < WORKER_HEARTBEAT_MS) return;
     lastBeatAt = now;
@@ -363,7 +364,7 @@ export function createWorker(
     await Promise.all([...active.values()].map((entry) => entry.done));
     await sandboxes.releaseAll();
     // A crash leaves its row to go stale, as a dead process would.
-    if (!crashing)
+    if (!crashing && ctx.config.workerHeartbeat)
       await removeWorkerHeartbeat(ctx.db, ctx.config.workerId).catch(
         (error: unknown) =>
           ctx.logger.warn("Removing the worker heartbeat failed", {
@@ -385,12 +386,13 @@ export function createWorker(
       stopping = false;
       crashing = false;
       lastBeatAt = 0;
-      await pruneWorkerHeartbeats(ctx.db, STALE_HEARTBEAT_MS).catch(
-        (error: unknown) =>
-          ctx.logger.warn("Pruning old worker heartbeats failed", {
-            error: errorMessage(error),
-          }),
-      );
+      if (ctx.config.workerHeartbeat)
+        await pruneWorkerHeartbeats(ctx.db, STALE_HEARTBEAT_MS).catch(
+          (error: unknown) =>
+            ctx.logger.warn("Pruning old worker heartbeats failed", {
+              error: errorMessage(error),
+            }),
+        );
       await reapOrphans();
       unsubscribers.push(
         await ctx.bus.subscribe("jj_control", (message) => {

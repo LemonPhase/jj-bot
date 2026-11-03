@@ -131,6 +131,21 @@ describe("the log", () => {
     );
   });
 
+  it("is the engine's own log for an app given none", async () => {
+    const app = createApp({
+      engine: t.engine,
+      config: { workerEmbedded: true },
+    });
+    const response = await app.request("/api/nothing-here");
+    expect(response.status).toBe(404);
+    expect(log.lines).toContainEqual(
+      expect.objectContaining({
+        msg: "GET /api/nothing-here 404",
+        requestId: response.headers.get("X-Request-Id"),
+      }),
+    );
+  });
+
   it("keeps a proxy's well-formed X-Request-Id and replaces anything else", async () => {
     const kept = await t.app.request("/api/nope", {
       headers: { "X-Request-Id": "edge-7f3a.1" },
@@ -550,7 +565,7 @@ describe("trace export", () => {
         { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://127.0.0.1:1/v1/traces" },
         "jj-api",
         quietLogger,
-        load,
+        { load },
       ),
     ).toBeUndefined();
     expect(load).not.toHaveBeenCalled();
@@ -558,6 +573,58 @@ describe("trace export", () => {
     expect(
       tracesUrl({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318/" }),
     ).toBe("http://collector:4318/v1/traces");
+  });
+
+  describe("to a collector that is down", () => {
+    /** Starts tracing to `url`, ends one span and times the shutdown. */
+    async function shutDownAgainst(url: string) {
+      const warnings: string[] = [];
+      const tracing = await startTracing(
+        { OTEL_EXPORTER_OTLP_ENDPOINT: url },
+        "jj-api",
+        { ...quietLogger, warn: (message) => warnings.push(message) },
+        { exportTimeoutMs: 300 },
+      );
+      if (!tracing) throw new Error("no tracing");
+      tracing.tracer.startSpan(SPANS.sessionRun).end();
+      const started = Date.now();
+      await expect(tracing.shutdown()).resolves.toBeUndefined();
+      return { ms: Date.now() - started, warnings };
+    }
+
+    it("neither fails nor holds up the shutdown when it refuses connections", async () => {
+      const closed = createServer();
+      await new Promise<void>((resolve) =>
+        closed.listen(0, "127.0.0.1", resolve),
+      );
+      const { port } = closed.address() as AddressInfo;
+      await new Promise((resolve) => closed.close(resolve));
+      const { ms, warnings } = await shutDownAgainst(
+        `http://127.0.0.1:${port}`,
+      );
+      expect(ms).toBeLessThan(2_000);
+      expect(warnings.join("\n")).toMatch(/Trace export|Flushing the traces/);
+    });
+
+    it("gives up on it after the export timeout when it never answers", async () => {
+      const sockets = new Set<import("node:net").Socket>();
+      const silent = createServer(() => {});
+      silent.on("connection", (socket) => sockets.add(socket));
+      await new Promise<void>((resolve) =>
+        silent.listen(0, "127.0.0.1", resolve),
+      );
+      const { port } = silent.address() as AddressInfo;
+      try {
+        const { ms, warnings } = await shutDownAgainst(
+          `http://127.0.0.1:${port}`,
+        );
+        expect(ms).toBeLessThan(2_000);
+        expect(warnings.length).toBeGreaterThan(0);
+      } finally {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => silent.close(resolve));
+      }
+    });
   });
 
   describe("with OTEL_EXPORTER_OTLP_ENDPOINT", () => {
@@ -601,13 +668,24 @@ describe("trace export", () => {
             OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${port}`,
             OTEL_EXPORTER_OTLP_HEADERS:
               "x-collector-key=collector-key-0123456789abcdef",
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+              "x-traces-key=traces-key-0123456789abcdef",
           },
         });
         expect(server.tracing?.url).toBe(`http://127.0.0.1:${port}/v1/traces`);
-        // The collector's key is a secret like the others.
-        expect(
-          (await server.services.secrets()).map((secret) => secret.value),
-        ).toContain("collector-key-0123456789abcdef");
+        // The collector's keys are secrets like the others.
+        expect(await server.services.secrets()).toEqual(
+          expect.arrayContaining([
+            {
+              name: "OTEL_EXPORTER_OTLP_HEADERS",
+              value: "collector-key-0123456789abcdef",
+            },
+            {
+              name: "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+              value: "traces-key-0123456789abcdef",
+            },
+          ]),
+        );
         const call = async (method: string, path: string, body?: unknown) =>
           (
             await fetch(`${server?.url}${path}`, {
@@ -648,6 +726,9 @@ describe("trace export", () => {
         );
         expect(received[0]?.headers["x-collector-key"]).toBe(
           "collector-key-0123456789abcdef",
+        );
+        expect(received[0]?.headers["x-traces-key"]).toBe(
+          "traces-key-0123456789abcdef",
         );
         const service =
           received[0]?.body.resourceSpans[0].resource.attributes.find(

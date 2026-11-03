@@ -84,6 +84,12 @@ export function endSpan(
   span.end();
 }
 
+/**
+ * A provider's tool call id (`call_…`, `toolu_…`): kept only when it looks
+ * like one, since the model's response is where it comes from.
+ */
+const CALL_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 interface OpenTool {
   span: Span;
   tool: string;
@@ -197,7 +203,9 @@ export class ActivityTrace {
             SPANS.toolCall,
             {
               "gen_ai.tool.name": tool,
-              "gen_ai.tool.call.id": event.toolCallId.slice(0, 128),
+              ...(CALL_ID.test(event.toolCallId)
+                ? { "gen_ai.tool.call.id": event.toolCallId }
+                : {}),
             },
             this.context,
           ),
