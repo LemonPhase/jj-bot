@@ -70,7 +70,7 @@ export function SpendControl({ view }: { view: TaskView }) {
 
   return (
     <>
-      <Tooltip content={tip} placement="auto">
+      <Tooltip content={tip} placement="bottom">
         <button
           type="button"
           className={`ui-badge task-spend task-spend--${level}`}
@@ -82,7 +82,7 @@ export function SpendControl({ view }: { view: TaskView }) {
           <span className="visually-hidden">Usage: </span>
           {formatCount(tokenTotal(usage.total))} tokens ·{" "}
           {spendLine(usage.total.costUsd, cap)}
-          {unpriced && <span aria-hidden="true"> · ?</span>}
+          {unpriced && ` · ${usage.total.unpricedCalls} unpriced`}
           {level === "reached" && (
             <span className="task-spend__reached"> · cap reached</span>
           )}
