@@ -15,6 +15,7 @@ export const ID_PREFIXES = {
   artifact: "art",
   usage: "use",
   approval: "appr",
+  check: "chk",
   job: "job",
 } as const;
 

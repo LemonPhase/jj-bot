@@ -760,7 +760,11 @@ export function userMessage(
   if (input.goal !== undefined && input.goal !== initial.goal) {
     const goalVersion = initial.goalVersion + 1;
     ops.updateTask({ goal: input.goal, goalVersion });
-    host.emit("task.goal_changed", { goal: input.goal, goalVersion });
+    host.emit("task.goal_changed", {
+      goal: input.goal,
+      goalVersion,
+      verificationPlan: null,
+    });
   }
   const reopened = reopen(ops, host);
   const message = ops.post({

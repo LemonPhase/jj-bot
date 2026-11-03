@@ -189,7 +189,12 @@ describe("taskBeats: beats come from task events", () => {
   it("announces a goal change", () => {
     const view = taskView({
       events: [
-        event(4, "task.goal_changed", { goal: "New", goalVersion: 2 }, at(3)),
+        event(
+          4,
+          "task.goal_changed",
+          { goal: "New", goalVersion: 2, verificationPlan: null },
+          at(3),
+        ),
       ],
     });
     expect(taskBeats(view, bots)).toEqual([

@@ -11,6 +11,7 @@ import {
   type TaskSummary,
   type TaskView,
   type Usage,
+  verificationSummary,
 } from "@jj/contracts";
 import {
   artifacts,
@@ -35,6 +36,7 @@ import {
   toTaskEvent,
 } from "../records";
 import { pendingApprovals, taskApprovals, toApproval } from "./approvals";
+import { latestChecks, latestOutcomes } from "./verification";
 
 const usageOf = (row: UsageRow): Usage => ({
   modelCalls: 1,
@@ -110,6 +112,7 @@ export async function taskView(
         .orderBy(desc(taskEvents.sequence))
         .limit(TASK_VIEW_EVENT_LIMIT);
       const events = latest.reverse().map(toTaskEvent).map(withoutOutput);
+      const checks = (await latestChecks(tx, [taskId])).get(taskId) ?? [];
 
       let total = emptyUsage();
       const bySession: Record<string, Usage> = {};
@@ -132,6 +135,7 @@ export async function taskView(
         messages: messageRows.map(toMessage),
         artifacts: artifactRows.map(toArtifact),
         approvals: approvalRows.map(toApproval),
+        verificationChecks: checks,
         usage: { total, bySession },
         events,
         firstSequence,
@@ -252,16 +256,22 @@ export async function taskSummaries(
     options.redact ?? ((text) => text),
   );
   const pending = await pendingApprovals(exec, ids);
+  const outcomes = await latestOutcomes(
+    exec,
+    taskRows.filter((row) => row.verificationPlan),
+  );
   return taskRows.map((row) => {
     const own = sessionRows.filter((session) => session.taskId === row.id);
     const question = questions.get(row.id);
+    const task = toTask(
+      row,
+      participants
+        .filter((participant) => participant.taskId === row.id)
+        .map((participant) => participant.botId),
+    );
+    const verification = verificationSummary(task, outcomes.get(row.id) ?? []);
     return {
-      ...toTask(
-        row,
-        participants
-          .filter((participant) => participant.taskId === row.id)
-          .map((participant) => participant.botId),
-      ),
+      ...task,
       sessionCount: own.length,
       activeSessionCount: own.filter(
         (session) =>
@@ -281,6 +291,7 @@ export async function taskSummaries(
             toApproval(approval);
           return { id, sessionId, botId, tool, summary, createdAt };
         }),
+      ...(verification ? { verification } : {}),
     };
   });
 }

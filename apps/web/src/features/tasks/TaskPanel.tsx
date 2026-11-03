@@ -8,6 +8,7 @@ import { NodeInspector } from "./NodeInspector";
 import { ProgressSteps } from "./ProgressSteps";
 import { TaskGraph } from "./TaskGraph";
 import { defaultSelection, TASK_NODE } from "./taskModel";
+import { VerificationSection } from "./VerificationSection";
 
 export type PanelTab = "progress" | "graph" | "office";
 
@@ -67,6 +68,7 @@ export function TaskPanel({
         {tab === "progress" && (
           <>
             <ProgressSteps view={view} picked={picked} onPick={selectNode} />
+            <VerificationSection view={view} />
             <ArtifactList view={view} />
           </>
         )}

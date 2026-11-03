@@ -2,7 +2,7 @@
 // cancelled, results go to the parent's inbox (waking it), and the task
 // completes, waits for the user, fails or finishes its stop. One lease-fenced
 // transaction per outcome.
-import { isFinishedStatus } from "@jj/contracts";
+import { isFinishedStatus, type VerificationPlan } from "@jj/contracts";
 import {
   bots,
   complete,
@@ -11,11 +11,13 @@ import {
   type SessionRow,
   type TaskRow,
   type Tx,
+  verificationChecks,
 } from "@jj/db";
-import { eq } from "drizzle-orm";
+import { and, eq, max } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import type { RunOutcome } from "../ports";
+import { planOf } from "../records";
 import { deliver, postMessage } from "../services/messages";
 import {
   cancelOpenSessions,
@@ -27,6 +29,11 @@ import {
 } from "../services/sessions";
 import { recordTaskUpdate } from "../services/task-updates";
 import { settleCancellation } from "../services/tasks";
+import {
+  attemptChecks,
+  summaryLine,
+  taskVerification,
+} from "../services/verification";
 import { parkHeld, settleApprovalWait } from "./approvals";
 import { openDelegationsText } from "./collab-tools";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
@@ -40,6 +47,47 @@ import {
 export interface CompletionRequest {
   result: string;
   goalVersion: number;
+  /**
+   * Set by the verification gate (gate.ts) when every check of the task's
+   * plan passed: the attempt that passed and the run whose gate ran it. A
+   * task with a plan completes only in that run; another run's verification
+   * is stale and the gate runs again.
+   */
+  verification?: { attempt: number; runId: string };
+}
+
+/**
+ * Whether this run's gate passed the request: every criterion of the task's
+ * current plan passed at the attempt it records, and that attempt is its
+ * goal version's latest. Read in the transaction that completes the task.
+ */
+export async function gatePassed(
+  tx: Tx,
+  task: TaskRow,
+  plan: VerificationPlan,
+  request: CompletionRequest,
+  runId: string,
+): Promise<boolean> {
+  const attempt = request.verification?.attempt;
+  if (attempt === undefined || request.verification?.runId !== runId)
+    return false;
+  const [latest] = await tx
+    .select({ value: max(verificationChecks.attempt) })
+    .from(verificationChecks)
+    .where(
+      and(
+        eq(verificationChecks.taskId, task.id),
+        eq(verificationChecks.goalVersion, task.goalVersion),
+      ),
+    );
+  if (latest?.value !== attempt) return false;
+  const checks = await attemptChecks(tx, task.id, task.goalVersion, attempt);
+  return plan.every((criterion) =>
+    checks.some(
+      (check) =>
+        check.criterionId === criterion.id && check.outcome === "passed",
+    ),
+  );
 }
 
 const BUDGET_NOTE = "\n\n(Stopped at the turn budget.)";
@@ -198,7 +246,15 @@ async function endTurn(
   }
   if (session.parentSessionId === null) {
     const request = session.completionRequested as CompletionRequest | null;
-    if (request && request.goalVersion === task.goalVersion) {
+    const plan = planOf(task.verificationPlan);
+    // The one place a task completes: with a plan, only on passing evidence
+    // for the current goal version, read again here.
+    const unverified =
+      request !== null &&
+      request.goalVersion === task.goalVersion &&
+      plan !== null &&
+      !(await gatePassed(tx, task, plan, request, rc.run.id));
+    if (request && request.goalVersion === task.goalVersion && !unverified) {
       await postMessage(
         tx,
         ctx,
@@ -236,11 +292,35 @@ async function endTurn(
         payload: { status: "completed", result: request.result, error: null },
         ...attribution,
       });
-      await recordTaskUpdate(tx, ctx, task, "completed", request.result);
+      const verification = plan ? await taskVerification(tx, task) : undefined;
+      await recordTaskUpdate(
+        tx,
+        ctx,
+        task,
+        "completed",
+        verification
+          ? `Verification: ${summaryLine(verification)}.\n\n${request.result}`
+          : request.result,
+      );
       rc.taskFinished = true;
       return;
     }
-    if (!cap || text.trim())
+    // A turn that ends without the coordinator's own answer to the user gets
+    // a system message saying what holds: a spend cap stopped it, or its
+    // completion did not pass verification (its last words, "done", would
+    // mislead, so they are not posted).
+    const held = unverified
+      ? {
+          text: `Not completed: the verification checks have not all passed for goal version ${task.goalVersion}.`,
+          replaces: true,
+        }
+      : cap
+        ? {
+            text: `Stopped: ${cap.reason} ${cap.advice}`,
+            replaces: !text.trim(),
+          }
+        : undefined;
+    if (!held?.replaces)
       await postMessage(
         tx,
         ctx,
@@ -254,8 +334,7 @@ async function endTurn(
         },
         attribution,
       );
-    const stopped = cap ? `Stopped: ${cap.reason} ${cap.advice}` : undefined;
-    if (stopped)
+    if (held)
       await postMessage(
         tx,
         ctx,
@@ -264,7 +343,7 @@ async function endTurn(
           authorKind: "system",
           sessionId: session.id,
           intent: "discussion",
-          text: stopped,
+          text: held.text,
         },
         attribution,
       );
@@ -279,13 +358,17 @@ async function endTurn(
     if (task.status !== "waiting") {
       await updateTask(tx, ctx, task, { status: "waiting" }, attribution);
       // A task that continues and waits again is a new event.
-      // Stopped at a cap, the chat is told the cap, after any text of the turn.
+      // Held, the chat is told what holds, after any text of the turn it posted.
       await recordTaskUpdate(
         tx,
         ctx,
         task,
         "waiting",
-        stopped ? [text.trim(), stopped].filter(Boolean).join("\n\n") : text,
+        held
+          ? [held.replaces ? "" : text.trim(), held.text]
+              .filter(Boolean)
+              .join("\n\n")
+          : text,
       );
     }
     return;

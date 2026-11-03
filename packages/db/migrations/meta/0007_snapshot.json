@@ -1,220 +1,9 @@
 {
-  "id": "13d876fc-676b-4b2f-a393-7871bbb45455",
+  "id": "21bcfd6c-881b-4b73-ba70-1830a33b5a72",
   "prevId": "afdf96c9-f4ee-4321-b7ee-0f13ea4932f4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
-    "public.approvals": {
-      "name": "approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "bot_id": {
-          "name": "bot_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool_call_id": {
-          "name": "tool_call_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tool": {
-          "name": "tool",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "args": {
-          "name": "args",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rule": {
-          "name": "rule",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "goal_version": {
-          "name": "goal_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "outcome": {
-          "name": "outcome",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "decided_at": {
-          "name": "decided_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_run_id": {
-          "name": "started_run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "resolved_at": {
-          "name": "resolved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "approvals_one_pending": {
-          "name": "approvals_one_pending",
-          "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"approvals\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "approvals_task_idx": {
-          "name": "approvals_task_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "approvals_task_id_tasks_id_fk": {
-          "name": "approvals_task_id_tasks_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "tasks",
-          "columnsFrom": ["task_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "approvals_session_id_sessions_id_fk": {
-          "name": "approvals_session_id_sessions_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "approvals_session_call": {
-          "name": "approvals_session_call",
-          "nullsNotDistinct": false,
-          "columns": ["session_id", "tool_call_id"]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "approvals_status_check": {
-          "name": "approvals_status_check",
-          "value": "\"approvals\".\"status\" in ('pending', 'approved', 'denied', 'expired', 'cancelled')"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.artifacts": {
       "name": "artifacts",
       "schema": "",
@@ -600,12 +389,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "approval_id": {
-          "name": "approval_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -664,7 +447,7 @@
       "checkConstraints": {
         "chat_task_updates_event_check": {
           "name": "chat_task_updates_event_check",
-          "value": "\"chat_task_updates\".\"event\" in ('completed', 'failed', 'waiting', 'approval')"
+          "value": "\"chat_task_updates\".\"event\" in ('completed', 'failed', 'waiting')"
         }
       },
       "isRLSEnabled": false
@@ -1328,13 +1111,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "approvals": {
-          "name": "approvals",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
         "is_default": {
           "name": "is_default",
           "type": "boolean",
@@ -1805,7 +1581,7 @@
         },
         "sessions_waiting_for_check": {
           "name": "sessions_waiting_for_check",
-          "value": "(\"sessions\".\"waiting_for\" is null or \"sessions\".\"waiting_for\" in ('delegations', 'user', 'approval')) and ((\"sessions\".\"status\" = 'waiting') = (\"sessions\".\"waiting_for\" is not null))"
+          "value": "(\"sessions\".\"waiting_for\" is null or \"sessions\".\"waiting_for\" in ('delegations', 'user')) and ((\"sessions\".\"status\" = 'waiting') = (\"sessions\".\"waiting_for\" is not null))"
         }
       },
       "isRLSEnabled": false
@@ -1936,6 +1712,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "verification_plan": {
+          "name": "verification_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "reason": {
           "name": "reason",
@@ -2286,6 +2068,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "verification_plan": {
+          "name": "verification_plan",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "sandbox_holder": {
           "name": "sandbox_holder",
           "type": "text",
@@ -2589,6 +2377,170 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.verification_checks": {
+      "name": "verification_checks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "goal_version": {
+          "name": "goal_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "criterion_id": {
+          "name": "criterion_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "exit_code": {
+          "name": "exit_code",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "interrupted": {
+          "name": "interrupted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output": {
+          "name": "output",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "truncated": {
+          "name": "truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "artifact_id": {
+          "name": "artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "verification_checks_task_id_tasks_id_fk": {
+          "name": "verification_checks_task_id_tasks_id_fk",
+          "tableFrom": "verification_checks",
+          "tableTo": "tasks",
+          "columnsFrom": ["task_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "verification_checks_attempt_criterion": {
+          "name": "verification_checks_attempt_criterion",
+          "nullsNotDistinct": false,
+          "columns": ["task_id", "goal_version", "attempt", "criterion_id"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "verification_checks_method_check": {
+          "name": "verification_checks_method_check",
+          "value": "\"verification_checks\".\"method\" in ('command', 'file', 'result')"
+        },
+        "verification_checks_outcome_check": {
+          "name": "verification_checks_outcome_check",
+          "value": "\"verification_checks\".\"outcome\" in ('passed', 'failed', 'inconclusive')"
+        },
+        "verification_checks_command_pass_check": {
+          "name": "verification_checks_command_pass_check",
+          "value": "\"verification_checks\".\"method\" <> 'command' or \"verification_checks\".\"outcome\" <> 'passed' or (\"verification_checks\".\"exit_code\" = 0 and \"verification_checks\".\"interrupted\" = 'no')"
+        }
+      },
       "isRLSEnabled": false
     }
   },

@@ -419,6 +419,72 @@ describe("approvals", () => {
     expect(await pushes(root, task.id)).toBe(1);
   });
 
+  it("keeps the verification gate shut while a call waits, then checks the work once it ran", async () => {
+    const root = await workspace();
+    let resumed = "";
+    const { engine } = await start(root, [
+      // The push and the completion in one batch: the completion waits too.
+      fauxAssistantMessage(
+        [
+          fauxToolCall("bash", { command: PUSH }, { id: "push" }),
+          fauxToolCall(
+            "complete_task",
+            { result: "Pushed." },
+            { id: "done-early" },
+          ),
+        ],
+        { stopReason: "toolUse" },
+      ),
+      (context) => {
+        resumed = textOf(conversation(context).at(-1));
+        return callTool("complete_task", { result: "Pushed after approval." });
+      },
+      say("Done."),
+    ]);
+    const bot = await guardedBot(engine);
+    const { task } = await engine.tasks.create({
+      goal: "Push the work",
+      coordinatorBotId: bot.id,
+      verificationPlan: [
+        {
+          id: "pushed",
+          description: "pushed.txt exists",
+          method: "file",
+          path: "pushed.txt",
+          expect: "exists",
+        },
+      ],
+    });
+    const held = await untilTask(
+      engine,
+      task.id,
+      (v) => pending(v) !== undefined && v.task.status === "waiting",
+      "the held call",
+    );
+    await sleep(200);
+    const still = await engine.tasks.get(task.id);
+    // No check ran and nothing completed while the call waits.
+    expect(
+      still.events.some((event) => event.type === "verification.started"),
+    ).toBe(false);
+    expect(still.task.status).toBe("waiting");
+    await engine.tasks.decideApproval(task.id, (pending(held) as Approval).id, {
+      decision: "approve",
+    });
+    const done = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    // The early completion was set aside: the model completed again after the call ran.
+    expect(resumed).toContain("Your `complete_task` call was set aside");
+    expect(done.task.result).toBe("Pushed after approval.");
+    expect(done.verificationChecks).toMatchObject([
+      { criterionId: "pushed", outcome: "passed" },
+    ]);
+    expect(await pushes(root, task.id)).toBe(1);
+  });
+
   it("expires a pending approval when the goal changes", async () => {
     const root = await workspace();
     let seen = "";
@@ -449,7 +515,7 @@ describe("approvals", () => {
       status: "expired",
     });
     expect(seen).toBe(
-      "Not run: the task's goal changed to version 2 before the user answered.",
+      "Not run: the task's goal or plan changed (now goal version 2) before the user answered.",
     );
     expect(await pushes(root, task.id)).toBe(0);
     await expect(

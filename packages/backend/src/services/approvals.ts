@@ -397,7 +397,7 @@ export async function expireApprovals(
   for (const current of rows) {
     const row = await updateApproval(tx, current, {
       status: "expired",
-      reason: `the task's goal changed to version ${goalVersion} before the user answered.`,
+      reason: `the task's goal or plan changed (now goal version ${goalVersion}) before the user answered.`,
       decidedAt: ctx.clock(),
     });
     await wake(tx, row);

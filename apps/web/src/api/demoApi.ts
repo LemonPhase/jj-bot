@@ -332,6 +332,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         messages: [],
         artifacts: [],
         approvals: [],
+        verificationChecks: [],
         usage: { total: emptyUsage(), bySession: {} },
         events: [],
         firstSequence: 1,
@@ -436,6 +437,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       error: null,
       cancelReason: null,
       cancelRequestedAt: null,
+      verificationPlan: null,
       spendCapUsd:
         input.spendCapUsd !== undefined
           ? input.spendCapUsd

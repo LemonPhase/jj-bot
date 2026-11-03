@@ -43,7 +43,7 @@ Settings show which model providers the server has keys for and edit runtime pro
 
 ## Verification
 
-A task may carry a verification plan, but only on a server that reports the `verification` capability; otherwise a plan is refused rather than stored unenforced. With a plan, a task cannot complete until every criterion passes with evidence. Without one, it completes when the coordinator delivers the consolidated result. Tool activity and artifacts are recorded either way. See [Verification](verification.md).
+A task may carry a verification plan, written by the user, but only on a server that reports the `verification` capability; otherwise a plan is refused rather than stored unenforced. With a plan, a task cannot complete until every criterion (a command in the task's sandbox, or an assertion on a workspace file or on the result) passes with evidence for the current goal version; a failure goes back to the coordinator to fix, and the task waits for the user when the attempts run out. Without one, it completes when the coordinator delivers the consolidated result, and it is never shown as verified. Tool activity and artifacts are recorded either way. See [Verification](verification.md).
 
 ## Visualization
 

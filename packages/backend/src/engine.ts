@@ -211,7 +211,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           agentExecution: providers.some((provider) => provider.configured),
           persistence: ctx.config.persistence,
           streaming: true,
-          verification: false,
+          verification: true,
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,

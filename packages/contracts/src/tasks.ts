@@ -10,6 +10,10 @@ import {
   spendCapUsdSchema,
   timestampSchema,
 } from "./common";
+import {
+  verificationPlanSchema,
+  verificationSummarySchema,
+} from "./verification";
 
 /**
  * - `queued`: created, nothing has started.
@@ -71,6 +75,7 @@ export const ACTIVITY_KINDS = [
   "searching",
   "delegating",
   "messaging",
+  "verifying",
   "waiting",
 ] as const;
 
@@ -110,6 +115,11 @@ export const taskObjectSchema = z.object({
    * with 409 TASK_TERMINAL and clients show "Stopping…" until the task is cancelled.
    */
   cancelRequestedAt: timestampSchema.nullable(),
+  /**
+   * The verification plan of the current goal version, written by the user;
+   * null for none. Parsed as null from events stored before plans existed.
+   */
+  verificationPlan: verificationPlanSchema.nullable().default(null),
   /**
    * The task's spend cap in US dollars, null for none. Set from the
    * coordinator's profile (`budgets.maxUsdPerTask`) when the task is created,
@@ -252,28 +262,14 @@ export const addUsage = (a: Usage, b: Usage): Usage => ({
   unpricedCalls: a.unpricedCalls + b.unpricedCalls,
 });
 
-export const verificationCriterionSchema = z.object({
-  id: idSchema,
-  description: z.string().min(1),
-  method: z.string().min(1),
-  expectedEvidence: z.string().min(1),
-});
-
-/**
- * Opt-in per task. The API rejects a present plan with VERIFICATION_UNAVAILABLE
- * while `capabilities.verification` is false, instead of storing a plan nothing enforces.
- */
-export const verificationPlanSchema = z
-  .array(verificationCriterionSchema)
-  .min(1);
-
 /** The create-task command before participant normalization. */
 export const createTaskCommandObjectSchema = z.object({
   goal: goalSchema,
   title: titleSchema.optional(),
   coordinatorBotId: idSchema,
   participantBotIds: idListSchema.default([]),
-  verificationPlan: verificationPlanSchema.optional(),
+  /** The user's plan; omitted or null for none. Refused while `capabilities.verification` is false. */
+  verificationPlan: verificationPlanSchema.nullable().optional(),
   /** Omitted: the coordinator's profile's `budgets.maxUsdPerTask`. Null: no cap. */
   spendCapUsd: spendCapUsdSchema.nullable().optional(),
 });
@@ -295,13 +291,15 @@ export const postTaskMessageCommandObjectSchema = z.object({
   text: commandTextSchema,
   goal: goalSchema.optional(),
   observedGoalVersion: goalVersionSchema.optional(),
-  verificationPlan: verificationPlanSchema.optional(),
+  /** Replaces the plan (null removes it), starting a new goal version when it differs. */
+  verificationPlan: verificationPlanSchema.nullable().optional(),
 });
 
 /**
  * `POST /api/tasks/:taskId/messages`. Every user message steers the coordinator.
- * `goal` replaces the goal and increments the goal version; it requires the
- * version the user was looking at, so a stale edit fails with STALE_GOAL_VERSION.
+ * `goal` replaces the goal and `verificationPlan` the plan; a change to either
+ * increments the goal version. Both require the version the user was looking
+ * at, so a stale edit fails with STALE_GOAL_VERSION.
  * Posting to a waiting, completed or failed task continues it (`task.reopened`).
  * A cancelled task, or one with `cancelRequestedAt` set, answers 409 TASK_TERMINAL.
  */
@@ -312,6 +310,16 @@ export const postTaskMessageCommandSchema =
         code: "custom",
         path: ["observedGoalVersion"],
         message: "Changing the goal requires the goal version you observed.",
+      });
+    else if (
+      command.verificationPlan !== undefined &&
+      command.observedGoalVersion === undefined
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["observedGoalVersion"],
+        message:
+          "Changing the verification plan requires the goal version you observed.",
       });
   });
 
@@ -362,6 +370,12 @@ export const taskSummaryObjectSchema = taskObjectSchema.extend({
    * one per session. Parsed as empty from servers before approvals.
    */
   pendingApprovals: z.array(pendingApprovalSchema).default(() => []),
+  /**
+   * Set exactly when the task has a plan: where its checks stand for the
+   * current goal version (`verificationSummary`). Show the task as verified
+   * only through `isVerified`.
+   */
+  verification: verificationSummarySchema.optional(),
 });
 
 /** A task as lists show it. */
@@ -373,6 +387,16 @@ export const taskSummarySchema = taskSummaryObjectSchema.superRefine(
         code: "custom",
         path: ["question"],
         message: "Only a waiting task has a question.",
+      });
+    if (
+      (summary.verification !== undefined) !==
+      (summary.verificationPlan !== null)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["verification"],
+        message:
+          "A task has a verification summary exactly when it has a plan.",
       });
   },
 );
@@ -455,8 +479,6 @@ export type MessageIntent = (typeof MESSAGE_INTENTS)[number];
 export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
 export type Usage = z.infer<typeof usageSchema>;
-export type VerificationCriterion = z.infer<typeof verificationCriterionSchema>;
-export type VerificationPlan = z.infer<typeof verificationPlanSchema>;
 export type CreateTaskCommand = z.input<typeof createTaskCommandSchema>;
 export type PostTaskMessageCommand = z.input<
   typeof postTaskMessageCommandSchema

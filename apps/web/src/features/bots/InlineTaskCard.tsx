@@ -10,6 +10,7 @@ import { Button, ErrorBanner, Icon, StatusSquare } from "../../components/ui";
 import { statusTitle, statusTone, statusWord } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { taskHref } from "../shell/router";
+import { verificationDisplay } from "../tasks/verification";
 
 /**
  * The line under a card's title, from the summary the workspace keeps
@@ -39,9 +40,9 @@ export function taskExcerpt(
  * the start of a finished task's result or error or of a waiting task's
  * question. It reads the live task summary, so it shows the task's current
  * status, not its status when the message was written. The link is named by
- * the title and status; the excerpt is its description. Verification is off
- * in Contracts 1.0, so the meta shows the goal version where the design
- * shows checks.
+ * the title and status; the excerpt is its description. The meta shows the
+ * goal version and, for a task with checks, where they stand ("verified ·
+ * 3/3" only when it completed with every check passed).
  */
 export function InlineTaskCard({
   taskId,
@@ -92,13 +93,17 @@ function TaskCardLink({
   excerpt: ReturnType<typeof taskExcerpt>;
   excerptId: string;
 }) {
+  const checks = task
+    ? verificationDisplay(task, task.verification)
+    : undefined;
+  const checksText = checks ? ` · ${checks.word} ${checks.count}` : "";
   return (
     <a
       className="chat-task-card"
       href={taskHref(taskId)}
       aria-label={
         task
-          ? `Task: ${task.title} ${statusWord(task)} · v${task.goalVersion}`
+          ? `Task: ${task.title} ${statusWord(task)} · v${task.goalVersion}${checks ? ` · checks ${checks.word} ${checks.count}` : ""}`
           : "Task: Open the task"
       }
       aria-describedby={excerpt ? excerptId : undefined}
@@ -110,6 +115,7 @@ function TaskCardLink({
             <span className="chat-task-card__title clamp1">{task.title}</span>
             <span className="chat-task-card__meta" title={statusTitle(task)}>
               {statusWord(task)} · v{task.goalVersion}
+              {checksText}
             </span>
           </span>
           {excerpt && (

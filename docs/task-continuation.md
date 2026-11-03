@@ -15,9 +15,9 @@ Posting to a `waiting`, `completed` or `failed` task continues it. The server em
 
 ## Goal versions
 
-A message may replace the goal. It must carry `observedGoalVersion`, the version the user was looking at. If that is not the current version, the API answers `409 STALE_GOAL_VERSION` and changes nothing.
+A message may replace the goal, the verification plan (`verificationPlan`; `null` removes it) or both. It must then carry `observedGoalVersion`, the version the user was looking at. If that is not the current version, the API answers `409 STALE_GOAL_VERSION` and changes nothing.
 
-A goal change increments `goalVersion` and emits `task.goal_changed` with the new goal and version, so the event log is the task's version history. A message that does not change the goal leaves the version, and the evidence gathered under it, untouched. Work at an older version cannot complete the task, and a call still waiting for the user's approval when the goal changes expires without running (see [Approvals](architecture.md#approvals)).
+A change to the goal or the plan increments `goalVersion` and emits `task.goal_changed` with the goal, the plan and the version, so the event log is the task's version history. A message that changes neither, including one that repeats the current plan, leaves the version, and the evidence gathered under it, untouched. Work and checks at an older version cannot complete the task, and a call still waiting for the user's approval when the version changes expires without running (see [Approvals](architecture.md#approvals)).
 
 ## Guardrails
 
