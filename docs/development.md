@@ -74,7 +74,7 @@ It exits 1 when the backup is damaged, the stack refuses it, or the restored dat
 
 ### PGlite
 
-A PGlite data directory (`JJ_DATABASE_PATH`, default `.jj-data`) is the whole database. Stop the server first: the directory is locked to the running process and a copy taken while it writes may not open. Copy the directory (`cp -a .jj-data <backup>`), and the `local` driver's workspaces under `JJ_SANDBOX_ROOT` if they matter; restore by copying them back while the server is stopped. The copied `jj-db.lock` names a process that is gone, so the next open takes it over. `JJ_DATABASE_PATH=<backup> npm run data:check` checks a copy.
+A PGlite data directory (`JJ_DATABASE_PATH`, default `.jj-data`) is the whole database. Stop the server first: the directory is locked to the running process and a copy taken while it writes may not open. Copy the directory (`cp -a .jj-data <backup>`), and the `local` driver's workspaces under `JJ_SANDBOX_ROOT` if they matter; restore by copying them back while the server is stopped. A `jj-db.lock` left in a copy names a process that is gone, so the next open takes it over. `JJ_DATABASE_PATH=<backup> npm run data:check` checks a copy.
 
 ### Upgrades
 
@@ -84,7 +84,7 @@ Migrations are forward-only: there is no downgrade.
 2. Update the checkout to the new release and run `docker compose up -d --build --wait`. The app applies the new migrations when it opens the database, all in one transaction; PostgreSQL openers serialize on an advisory lock, so a separate worker booting at once is safe.
 3. Check `docker compose logs app` and `/health/ready`, whose `migrations` check reports none pending.
 
-To go back, restore the backup taken before the upgrade with the old release (`scripts/restore.sh --force`): a build older than its database refuses to start, with `This database was written by a newer version of JJ Bot: …` naming the newest migration it knows, before it applies or changes anything. A PostgreSQL major version is upgraded by the same route: back up, change the `postgres` image, `docker compose down -v`, restore.
+To go back, restore the backup taken before the upgrade with the old release (`scripts/restore.sh --force`): a build older than its database refuses to start, with `This database was written by a newer version of JJ Bot: …` naming the newest migration it knows, before it applies or changes anything. A PostgreSQL major version is upgraded by the same route: back up, change the `postgres` image, `docker compose down -v`, then `scripts/restore.sh --force`, since the workspace volumes outlive `down -v` and the backup replaces them.
 
 The upgrade tests start from the previous release's schema with data its build wrote (`PREVIOUS_RELEASE` in `packages/db/src/testing.ts`, its fixture in `packages/db/fixtures`), open it through the boot path, and check that every record keeps its values, the current schema reads every table, and the server serves it and continues its task. Each release moves `PREVIOUS_RELEASE` forward with a fixture its own build writes.
 
