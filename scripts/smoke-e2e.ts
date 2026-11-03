@@ -18,6 +18,14 @@
 // without repeating finished work, with the replayed stream rebuilding the
 // same view as a reload. Exits non-zero on any failure.
 //
+// JJ_SMOKE_RESTORE_COMMAND (with JJ_SMOKE_BASE_URL) adds backup survival:
+// after the first task, the command backs the stack up, wipes it and restores
+// it (scripts/backup.sh, `docker compose down -v`, scripts/restore.sh, up
+// again). Every bot, profile, task, event and artifact must read back the
+// same with the same token, and the restored task continues with a
+// verification plan whose checks find its files in the restored workspace,
+// byte for byte. The rest of the smoke then runs on the restored data.
+//
 // JJ_SMOKE_MODEL=<provider/model> runs the same flow against a real model
 // instead (its provider key must be set where the server runs); that mode is
 // not run in CI. JJ_SMOKE_TOKEN is the bearer token of a server at
@@ -46,6 +54,7 @@ const realModel = setting("JJ_SMOKE_MODEL");
 const remoteUrl = setting("JJ_SMOKE_BASE_URL")?.replace(/\/+$/, "");
 const remoteToken = setting("JJ_SMOKE_TOKEN");
 const restartCommand = setting("JJ_SMOKE_RESTART_COMMAND");
+const restoreCommand = setting("JJ_SMOKE_RESTORE_COMMAND");
 const timeoutMs = realModel ? 10 * 60_000 : remoteUrl ? 120_000 : 60_000;
 /** The slow command the restart lands on; it would outlast the whole check. */
 const SLOW_COMMAND = "sleep 300";
@@ -65,9 +74,9 @@ const unreachable = (
 /** Tries each target with bash's /dev/tcp; prints `open <target>` for any it reaches. */
 const PROBE_COMMAND = `for t in ${unreachable.map((target) => target.replace(":", "/")).join(" ")}; do timeout 3 bash -c "</dev/tcp/$t" 2>/dev/null && echo "open $t"; done; echo probed`;
 
-if (restartCommand && !remoteUrl) {
+if ((restartCommand || restoreCommand) && !remoteUrl) {
   console.error(
-    "smoke:e2e: JJ_SMOKE_RESTART_COMMAND needs JJ_SMOKE_BASE_URL (a server it can restart).",
+    "smoke:e2e: JJ_SMOKE_RESTART_COMMAND and JJ_SMOKE_RESTORE_COMMAND need JJ_SMOKE_BASE_URL (a server they can restart).",
   );
   process.exit(2);
 }
@@ -383,6 +392,14 @@ async function main(): Promise<boolean> {
       for (const artifact of view.artifacts)
         await download(base, headers, task.id, artifact);
     });
+
+    if (restoreCommand)
+      await restoreSurvival({
+        base,
+        headers,
+        expectStatus,
+        taskId: task.id,
+      });
 
     await step("stop a second task", async () => {
       const { task: second } = await expectStatus("POST", "/api/tasks", 201, {
@@ -1034,6 +1051,137 @@ async function restartSurvival(options: {
           events,
         ),
         "the stream and the event log differ",
+      );
+    },
+  );
+}
+
+/** What the API answers about every record, for comparing across a restore. */
+async function everything(
+  base: string,
+  headers: Record<string, string>,
+  expectStatus: ExpectStatus,
+) {
+  const { bots } = await expectStatus("GET", "/api/bots", 200);
+  const { profiles } = await expectStatus("GET", "/api/runtime-profiles", 200);
+  const { tasks } = (await expectStatus("GET", "/api/tasks", 200)) as {
+    tasks: TaskSummary[];
+  };
+  const views: Record<string, unknown> = {};
+  for (const summary of tasks) {
+    const view: TaskView = await expectStatus(
+      "GET",
+      `/api/tasks/${summary.id}`,
+      200,
+    );
+    for (const artifact of view.artifacts)
+      await download(base, headers, summary.id, artifact);
+    views[summary.id] = {
+      view,
+      events: await allEvents(base, headers, summary.id),
+    };
+  }
+  return { bots, profiles, tasks, views };
+}
+
+/**
+ * Backup survival: record every record the API serves, back the stack up,
+ * wipe and restore it with JJ_SMOKE_RESTORE_COMMAND, and check that the same
+ * token reads every record back unchanged; then continue the restored task
+ * with a plan whose checks find its files in the restored workspace, byte
+ * for byte, so the task completes verified.
+ */
+async function restoreSurvival(options: {
+  base: string;
+  headers: Record<string, string>;
+  expectStatus: ExpectStatus;
+  taskId: string;
+}) {
+  const { base, headers, expectStatus, taskId } = options;
+  const before = await step("record every record before the backup", () =>
+    everything(base, headers, expectStatus),
+  );
+
+  await step(`back up, wipe and restore: ${restoreCommand}`, async () => {
+    const result = spawnSync(restoreCommand as string, {
+      shell: true,
+      stdio: "inherit",
+      timeout: 600_000,
+    });
+    check(
+      result.status === 0,
+      `exited with ${result.status ?? result.signal ?? result.error?.message}`,
+    );
+    await untilReady(base, 180_000);
+    if (headers.Authorization) {
+      const anonymous = await fetch(`${base}/api/bootstrap`);
+      check(
+        anonymous.status === 401,
+        `no token after the restore: ${anonymous.status}`,
+      );
+    }
+  });
+
+  await step(
+    "every bot, profile, task, event and artifact reads back the same",
+    async () => {
+      const after = await everything(base, headers, expectStatus);
+      for (const part of ["bots", "profiles", "tasks"] as const)
+        check(
+          isDeepStrictEqual(after[part], before[part]),
+          `the restored ${part} differ: ${JSON.stringify(after[part])} != ${JSON.stringify(before[part])}`,
+        );
+      for (const [id, recorded] of Object.entries(before.views))
+        check(
+          isDeepStrictEqual(after.views[id], recorded),
+          `the restored task ${id} differs from its backup`,
+        );
+    },
+  );
+
+  await step(
+    "the restored task continues, verified on the files in its restored workspace",
+    async () => {
+      const view: TaskView = await expectStatus(
+        "GET",
+        `/api/tasks/${taskId}`,
+        200,
+      );
+      const files = view.artifacts.filter(
+        (artifact) => artifact.kind === "file" && artifact.path,
+      );
+      check(files.length >= 2, `${files.length} file artifact(s)`);
+      await expectStatus("POST", `/api/tasks/${taskId}/messages`, 201, {
+        text: "Check that the notes came through the restore.",
+        observedGoalVersion: view.task.goalVersion,
+        verificationPlan: files.map((artifact, index) => ({
+          id: `restored-${index + 1}`,
+          description: `${artifact.path} is as it was before the backup`,
+          method: "command",
+          command: `printf '%s  %s\\n' ${artifact.sha256} '${artifact.path}' | sha256sum -c -`,
+        })),
+      });
+      const deadline = Date.now() + timeoutMs;
+      let current: TaskView;
+      for (;;) {
+        current = await expectStatus("GET", `/api/tasks/${taskId}`, 200);
+        if (
+          current.task.goalVersion > view.task.goalVersion &&
+          current.task.status !== "queued" &&
+          current.task.status !== "running"
+        )
+          break;
+        check(Date.now() < deadline, `still ${current.task.status}`);
+        await sleep(100);
+      }
+      const summary = verificationSummary(
+        current.task,
+        current.verificationChecks,
+      );
+      check(
+        current.task.status === "completed" &&
+          isVerified(current.task, summary),
+        `status ${current.task.status}, verification ${JSON.stringify(summary)}: ${JSON.stringify(current.verificationChecks.map((entry) => entry.detail ?? entry.outputPreview))}`,
       );
     },
   );

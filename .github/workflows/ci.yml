@@ -130,7 +130,7 @@ jobs:
     # the docker driver on the runner's daemon, driven over HTTP from outside.
     name: Compose stack
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       JJ_ENABLE_SCRIPTED_MODEL: "true"
       JJ_DEFAULT_MODEL: scripted/team
@@ -172,12 +172,37 @@ jobs:
           echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,$(address app):3001,$(address postgres):5432" >> "$GITHUB_ENV"
 
       # Through the published loopback port, as a browser on the host would.
-      # Includes restart survival across `docker compose restart app`.
-      - name: Smoke against the stack (docker driver, restart survival)
+      # Includes backup survival: after its first task the running stack is
+      # backed up, wiped (`down -v`, its sandboxes and workspace volumes too)
+      # and restored, and the rest of the smoke runs on the restored data,
+      # with restart survival across `docker compose restart app`.
+      - name: Smoke against the stack (docker driver, backup and restore, restart survival)
         env:
           JJ_SMOKE_BASE_URL: http://127.0.0.1:3001
           JJ_SMOKE_RESTART_COMMAND: docker compose restart app
+          JJ_SMOKE_RESTORE_COMMAND: >-
+            scripts/backup.sh "$RUNNER_TEMP/backup" &&
+            docker compose down -v --remove-orphans &&
+            { docker ps -aq --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker rm -f; } &&
+            { docker volume ls -q --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker volume rm; } &&
+            scripts/restore.sh "$RUNNER_TEMP/backup" &&
+            docker compose up -d --wait --wait-timeout 180
         run: npm run smoke:e2e
+
+      # The manifest names the versions, the migration level and the
+      # workspaces; a restore into a stack that holds data is refused.
+      - name: Check the backup's manifest, and that restore refuses a stack with data
+        run: |
+          cat "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"format": "jj-bot-backup"' "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"state": "current"' "$RUNNER_TEMP/backup/manifest.json"
+          grep -F '"jj-bot-task-' "$RUNNER_TEMP/backup/manifest.json"
+          if scripts/restore.sh "$RUNNER_TEMP/backup" 2>restore.err; then
+            echo "restore replaced a stack that holds data without --force"
+            exit 1
+          fi
+          cat restore.err
+          grep -F "the stack is not empty" restore.err
 
       # One "Open JJ Bot" line per boot (two, with the restart), all with the
       # same token, and the token in no other line.
