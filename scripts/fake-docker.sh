@@ -9,7 +9,8 @@
 # check cannot reach the database), after_restore.env and fail_after_restore
 # (the data check after pg_restore), dump (what pg_dump prints),
 # restored_dump, pg_restore_list_fail, volumes/<name>/{labels,data},
-# vanish_on_inspect and vanish_on_run (volume names that disappear).
+# vanish_on_inspect and vanish_on_run (volume names that disappear),
+# volumes/<name>/users (containers using it) and server_version.
 set -u
 S=$FAKE_DOCKER_STATE
 printf '%s\n' "$*" >>"$S/log"
@@ -63,7 +64,7 @@ if [ "$1" = compose ]; then
       esac
       case "$last" in
         *pg_dump*) cat "$S/dump" ;;
-        *"show server_version"*) echo 17.0 ;;
+        *"show server_version"*) cat "$S/server_version" 2>/dev/null || echo 17.0 ;;
         *"drop database"*) echo "recreated the database" >>"$S/events" ;;
         *pg_restore*)
           cat >"$S/restored_dump"
@@ -80,7 +81,18 @@ fi
 
 case "$1" in
   inspect) cat "$S/project" ;;
-  image | ps) ;;
+  image) ;;
+  ps)
+    # Containers using a volume: volumes/<name>/users holds "<id> <namespace>".
+    volume=$(printf '%s\n' "$@" | sed -n 's/^volume=//p')
+    namespace=$(printf '%s\n' "$@" | sed -n 's/^label=jj.sandbox.namespace=//p')
+    if [ -n "$volume" ] && [ -e "$S/volumes/$volume/users" ]; then
+      while read -r id owner; do
+        [ -z "$namespace" ] || [ "$owner" = "$namespace" ] || continue
+        echo "$id"
+      done <"$S/volumes/$volume/users"
+    fi
+    ;;
   rm) echo "removed containers ${*:3}" >>"$S/events" ;;
   volume)
     case "$2" in

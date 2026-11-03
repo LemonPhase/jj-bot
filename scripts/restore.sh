@@ -5,14 +5,17 @@
 #   scripts/restore.sh [--force] DIR
 #
 # DIR is relative to the current directory. Restoring a backup means trusting
-# it: pg_restore runs its SQL as the database's superuser.
+# it: pg_restore runs its SQL as the database's superuser, and checksums
+# detect damage, not tampering, so a backup must come from a trusted source.
 #
 # Before it changes anything, it checks the backup: its checksums, which
 # cover every file it reads; that every workspace archive is one the manifest
 # lists, named and labelled as the docker driver names a task workspace, and
 # that no volume of that name exists outside the stack's namespace; that the
-# stack's pg_restore reads the dump; and that this build ships the migration
-# the backup's database is at. It starts the postgres service, and refuses a
+# stack's PostgreSQL is the backup's major version or later and its
+# pg_restore reads the dump; that this build ships the migration the backup's
+# database is at; and that no other container uses a workspace volume
+# --force would remove. It starts the postgres service, and refuses a
 # stack that already holds data (a database JJ Bot has opened, a workspace
 # volume in its namespace, or a running app) unless --force is given.
 #
@@ -77,15 +80,17 @@ if ! grep -q '"format": "jj-bot-backup"' "$dir/manifest.json" || ! grep -q '"ver
   fail "$dir/manifest.json is not a version 1 JJ Bot backup manifest."
 fi
 echo "Checking $dir"
-listed=$(awk '{ print $2 }' "$dir/SHA256SUMS")
-while IFS= read -r file; do
-  [[ $file =~ ^(manifest\.json|check\.env|check\.json|database\.dump|volumes/[A-Za-z0-9_.-]+\.(tar|labels))$ ]] ||
-    fail "the backup is refused: SHA256SUMS lists $file, which is not a backup file."
-done <<<"$listed"
+# Every line is a SHA-256 and one of the backup's files, so no line is
+# skipped as malformed while its file still counts as covered.
+while IFS= read -r line; do
+  [[ $line =~ ^[0-9a-f]{64}\ \ (manifest\.json|check\.env|check\.json|database\.dump|volumes/[A-Za-z0-9_.-]+\.(tar|labels))$ ]] ||
+    fail "the backup is refused: SHA256SUMS holds a line that is not the SHA-256 of a backup file: ${line:0:120}"
+done <"$dir/SHA256SUMS"
+listed=$(cut -c67- "$dir/SHA256SUMS")
 for file in manifest.json check.env database.dump; do
-  grep -qx "$file" <<<"$listed" || fail "the backup is refused: SHA256SUMS does not cover $file."
+  grep -qxF -- "$file" <<<"$listed" || fail "the backup is refused: SHA256SUMS does not cover $file."
 done
-(cd "$dir" && sha256 -c --quiet SHA256SUMS) || fail "the backup is damaged: its checksums do not match."
+(cd "$dir" && sha256 -c --strict --quiet SHA256SUMS) || fail "the backup is damaged: its checksums do not match."
 
 backed() { sed -n "s/^$1=//p" "$dir/check.env"; }
 source_namespace=$(sed -n 's/^  "dockerNamespace": "\(.*\)",$/\1/p' "$dir/manifest.json")
@@ -100,7 +105,7 @@ names=$(awk '/^  "volumes": \[/ { on = 1; if ($0 ~ /\]/) exit; next } on && /^  
 for archive in "$dir"/volumes/*.tar "$dir"/volumes/*.labels; do
   [ -e "$archive" ] || continue
   name=$(basename "$archive")
-  grep -qxF "${name%.*}" <<<"$names" || fail "the backup is refused: volumes/$name is not a workspace its manifest lists."
+  grep -qxF -- "${name%.*}" <<<"$names" || fail "the backup is refused: volumes/$name is not a workspace its manifest lists."
 done
 workspaces=()
 while IFS= read -r name; do
@@ -113,7 +118,7 @@ while IFS= read -r name; do
     fail "the backup is refused: $name is not a workspace volume of the namespace $source_namespace."
   fi
   for file in "volumes/$name.tar" "volumes/$name.labels"; do
-    grep -qx "$file" <<<"$listed" || fail "the backup is refused: SHA256SUMS does not cover $file."
+    grep -qxF -- "$file" <<<"$listed" || fail "the backup is refused: SHA256SUMS does not cover $file."
   done
   expected=$(printf '%s\n' jj.sandbox=1 "jj.sandbox.namespace=$source_namespace" \
     "jj.sandbox.workspace-key=$key" "jj.sandbox.workspace-mode=$mode" | sort)
@@ -138,12 +143,23 @@ namespace=$(current docker_namespace)
 tags=$(current build_migration_tags)
 [ -n "$tags" ] || fail "this app image predates the restore check's migration list; rebuild it (docker compose build app)."
 level=$(backed schema_latest)
-if [ "$(backed schema_newer)" != 0 ] || [ -z "$level" ] || ! grep -qxF "$level" <<<"${tags//,/$'\n'}"; then
+if [ "$(backed schema_newer)" != 0 ] || [ -z "$level" ] || ! grep -qxF -- "$level" <<<"${tags//,/$'\n'}"; then
   fail "the backup's database is at migration ${level:-unknown to the build that made it} ($(backed schema_applied) applied), which this build does not ship (its newest is $(current build_latest_migration)); restore it with the version it was made with$([ -z "$commit" ] || echo " (checkout $commit)") or a later one. Nothing was changed."
 fi
 
-# This stack's pg_restore must read the dump (a newer PostgreSQL's dump may
-# need a newer one).
+# This stack's PostgreSQL must be the backup's major version or a later one:
+# pg_dump's archive format is shared by several majors, so a dump from a newer
+# one can read fine and still fail partway through the restore.
+source_server=$(sed -n 's/^  "postgres": { "server": "\([^"]*\)".*/\1/p' "$dir/manifest.json")
+target_server=$(docker compose exec -T postgres sh -c 'psql -tA --username="$POSTGRES_USER" --dbname=postgres -c "show server_version"' | tr -d '\r') || target_server=
+source_major=${source_server%%[!0-9]*}
+target_major=${target_server%%[!0-9]*}
+[ -n "$source_major" ] || fail "the backup's manifest names no PostgreSQL version. Nothing was changed."
+[ -n "$target_major" ] || fail "could not read this stack's PostgreSQL version. Nothing was changed."
+if [ "$source_major" -gt "$target_major" ]; then
+  fail "the backup comes from PostgreSQL $source_server, newer than this stack's $target_server; restore it into a stack on PostgreSQL $source_major or later (the postgres image in compose.yaml). Nothing was changed."
+fi
+# And its pg_restore must read the dump.
 if ! unreadable=$(docker compose exec -T postgres pg_restore --list 2>&1 >/dev/null <"$dir/database.dump"); then
   fail "this stack's pg_restore cannot read the backup's dump ($(tr '\n' ' ' <<<"$unreadable" | sed 's/ *$//')); restore it into a stack on the PostgreSQL version that made it ($(sed -n 's/^  "postgres": { "server": "\([^"]*\)".*/\1/p' "$dir/manifest.json")) or a later one. Nothing was changed."
 fi
@@ -151,9 +167,18 @@ fi
 volumes=$(docker volume ls --quiet --filter "label=jj.sandbox=1" --filter "label=jj.sandbox.namespace=$namespace")
 for workspace in ${workspaces[@]+"${workspaces[@]}"}; do
   volume=$namespace-$workspace
-  if docker volume inspect "$volume" >/dev/null 2>&1 && ! grep -qxF "$volume" <<<"$volumes"; then
+  if docker volume inspect "$volume" >/dev/null 2>&1 && ! grep -qxF -- "$volume" <<<"$volumes"; then
     fail "a volume named $volume exists outside the namespace $namespace's workspaces; the restore will not write into it. Nothing was changed."
   fi
+done
+
+# A workspace volume another container uses (outside this namespace's
+# sandboxes, which --force removes) could not be removed.
+for volume in $volumes; do
+  users=$(docker ps --all --quiet --filter "volume=$volume")
+  ours=$(docker ps --all --quiet --filter "volume=$volume" --filter "label=jj.sandbox.namespace=$namespace")
+  others=$(grep -vxF -f <(printf '%s\n' "$ours") <<<"$users" || true)
+  [ -z "$others" ] || fail "the workspace volume $volume is in use by a container outside the namespace $namespace ($(tr '\n' ' ' <<<"$others" | sed 's/ *$//')); stop it first. Nothing was changed."
 done
 
 app=$(docker compose ps --status running --quiet app)
@@ -171,7 +196,9 @@ if [ ${#held[@]} -gt 0 ]; then
   docker compose stop app
   sandboxes=$(docker ps --all --quiet --filter "label=jj.sandbox.namespace=$namespace")
   [ -z "$sandboxes" ] || xargs docker rm --force >/dev/null <<<"$sandboxes"
-  [ -z "$volumes" ] || xargs docker volume rm >/dev/null <<<"$volumes"
+  if [ -n "$volumes" ] && ! xargs docker volume rm >/dev/null <<<"$volumes"; then
+    fail "could not remove every workspace volume of the namespace $namespace (see above). The app is stopped and the database is unchanged; remove what is left and run the restore again, or start the app with docker compose up -d --wait."
+  fi
   docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 --quiet --username="$POSTGRES_USER" --dbname=postgres -c "drop database if exists \"$POSTGRES_DB\" with (force)" -c "create database \"$POSTGRES_DB\""'
 fi
 

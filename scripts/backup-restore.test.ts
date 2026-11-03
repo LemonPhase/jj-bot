@@ -2,9 +2,13 @@
 // (scripts/fake-docker.sh), which answers from a state directory and records
 // what changed. The real stack runs them in CI's Compose stack job; these
 // cover the paths a stack seldom takes: no workspace at all, a workspace
-// that vanishes mid-backup, a damaged or tampered backup, a dump or a schema
-// this stack cannot take, and a failing restore check.
+// that vanishes mid-backup, a damaged backup or one holding files its
+// manifest and the driver's naming do not account for, a dump, PostgreSQL
+// version or schema this stack cannot take, a workspace volume in use, and a
+// failing restore check. Checksums detect damage, not tampering: a backup
+// must come from a trusted source.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   cpSync,
@@ -146,24 +150,28 @@ function withTaskWorkspace() {
 }
 
 /** Rewrites a backup file and its checksum, as a tamperer would. */
+const sumLine = (dir: string, file: string) =>
+  `${createHash("sha256")
+    .update(readFileSync(join(dir, file)))
+    .digest("hex")}  ${file}\n`;
+
+/** Rewrites a backup file and every checksum, as a forger could. */
 function tamper(dir: string, file: string, content: string) {
   writeFileSync(join(dir, file), content);
-  const sums = spawnSync(
-    "bash",
-    ["-c", "cut -d' ' -f3 SHA256SUMS | xargs sha256sum"],
-    {
-      cwd: dir,
-      encoding: "utf8",
-    },
+  const files = readFileSync(join(dir, "SHA256SUMS"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.slice(66));
+  writeFileSync(
+    join(dir, "SHA256SUMS"),
+    files.map((name) => sumLine(dir, name)).join(""),
   );
-  writeFileSync(join(dir, "SHA256SUMS"), sums.stdout);
 }
 
 function addToSums(dir: string, file: string) {
-  const sum = spawnSync("sha256sum", [file], { cwd: dir, encoding: "utf8" });
   writeFileSync(
     join(dir, "SHA256SUMS"),
-    `${readFileSync(join(dir, "SHA256SUMS"), "utf8")}${sum.stdout}`,
+    `${readFileSync(join(dir, "SHA256SUMS"), "utf8")}${sumLine(dir, file)}`,
   );
 }
 
@@ -396,19 +404,19 @@ describe("scripts/restore.sh", () => {
       );
     rmSync(join(renamed, "volumes/jj-test-task-task_1.tar"));
     rmSync(join(renamed, "volumes/jj-test-task-task_1.labels"));
+    writeFileSync(
+      join(renamed, "SHA256SUMS"),
+      readFileSync(join(renamed, "SHA256SUMS"), "utf8").replaceAll(
+        "jj-test-task-task_1",
+        "jj-test_jj_postgres",
+      ),
+    );
     tamper(
       renamed,
       "manifest.json",
       readFileSync(join(renamed, "manifest.json"), "utf8").replace(
         '"jj-test-task-task_1"',
         '"jj-test_jj_postgres"',
-      ),
-    );
-    writeFileSync(
-      join(renamed, "SHA256SUMS"),
-      readFileSync(join(renamed, "SHA256SUMS"), "utf8").replaceAll(
-        "jj-test-task-task_1",
-        "jj-test_jj_postgres",
       ),
     );
     result = target.run("restore.sh", [renamed]);
@@ -442,6 +450,109 @@ describe("scripts/restore.sh", () => {
     expect(target.volumeData("jj-test_jj_postgres")).toBe("PG_DATA");
     expect(target.volumeData("jj-test-task-task_1")).toBe("SOMEONE ELSE'S");
     expect(target.events()).not.toMatch(NOTHING_CHANGED);
+  });
+
+  it("refuses a checksum line that is not a SHA-256 of a backup file, instead of skipping it", () => {
+    const dir = backupOf(withTaskWorkspace(), join(temp("jj-backup-"), "b"));
+    for (const file of ["check.env", "database.dump"]) {
+      const target = stack();
+      writeFileSync(target.file("app_running"), "");
+      const copy = join(temp("jj-backup-"), "bad-line");
+      cpSync(dir, copy, { recursive: true });
+      writeFileSync(
+        join(copy, file),
+        `${readFileSync(join(copy, file), "utf8")}changed\n`,
+      );
+      // A digit made non-hex: sha256sum warns about the line and skips it.
+      writeFileSync(
+        join(copy, "SHA256SUMS"),
+        readFileSync(join(copy, "SHA256SUMS"), "utf8")
+          .split("\n")
+          .map((line) =>
+            line.endsWith(`  ${file}`) ? `z${line.slice(1)}` : line,
+          )
+          .join("\n"),
+      );
+      const result = target.run("restore.sh", ["--force", copy]);
+      expect(result.status, file).toBe(1);
+      expect(result.output).toContain(
+        "SHA256SUMS holds a line that is not the SHA-256 of a backup file",
+      );
+      expect(target.events()).not.toMatch(NOTHING_CHANGED);
+    }
+  });
+
+  it("refuses, before changing anything, a backup from a newer PostgreSQL major", () => {
+    const source = withTaskWorkspace();
+    writeFileSync(source.file("server_version"), "18.1\n");
+    const dir = backupOf(source, join(temp("jj-backup-"), "b"));
+    expect(readFileSync(join(dir, "manifest.json"), "utf8")).toContain(
+      '"server": "18.1"',
+    );
+    const target = stack();
+    writeFileSync(
+      target.file("server_version"),
+      "17.11 (Debian 17.11-1.pgdg120+1)\n",
+    );
+    writeFileSync(target.file("app_running"), "");
+    target.volume("jj-test-task-old", driverLabels("jj-test", "task", "old"));
+    const result = target.run("restore.sh", ["--force", dir]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "the backup comes from PostgreSQL 18.1, newer than this stack's 17.11",
+    );
+    expect(result.output).toContain("Nothing was changed.");
+    expect(target.events()).not.toMatch(NOTHING_CHANGED);
+    expect(target.hasVolume("jj-test-task-old")).toBe(true);
+
+    // An older major restores: pg_restore reads older dumps.
+    const older = withTaskWorkspace();
+    writeFileSync(older.file("server_version"), "16.4\n");
+    const fromOlder = backupOf(older, join(temp("jj-backup-"), "b"));
+    expect(stack({ check: EMPTY }).run("restore.sh", [fromOlder]).status).toBe(
+      0,
+    );
+  });
+
+  it("takes a migration name as a name, not as an option", () => {
+    const source = withTaskWorkspace();
+    writeFileSync(
+      source.file("check.env"),
+      checkEnv({ schema_latest: "--version" }),
+    );
+    const dir = backupOf(source, join(temp("jj-backup-"), "b"));
+    const target = stack({ check: EMPTY });
+    const result = target.run("restore.sh", [dir]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "the backup's database is at migration --version",
+    );
+    expect(target.events()).not.toMatch(NOTHING_CHANGED);
+  });
+
+  it("refuses, before stopping anything, a workspace volume another container uses", () => {
+    const dir = backupOf(withTaskWorkspace(), join(temp("jj-backup-"), "b"));
+    const target = stack();
+    writeFileSync(target.file("app_running"), "");
+    target.volume("jj-test-task-old", driverLabels("jj-test", "task", "old"));
+    target.volume("jj-test-task-held", driverLabels("jj-test", "task", "held"));
+    // One of this namespace's sandboxes (--force removes it), and a stranger.
+    writeFileSync(
+      target.file("volumes/jj-test-task-held/users"),
+      "sandbox1 jj-test\nstranger1 other\n",
+    );
+    const result = target.run("restore.sh", ["--force", dir]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      "the workspace volume jj-test-task-held is in use by a container outside the namespace jj-test (stranger1)",
+    );
+    expect(target.events()).not.toMatch(NOTHING_CHANGED);
+
+    writeFileSync(
+      target.file("volumes/jj-test-task-held/users"),
+      "sandbox1 jj-test\n",
+    );
+    expect(target.run("restore.sh", ["--force", dir]).status).toBe(0);
   });
 
   it("reports a restore check that cannot read the database as such, not as a newer schema", () => {
