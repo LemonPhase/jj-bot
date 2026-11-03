@@ -127,14 +127,30 @@ export function approvalSubject(
 }
 
 const collapse = (value: string) => value.replace(/\s+/g, " ").trim();
-const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * True when the parts are found in `text` in order, each after the one
+ * before. Leftmost matches are always enough for a pattern open at both
+ * ends, so this is a linear scan with no backtracking, whatever the input.
+ */
+function inOrder(text: string, parts: readonly string[]): boolean {
+  let from = 0;
+  for (const part of parts) {
+    if (!part) continue;
+    const at = text.indexOf(part, from);
+    if (at === -1) return false;
+    from = at + part.length;
+  }
+  return true;
+}
 
 /**
  * True when the rule asks for approval of this call: the tool matches and,
  * when the rule has a `match`, its text is found in the call's subject.
  * Case-sensitive; `*` stands for any run of characters, and runs of
- * whitespace in either count as one space. Pure, so the profile editor can
- * preview a rule.
+ * whitespace in either count as one space. Linear in the subject's length
+ * (no regular expression), so a long command cannot stall the server. Pure,
+ * so the profile editor can preview a rule.
  */
 export function approvalRuleMatches(
   rule: ApprovalRule,
@@ -143,8 +159,10 @@ export function approvalRuleMatches(
 ): boolean {
   if (rule.tool !== tool) return false;
   if (rule.match === undefined) return true;
-  const pattern = collapse(rule.match).split("*").map(escape).join("[\\s\\S]*");
-  return new RegExp(pattern).test(collapse(approvalSubject(tool, args)));
+  return inOrder(
+    collapse(approvalSubject(tool, args)),
+    collapse(rule.match).split("*"),
+  );
 }
 
 /** The first rule that asks for approval of this call, if any. */

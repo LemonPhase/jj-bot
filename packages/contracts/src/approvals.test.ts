@@ -95,6 +95,34 @@ describe("approval rules", () => {
     ).toBe(expected);
   });
 
+  it("stays fast on long commands that do not match (no backtracking)", () => {
+    const heredoc = `cat > notes.md <<'EOF'\n${"git pull and merge\n".repeat(700)}EOF`;
+    const repeated = "a".repeat(3_000);
+    const started = performance.now();
+    expect(
+      approvalRuleMatches(
+        { tool: "bash", match: "*git*push*" },
+        "bash",
+        bash(heredoc),
+      ),
+    ).toBe(false);
+    expect(
+      approvalRuleMatches(
+        { tool: "bash", match: "a*a*a*b" },
+        "bash",
+        bash(repeated),
+      ),
+    ).toBe(false);
+    expect(
+      approvalRuleMatches(
+        { tool: "bash", match: "a*a*a*a" },
+        "bash",
+        bash(repeated),
+      ),
+    ).toBe(true);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
   it("matches every call of its tool without a match, and no other tool", () => {
     expect(approvalRuleMatches({ tool: "write" }, "write", { path: "a" })).toBe(
       true,
