@@ -60,6 +60,11 @@ export interface DataReport {
     tasks: number;
     artifacts: number;
     artifactBytes: number;
+    /** Task events, and the UTF-8 bytes of their payloads' JSON. */
+    events: number;
+    eventBytes: number;
+    /** Tasks whose events were compacted (`task.compacted`). */
+    compactedTasks: number;
   };
   /** Stored secrets; absent before the secrets store's migration. */
   secrets?: {
@@ -165,6 +170,16 @@ export async function reportOn(
       exec,
       "select coalesce(sum(size_bytes), 0) as n from artifacts",
     ),
+    events: await count(exec, "select count(*) as n from task_events"),
+    eventBytes: await count(
+      exec,
+      "select coalesce(sum(octet_length(payload::text)), 0) as n from task_events",
+    ),
+    // Read as an older schema may hold it: the column came with retention.
+    compactedTasks: await count(
+      exec,
+      "select count(distinct task_id) as n from task_events where type = 'task.compacted'",
+    ),
   };
   if (await present(exec, "secrets")) {
     const keys = secretKeys(env);
@@ -243,9 +258,18 @@ export function formatReport(report: DataReport): string {
       break;
   }
   if (report.records) {
-    const { bots, tasks, artifacts, artifactBytes } = report.records;
+    const {
+      bots,
+      tasks,
+      artifacts,
+      artifactBytes,
+      events,
+      eventBytes,
+      compactedTasks,
+    } = report.records;
     lines.push(
       `Records: ${plural(bots, "bot")}, ${plural(tasks, "task")}, ${plural(artifacts, "artifact")} (${artifactBytes} bytes).`,
+      `Task events: ${plural(events, "event")} (${eventBytes} payload bytes); ${plural(compactedTasks, "task")} compacted.`,
     );
   }
   if (report.secrets) {
@@ -298,6 +322,9 @@ export function formatEnv(report: DataReport): string {
     ["tasks", report.records?.tasks ?? 0],
     ["artifacts", report.records?.artifacts ?? 0],
     ["artifact_bytes", report.records?.artifactBytes ?? 0],
+    ["events", report.records?.events ?? 0],
+    ["event_bytes", report.records?.eventBytes ?? 0],
+    ["compacted_tasks", report.records?.compactedTasks ?? 0],
     ["secrets_stored", report.secrets?.stored ?? 0],
     ["secrets_unreadable", report.secrets?.unreadable.length ?? 0],
     ["secrets_retired", report.secrets?.retired.stored ?? 0],

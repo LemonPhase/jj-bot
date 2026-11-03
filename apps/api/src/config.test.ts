@@ -137,6 +137,30 @@ describe("loadServerConfig", () => {
     ).toEqual(["jj.example.com", "proxy:8443"]);
   });
 
+  it("reads the event retention and payload cap, and refuses values outside their range", () => {
+    expect(loadServerConfig({}).engine).toMatchObject({
+      eventRetentionDays: undefined,
+      eventPayloadCapBytes: undefined,
+    });
+    for (const days of ["0", "1", "30", "3650"])
+      expect(
+        loadServerConfig({ JJ_EVENT_RETENTION_DAYS: days }).engine
+          .eventRetentionDays,
+      ).toBe(Number(days));
+    for (const days of ["-1", "3651", "1.5", "a month"])
+      expect(() => loadServerConfig({ JJ_EVENT_RETENTION_DAYS: days })).toThrow(
+        /eventRetentionDays|JJ_EVENT_RETENTION_DAYS/,
+      );
+    expect(
+      loadServerConfig({ JJ_EVENT_PAYLOAD_CAP_BYTES: "131072" }).engine
+        .eventPayloadCapBytes,
+    ).toBe(131072);
+    for (const bytes of ["131071", "1048577", "256k"])
+      expect(() =>
+        loadServerConfig({ JJ_EVENT_PAYLOAD_CAP_BYTES: bytes }),
+      ).toThrow(/JJ_EVENT_PAYLOAD_CAP_BYTES/);
+  });
+
   it("refuses a separate worker on PGlite, and malformed settings", () => {
     expect(() => loadServerConfig({ JJ_EMBED_WORKER: "false" })).toThrow(
       /needs PostgreSQL/,

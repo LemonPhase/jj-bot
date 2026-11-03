@@ -75,7 +75,11 @@ describe("readDataReport", () => {
         tasks: 3,
         artifacts: 5,
         artifactBytes: expect.any(Number),
+        events: expect.any(Number),
+        eventBytes: expect.any(Number),
+        compactedTasks: 0,
       });
+      expect(report.records?.events).toBeGreaterThan(0);
       // Before the secrets store, there is nothing to report on secrets.
       expect(report.secrets).toBeUndefined();
       expect(formatReport(report)).toContain(
