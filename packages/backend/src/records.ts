@@ -86,6 +86,7 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     error: row.error,
     cancelReason: row.cancelReason,
     cancelRequestedAt: isoOrNull(row.cancelRequestedAt),
+    spendCapUsd: row.spendCapUsd,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
     finishedAt: isoOrNull(row.finishedAt),

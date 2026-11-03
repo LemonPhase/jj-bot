@@ -35,3 +35,4 @@ Each feature file starts with an H1 and one paragraph describing the user-visibl
 - [Tasks](tasks.md): start a task from the New task dialog, follow it to done, read its artifacts and progress, continue it.
 - [Stop a task](stop-task.md): stop a running task and prove its work stopped.
 - [Settings](settings.md): models, runtime profiles and sandbox drivers.
+- [Spend caps](spend-caps.md): a task stopped at its cap and continued, a bot at its daily cap, and usage reporting.

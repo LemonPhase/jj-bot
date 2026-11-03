@@ -204,6 +204,7 @@ export class Ops {
       cacheReadTokens: call > 1 ? 900 : 0,
       cacheWriteTokens: call === 1 ? 900 : 0,
       costUsd: 0,
+      unpricedCalls: 0,
     };
     this.host.emit(
       "model.finished",

@@ -132,6 +132,13 @@ export interface RunHooks {
   drainInbox(): Promise<string[]>;
   /** Stores output over the cap in full. Returns the artifact id. */
   spillOutput(text: string, label: string): Promise<string>;
+  /**
+   * Asked before every model call of the run, compaction summaries and
+   * overflow retries included. Returns why the call may not start (a spend
+   * cap was reached), or undefined to let it go. A refused call is never sent
+   * and reports no events; the run ends with `budget` (`limit: "spend"`).
+   */
+  admitModelCall?(): Promise<string | undefined>;
 }
 
 export interface RunBudgets {
@@ -140,6 +147,9 @@ export interface RunBudgets {
   /** The run stops (outcome `budget`) when this passes, interrupting what is in flight. */
   deadline: Date;
 }
+
+/** Which budget ended a run: model calls, the deadline, or a spend cap. */
+export type BudgetLimit = "turns" | "deadline" | "spend";
 
 export interface RunInput {
   sessionId: string;
@@ -186,8 +196,17 @@ export type RunOutcome =
    * (`reason: "sandbox_released"`): what was in flight was stopped.
    */
   | { kind: "aborted"; reason?: "sandbox_released" }
-  /** Stopped at `maxTurns` or the deadline while the model still wanted to go on. */
-  | { kind: "budget"; finalText: string }
+  /**
+   * Stopped at `maxTurns` or the deadline while the model still wanted to go
+   * on, or before a model call `admitModelCall` refused (`limit: "spend"`,
+   * `reason` its refusal).
+   */
+  | {
+      kind: "budget";
+      finalText: string;
+      limit: BudgetLimit;
+      reason?: string;
+    }
   /** `error` is redacted: no provider key or key-shaped text. */
   | { kind: "error"; code: RunErrorCode; error: string };
 

@@ -60,6 +60,8 @@ export interface NewTaskInput {
   goal: string;
   /** The first entry is the coordinator. */
   participantBotIds: string[];
+  /** Omitted: the coordinator's profile's cap. Null: no cap. */
+  spendCapUsd?: number | null;
 }
 
 interface WorkspaceValue {
@@ -536,7 +538,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         }
         return true;
       },
-      createTask: async ({ goal, participantBotIds }) => {
+      createTask: async ({ goal, participantBotIds, spendCapUsd }) => {
         const [coordinatorBotId] = participantBotIds;
         if (!coordinatorBotId)
           throw new Error("A task needs at least one bot.");
@@ -544,6 +546,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           goal,
           coordinatorBotId,
           participantBotIds,
+          ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
         });
         setTasks((current) =>
           upsert(current, {

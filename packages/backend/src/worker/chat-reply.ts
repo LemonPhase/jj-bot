@@ -6,7 +6,7 @@
 // inputs wait, each job enqueues the next. An update whose reply fails is
 // still told: the engine posts it as a plain message instead.
 
-import { FINISHED_TASK_STATUSES } from "@jj/contracts";
+import { FINISHED_TASK_STATUSES, type Usage } from "@jj/contracts";
 import {
   bots,
   type ClaimedJob,
@@ -38,9 +38,10 @@ import {
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { hint, wakeWorkers } from "../events";
-import type { ChatReply, ChatResponder } from "../ports";
+import type { ChatResponder } from "../ports";
 import { activeBotRows, memoryText } from "../services/bots";
 import { conversationHistory } from "../services/chat";
+import { spendStop } from "../services/spend";
 import {
   answerTaskUpdate,
   fallbackText,
@@ -179,22 +180,25 @@ async function storeMessage(
   });
 }
 
+/** One model call of a reply, recorded as it finishes (task-less: direct chat). */
 async function storeUsage(
   tx: Tx,
   ctx: EngineContext,
   botId: string,
-  reply: ChatReply,
+  used: Usage,
+  model: string,
 ) {
   await tx.insert(usage).values({
     id: ctx.ids("usage"),
     taskId: null,
     botId,
-    model: reply.model,
-    inputTokens: reply.usage.inputTokens,
-    outputTokens: reply.usage.outputTokens,
-    cacheReadTokens: reply.usage.cacheReadTokens,
-    cacheWriteTokens: reply.usage.cacheWriteTokens,
-    costUsd: reply.usage.costUsd,
+    model,
+    inputTokens: used.inputTokens,
+    outputTokens: used.outputTokens,
+    cacheReadTokens: used.cacheReadTokens,
+    cacheWriteTokens: used.cacheWriteTokens,
+    costUsd: used.costUsd,
+    priced: used.unpricedCalls === 0,
     createdAt: ctx.clock(),
   });
 }
@@ -309,6 +313,16 @@ export async function runChatJob(
         deadline: new Date(Date.now() + ctx.config.chatTimeoutMs),
       },
       signal: control.controller.signal,
+      // User replies and update replies alike: the bot's and the instance's
+      // daily caps (a reply has no task). A refused call is never made.
+      admitModelCall: async () => {
+        const stop = await spendStop(ctx.db, ctx, { botId });
+        return stop ? `${stop.message} ${stop.advice}` : undefined;
+      },
+      // Each call is recorded as it finishes, and only here: a reply that
+      // fails, or whose update is overtaken, still counts every call it made.
+      onUsage: (used, model) =>
+        write((tx) => storeUsage(tx, ctx, botId, used, model)),
     });
     if (control.reason) throw control.controller.signal.reason;
     const answered = input;
@@ -317,8 +331,8 @@ export async function runChatJob(
       const told =
         answered.kind === "user" ||
         (await answerTaskUpdate(tx, ctx, answered.update.id, id));
-      // An update overtaken during the reply is not told, but its model
-      // calls were made: their usage is recorded either way.
+      // An update overtaken during the reply is not told; its model calls
+      // were recorded as they finished (onUsage).
       if (told)
         await storeMessage(tx, ctx, botId, {
           id,
@@ -328,7 +342,6 @@ export async function runChatJob(
               ? (state.linkedTaskId ?? onlyTaskLookedAt(state))
               : answered.update.taskId,
         });
-      await storeUsage(tx, ctx, botId, reply);
       if (answered.kind === "user")
         await markHandled(
           tx,
@@ -353,9 +366,11 @@ export async function runChatJob(
     }
     const code = (error as { code?: unknown } | undefined)?.code;
     const reason =
-      typeof code === "string"
-        ? `Reply failed (${code}): ${errorMessage(error)}`
-        : errorMessage(error);
+      code === "spend_cap"
+        ? `Not answered: ${errorMessage(error)}`
+        : typeof code === "string"
+          ? `Reply failed (${code}): ${errorMessage(error)}`
+          : errorMessage(error);
     const failed = input;
     await write(async (tx) => {
       // The update is never lost: the engine tells it plainly instead.

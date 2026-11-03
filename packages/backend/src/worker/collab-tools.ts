@@ -14,6 +14,7 @@ import {
   lockTask,
   openChildren,
 } from "../services/sessions";
+import { spendStop } from "../services/spend";
 import { briefSummary } from "../services/task-log";
 import { childFirstInput } from "./first-input";
 import { lookupTools } from "./lookup-tools";
@@ -137,6 +138,17 @@ function delegateTool(rc: RunContext, team: readonly Teammate[]): CollabTool {
         if ((existing?.value ?? 0) >= ctx.config.maxSessionsPerTask)
           return refuse(
             `This task already has ${ctx.config.maxSessionsPerTask} sessions, the limit. Use the results you have or do the work yourself.`,
+          );
+        // A session that could make no model call would stop at once.
+        const capped = await spendStop(tx, ctx, {
+          taskId: task.id,
+          botId: assignee.botId,
+        });
+        if (capped)
+          return refuse(
+            capped.scope === "bot"
+              ? `${capped.message} ${assignee.name} cannot start this work now; give it to another teammate, do it yourself, or tell the user.`
+              : `${capped.message} No teammate can start work now, and your own next model call stops too; end your turn so the task waits for the user. ${capped.advice}`,
           );
         const attribution = attributionOf(rc);
         // What the child starts on (first-input.ts): the task log so far, the

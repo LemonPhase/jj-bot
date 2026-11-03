@@ -1,6 +1,9 @@
 import {
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
+  DEFAULT_MAX_USD_PER_BOT_PER_DAY,
+  DEFAULT_MAX_USD_PER_TASK,
+  MAX_SPEND_CAP_USD,
   type RuntimeProfile,
   type SandboxSpecPatch,
   type ToolName,
@@ -32,6 +35,9 @@ export interface ProfileDraft {
   tools: readonly ToolName[];
   maxTurnsPerRun: string;
   maxRunMinutes: string;
+  /** US dollars; empty for no cap. */
+  maxUsdPerTask: string;
+  maxUsdPerBotPerDay: string;
   /** Create only: make the new profile the default. */
   isDefault: boolean;
 }
@@ -49,13 +55,29 @@ export const BUDGETS = {
 
 export type BudgetKey = keyof typeof BUDGETS;
 
+/** Spend caps, as in the contract's `profileBudgetsSchema`: US dollars, null for no cap. */
+export const SPEND_CAPS = {
+  maxUsdPerTask: {
+    label: "Spend cap per task (USD)",
+    hint: `What one task this profile coordinates may spend; it is copied onto the task when it starts. Empty for no cap. Default $${DEFAULT_MAX_USD_PER_TASK}.`,
+    default: DEFAULT_MAX_USD_PER_TASK,
+  },
+  maxUsdPerBotPerDay: {
+    label: "Spend cap per bot per day (USD)",
+    hint: `What each bot on this profile may spend in any 24 hours, tasks and chat together. Empty for no cap. Default $${DEFAULT_MAX_USD_PER_BOT_PER_DAY}.`,
+    default: DEFAULT_MAX_USD_PER_BOT_PER_DAY,
+  },
+} as const;
+
+export type SpendCapKey = keyof typeof SPEND_CAPS;
+
 /** A valid draft: what the profile should be once saved. */
 export interface DesiredProfile {
   name: string;
   description: string;
   sandbox: { driver: string } & Record<string, unknown>;
   tools: ToolName[];
-  budgets: Record<BudgetKey, number>;
+  budgets: Record<BudgetKey, number> & Record<SpendCapKey, number | null>;
   isDefault: boolean;
 }
 
@@ -73,6 +95,8 @@ export function newProfileDraft(
     tools: [...CODING_TOOLS],
     maxTurnsPerRun: String(BUDGETS.maxTurnsPerRun.default),
     maxRunMinutes: String(BUDGETS.maxRunMinutes.default),
+    maxUsdPerTask: String(SPEND_CAPS.maxUsdPerTask.default),
+    maxUsdPerBotPerDay: String(SPEND_CAPS.maxUsdPerBotPerDay.default),
     isDefault: false,
   };
 }
@@ -89,8 +113,26 @@ export function draftFromProfile(
     tools: [...profile.tools],
     maxTurnsPerRun: String(profile.budgets.maxTurnsPerRun),
     maxRunMinutes: String(profile.budgets.maxRunMinutes),
+    maxUsdPerTask: capText(profile.budgets.maxUsdPerTask),
+    maxUsdPerBotPerDay: capText(profile.budgets.maxUsdPerBotPerDay),
     isDefault: profile.isDefault,
   };
+}
+
+const capText = (cap: number | null) => (cap === null ? "" : String(cap));
+
+/** A spend cap from its input: empty is no cap (null). */
+function readSpendCap(
+  key: SpendCapKey,
+  text: string,
+  errors: Record<string, string>,
+): number | null {
+  if (!text.trim()) return null;
+  const value = Number(text.trim());
+  if (!Number.isFinite(value) || value <= 0 || value > MAX_SPEND_CAP_USD)
+    errors[key] =
+      `Enter an amount above 0 and at most ${MAX_SPEND_CAP_USD}, or leave it empty for no cap.`;
+  return value;
 }
 
 /** Tools in the contract's order, without duplicates. */
@@ -126,6 +168,12 @@ export function readProfileDraft(
   const budgets = {
     maxTurnsPerRun: readBudget("maxTurnsPerRun", draft.maxTurnsPerRun, errors),
     maxRunMinutes: readBudget("maxRunMinutes", draft.maxRunMinutes, errors),
+    maxUsdPerTask: readSpendCap("maxUsdPerTask", draft.maxUsdPerTask, errors),
+    maxUsdPerBotPerDay: readSpendCap(
+      "maxUsdPerBotPerDay",
+      draft.maxUsdPerBotPerDay,
+      errors,
+    ),
   };
   if (Object.keys(errors).length > 0) return { errors };
   return {
@@ -243,8 +291,11 @@ export function profilePatch(
   if (!sameJson(orderedTools(stored.tools), orderedTools(desired.tools)))
     patch.tools = orderedTools(desired.tools);
 
-  const budgets: Partial<Record<BudgetKey, number>> = {};
+  const budgets: Partial<DesiredProfile["budgets"]> = {};
   for (const key of Object.keys(BUDGETS) as BudgetKey[])
+    if (desired.budgets[key] !== stored.budgets[key])
+      budgets[key] = desired.budgets[key];
+  for (const key of Object.keys(SPEND_CAPS) as SpendCapKey[])
     if (desired.budgets[key] !== stored.budgets[key])
       budgets[key] = desired.budgets[key];
   if (Object.keys(budgets).length > 0) patch.budgets = budgets;

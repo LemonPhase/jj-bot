@@ -9,10 +9,12 @@ import {
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import {
+  type Api,
   type AssistantMessage,
   createInitialSystemMessage,
   type ImageContent,
   type Message,
+  type Model,
   type Usage as PiUsage,
   type RetryPolicy,
   type TextContent,
@@ -39,6 +41,7 @@ import {
   retryingStreamFn,
   streamOf,
 } from "./errors";
+import type { ModelCallGate } from "./gate";
 import type { ResolvedModel } from "./models";
 import {
   finalizeResult,
@@ -74,14 +77,31 @@ const clip = (text: string, max: number) =>
 
 const count = (value: number) => Math.max(0, Math.round(value || 0));
 
-export function toContractUsage(usage: PiUsage): Usage {
+/**
+ * True when the catalog lists a price for the model. Without one pi reports
+ * a cost of 0, which may be free or unknown: such calls are counted as
+ * unpriced, never as costing nothing.
+ */
+export const hasListedPrice = (model: Pick<Model<Api>, "cost">): boolean =>
+  model.cost.input > 0 ||
+  model.cost.output > 0 ||
+  model.cost.cacheRead > 0 ||
+  model.cost.cacheWrite > 0;
+
+/** One model call's usage; a model without a listed price makes it an unpriced call. */
+export function toContractUsage(
+  usage: PiUsage,
+  model: Pick<Model<Api>, "cost">,
+): Usage {
+  const priced = hasListedPrice(model);
   return {
     modelCalls: 1,
     inputTokens: count(usage.input),
     outputTokens: count(usage.output),
     cacheReadTokens: count(usage.cacheRead),
     cacheWriteTokens: count(usage.cacheWrite),
-    costUsd: Math.max(0, usage.cost?.total || 0),
+    costUsd: priced ? Math.max(0, usage.cost?.total || 0) : 0,
+    unpricedCalls: priced ? 0 : 1,
   };
 }
 
@@ -159,6 +179,11 @@ export interface LoopSpec {
   inputs: UserMessage[];
   maxTurns: number;
   deadline?: Date;
+  /**
+   * Asked before every model call (the compactor asks it for its own calls).
+   * A refused call is never sent and the loop ends with `budget`/`spend`.
+   */
+  gate?: ModelCallGate;
   signal: AbortSignal;
   /** Retries of transient provider failures. */
   retry: RetryPolicy;
@@ -187,6 +212,36 @@ const hasToolCalls = (message: AssistantMessage) =>
 
 /** The result recorded for a call the run stopped before it started. */
 export const NOT_STARTED_TEXT = "Not started: the run was stopped.";
+
+/** The error text of the stand-in answer for a model call the gate refused; it is never reported. */
+const REFUSED_CALL = "The model call was refused before it was sent.";
+
+/** An aborted answer in place of a refused call: nothing was sent, nothing was used. */
+function refusedAnswer(model: Model<Api>): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "aborted",
+    errorMessage: REFUSED_CALL,
+    timestamp: Date.now(),
+  };
+}
+
+const isRefusedAnswer = (message: AgentMessage) =>
+  message.role === "assistant" &&
+  message.stopReason === "aborted" &&
+  message.errorMessage === REFUSED_CALL;
 
 /** A valid deadline and turn budget, or why not. */
 export function budgetProblem(
@@ -249,7 +304,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
   if (problem) return exitEarly(fail("invalid_request", problem));
   if (spec.signal.aborted) return exitEarly({ kind: "aborted" });
   if (spec.deadline && spec.deadline.getTime() <= Date.now())
-    return exitEarly({ kind: "budget", finalText: "" });
+    return exitEarly({ kind: "budget", limit: "deadline", finalText: "" });
 
   const controller = new AbortController();
   const signal = controller.signal;
@@ -299,6 +354,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     switch (event.type) {
       case "message_end": {
         const message = event.message;
+        // A refused call never happened: no event, nothing produced.
+        if (isRefusedAnswer(message)) return;
         produced.push(message);
         if (
           message.role === "assistant" &&
@@ -321,7 +378,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
             type: "model.finished",
             model: ref,
             stopReason: message.stopReason,
-            usage: toContractUsage(message.usage),
+            usage: toContractUsage(message.usage, resolved.model),
             ...(text ? { text: clip(text, 2000) } : {}),
             ...(failed && message.errorMessage
               ? { error: redact(message.errorMessage) }
@@ -473,6 +530,11 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
           update = { context: latestContext };
         } else if (result.reason === "summary_failed") thresholdOff = true;
       }
+      // Asked last, so a compaction's own call counts before this one starts.
+      if (spec.gate && !(await spec.gate.admit())) {
+        controller.abort(new Error("model call refused"));
+        return update;
+      }
       turns++;
       await spec.onEvent({ type: "model.started", model: ref });
       return update;
@@ -484,7 +546,7 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
         hasToolCalls(turn.message) && turn.toolResults.length > 0;
       if (spec.endRequested()) return { action: "end" };
       if (spec.deadline && Date.now() >= spec.deadline.getTime()) {
-        if (wantsMore) budgetHit = true;
+        if (wantsMore) deadlineHit = true;
         return { action: "end" };
       }
       if (turns >= spec.maxTurns) {
@@ -510,7 +572,12 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
     ],
     tools,
   };
-  const retrying = retryingStreamFn(spec.streamFn, spec.retry);
+  const providerStream = retryingStreamFn(spec.streamFn, spec.retry);
+  // A call the gate refused is answered here, so it never reaches the provider.
+  const retrying: StreamFn = async (model, request, options) =>
+    spec.gate?.refusal !== undefined
+      ? streamOf(refusedAnswer(resolved.model))
+      : providerStream(model, request, options);
   // With compaction on, a response the provider cut short for lack of room
   // is an overflow: it is not persisted, its calls never run, and it is
   // compacted and retried below. With compaction off for the model's window
@@ -611,7 +678,19 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       ? assistantText(completed.at(-1) as AssistantMessage)
       : "";
   if (spec.signal.aborted) return { kind: "aborted" };
-  if (deadlineHit || budgetHit) return { kind: "budget", finalText };
+  if (spec.gate?.refusal !== undefined)
+    return {
+      kind: "budget",
+      limit: "spend",
+      reason: spec.gate.refusal,
+      finalText,
+    };
+  if (deadlineHit || budgetHit)
+    return {
+      kind: "budget",
+      limit: deadlineHit ? "deadline" : "turns",
+      finalText,
+    };
   if (isSandboxReleased(loopError))
     return { kind: "aborted", reason: "sandbox_released" };
   if (loopError !== undefined) {

@@ -195,6 +195,8 @@ export const tasks = pgTable(
     cancelReason: text("cancel_reason"),
     /** Set when a stop is requested; the task is cancelled once nothing of it runs. */
     cancelRequestedAt: optionalTime("cancel_requested_at"),
+    /** The task's spend cap in US dollars (`task.spendCapUsd`); null for none. */
+    spendCapUsd: doublePrecision("spend_cap_usd"),
     /**
      * The worker holding the task's ephemeral sandbox, which no other worker
      * can reach, and until when (refreshed while held, cleared on release).
@@ -566,9 +568,16 @@ export const usage = pgTable(
     cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
     cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
     costUsd: doublePrecision("cost_usd").notNull().default(0),
+    /** False when the model lists no price: `cost_usd` is then 0 and the real cost unknown. */
+    priced: boolean("priced").notNull().default(true),
     createdAt: createdAt(),
   },
-  (t) => [index("usage_task_idx").on(t.taskId)],
+  (t) => [
+    index("usage_task_idx").on(t.taskId),
+    // The spend guard's rolling 24 hours, per bot and for the instance.
+    index("usage_bot_created_idx").on(t.botId, t.createdAt),
+    index("usage_created_idx").on(t.createdAt),
+  ],
 );
 
 export const jobs = pgTable(

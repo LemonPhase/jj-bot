@@ -34,6 +34,8 @@ import {
   type ProfileErrors,
   profilePatch,
   readProfileDraft,
+  SPEND_CAPS,
+  type SpendCapKey,
 } from "./profileDraft";
 import { SpecFields } from "./SpecFields";
 import { carryDraft, type SpecField, specFormFields } from "./specForm";
@@ -284,7 +286,26 @@ export function ProfileEditor({
                 onChange={(event) => set({ [key]: event.target.value })}
               />
             ))}
+            {(Object.keys(SPEND_CAPS) as SpendCapKey[]).map((key) => (
+              <Input
+                key={key}
+                type="number"
+                inputMode="decimal"
+                step="any"
+                min={0}
+                label={SPEND_CAPS[key].label}
+                hint={SPEND_CAPS[key].hint}
+                placeholder="No cap"
+                error={errors[key]}
+                value={draft[key]}
+                onChange={(event) => set({ [key]: event.target.value })}
+              />
+            ))}
           </div>
+          <p className="ui-field__hint">
+            Spend caps count model calls with a listed price. Calls on a model
+            with no listed price are counted apart, and no cap can bound them.
+          </p>
         </fieldset>
 
         {profile?.isDefault ? (

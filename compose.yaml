@@ -73,6 +73,7 @@ services:
       JJ_MAX_SESSIONS_PER_TASK: ${JJ_MAX_SESSIONS_PER_TASK:-}
       JJ_MAX_DELEGATION_DEPTH: ${JJ_MAX_DELEGATION_DEPTH:-}
       JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
+      JJ_MAX_USD_PER_DAY: ${JJ_MAX_USD_PER_DAY:-}
       JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
     ports:
       # Loopback only. The token is required either way; publish wider only

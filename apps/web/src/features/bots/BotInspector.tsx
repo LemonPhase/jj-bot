@@ -18,10 +18,17 @@ import {
 } from "../../components/ui";
 import { appearanceSummary } from "../../lib/appearance";
 import { formatMessageTime } from "../../lib/format";
+import { useUsageReport } from "../../state/useUsageReport";
 import { useWorkspace } from "../../state/WorkspaceContext";
-import { studioHref, taskHref } from "../shell/router";
+import { SETTINGS_HREF, studioHref, taskHref } from "../shell/router";
 import { navigate } from "../shell/useRoute";
 import { draftFromBot, updateBotCommand } from "../studio/studioDraft";
+import {
+  formatCost,
+  spendLevel,
+  spendLine,
+  unpricedNote,
+} from "../tasks/format";
 import { DEFAULT_OPTION, modelOptions, profileOptions } from "./botOptions";
 import { requestBotFocus } from "./focusRequest";
 import { useModels } from "./useModels";
@@ -75,6 +82,7 @@ export function BotInspector({
       <DetailsForm bot={bot} />
       <MemoryForm bot={bot} fieldId={memoryId} />
       <ActiveTasks bot={bot} focusId={tasksId} />
+      <SpendSection bot={bot} />
       <ArchiveSection bot={bot} />
     </Panel>
   );
@@ -340,6 +348,53 @@ function ActiveTasks({ bot, focusId }: { bot: Bot; focusId: string }) {
         </ul>
       ) : (
         <p className="inspector-note">Not in any active tasks.</p>
+      )}
+    </section>
+  );
+}
+
+/** What the bot spent in the last 24 hours against its daily cap, and over 30 days. */
+function SpendSection({ bot }: { bot: Bot }) {
+  const { report, error } = useUsageReport();
+  const labelId = useId();
+  const entry = report?.bots.find((candidate) => candidate.botId === bot.id);
+  const level = entry
+    ? spendLevel(entry.last24h.costUsd, entry.capUsdPerDay)
+    : "ok";
+  const unpriced = entry ? unpricedNote(entry.last30d) : null;
+  return (
+    <section className="inspector-section" aria-labelledby={labelId}>
+      <SectionLabel
+        as="h3"
+        id={labelId}
+        tracking="part"
+        className="inspector-heading"
+      >
+        Spend
+      </SectionLabel>
+      {entry ? (
+        <>
+          <p className={`inspector-spend inspector-spend--${level}`}>
+            Last 24 hours:{" "}
+            {spendLine(entry.last24h.costUsd, entry.capUsdPerDay)}
+            {level === "reached" && " · cap reached"}
+          </p>
+          <p className="inspector-note">
+            30 days: {formatCost(entry.last30d.costUsd)} over{" "}
+            {entry.last30d.modelCalls} model call
+            {entry.last30d.modelCalls === 1 ? "" : "s"}, direct chat{" "}
+            {formatCost(entry.chatLast30d.costUsd)}.
+            {unpriced && ` ${unpriced}.`}
+          </p>
+          <p className="inspector-note">
+            The daily cap comes from the bot's runtime profile. All spend is in{" "}
+            <a href={SETTINGS_HREF}>Settings</a>, under Usage.
+          </p>
+        </>
+      ) : (
+        <p className="inspector-note">
+          {error ? `Usage did not load: ${error}` : "Loading usage…"}
+        </p>
       )}
     </section>
   );

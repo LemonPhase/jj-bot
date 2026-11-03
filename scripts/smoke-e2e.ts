@@ -410,6 +410,87 @@ async function main(): Promise<boolean> {
       });
     });
 
+    await step(
+      "stop a task at its spend cap, then continue it once raised",
+      async () => {
+        // The scripted model's fictional-price variant costs a few tenths of a
+        // cent a call, so a $0.002 cap stops the task after its first call.
+        const { bot: penny } = await expectStatus("POST", "/api/bots", 201, {
+          name: `Penny${suffix}`,
+          model: realModel ?? "scripted/team-priced",
+          ...(dockerProfile ? { runtimeProfileId: dockerProfile.id } : {}),
+        });
+        const capUsd = realModel ? 0.0001 : 0.002;
+        const { task: capped } = await expectStatus("POST", "/api/tasks", 201, {
+          goal: "Write notes-penny.md: run `echo one`, run `echo two`, run `echo three`, one command a turn, then complete the task.",
+          title: "Capped notes",
+          coordinatorBotId: penny.id,
+          spendCapUsd: capUsd,
+        });
+        check(capped.spendCapUsd === capUsd, `cap ${capped.spendCapUsd}`);
+        const deadline = Date.now() + timeoutMs;
+        let current: TaskView;
+        for (;;) {
+          current = await expectStatus("GET", `/api/tasks/${capped.id}`, 200);
+          const stopped = current.events.some(
+            (event) => event.type === "spend.capped",
+          );
+          if (stopped && current.task.status === "waiting") break;
+          check(
+            current.task.status !== "completed" &&
+              current.task.status !== "failed",
+            `the capped task ${current.task.status} without stopping at its cap`,
+          );
+          check(Date.now() < deadline, `still ${current.task.status}`);
+          await sleep(100);
+        }
+        check(
+          current.usage.total.costUsd >= capUsd,
+          `spent ${current.usage.total.costUsd} of ${capUsd}`,
+        );
+        check(
+          current.messages
+            .at(-1)
+            ?.text.startsWith("Stopped: The task reached its spend cap"),
+          `last message: ${current.messages.at(-1)?.text}`,
+        );
+        const refused = await expectStatus(
+          "POST",
+          `/api/tasks/${capped.id}/messages`,
+          409,
+          { text: "Carry on." },
+        );
+        check(
+          refused.error.code === "SPEND_CAP_REACHED",
+          `refused with ${refused.error.code}`,
+        );
+        await expectStatus("PATCH", `/api/tasks/${capped.id}`, 200, {
+          spendCapUsd: null,
+        });
+        await expectStatus("POST", `/api/tasks/${capped.id}/messages`, 201, {
+          text: "Carry on.",
+        });
+        for (;;) {
+          current = await expectStatus("GET", `/api/tasks/${capped.id}`, 200);
+          if (current.task.status === "completed") break;
+          check(
+            current.task.status !== "failed",
+            `the continued task failed: ${current.task.error}`,
+          );
+          check(Date.now() < deadline, `still ${current.task.status}`);
+          await sleep(100);
+        }
+        const usage = await expectStatus("GET", "/api/usage", 200);
+        const spent = usage.bots.find(
+          (entry: { botId: string }) => entry.botId === penny.id,
+        );
+        check(
+          spent && spent.last24h.costUsd >= current.usage.total.costUsd - 1e-9,
+          `usage report for Penny: ${JSON.stringify(spent)}`,
+        );
+      },
+    );
+
     await directChat({
       expectStatus,
       name: `Hopper${suffix}`,
