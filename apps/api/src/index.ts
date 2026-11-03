@@ -1,11 +1,15 @@
-// The API process: boots the server, and shuts it down gracefully on SIGINT
-// or SIGTERM. A second signal, or a shutdown that hangs, exits at once.
+// The API process: boots the server, and on SIGINT or SIGTERM drains (for
+// JJ_DRAIN_TIMEOUT_SEC: not ready, the embedded worker lets running sessions
+// reach a turn boundary), then shuts down gracefully and exits 0. A second
+// signal, or a shutdown that hangs, exits 1 at once.
 import { createLogger, logSettings } from "@jj/backend";
 import { ConfigError } from "./config";
-import { exitOnUncaught } from "./process";
+import {
+  exitOnUncaught,
+  SHUTDOWN_AFTER_DRAIN_MS,
+  stopOnSignals,
+} from "./process";
 import { startServer } from "./server";
-
-const SHUTDOWN_TIMEOUT_MS = 20_000;
 
 // The process's log; a JJ_LOG_* value that cannot work is the ConfigError
 // startServer reports, printed here with the defaults.
@@ -25,25 +29,12 @@ try {
   process.exit(1);
 }
 
-let stopping = false;
-function shutdown(signal: string) {
-  if (stopping) {
-    logger.error(`${signal} again: exiting now.`);
-    process.exit(1);
-  }
-  stopping = true;
-  logger.info(`${signal}: shutting down.`);
-  setTimeout(() => {
-    logger.error("Shutdown timed out: exiting.");
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS).unref();
-  server.close().then(
-    () => process.exit(0),
-    (error: unknown) => {
-      logger.error("Shutdown failed", { error });
-      process.exit(1);
-    },
-  );
-}
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
+const { drainTimeoutMs, embedWorker } = server.config;
+stopOnSignals(logger, {
+  announce: (signal) =>
+    embedWorker
+      ? `${signal}: draining (running sessions get up to ${drainTimeoutMs / 1000} s to reach a turn boundary), then shutting down.`
+      : `${signal}: shutting down.`,
+  stop: () => server.close({ drainMs: drainTimeoutMs }),
+  limitMs: drainTimeoutMs + SHUTDOWN_AFTER_DRAIN_MS,
+});

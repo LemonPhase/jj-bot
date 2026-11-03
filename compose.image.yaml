@@ -1,0 +1,20 @@
+# Optional, with compose.yaml: run the published release instead of building
+# from this checkout. JJ_VERSION picks it (such as 0.3.0; default latest).
+#   JJ_VERSION=0.3.0 docker compose -f compose.yaml -f compose.image.yaml up -d --wait
+# or put COMPOSE_FILE=compose.yaml:compose.image.yaml and JJ_VERSION in .env.
+# Nothing is built from source. It combines with compose.socket-proxy.yaml.
+# docs/development.md, "From the published image".
+services:
+  app:
+    image: ghcr.io/lemonphase/jj-bot:${JJ_VERSION:-latest}
+    build: !reset null
+
+  # The docker driver looks for the sandbox base image as jj-sandbox:base-1
+  # on the host's daemon: on every `up`, this gives the published one at
+  # JJ_VERSION that name, with a build that only names it as its base.
+  sandbox-image:
+    build: !override
+      context: .
+      dockerfile_inline: |
+        FROM ghcr.io/lemonphase/jj-sandbox:${JJ_VERSION:-latest}
+    pull_policy: build

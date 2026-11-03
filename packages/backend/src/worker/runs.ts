@@ -263,8 +263,8 @@ export const isContinuing = (kind: string) =>
   (CONTINUING_KINDS as readonly string[]).includes(kind);
 
 /** Undelivered input that starts or continues a run (briefs, results, steering). */
-export async function hasContinuingInput(tx: Tx, sessionId: string) {
-  const [row] = await tx
+export async function hasContinuingInput(exec: Executor, sessionId: string) {
+  const [row] = await exec
     .select({ id: sessionInbox.id })
     .from(sessionInbox)
     .where(
