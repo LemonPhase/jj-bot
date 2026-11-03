@@ -60,11 +60,6 @@ const tally = (count: number, from = 0) =>
     (_, i) => `seq ${(from + i) * 800 + 1} ${(from + i + 1) * 800}`,
   );
 const commands = tally(20);
-// A session of some twenty turns, each a scripted model call, a command and
-// its records in the embedded database, is processor-bound on one thread:
-// about 6 s on an idle machine, two to three times that on a loaded one. Its
-// waits (and its test, 90 s) get room for that; nothing in them is timed.
-const SESSION_WAIT_MS = 45_000;
 const goalFor = (list: string[]) =>
   `Tally the numbers into notes-tally.md: ${list.map((command) => `run \`${command}\``).join(", ")}.`;
 
@@ -149,7 +144,6 @@ describe("context compaction in the engine", () => {
       task.id,
       (next) => ["completed", "failed"].includes(next.task.status),
       "the task",
-      SESSION_WAIT_MS,
     );
     expect(view.task.status).toBe("completed");
     const session = view.sessions[0];
@@ -252,15 +246,11 @@ describe("context compaction in the engine", () => {
       "assistant",
       "toolResult",
     ]);
-  }, 90_000);
+  });
 
   it("recovers a crash after a compaction without re-running or losing a tool call", async () => {
     root = await mkdtemp(join(tmpdir(), "jj-compaction-"));
     const worker = async () => {
-      // The harness's 5 s lease, not a shorter one: a loaded host stalls this
-      // thread for over a second at times, and a worker that misses its
-      // heartbeats that long loses its own run, again and again, until the
-      // session is given up.
       const engine = await testEngine(db.database, {
         runExecutor: smallWindowExecutor(),
         workspaceRoot: root,
@@ -285,7 +275,6 @@ describe("context compaction in the engine", () => {
           (e) => e.type === "tool.started" && e.payload.summary === "sleep 30",
         ),
       "the long command",
-      SESSION_WAIT_MS,
     );
     const sessionId = running.sessions[0]?.id as string;
     expect(
@@ -301,7 +290,6 @@ describe("context compaction in the engine", () => {
       task.id,
       (next) => ["completed", "failed"].includes(next.task.status),
       "the resumed task",
-      SESSION_WAIT_MS,
     );
     expect(view.task.status).toBe("completed");
     const runRows = await db.database.db
@@ -335,5 +323,5 @@ describe("context compaction in the engine", () => {
     const { calls, results } = callsAndResults(context);
     expect(new Set(calls).size).toBe(calls.length);
     expect(results).toEqual(calls);
-  }, 90_000);
+  });
 });

@@ -62,8 +62,10 @@ export interface Worker {
    */
   drain(timeoutMs: number): Promise<void>;
   /**
-   * Stops at once without writing anything, as a crash would: leases are left
-   * to expire and another worker reclaims the runs. For tests and fatal exits.
+   * Stops at once, as a crash would: every run is fenced first, so none starts
+   * a new write (one already open, and a claim pass in flight, still commit),
+   * leases are left to expire and another worker reclaims the runs. For tests
+   * and fatal exits.
    */
   abandon(): Promise<void>;
   /** From the start of a drain until the worker has stopped. */
@@ -204,11 +206,14 @@ export function createWorker(
       do {
         again = false;
         while (!stopping && !draining && active.size < ctx.config.concurrency) {
+          // Never its own runs: a stall that held their heartbeats past the
+          // lease leaves them alive, not abandoned.
           const { jobs, exhausted } = await claim(
             ctx.db,
             ctx.config.workerId,
             ctx.config.concurrency - active.size,
             ctx.config.leaseMs,
+            { running: [...active.keys()] },
           );
           for (const job of exhausted) {
             const result = await handleExhausted(ctx, job).catch(
@@ -423,6 +428,9 @@ export function createWorker(
     if (!started) return;
     stopping = true;
     crashing = reason === "crash";
+    // A crash fences every run before waiting on anything below, which a busy
+    // database can hold for seconds, so no run starts a new write meanwhile.
+    if (crashing) abortWhere(() => true, reason);
     started = false;
     lastPollAt = null;
     for (const timer of timers.splice(0)) clearInterval(timer);
