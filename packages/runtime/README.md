@@ -1,6 +1,6 @@
 # @jj/runtime
 
-The pi agent runtime (`@earendil-works/pi-coding-agent`, `pi-agent-core`, `pi-ai`, pinned at 1.4.0). No database access: the engine supplies inputs and persists what the hooks hand it.
+The pi agent runtime (`@earendil-works/pi-coding-agent`, `pi-agent-core`, `pi-ai`, pinned at 1.5.0). No database access: the engine supplies inputs and persists what the hooks hand it.
 
 - `ModelRegistry` wraps pi-ai's catalog for the offered providers (each enabled by one API-key variable). `providers()` and `view()` feed `GET /api/models`; `defaultModel()` honours `JJ_DEFAULT_MODEL` when its provider is configured; `resolve(ref | null)` returns the pi model and a key getter. Keys come only from the env the registry was built with and from `storedKeys` (the server's secrets store, read on every call), the env variable winning, and are handed to pi per call; `providers()` reports where each key comes from (`keySource`) and describes a stored one by its last four characters. pi's own auth resolution is pointed at that env and never at host credential files.
 - `PiSessionExecutor.run(input)` runs one execution session on pi's low-level agent loop over a transcript the engine owns: no pi session files, settings, context files or extensions are loaded.

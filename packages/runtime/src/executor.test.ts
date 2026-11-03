@@ -3,9 +3,9 @@ import {
   fauxProvider,
   fauxToolCall,
   type ToolResultMessage,
-  Type,
 } from "@earendil-works/pi-ai";
 import { CODING_TOOLS, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
 import { NOT_STARTED_TEXT } from "./loop";

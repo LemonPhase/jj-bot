@@ -1,11 +1,11 @@
 import type {
   AssistantMessage,
   ToolResultMessage,
-  TSchema,
   UserMessage,
 } from "@earendil-works/pi-ai";
 import type { ModelRef, ToolName, Usage } from "@jj/contracts";
 import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
+import type { TSchema } from "typebox";
 import type { RunErrorCode } from "./errors";
 
 /**
@@ -55,7 +55,7 @@ export interface CollabToolResult {
 export interface CollabTool {
   name: string;
   description: string;
-  /** TypeBox schema (`Type` from `@earendil-works/pi-ai`) or plain JSON Schema. */
+  /** TypeBox schema (`Type` from `typebox`) or plain JSON Schema. */
   parameters: TSchema;
   /** Activity summary for `tool.started`, such as the delegate's bot name. Default: the tool name. */
   summarize?(args: Record<string, unknown>): string;

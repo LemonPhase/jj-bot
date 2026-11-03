@@ -4,10 +4,10 @@ import {
   fauxToolCall,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import { serializeConversation } from "@earendil-works/pi-coding-agent";
 import { CODING_TOOLS } from "@jj/contracts";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
 import { ModelRegistry } from "./models";

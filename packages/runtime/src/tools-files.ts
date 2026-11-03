@@ -1,5 +1,4 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -7,6 +6,7 @@ import {
   truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import type { Sandbox } from "@jj/sandbox";
+import { Type } from "typebox";
 import {
   finalizeResult,
   guarded,
