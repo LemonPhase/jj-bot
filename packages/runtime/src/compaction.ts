@@ -97,8 +97,10 @@ export function summaryMessage(entry: CompactionEntry): UserMessage {
 export const COMPACTION_INSTRUCTIONS =
   "This is one execution session of a multi-bot task. Keep the brief or goal as given, " +
   "every delegation still open (the bot, its brief and session id) and every result or failure " +
-  "already received, steering and messages from the user or teammates, and whether complete_task " +
-  "was called. The summarised tool calls already ran and their effects are in the shared workspace.";
+  "already received, steering and messages from the user or teammates, a handoff note on the bot's " +
+  "earlier work (that session's id and the facts from its brief and report the work relies on), and " +
+  "whether complete_task was called. The summarised tool calls already ran and their effects are in " +
+  "the shared workspace.";
 
 export interface CompactionOptions {
   /** Default true. */

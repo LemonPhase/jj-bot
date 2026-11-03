@@ -490,6 +490,32 @@ export async function readSessionReport(
 }
 
 /**
+ * The latest of a bot's sessions under one parent session that has reported,
+ * by completing or failing, with its brief and report in full; undefined when
+ * it has none. A cancelled session never reported, so it does not count.
+ */
+export async function readLatestReport(
+  exec: Executor,
+  taskId: string,
+  under: { parentSessionId: string; botId: string },
+): Promise<SessionReport | undefined> {
+  const [latest] = await exec
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(
+      and(
+        eq(sessions.taskId, taskId),
+        eq(sessions.parentSessionId, under.parentSessionId),
+        eq(sessions.botId, under.botId),
+        inArray(sessions.status, ["completed", "failed"]),
+      ),
+    )
+    .orderBy(desc(sessions.createdAt), desc(sessions.id))
+    .limit(1);
+  return latest ? readSessionReport(exec, taskId, latest.id) : undefined;
+}
+
+/**
  * A participant's sessions on the task, oldest first, by bot name (ignoring
  * case) or id. Undefined when no participant of the task matches.
  */
