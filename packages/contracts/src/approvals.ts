@@ -1,5 +1,18 @@
 import { z } from "zod";
+import {
+  CANONICAL_DEPTH_LIMIT,
+  CANONICAL_LENGTH_LIMIT,
+  type CanonicalProblem,
+  canonicalForm,
+} from "./canonical";
 import { idSchema, timestampSchema } from "./common";
+import {
+  MCP_TOOL_PREFIX,
+  type McpServer,
+  type McpToolSnapshot,
+  mcpServerOf,
+  toolSelectorMatches,
+} from "./mcp";
 import { type ApprovalRule, approvalRuleSchema } from "./profiles";
 
 /**
@@ -123,12 +136,22 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 
 /**
  * What a rule's `match` is looked for in: the command for `bash`, the
- * pattern and path for `grep` and `find`, the path for the other file tools.
+ * pattern and path for `grep` and `find`, the path for the other file
+ * tools. For an MCP tool (`mcp__…`), the arguments' keys and string and
+ * number values, unescaped, in canonical key order (`canonicalForm`'s
+ * `words`), so a match sees what the call really holds: `rm -rf /` finds
+ * `{"cmd":"rm -rf\n/"}` and `C:\Windows` finds `{"path":"C:\\Windows"}`.
+ * Undefined when an MCP call's arguments have no canonical form
+ * (`approvalSubjectProblem` says why); such a call fails closed.
  */
 export function approvalSubject(
   tool: string,
   args: Record<string, unknown>,
-): string {
+): string | undefined {
+  if (tool.startsWith(MCP_TOOL_PREFIX)) {
+    const form = canonicalForm(args);
+    return form.ok ? form.words : undefined;
+  }
   switch (tool) {
     case "bash":
       return text(args.command);
@@ -138,6 +161,30 @@ export function approvalSubject(
     default:
       return text(args.path);
   }
+}
+
+const UNREADABLE_ARGUMENTS: Record<CanonicalProblem, string> = {
+  cycle: "refer to themselves",
+  depth: `nest deeper than ${CANONICAL_DEPTH_LIMIT} levels`,
+  length: `run longer than ${CANONICAL_LENGTH_LIMIT} characters as JSON`,
+  unserializable: "hold a value JSON cannot represent",
+};
+
+/**
+ * Why no rule's `match` can be checked against this call: its arguments (an
+ * MCP tool's) have no canonical form. Undefined when they can, and for every
+ * built-in tool. Such a call is held by every rule for its tool, `match` or
+ * not, so it waits for the user (it fails closed); the approval card says why.
+ */
+export function approvalSubjectProblem(
+  tool: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  if (!tool.startsWith(MCP_TOOL_PREFIX)) return undefined;
+  const form = canonicalForm(args);
+  return form.ok
+    ? undefined
+    : `Its arguments ${UNREADABLE_ARGUMENTS[form.problem]}, so no rule's match could be checked: every rule for ${tool} holds it.`;
 }
 
 const collapse = (value: string) => value.replace(/\s+/g, " ").trim();
@@ -159,7 +206,8 @@ function inOrder(text: string, parts: readonly string[]): boolean {
 }
 
 /**
- * True when the rule asks for approval of this call: the tool matches and,
+ * True when the rule asks for approval of this call: the tool matches (the
+ * same name, or `mcp__<server>__*` and a tool of that server) and,
  * when the rule has a `match`, its text is found in the call's subject.
  * Case-sensitive; `*` stands for any run of characters, and runs of
  * whitespace in either count as one space. Linear in the subject's length
@@ -176,24 +224,66 @@ export function approvalRuleMatches(
 
 /**
  * The first rule that asks for approval of this call, if any. The call's
- * subject is collapsed once, however many rules are checked.
+ * subject is built and collapsed once, however many rules are checked. A
+ * call without a subject (`approvalSubjectProblem`) matches the first rule
+ * for its tool, `match` or not: it fails closed. Never throws.
  */
 export function matchingApprovalRule(
   rules: readonly ApprovalRule[],
   tool: string,
   args: Record<string, unknown>,
 ): ApprovalRule | undefined {
-  let subject: string | undefined;
+  let subject: string | null | undefined = null;
   return rules.find((rule) => {
-    if (rule.tool !== tool) return false;
+    if (!toolSelectorMatches(rule.tool, tool)) return false;
     if (rule.match === undefined) return true;
-    subject ??= collapse(approvalSubject(tool, args));
+    if (subject === null) {
+      const raw = approvalSubject(tool, args);
+      subject = raw === undefined ? undefined : collapse(raw);
+    }
+    if (subject === undefined) return true;
     return inOrder(subject, collapse(rule.match).split("*"));
   });
 }
 
-/** A rule on one line: "bash calls matching `git push*`", "every write call". */
+/**
+ * Indexes of the exact MCP rules (`mcp__<server>__<tool>`, not `__*`) that
+ * name no tool of their server's pinned snapshot. Exposed names hold only
+ * within a snapshot: a new one can rename a tool (a name that now collides
+ * gains the hash suffix), so such a rule would silently match nothing, and
+ * a profile save refuses it. `servers` and `snapshots` are the profile's;
+ * a rule for a server it lacks, or one without a snapshot, names no tool.
+ */
+export function mcpRulesWithoutTool(
+  rules: readonly ApprovalRule[],
+  servers: readonly McpServer[],
+  snapshots: readonly McpToolSnapshot[],
+): number[] {
+  return rules.flatMap((rule, index) => {
+    const server = mcpServerOf(rule.tool);
+    if (server === undefined || rule.tool.endsWith("__*")) return [];
+    const snapshotId = servers.find(
+      (candidate) => candidate.name === server,
+    )?.snapshotId;
+    const snapshot = snapshots.find(
+      (candidate) => candidate.id === snapshotId && candidate.server === server,
+    );
+    return snapshot?.tools.some((tool) => tool.exposedName === rule.tool)
+      ? []
+      : [index];
+  });
+}
+
+/**
+ * A rule on one line: "bash calls matching `git push*`", "every write
+ * call", "every call to MCP server docs".
+ */
 export function describeApprovalRule(rule: ApprovalRule): string {
+  const server = rule.tool.endsWith("__*") ? mcpServerOf(rule.tool) : undefined;
+  if (server !== undefined)
+    return rule.match === undefined
+      ? `every call to MCP server ${server}`
+      : `calls to MCP server ${server} matching \`${rule.match}\``;
   return rule.match === undefined
     ? `every ${rule.tool} call`
     : `${rule.tool} calls matching \`${rule.match}\``;

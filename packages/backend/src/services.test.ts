@@ -64,6 +64,7 @@ function fakeDocker(ok: boolean): EngineDriver {
       exposePort: false,
       snapshot: false,
       metrics: false,
+      spawn: false,
     },
     validateSpec(spec) {
       const parsed = sandboxSpecSchema.parse(spec);
@@ -93,6 +94,9 @@ describe("bootstrap", () => {
       // Plans are accepted and enforced (verification.test.ts).
       verification: true,
       secretStore: false,
+      // No MCP server or skill reaches a session on this build.
+      mcp: { stdio: false, remote: false },
+      skills: false,
       drivers: [
         { id: "local", available: true, isolated: false },
         { id: "docker", available: false, isolated: true },

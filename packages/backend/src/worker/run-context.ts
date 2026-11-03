@@ -194,17 +194,17 @@ async function markDelivered(tx: Tx, rc: RunContext) {
 }
 
 /**
- * Takes undelivered inbox items (oldest first) for the executor. They stay
- * undelivered until the executor persists them, so a crash before that
- * re-delivers them on recovery. `kinds` limits which items are taken;
- * `continuingOnly` takes nothing unless one of them continues a run (a brief,
- * result or steering), and then takes messages with it. A coordinator that
- * receives items catches up with the task's goal version, and any completion
- * it recorded earlier is dropped.
+ * Takes the undelivered inbox items for the executor, all of them and oldest
+ * first, so they keep the order they arrived in. They stay undelivered until
+ * the executor persists them, so a crash before that re-delivers them on
+ * recovery. `continuingOnly` takes nothing unless one of them continues a
+ * run (a brief, result or steering): where the model has ended its turn,
+ * messages ride along with such input and never come alone. A coordinator
+ * that receives items catches up with the task's goal version, and any
+ * completion it recorded earlier is dropped.
  */
 export async function takeInbox(
   rc: RunContext,
-  kinds?: readonly ("brief" | "result" | "steering" | "message")[],
   continuingOnly = false,
 ): Promise<string[]> {
   return writeRun(rc, async (tx) => {
@@ -217,7 +217,6 @@ export async function takeInbox(
         and(
           eq(sessionInbox.sessionId, rc.session.id),
           isNull(sessionInbox.deliveredAt),
-          ...(kinds ? [inArray(sessionInbox.kind, [...kinds])] : []),
         ),
       )
       .orderBy(asc(sessionInbox.createdAt), asc(sessionInbox.id));
@@ -483,7 +482,7 @@ export function runHooks(rc: RunContext): RunHooks {
     // it is taken only with input that continues the run anyway, and
     // otherwise waits for the session's next run (or, if the session
     // finishes first, goes to its parent with its result: outcomes.ts).
-    drainInbox: (turnEnded) => takeInbox(rc, undefined, turnEnded),
+    drainInbox: (turnEnded) => takeInbox(rc, turnEnded),
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
     admitModelCall: () => admitModelCall(rc),

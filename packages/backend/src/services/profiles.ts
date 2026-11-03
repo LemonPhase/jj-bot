@@ -2,9 +2,11 @@
 // budgets. A spec the driver cannot enforce is refused with the driver's own
 // message (PROFILE_UNSUPPORTED); nothing is silently downgraded.
 import {
+  type ApprovalRule,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   createRuntimeProfileCommandSchema,
+  mcpRulesWithoutTool,
   profileBudgetsSchema,
   type RuntimeProfile,
   type RuntimeProfileStatus,
@@ -149,6 +151,47 @@ async function checkGrants(
     );
 }
 
+/**
+ * No MCP server or skill reaches a session on this server
+ * (`capabilities.mcp` and `capabilities.skills` are false), so a profile
+ * asking for one is refused instead of saved as if it worked. An empty list
+ * is what every profile holds, and is accepted.
+ */
+function refuseMcpAndSkills(command: {
+  mcpServers?: readonly unknown[];
+  skills?: readonly unknown[];
+  approvals?: readonly ApprovalRule[];
+}): void {
+  if (command.mcpServers?.length)
+    throw new DomainError(
+      "MCP_UNAVAILABLE",
+      "mcpServers: this server does not run MCP servers (capabilities.mcp is off for stdio and remote servers). Remove them to save the profile.",
+    );
+  if (command.skills?.length)
+    throw new DomainError(
+      "MCP_UNAVAILABLE",
+      "skills: this server has no skills library (capabilities.skills is off). Remove them to save the profile.",
+    );
+  // An exact MCP rule must name a tool of its server's pinned snapshot, and
+  // no profile holds a server here, so none does; `mcp__<server>__*` may.
+  // This checks the command's own `approvals` only. Once profiles hold
+  // servers (#29 step 4), check the merged profile instead: its rules
+  // against its servers and their pinned snapshots, also when a patch
+  // changes only `mcpServers`.
+  const rules = command.approvals ?? [];
+  const unknown = mcpRulesWithoutTool(rules, [], []);
+  if (unknown.length > 0)
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      unknown
+        .map(
+          (index) =>
+            `approvals.${index}.tool: ${rules[index]?.tool} names no tool of its MCP server's pinned snapshot. Exact names hold only within a snapshot; mcp__<server>__* covers every tool of a server.`,
+        )
+        .join("; "),
+    );
+}
+
 async function clearDefault(tx: Tx, except: string) {
   await tx
     .update(runtimeProfiles)
@@ -163,6 +206,7 @@ export async function createProfile(
   input: CreateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(createRuntimeProfileCommandSchema, input);
+  refuseMcpAndSkills(command);
   const sandbox = validateSpec(ctx, input.sandbox);
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
@@ -225,6 +269,7 @@ export async function updateProfile(
   input: UpdateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(updateRuntimeProfileCommandSchema, input);
+  refuseMcpAndSkills(command);
   const current = await profileRow(ctx.db, id);
   const settings = profileSettings(current);
   if (command.isDefault === false && current.isDefault)

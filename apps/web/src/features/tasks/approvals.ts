@@ -1,7 +1,14 @@
 // What an approval card says. Its state never claims more than the record
 // does: a pending call has not run, an approved one "runs" only once a run
 // started it, and "ran" needs its stored outcome.
-import type { Approval, PendingApproval, TaskView } from "@jj/contracts";
+import {
+  type Approval,
+  approvalSubjectProblem,
+  canonicalJson,
+  MCP_TOOL_PREFIX,
+  type PendingApproval,
+  type TaskView,
+} from "@jj/contracts";
 import type { StatusTone } from "../../lib/status";
 
 export interface ApprovalState {
@@ -49,14 +56,103 @@ export function approvalState(approval: Approval): ApprovalState {
   }
 }
 
-/** The call as the user reviews it: the whole command for bash, else the arguments. */
+/** Longest preview of arguments that have no canonical form, in characters. */
+export const PREVIEW_LIMIT = 4_000;
+/** Deepest level such a preview shows. */
+export const PREVIEW_DEPTH = 16;
+
+/**
+ * As much of a value as can be shown when it has no canonical form: keys
+ * in canonical order, `…` past PREVIEW_DEPTH levels or `limit` characters,
+ * `⟨cycle⟩` where a value contains itself, and `⟨not JSON⟩` for a value
+ * JSON cannot hold. Never throws. The card writes invisible characters
+ * out (`visibleText`) as for every call.
+ */
+export function argumentsPreview(
+  value: unknown,
+  limit = PREVIEW_LIMIT,
+): string {
+  let out = "";
+  const ancestors = new Set<object>();
+  const add = (part: string) => {
+    out += part;
+  };
+  const walk = (current: unknown, depth: number): void => {
+    if (out.length > limit) return;
+    switch (typeof current) {
+      case "string":
+        return add(JSON.stringify(current.slice(0, limit)));
+      case "number":
+        return add(Number.isFinite(current) ? String(current) : "null");
+      case "boolean":
+        return add(String(current));
+      case "bigint":
+        return add(`${current}n`);
+      case "undefined":
+        return add("null");
+      case "object":
+        break;
+      default:
+        return add("⟨not JSON⟩");
+    }
+    if (current === null) return add("null");
+    if (depth >= PREVIEW_DEPTH) return add("…");
+    if (ancestors.has(current)) return add("⟨cycle⟩");
+    ancestors.add(current);
+    try {
+      if (Array.isArray(current)) {
+        add("[");
+        for (let index = 0; index < current.length; index += 1) {
+          if (out.length > limit) break;
+          if (index > 0) add(",");
+          walk(current[index], depth + 1);
+        }
+        add("]");
+        return;
+      }
+      const prototype = Object.getPrototypeOf(current);
+      if (prototype !== Object.prototype && prototype !== null)
+        return add("⟨not JSON⟩");
+      const record = current as Record<string, unknown>;
+      add("{");
+      let first = true;
+      for (const key of Object.keys(record).sort()) {
+        if (out.length > limit) break;
+        if (!first) add(",");
+        first = false;
+        add(`${JSON.stringify(key.slice(0, limit))}:`);
+        walk(record[key], depth + 1);
+      }
+      add("}");
+    } catch {
+      add("⟨unreadable⟩");
+    } finally {
+      ancestors.delete(current);
+    }
+  };
+  walk(value, 0);
+  return out.length > limit ? `${out.slice(0, limit)}…` : out;
+}
+
+/**
+ * The call as the user reviews it: the whole command for bash, an MCP
+ * tool's arguments as canonical one-line JSON (or, when they have none, as
+ * much as `argumentsPreview` can show; `approvalProblem` says why), else the
+ * arguments.
+ */
 export function approvalCall(
   approval: Pick<Approval, "tool" | "args">,
 ): string {
   const { tool, args } = approval;
   if (tool === "bash" && typeof args.command === "string") return args.command;
+  if (tool.startsWith(MCP_TOOL_PREFIX))
+    return canonicalJson(args) ?? argumentsPreview(args);
   return JSON.stringify(args, null, 2);
 }
+
+/** Why the call waits whatever its rule's match: its arguments could not be checked. */
+export const approvalProblem = (approval: Pick<Approval, "tool" | "args">) =>
+  approvalSubjectProblem(approval.tool, approval.args);
 
 /** The task's approvals still waiting for the user, oldest first. */
 export const pendingOf = (approvals: readonly Approval[]): Approval[] =>

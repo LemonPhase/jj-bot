@@ -277,6 +277,12 @@ export interface DriverCapabilities {
   exposePort: boolean;
   snapshot: boolean;
   metrics: boolean;
+  /**
+   * Starts long-lived processes whose stdin, stdout and stderr stream while
+   * they run, such as stdio MCP servers. A driver that cannot stream them
+   * declares false, and nothing that needs it runs on its sandboxes.
+   */
+  spawn: boolean;
 }
 
 export interface AcquireRequest {

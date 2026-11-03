@@ -60,8 +60,8 @@ import {
   type WorkerDeps,
 } from "./run-context";
 import {
-  CONTINUING_KINDS,
   closeStaleRun,
+  endedTurn,
   hasContinuingInput,
   runningRun,
 } from "./runs";
@@ -500,22 +500,32 @@ async function executeRun(
       return;
     }
     const { call, deadline } = prepared;
-    // Each executor call takes the inbox; input that arrives as a call ends
-    // continues the run, even when it lands just before the write-back.
+    // Each executor call takes the inbox, in order; input that arrives as a
+    // call ends continues the run, even when it lands just before the
+    // write-back. Where the turn has ended (a continuation, or a recovery
+    // whose transcript ends with the model's answer or a turn the engine
+    // ended), the inbox is taken only when a brief, result or steering is in
+    // it, so a message alone never gives the model another turn. A recovery
+    // with none finishes the turn as the run would have: the executor is
+    // idle on an answer, and a turn the engine ended is not resumed at all.
     for (let calls = 1; ; calls += 1) {
       let outcome: RunOutcome;
       let inputs: string[] = [];
       let gateFailed = false;
       try {
         rc.claimed.clear();
-        inputs = await takeInbox(
-          rc,
-          calls === 1 ? undefined : CONTINUING_KINDS,
-        );
-        outcome = await call(inputs);
+        const ended =
+          calls === 1 && rc.reason === "recovery"
+            ? await endedTurn(ctx.db, rc.session.id)
+            : undefined;
+        inputs = await takeInbox(rc, calls > 1 || ended !== undefined);
+        outcome =
+          ended === "engine" && inputs.length === 0
+            ? { kind: "idle" }
+            : await call(inputs);
         while (outcome.kind === "ended" && calls < MAX_CONTINUATIONS) {
           rc.claimed.clear();
-          inputs = await takeInbox(rc, CONTINUING_KINDS);
+          inputs = await takeInbox(rc, true);
           if (inputs.length === 0) break;
           calls += 1;
           outcome = await call(inputs);

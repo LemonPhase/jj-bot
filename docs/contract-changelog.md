@@ -31,6 +31,89 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.7.0 — 2026-11-03 — MCP servers and skills per profile
+
+**Changed by:** backend and frontend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/29#issuecomment-6602672162)) · **Compatibility:** additive for writers; a 1.6.0 reader that parses profiles strictly cannot parse one holding an approval rule on an MCP tool (`approvalRuleSchema.tool` was the coding tools only)
+
+The routes below are part of the contract, but a server serves them only once it reports the
+capability they belong to (`capabilities.mcp`, `capabilities.skills`); until then they answer 404,
+bootstrap reports both false, and a profile asking for MCP servers or skills is refused with
+`MCP_UNAVAILABLE`.
+
+- New `mcp.ts`. `mcpServerSchema`, a union on `transport` of `mcpStdioServerSchema` (`command`,
+  `args`, `cwd`, `env`, `secretEnv`, `startupTimeoutSec`) and `mcpHttpServerSchema` (an https `url`
+  without credentials, `headers`, `secretHeaders`), sharing `name` (`mcpServerNameSchema`:
+  `^[a-z](?:_?[a-z0-9])*$`, at most 24 characters, so never `__`), `description`, `enabled`,
+  `exposure` and `toolExposure` (`direct` | `hidden`), `timeoutSec`, `askUnlessReadOnly` (default
+  true for `http`, false for `stdio`) and `snapshotId`. `env` and `secretEnv` variables take any
+  POSIX name except `JJ_*` (`mcpEnvNameSchema`); `secretEnv` values are sandbox secret names.
+  `cwd` has no empty, `.` or `..` part. Credentials belong in `secretHeaders`; a check of names
+  refuses a `url` with a user or password or with a query, fragment or path `;` parameter (split
+  on `&` and `;`) named like a key, token, secret, password, auth, signature or code, and plain
+  `Authorization`, `Proxy-Authorization` and `Cookie` headers and any header named that way. It
+  checks names only: a secret under an unusual name, or in the path itself, is not detected. A URL with control characters or backslashes is refused, and the URL is stored
+  normalized (`new URL(url).href`, punycode hosts). Headers the transport sets, `Accept` and
+  `Content-Type` included, are refused, and header names ignore case. `mcpServersSchema` holds at
+  most `MAX_MCP_SERVERS` = 8 with unique names.
+- `runtimeProfileSchema.mcpServers` and `.skills` (both parsed as empty from servers before
+  1.7.0), also in `createRuntimeProfileCommandSchema` and, replaced whole,
+  `updateRuntimeProfileCommandSchema`. A stdio server's `secretEnv` must name secrets the same
+  profile grants (`ungrantedMcpSecrets`, `refineMcpSecretGrants`): the create command checks it,
+  a patch checks it when it carries both lists, and the server checks the merged profile.
+- Records `mcpToolSchema`, `mcpToolSnapshotSchema` (immutable; sanitized tools with a hash and
+  an `exposedName` that starts with `mcp__<server>__` and is unique within the snapshot,
+  `configHash`, warnings) and `mcpDiscoverySchema` (`queued`, `running`,
+  `succeeded`, `failed`; redacted `error` and `stderrTail`). Routes:
+  `POST /api/runtime-profiles/:id/mcp-discoveries` with `startMcpDiscoveryCommandSchema` → 202
+  `mcpDiscoveryResultSchema`; `GET /api/mcp-discoveries/:id` → `mcpDiscoveryResultSchema`;
+  `GET /api/mcp-snapshots/:id` → `mcpSnapshotResultSchema`.
+- New `skills.ts`: `skillNameSchema` (the Agent Skills format), `skillGrantsSchema` (unique, at
+  most `MAX_PROFILE_SKILLS` = 32), `skillFilePathSchema` (relative, no `.` or `..` parts),
+  `putSkillCommandSchema` (at most 100 files with base64 content, a root `SKILL.md` of at most
+  64 KiB, at most 1 MiB in all) and `skillSchema` (content-addressed by `hash`). Routes:
+  `GET /api/skills` → `skillsViewSchema`; `GET` and `PUT /api/skills/:name` →
+  `skillResultSchema`; `DELETE /api/skills/:name` → 204, removing the skill's grants.
+- Naming: `mcpToolName` and `mcpToolNames` give pi's `mcp__<server>__<tool>` (characters outside
+  `[A-Za-z0-9_]` become `_`; over 64 characters, or a name tools of a server share, ends in an
+  8-hex SHA-256 suffix), assigned in tool-name order so the list's order never changes a name;
+  `MCP_TOOL_PREFIX`, which no built-in tool starts with. Names are stable only within a snapshot:
+  a new one can rename a tool. `declaredMcpTools` lists what a profile would declare; a save that
+  would declare more than `MAX_MCP_DIRECT_TOOLS` = 64 is refused. New `canonical.ts`:
+  `canonicalForm` (canonical one-line JSON with keys sorted by code units, and its keys and string
+  and number values as `words`, or why there is none: a cycle, depth over
+  `CANONICAL_DEPTH_LIMIT` = 64, length over `CANONICAL_LENGTH_LIMIT` = 1 MiB characters, or a value
+  JSON cannot hold; it never throws), `canonicalJson` (`string | undefined`) and a
+  dependency-free `sha256Hex`.
+- `approvalRuleSchema.tool` also takes `mcpToolSelectorSchema` (`mcp__<server>__<tool>` or
+  `mcp__<server>__*`). An MCP call keeps two texts: the approval card shows its arguments as
+  canonical one-line JSON, and `approvalSubject` (now `string | undefined`) is their unescaped
+  `words`, which a rule's `match` is looked for in, so JSON escaping hides nothing from it.
+  Arguments without a canonical form fail closed: `matchingApprovalRule` then holds the call
+  under the first rule for its tool, whatever its `match`, and `approvalSubjectProblem` says why.
+  `matchingApprovalRule` matches a server's `*` (`toolSelectorMatches`), and
+  `describeApprovalRule` words it. `mcpRulesWithoutTool` finds exact rules that name no tool of
+  their server's pinned snapshot, which a profile save refuses.
+- Event `mcp.server` (`profileId`, `server`, `state`: `starting` | `ready` | `failed` | `exited`,
+  `durationMs?`, `error?`, `stderrTail?`, `drift?`); `activityFromEvent` shows "Starting MCP
+  server x" and then "Using MCP server x".
+- `capabilitiesSchema.mcp` (`{ stdio, remote }`) and `.skills`, false when absent;
+  `driverCapabilitiesSchema.spawn` (with `DriverCapabilities.spawn` in the driver contract), false
+  when absent.
+- API error codes `MCP_UNAVAILABLE` (422: a profile asks for MCP servers or skills the server or its
+  driver cannot run) and `MCP_SNAPSHOT_MISMATCH` (409: a pinned snapshot was discovered for another
+  configuration).
+
+**Action required (frontend):** none to keep working: the profile editor carries `mcpServers` and
+`skills` as stored and keeps a stored MCP approval rule's tool among its options, the approval card
+shows an MCP call as canonical JSON and says when its arguments could not be checked, and the demo
+refuses MCP servers, skills and exact MCP rules like a server without them. The settings UI comes
+with #29's later steps.
+**Action required (backend):** none in this change: bootstrap reports `mcp` and `skills` false,
+every driver reports `spawn: false`, and the API refuses a profile with any MCP server or skill
+with `MCP_UNAVAILABLE` instead of storing it, and an exact MCP approval rule with
+`VALIDATION_FAILED`, since no snapshot is pinned. The engine steps of #29 lift each refusal as its
+capability becomes real.
+
 ## 1.6.0 — 2026-11-03 — Approvals for held tool calls
 
 **Changed by:** backend and frontend ([#87](https://github.com/LemonPhase/jj-bot/issues/87), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/87#issuecomment-6595622906)) · **Compatibility:** additive

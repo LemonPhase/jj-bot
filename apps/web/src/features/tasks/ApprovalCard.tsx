@@ -16,7 +16,7 @@ import {
   StatusSquare,
 } from "../../components/ui";
 import { formatMessageTime } from "../../lib/format";
-import { approvalCall, approvalState } from "./approvals";
+import { approvalCall, approvalProblem, approvalState } from "./approvals";
 import { botName } from "./taskModel";
 
 /**
@@ -44,6 +44,7 @@ export function ApprovalCard({
   const current =
     approval.status === "pending" && answered ? answered : approval;
   const state = approvalState(current);
+  const problem = approvalProblem(current);
   const name = botName(bot);
   const pending = current.status === "pending";
 
@@ -107,6 +108,7 @@ export function ApprovalCard({
           {pending ? "Needs your approval" : "Held by the rule"}:{" "}
           {describeApprovalRule(current.rule)}
         </p>
+        {problem && <p className="approval-card__rule">{problem}</p>}
         <p className="approval-card__state" role="status">
           <StatusSquare tone={state.tone} />
           <span>{state.text}</span>

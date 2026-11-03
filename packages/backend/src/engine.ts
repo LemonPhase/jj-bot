@@ -301,6 +301,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           streaming: true,
           verification: true,
           secretStore: store.available,
+          // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
+          mcp: { stdio: false, remote: false },
+          skills: false,
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,

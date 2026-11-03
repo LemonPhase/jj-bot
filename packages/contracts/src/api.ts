@@ -18,6 +18,16 @@ export const capabilitiesSchema = z.object({
   verification: z.boolean(),
   /** Keys and sandbox secrets can be stored encrypted: the server has `JJ_SECRET_KEY`. */
   secretStore: z.boolean().default(false),
+  /**
+   * MCP servers run: `stdio` ones in a task's sandbox (where its driver can
+   * spawn processes), `remote` (http) ones called by the worker. While
+   * false, a profile asking for that kind is refused with MCP_UNAVAILABLE.
+   */
+  mcp: z
+    .object({ stdio: z.boolean(), remote: z.boolean() })
+    .default({ stdio: false, remote: false }),
+  /** The skills library exists and granted skills reach sessions. While false, a grant is refused with MCP_UNAVAILABLE. */
+  skills: z.boolean().default(false),
   drivers: z.array(
     z.object({ id: idSchema, available: z.boolean(), isolated: z.boolean() }),
   ),
@@ -50,6 +60,10 @@ export const API_ERROR_CODES = [
   "PROFILE_UNSUPPORTED",
   "PROFILE_IN_USE",
   "SECRET_STORE_UNAVAILABLE",
+  /** A profile asks for MCP servers or skills this server or its driver cannot run. */
+  "MCP_UNAVAILABLE",
+  /** A server's pinned snapshot was discovered for another configuration: discover it again. */
+  "MCP_SNAPSHOT_MISMATCH",
   "UNAUTHORIZED",
   "INTERNAL",
 ] as const;
