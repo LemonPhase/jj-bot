@@ -26,6 +26,7 @@ const bootstrap: Bootstrap = {
     secretStore: false,
     mcp: { stdio: false, remote: false },
     skills: false,
+    uploads: null,
     drivers: [{ id: "docker", available: true, isolated: true }],
   },
   defaultModel: "anthropic/model",
