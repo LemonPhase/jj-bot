@@ -179,6 +179,44 @@ describe.each(targets)("job queue on $name", (target) => {
     expect(await complete(db, third.lease)).toBe(true);
   });
 
+  it("leaves the jobs its claimer still runs alone, though their lease expired", async () => {
+    const { db } = database;
+    const [bot, last] = await seedBots(db, 2);
+    const job = must(await enqueue(db, { kind: "chat.reply", botId: bot?.id }));
+    const final = must(
+      await enqueue(db, {
+        kind: "chat.reply",
+        botId: last?.id,
+        maxAttempts: 1,
+      }),
+    );
+    const [first, only] = (await claim(db, "w", 10, 30_000)).jobs.map(
+      (claimed) => claimed.lease,
+    );
+    await db
+      .update(jobs)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(jobs.status, "running"));
+    // Its heartbeats fell behind: neither reclaimed nor failed as exhausted.
+    expect(
+      await claim(db, "w", 10, 30_000, { running: [job.id, final.id] }),
+    ).toEqual({ jobs: [], exhausted: [] });
+    expect((await jobRow(database, final.id))?.status).toBe("running");
+    expect(await heartbeat(db, must(first), 30_000)).toBe(true);
+    expect(await heartbeat(db, must(only), 30_000)).toBe(true);
+    // The heartbeats extended both leases. Another claimer still takes over
+    // one that expires again.
+    await db
+      .update(jobs)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(eq(jobs.id, job.id));
+    const taken = await claim(db, "rescuer", 10, 30_000);
+    expect(taken.jobs.map((claimed) => [claimed.id, claimed.attempts])).toEqual(
+      [[job.id, 2]],
+    );
+    expect(await heartbeat(db, must(first), 30_000)).toBe(false);
+  });
+
   it("fails a job whose lease expired max_attempts times, and reports it once", async () => {
     const { db } = database;
     const [capped, defaulted] = await seedBots(db, 2);

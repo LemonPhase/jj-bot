@@ -105,7 +105,6 @@ describe("recovery", () => {
       task.id,
       status("completed"),
       "the resumed task",
-      20_000,
     );
     expect(view.task.result).toBe("count: one");
     // The completed command ran once, before the crash; nothing was re-run.
@@ -151,6 +150,87 @@ describe("recovery", () => {
         "utf8",
       ),
     ).toBe("one\n");
+  });
+
+  it("starts no new write once a crash begins, not even while the worker still winds down", async () => {
+    const first = await worker();
+    const team = await createTeam(first.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    first.executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "hold" } }] }
+        : { text: "must not be written" },
+    );
+    const { task } = await first.engine.tasks.create({
+      goal: "Crash mid-call",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await first.executor.gate("hold").reached;
+    const before = (await first.engine.tasks.events(task.id)).cursor;
+    // The call returns just after the crash begins, before the worker has
+    // finished stopping: none of what the run writes next may land.
+    const crash = first.engine.worker.abandon();
+    first.executor.gate("hold").open();
+    await crash;
+    const after = await first.engine.tasks.events(task.id, { after: before });
+    expect(after.events).toEqual([]);
+    const [run] = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id));
+    expect(run?.status).toBe("running");
+  });
+
+  it("keeps a run whose heartbeats fell behind its lease, rather than reclaiming it", async () => {
+    const engine = await worker();
+    const team = await createTeam(engine.engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    engine.executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "gate", args: { name: "stalled" } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : { calls: [{ name: "complete_task", args: { result: "kept" } }] },
+    );
+    const { task } = await engine.engine.tasks.create({
+      goal: "Outlast a stall",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await engine.executor.gate("stalled").reached;
+    // As when a stalled host held the heartbeats past the lease.
+    await db.database.db
+      .update(jobs)
+      .set({ leaseUntil: sql`now() - interval '1 second'` })
+      .where(and(eq(jobs.taskId, task.id), eq(jobs.status, "running")));
+    const expired = Date.now();
+    let passes = 0;
+    let seen = 0;
+    await until(
+      () => {
+        const at = engine.engine.worker.lastPollAt?.getTime() ?? 0;
+        if (at > expired && at !== seen) {
+          passes += 1;
+          seen = at;
+        }
+        return passes >= 2;
+      },
+      { what: "claim passes after the expiry" },
+    );
+    const [job] = await db.database.db
+      .select()
+      .from(jobs)
+      .where(eq(jobs.taskId, task.id));
+    expect(job).toMatchObject({ status: "running", attempts: 1 });
+    engine.executor.gate("stalled").open();
+    const view = await untilTask(engine.engine, task.id, status("completed"));
+    expect(view.task.result).toBe("kept");
+    const runRows = await db.database.db
+      .select()
+      .from(runs)
+      .where(eq(runs.taskId, task.id));
+    expect(runRows.map((run) => [run.reason, run.status])).toEqual([
+      ["start", "completed"],
+    ]);
   });
 
   it("hands running work to the next worker on a graceful stop", async () => {
@@ -261,7 +341,6 @@ describe("recovery", () => {
       task.id,
       status("failed"),
       "the failure",
-      20_000,
     );
     expect(view.sessions[0]?.error).toContain(
       "ephemeral workspace is not on this worker: a worker restart discarded it",

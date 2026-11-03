@@ -40,8 +40,9 @@ import {
  * JJ_SANDBOX_TEST_IMAGE when set (CI builds jj-sandbox:base-1 and sets it),
  * else jj-sandbox:base-1 when it is built (`npm run sandbox:image`), else
  * node:22-bookworm-slim, which also meets the driver's image requirements.
- * Every container and volume carries a per-run label and is removed after
- * the run.
+ * Every container, volume and network carries a per-run label and is removed
+ * after the run; what a run whose process died first left behind is removed
+ * by the first run that finds it stale (`isStaleRun`).
  */
 
 const FALLBACK_IMAGE = "node:22-bookworm-slim";
@@ -141,9 +142,10 @@ interface ContainerInspect {
   }>;
 }
 
-async function removeRunResources(): Promise<string[]> {
+/** Removes a run's containers, then its volumes and networks; returns what is left. */
+async function removeRunResources(run = runId): Promise<string[]> {
   if (!engine) return [];
-  const filters = JSON.stringify({ label: [`${RUN_LABEL}=${runId}`] });
+  const filters = JSON.stringify({ label: [`${RUN_LABEL}=${run}`] });
   const list = async () => {
     const containers = await engine.json<Array<{ Id: string }>>(
       "GET",
@@ -185,6 +187,86 @@ async function removeRunResources(): Promise<string[]> {
     ...left.networks.map((network) => `network ${network.Name}`),
   ];
 }
+
+/** Longer than any run of the docker tests, which takes minutes. */
+const STALE_RUN_MS = 2 * 60 * 60_000;
+
+const processAlive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/**
+ * Whether `run`, a RUN_LABEL value (`<pid>-<start time in base 36>`, as this
+ * file and the engine's docker test write it), is a run that is over: it
+ * started more than STALE_RUN_MS ago and its process is not alive here. A run
+ * whose process died before its `afterAll` (killed by a timeout, say) leaves
+ * its resources behind. A live run is never stale, even one in another PID
+ * namespace on a shared daemon, where its pid says nothing: it is younger.
+ * Any other label value is left alone.
+ */
+function isStaleRun(run: string, now = Date.now(), alive = processAlive) {
+  const match = /^([1-9]\d*)-([0-9a-z]+)$/.exec(run);
+  if (!match) return false;
+  const started = Number.parseInt(match[2] as string, 36);
+  return now - started > STALE_RUN_MS && !alive(Number(match[1]));
+}
+
+/** Removes the resources of every stale run on the daemon; returns those runs. */
+async function removeStaleRuns(): Promise<string[]> {
+  if (!engine) return [];
+  const filters = JSON.stringify({ label: [RUN_LABEL] });
+  const labelled = [
+    ...(await engine.json<Array<{ Labels?: Record<string, string> }>>(
+      "GET",
+      "/containers/json",
+      { query: { all: true, filters } },
+    )),
+    ...((
+      await engine.json<{
+        Volumes: Array<{ Labels?: Record<string, string> | null }> | null;
+      }>("GET", "/volumes", { query: { filters } })
+    ).Volumes ?? []),
+    ...(await engine.json<Array<{ Labels?: Record<string, string> }>>(
+      "GET",
+      "/networks",
+      { query: { filters } },
+    )),
+  ];
+  const stale = [
+    ...new Set(labelled.map((resource) => resource.Labels?.[RUN_LABEL] ?? "")),
+  ].filter((run) => isStaleRun(run));
+  for (const run of stale) await removeRunResources(run);
+  return stale;
+}
+
+describe("docker test runs", () => {
+  const hour = 60 * 60_000;
+  const now = Date.UTC(2026, 10, 3, 16);
+  const id = (pid: number, started: number) => `${pid}-${started.toString(36)}`;
+
+  it("are stale once over two hours old with no process alive", () => {
+    const dead = () => false;
+    expect(isStaleRun(id(16425, now - 3 * hour), now, dead)).toBe(true);
+    expect(isStaleRun(id(16425, now - 1.5 * hour), now, dead)).toBe(false);
+    // A live process keeps its run whatever its age.
+    expect(isStaleRun(id(16425, now - 30 * hour), now, () => true)).toBe(false);
+    // This run, and labels of any other form.
+    expect(isStaleRun(runId)).toBe(false);
+    for (const other of ["", "manual", "0-mw0qkqn5", "12-MW0", "12-mw0-x"])
+      expect(isStaleRun(other, now, dead)).toBe(false);
+  });
+
+  it("are looked up by pid on this host", () => {
+    expect(processAlive(process.pid)).toBe(true);
+    // Above Linux's pid_max, so never a process.
+    expect(processAlive(2 ** 22 + 1)).toBe(false);
+  });
+});
 
 describe("docker engine client", () => {
   it("parses DOCKER_HOST values and refuses what it cannot speak", () => {
@@ -364,7 +446,14 @@ describe("docker engine client", () => {
 });
 
 describe.skipIf(!health.ok)("docker driver against a live daemon", () => {
-  beforeAll(() => createDriver().ensureImage(image), 300_000);
+  beforeAll(async () => {
+    const stale = await removeStaleRuns();
+    if (stale.length > 0)
+      console.warn(
+        `[docker driver] removed what ${stale.length} earlier test runs left behind: ${stale.join(", ")}`,
+      );
+    await createDriver().ensureImage(image);
+  }, 300_000);
 
   afterAll(async () => {
     const left = await removeRunResources();

@@ -1,4 +1,15 @@
-import { and, asc, eq, inArray, lt, lte, or, type SQL, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  lt,
+  lte,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { type AnyPgColumn, alias } from "drizzle-orm/pg-core";
 import type { Executor } from "./database";
 import { newId } from "./ids";
@@ -133,21 +144,26 @@ export async function enqueue(
  * never wait on each other. A queued `session.run` (or `chat.reply`) whose
  * session (or bot) already has one running is skipped until that run ends.
  * Each claim increments `attempts`, the lease generation. Expired jobs without
- * attempts left are failed first and returned as `exhausted`.
+ * attempts left are failed first and returned as `exhausted`. Jobs listed in
+ * `running`, which the claimer is still running, are neither: their owner is
+ * alive though its heartbeats fell behind the lease, and can still extend it.
  */
 export async function claim(
   exec: Executor,
   owner: string,
   limit: number,
   leaseMs: number,
+  options: { running?: readonly string[] } = {},
 ): Promise<ClaimResult> {
   if (!owner) throw new Error("A lease owner is required.");
   positiveInteger(limit, "Claim limit");
   positiveInteger(leaseMs, "Lease duration");
 
+  const own = options.running ?? [];
   const expired = and(
     eq(jobs.status, "running"),
     lt(jobs.leaseUntil, sql`now()`),
+    own.length > 0 ? notInArray(jobs.id, [...own]) : undefined,
   );
   const exhaustedIds = exec
     .select({ id: jobs.id })

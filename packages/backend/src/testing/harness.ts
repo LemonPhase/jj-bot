@@ -1,6 +1,7 @@
 // Test harness: a database per suite (PGlite, or PostgreSQL when
 // JJ_TEST_DATABASE_URL is set), engines wired to the local sandbox driver and
-// the fakes, and polling helpers. Not exported from the package.
+// the fakes, polling helpers, and the engine suites' time budgets. Not
+// exported from the package.
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import { type Database, jobs, openDatabase, ulid } from "@jj/db";
 import { LocalSandboxDriver } from "@jj/sandbox";
 import { inArray, sql } from "drizzle-orm";
 import { Client } from "pg";
+import { vi } from "vitest";
 import type { EngineConfigInput } from "../config";
 import type { Logger } from "../context";
 import { createDriverRegistry, type DriverEntry } from "../drivers";
@@ -27,6 +29,22 @@ import { FakeChatResponder, FakeModels } from "./fakes";
 
 export const postgresUrl = process.env.JJ_TEST_DATABASE_URL;
 export const OPEN_TIMEOUT = 60_000;
+
+/**
+ * How long `until` waits by default, and each test of a suite that imports
+ * this harness may take. The engine scenarios are processor-bound on one
+ * thread (the fake or faux model, commands, and the embedded PGlite, which
+ * runs a transaction's statements without yielding): the slowest take about
+ * 5 s on an idle machine and several times that on one running other suites
+ * alongside. Nothing waits these out on a passing run; they only bound how
+ * long a broken scenario takes to fail, so they are sized for a loaded
+ * machine, not an idle one.
+ */
+export const WAIT_MS = 45_000;
+export const ENGINE_TEST_TIMEOUT = 90_000;
+// Imported before the suite defines its tests, so each one takes this as its
+// default; the root config's 20 s stays for every other package's suites.
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT });
 
 export interface TestDatabase {
   database: Database;
@@ -189,7 +207,7 @@ export async function until<T>(
     | false,
   options: { timeoutMs?: number; what?: string } = {},
 ): Promise<T> {
-  const deadline = Date.now() + (options.timeoutMs ?? 15_000);
+  const deadline = Date.now() + (options.timeoutMs ?? WAIT_MS);
   let last: unknown;
   for (;;) {
     try {
