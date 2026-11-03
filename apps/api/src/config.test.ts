@@ -170,6 +170,35 @@ describe("loadWorkerConfig", () => {
   });
 });
 
+describe("JJ_DEFAULT_MODEL", () => {
+  it("warns at boot when it is not used, and bootstrap reports the default in use", async () => {
+    const warnings: string[] = [];
+    const server = await startServer({
+      logger: { ...quietLogger, warn: (message) => warnings.push(message) },
+      env: {
+        API_PORT: "0",
+        JJ_DATABASE_PATH: "memory://",
+        JJ_SANDBOX_DRIVERS: "local",
+        OPENAI_API_KEY: "sk-test",
+        MISTRAL_API_KEY: "test",
+        // Not in pi's catalog.
+        JJ_DEFAULT_MODEL: "mistral/mistral-nemo",
+      },
+    });
+    try {
+      expect(warnings).toEqual([
+        'JJ_DEFAULT_MODEL "mistral/mistral-nemo" is not used: Unknown model "mistral/mistral-nemo". Bots without a model use openai/gpt-6-luna instead.',
+      ]);
+      const bootstrap = await (
+        await fetch(`${server.url}/api/bootstrap`)
+      ).json();
+      expect(bootstrap.defaultModel).toBe("openai/gpt-6-luna");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 const ipv6Loopback = await new Promise<boolean>((resolve) => {
   const probe = createServer()
     .once("error", () => resolve(false))
