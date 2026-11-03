@@ -484,9 +484,11 @@ export async function finishRun(
           ? outcome.code
             ? `model error (${outcome.code}): ${outcome.error}`
             : outcome.error
-          : outcome.reason === "sandbox_released"
-            ? "The task's sandbox was released while the run was in progress."
-            : "The run was aborted.";
+          : outcome.kind === "held"
+            ? "A tool call is waiting for approval, which this engine does not record yet."
+            : outcome.reason === "sandbox_released"
+              ? "The task's sandbox was released while the run was in progress."
+              : "The run was aborted.";
       await closeRun(tx, ctx, rc.run, "failed", attributionOf(rc), error);
       const failed = await failSessionTx(
         tx,
