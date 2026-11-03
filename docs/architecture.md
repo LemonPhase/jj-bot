@@ -63,6 +63,7 @@ On first boot, with no profiles stored, the server seeds one profile per registe
 | Bot               | Identity, role, instructions, model choice, runtime profile, appearance, memory.                                   |
 | RuntimeProfile    | Sandbox driver and spec, coding tools, budgets; reports driver availability and isolation.                         |
 | BotConversation   | Direct user-to-bot chat outside task execution.                                                                    |
+| ChatTaskUpdate    | A task event its coordinator's chat is told (completed, failed, waiting for the user) until a reply answers it.    |
 | Task              | Title, goal and goal version, coordinator, state, final result, stop request.                                      |
 | TaskParticipation | Bot membership in a task.                                                                                          |
 | ExecutionSession  | Task, bot, parent session, role, brief, depth, goal version, status, what it waits for, result.                    |
@@ -80,7 +81,27 @@ Records are relational tables with indexed foreign keys. Every record carries an
 
 ## Direct bot chat
 
-A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, and two tools: create a task, or send a message to one of the bot's active tasks. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited.
+A direct message to a bot runs a lightweight pi session with the bot's persona and model, no sandbox, a bounded history and the chat's task tools. The bot can answer directly, ask a clarifying question, or shape a task's goal and roster before creating it. A bot coordinates the tasks it creates from chat. Task creation from chat is rate-limited. The chat prompt gives the count of the bot's unfinished tasks and points to `list_tasks`; it does not list them.
+
+The task tools cover only the tasks the bot takes part in (its participations); any other task id, known or not, is refused with a tool error:
+
+- `list_tasks(status?, limit?)`: the bot's tasks, newest first, each with its id, title, status, the bot's role, when it last changed and its result or error on one line.
+- `get_task(id)`: the task state as a session's `task_state` gives it (goal and goal version, status, result or error, each session's bot, role, status and the first line of its brief), the bot's role, and the latest task log entries as an index.
+- `read_task_log(id, …)`: the task log as `task_log` pages it (newest entries by default), or one entry in full. Session transcripts are never read.
+- `create_task`: as above.
+- `send_to_task(id, text)`: passes the message on to the task's coordinator, continuing a waiting, completed or failed task as a user message does: same task, workspace and coordinator transcript. A cancelled or stopping task refuses it.
+- `stop_task(id, reason?)`: stops the task as the user's stop does. Only the task's coordinator can.
+
+The read tools change nothing, and their output is never a reply's text when its budget cuts it short. Tool definitions are the same whatever tasks exist: task ids are plain string parameters checked inside each tool. A reply takes at most six model calls: the deepest planned reply, a question about a task, takes four (`list_tasks`, `get_task`, `read_task_log` for an entry in full, then the answer), and the other two absorb a refused call and its retry.
+
+**Task updates.** When a task completes, fails or waits for the user, its coordinator tells the user in its direct chat, in its own words:
+
+- The transaction that changes the task records the update (the task, what happened, and its result, error or the coordinator's question, as stored then and clipped) and enqueues a chat reply for the coordinator. Each event has one update, keyed by the task and its event sequence; a task that continues and then waits again is a new event.
+- The update is the input of one chat reply and is never stored as a chat message. That reply gets the read tools only; it may suggest an action, and the user decides. Its message carries the task's id, so the chat shows the task's card under it.
+- A bot's chat replies run one at a time, each answering one input: the user's unanswered messages first, then the oldest update. An update that arrives during a reply is answered after it, by a reply that sees both.
+- The reply that answers an update marks it answered in the transaction that stores its message, so a crash or hand-off tells it once. If the reply fails (a model error or the budget), or its job keeps dying, the engine posts the update as a plain message with the task's card instead, so it is never lost. A user message whose reply failed is not answered again until the user writes more.
+
+The task card reads the live task summary: it shows the task's current status, not its status when the message was written, and a completed or failed task's result or error.
 
 ## Visibility is separate from activation
 
@@ -157,7 +178,7 @@ A bot's memory is one text that the user edits (`PUT /api/bots/:id/memory`). It 
 
 ## Concurrency and recovery
 
-A job lease gives each active run a single owner, and every write-back re-checks ownership. Event and conversation sequences are serialized per task and per bot rather than globally, so independent tasks never contend. Side effects of a job that can run again are keyed by its input: a chat reply that runs again after a hand-off or crash creates no second task and relays no message twice.
+A job lease gives each active run a single owner, and every write-back re-checks ownership. Event and conversation sequences are serialized per task and per bot rather than globally, so independent tasks never contend. Side effects of a job that can run again are keyed by its input: a chat reply that runs again after a hand-off or crash creates no second task, relays no message twice and tells a task update once.
 
 A session's pi transcript is persisted as the run proceeds: its inputs before the model call that sees them, an assistant message before its tools run, each tool result as soon as that tool finishes, and a compaction entry once everything it covers is stored. After a crash or restart, the session resumes from what was persisted, in a new run. A command that was running at the crash is reported to the agent as interrupted with an unknown outcome; it is never silently re-run. A session whose workspace did not survive, such as an ephemeral one, is not resumed: it fails visibly. A pi upgrade that changes the transcript format must migrate stored transcripts or refuse to resume them.
 
