@@ -33,6 +33,7 @@ import {
   draftFromTask,
   draftFromTemplate,
   problemLines,
+  profileCapOf,
   resolvedCapLine,
   type TemplateDraft,
   teamLine,
@@ -116,7 +117,7 @@ function TemplateEditor({
   source: EditorSource;
   onClose: () => void;
 }) {
-  const { bots, createTemplate, updateTemplate } = useWorkspace();
+  const { bots, profiles, createTemplate, updateTemplate } = useWorkspace();
   const api = useApi();
   const formId = useId();
   const checksLabelId = useId();
@@ -125,7 +126,10 @@ function TemplateEditor({
     source.kind === "template"
       ? draftFromTemplate(source.template)
       : source.kind === "task"
-        ? draftFromTask(source.task)
+        ? draftFromTask(
+            source.task,
+            profileCapOf(source.task.coordinatorBotId, bots, profiles),
+          )
         : blankDraft(bots),
   );
   const active = (botId: string) => bots.some((bot) => bot.id === botId);
@@ -219,7 +223,7 @@ function TemplateEditor({
       title={editing ? "Edit template" : "New template"}
       description={
         source.kind === "task"
-          ? "Saved from this task as it is now: its goal, team, checks and cap. Start it again from the Templates list."
+          ? "Saved from this task as it is now: its goal, team, checks and cap (the profile's, when the task has the cap its profile sets). Start it again from the Templates list."
           : "A task setup to start again in one step: its goal, team, checks and cap."
       }
       dismissible={false}

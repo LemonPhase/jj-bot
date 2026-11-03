@@ -225,7 +225,7 @@ A task template is a saved task setup the user starts again with one action: a t
 - **Attribution, not ownership.** A task keeps its `templateId` as a plain id: deleting a template leaves the tasks started from it, and their `templateId`, unchanged.
 - **The user's only.** No agent tool, in a task or in direct chat, lists, saves or starts a template, and a template grants nothing manual creation does not. It carries no files and no runtime profile of its own: its tasks run with their coordinator's profile, as every task does.
 
-"Save as template" in the web app fills the template editor from the task as it is now (its current goal, roster, plan and cap); it needs no route of its own.
+"Save as template" in the web app fills the template editor from the task as it is now (its current goal, roster, plan and cap, which reads as the profile's when it equals the cap the coordinator's profile sets now); it needs no route of its own.
 
 ## Events and streaming
 

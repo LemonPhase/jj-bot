@@ -252,8 +252,11 @@ describe("the template editor", () => {
     expect("spendCapUsd" in (await api.getTemplate(SEEDED))).toBe(false);
   });
 
-  it("starts from the open task as it is now when saved from its header", async () => {
+  /** Opens "Save as template" on task-102 once the workspace follows it. */
+  async function saveFromTask(spendCapUsd?: number) {
     const base = createDemoApi({ autoplay: false });
+    if (spendCapUsd !== undefined)
+      await base.updateTask("task-102", { spendCapUsd });
     const create = vi.spyOn(base, "createTemplate");
     window.location.hash = "#/tasks/task-102";
     const { task } = await base.getTask("task-102");
@@ -272,30 +275,68 @@ describe("the template editor", () => {
     );
     const dialog = await screen.findByRole("dialog", { name: "New template" });
     expect(
-      within(dialog).getByRole("textbox", {
-        name: "Title",
-      }) as HTMLInputElement,
-    ).toHaveProperty("value", String(task.title));
+      (
+        within(dialog).getByRole("textbox", {
+          name: "Title",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe(task.title);
     expect(
-      within(dialog).getByRole("textbox", { name: "Goal" }) as HTMLInputElement,
-    ).toHaveProperty("value", String(task.goal));
+      (
+        within(dialog).getByRole("textbox", {
+          name: "Goal",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe(task.goal);
+    const save = async () => {
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Save template" }),
+      );
+      await waitFor(() => expect(onClose).toHaveBeenCalled());
+    };
+    return { task, dialog, create, save };
+  }
+
+  it("starts from the open task as it is now, following the profile when the task has its cap", async () => {
+    const { task, dialog, create, save } = await saveFromTask();
+    // Kite's profile (the default) sets $5, the cap task-102 has.
+    expect(task.spendCapUsd).toBe(5);
     expect(
-      within(dialog).getByRole("spinbutton", {
-        name: "Cap (USD)",
-      }) as HTMLInputElement,
-    ).toHaveProperty("value", String(task.spendCapUsd));
-    fireEvent.click(
-      within(dialog).getByRole("button", { name: "Save template" }),
-    );
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
+      within(dialog)
+        .getByRole("radio", { name: "Profile's" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      within(dialog).queryByRole("spinbutton", { name: "Cap (USD)" }),
+    ).toBeNull();
+    await save();
     expect(create).toHaveBeenCalledWith({
       title: task.title,
       goal: task.goal,
       coordinatorBotId: task.coordinatorBotId,
       participantBotIds: task.participantBotIds,
       verificationPlan: null,
-      spendCapUsd: task.spendCapUsd,
     });
+  });
+
+  it("keeps a task's own cap as an amount when it differs from the profile's", async () => {
+    const { task, dialog, create, save } = await saveFromTask(3);
+    expect(
+      within(dialog)
+        .getByRole("radio", { name: "Amount" })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      (
+        within(dialog).getByRole("spinbutton", {
+          name: "Cap (USD)",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("3");
+    await save();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ goal: task.goal, spendCapUsd: 3 }),
+    );
   });
 });
 

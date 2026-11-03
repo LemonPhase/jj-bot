@@ -62,10 +62,14 @@ export function draftFromTemplate(template: TaskTemplate): TemplateDraft {
 
 /**
  * "Save as template": the task as it is now (its current goal, roster, plan
- * and cap). The cap is the task's own, so the template keeps the amount
- * rather than the profile's at start.
+ * and cap). A cap equal to the coordinator's profile's now (`profileCapUsd`)
+ * reads as that profile's, so the template follows the profile; any other
+ * cap is kept as the task's own.
  */
-export function draftFromTask(task: Task): TemplateDraft {
+export function draftFromTask(
+  task: Task,
+  profileCapUsd?: number | null,
+): TemplateDraft {
   return {
     title: task.title,
     goal: task.goal,
@@ -74,8 +78,24 @@ export function draftFromTask(task: Task): TemplateDraft {
       (botId) => botId !== task.coordinatorBotId,
     ),
     plan: task.verificationPlan,
-    ...capOf(task.spendCapUsd),
+    ...capOf(
+      profileCapUsd !== undefined && task.spendCapUsd === profileCapUsd
+        ? undefined
+        : task.spendCapUsd,
+    ),
   };
+}
+
+/** The task cap a new task of this coordinator gets now: its profile's `maxUsdPerTask`. */
+export function profileCapOf(
+  coordinatorBotId: string,
+  bots: readonly Bot[],
+  profiles: readonly RuntimeProfile[],
+): number | null {
+  const coordinator = bots.find((bot) => bot.id === coordinatorBotId);
+  return (
+    profileOf(coordinator, profiles)?.budgets ?? profileBudgetsSchema.parse({})
+  ).maxUsdPerTask;
 }
 
 /** The profile a bot runs with, as the server picks it: its own, else the default. */
@@ -98,9 +118,7 @@ export function resolvedCapLine(
   if (template.spendCapUsd !== undefined)
     return `${formatCap(template.spendCapUsd)}, as the template says.`;
   const coordinator = bots.find((bot) => bot.id === template.coordinatorBotId);
-  const profileCap = (
-    profileOf(coordinator, profiles)?.budgets ?? profileBudgetsSchema.parse({})
-  ).maxUsdPerTask;
+  const profileCap = profileCapOf(template.coordinatorBotId, bots, profiles);
   const whose = coordinator ? `${coordinator.name}'s profile` : "the profile";
   return profileCap === null
     ? `No cap: ${whose} sets none.`
