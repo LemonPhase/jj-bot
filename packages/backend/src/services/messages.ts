@@ -29,6 +29,7 @@ import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import { toMessage } from "../records";
 import { lockTask, updateSession, updateTask } from "./sessions";
+import { assertWithinCaps } from "./spend";
 
 export interface PostMessageInput {
   taskId: string;
@@ -186,7 +187,9 @@ export async function rootSession(
 /**
  * A message that continues the task: reopens a waiting, completed or failed
  * task (and its coordinator session) and wakes the coordinator. Refused with
- * TASK_TERMINAL once the task is cancelled or being stopped.
+ * TASK_TERMINAL once the task is cancelled or being stopped, and with
+ * SPEND_CAP_REACHED while the coordinator could not make a model call (the
+ * task's, its bot's or the instance's cap is reached).
  */
 export async function continueTask(
   tx: Tx,
@@ -195,6 +198,10 @@ export async function continueTask(
   attribution: Attribution = {},
 ): Promise<{ task: TaskRow; root: SessionRow }> {
   assertOpen(task);
+  await assertWithinCaps(tx, ctx, {
+    taskId: task.id,
+    botId: task.coordinatorBotId,
+  });
   let root = await rootSession(tx, task.id);
   if (!root) throw new Error(`Task ${task.id} has no coordinator session.`);
   if (

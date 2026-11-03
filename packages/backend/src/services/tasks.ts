@@ -8,6 +8,8 @@ import {
   stopTaskCommandSchema,
   type Task,
   type TaskEventOf,
+  type UpdateTaskCommand,
+  updateTaskCommandSchema,
 } from "@jj/contracts";
 import {
   bots,
@@ -27,7 +29,7 @@ import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { emit } from "../events";
 import { toTask } from "../records";
-import { deliver } from "./messages";
+import { assertOpen, deliver } from "./messages";
 import {
   insertSession,
   lockTask,
@@ -36,6 +38,7 @@ import {
   updateSession,
   updateTask,
 } from "./sessions";
+import { assertWithinCaps, taskCapFor } from "./spend";
 
 /** A title from the goal's first line when the creator gives none. */
 export function deriveTitle(goal: string): string {
@@ -54,14 +57,25 @@ export interface NewTaskInput {
   createdByBotId?: string | null;
   /** The conversation message whose reply created the task (one task per message). */
   createdFromMessageId?: string | null;
+  /** Omitted: the coordinator's profile's `maxUsdPerTask`. Null: no cap. */
+  spendCapUsd?: number | null;
 }
 
-/** Creates the task, its coordinator session and the first wake, in the caller's transaction. */
+/**
+ * Creates the task, its coordinator session and the first wake, in the
+ * caller's transaction. SPEND_CAP_REACHED when the coordinator could not
+ * make a model call now (its own or the instance's daily cap).
+ */
 export async function createTaskTx(
   tx: Tx,
   ctx: EngineContext,
   input: NewTaskInput,
 ): Promise<{ task: TaskRow; root: SessionRow }> {
+  await assertWithinCaps(tx, ctx, { botId: input.coordinatorBotId });
+  const spendCapUsd =
+    input.spendCapUsd !== undefined
+      ? input.spendCapUsd
+      : await taskCapFor(tx, input.coordinatorBotId);
   const now = ctx.clock();
   const [task] = await tx
     .insert(tasks)
@@ -72,6 +86,7 @@ export async function createTaskTx(
       coordinatorBotId: input.coordinatorBotId,
       createdByBotId: input.createdByBotId ?? null,
       createdFromMessageId: input.createdFromMessageId ?? null,
+      spendCapUsd,
       createdAt: now,
       updatedAt: now,
     })
@@ -162,6 +177,30 @@ export async function createTask(
     createTaskTx(tx, ctx, command),
   );
   return { task: toTask(task, command.participantBotIds) };
+}
+
+/**
+ * `PATCH /api/tasks/:id`: the spend cap. It does not continue a task that
+ * stopped at its cap; the user's next message does.
+ */
+export async function updateTaskSettings(
+  ctx: EngineContext,
+  taskId: string,
+  input: UpdateTaskCommand,
+): Promise<{ task: Task }> {
+  const command = parseCommand(updateTaskCommandSchema, input);
+  const row = await ctx.db.transaction(async (tx) => {
+    const task = await lockTask(tx, taskId);
+    if (!task) throw notFound("Task", taskId);
+    assertOpen(task);
+    if (
+      command.spendCapUsd === undefined ||
+      command.spendCapUsd === task.spendCapUsd
+    )
+      return task;
+    return updateTask(tx, ctx, task, { spendCapUsd: command.spendCapUsd });
+  });
+  return { task: toTask(row, await participantIds(ctx.db, taskId)) };
 }
 
 /** `POST /api/tasks/:id/stop`. Idempotent while stopping or cancelled. */

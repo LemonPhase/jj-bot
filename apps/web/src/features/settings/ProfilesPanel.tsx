@@ -18,6 +18,7 @@ import {
   StatusTag,
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
+import { formatCap } from "../tasks/format";
 import {
   ISOLATION_HELP,
   isolationLabel,
@@ -178,6 +179,12 @@ function ProfileCard({
     `${sandbox.workspace} workspace`,
     `${profile.tools.length} of ${CODING_TOOLS.length} tools`,
     `${profile.budgets.maxTurnsPerRun} turns · ${profile.budgets.maxRunMinutes} min`,
+    profile.budgets.maxUsdPerTask === null
+      ? "no task cap"
+      : `${formatCap(profile.budgets.maxUsdPerTask)} per task`,
+    profile.budgets.maxUsdPerBotPerDay === null
+      ? "no daily bot cap"
+      : `${formatCap(profile.budgets.maxUsdPerBotPerDay)} per bot a day`,
   ];
   return (
     <Card as="article" className="settings-card" aria-label={profile.name}>

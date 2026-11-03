@@ -486,7 +486,11 @@ describe("PiSessionExecutor", () => {
     const outcome = await new PiSessionExecutor({ models: registry }).run(
       input({ hooks: recorded.hooks, budgets: budgets(2) }),
     );
-    expect(outcome).toEqual({ kind: "budget", finalText: "" });
+    expect(outcome).toEqual({
+      kind: "budget",
+      limit: "turns",
+      finalText: "",
+    });
     expect(finished(recorded.events, "bash")).toHaveLength(2);
     expect(faux.getPendingResponseCount()).toBe(1);
   });
@@ -497,7 +501,11 @@ describe("PiSessionExecutor", () => {
     const outcome = await new PiSessionExecutor({ models: registry }).run(
       input({ hooks: recorded.hooks, budgets: budgets(10, 500) }),
     );
-    expect(outcome).toEqual({ kind: "budget", finalText: "" });
+    expect(outcome).toEqual({
+      kind: "budget",
+      limit: "deadline",
+      finalText: "",
+    });
     expect(finished(recorded.events, "bash")[0]?.interrupted).not.toBe("no");
   });
 
@@ -783,7 +791,11 @@ describe("PiSessionExecutor", () => {
         budgets: { maxTurns: 5, deadline: new Date(Date.now() - 1) },
       }),
     );
-    expect(outcome).toEqual({ kind: "budget", finalText: "" });
+    expect(outcome).toEqual({
+      kind: "budget",
+      limit: "deadline",
+      finalText: "",
+    });
     expect(recorded.entries.map((entry) => textOf(entry))).toEqual([
       "Do the work.",
     ]);

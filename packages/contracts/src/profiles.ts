@@ -10,6 +10,7 @@ import {
   idSchema,
   modelRefSchema,
   SOME_FIELD_REQUIRED,
+  spendCapUsdSchema,
   timestampSchema,
 } from "./common";
 
@@ -66,9 +67,25 @@ const toolListSchema = z
 const maxTurnsPerRunSchema = z.number().int().min(1).max(500);
 const maxRunMinutesSchema = z.number().int().min(1).max(240);
 
+/** Default spend caps, in US dollars. A stored profile without a cap key takes these on read. */
+export const DEFAULT_MAX_USD_PER_TASK = 5;
+export const DEFAULT_MAX_USD_PER_BOT_PER_DAY = 20;
+
+/**
+ * Turn and time budgets per run, and spend caps. `null` means no cap.
+ * - `maxUsdPerTask`: the cap a task gets when this is its coordinator's
+ *   profile, copied onto the task (`task.spendCapUsd`) when it is created.
+ * - `maxUsdPerBotPerDay`: what each bot on this profile may spend in any
+ *   rolling 24 hours, task sessions and direct chat together.
+ * Caps count model calls with a listed price only (see `usageSchema`).
+ */
 export const profileBudgetsSchema = z.object({
   maxTurnsPerRun: maxTurnsPerRunSchema.default(60),
   maxRunMinutes: maxRunMinutesSchema.default(30),
+  maxUsdPerTask: spendCapUsdSchema.nullable().default(DEFAULT_MAX_USD_PER_TASK),
+  maxUsdPerBotPerDay: spendCapUsdSchema
+    .nullable()
+    .default(DEFAULT_MAX_USD_PER_BOT_PER_DAY),
 });
 
 /**
@@ -146,6 +163,8 @@ export const updateRuntimeProfileCommandObjectSchema = z
       .object({
         maxTurnsPerRun: maxTurnsPerRunSchema,
         maxRunMinutes: maxRunMinutesSchema,
+        maxUsdPerTask: spendCapUsdSchema.nullable(),
+        maxUsdPerBotPerDay: spendCapUsdSchema.nullable(),
       })
       .partial(),
     isDefault: z.boolean(),

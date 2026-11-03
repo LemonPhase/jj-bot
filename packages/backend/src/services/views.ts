@@ -42,6 +42,7 @@ const usageOf = (row: UsageRow): Usage => ({
   cacheReadTokens: row.cacheReadTokens,
   cacheWriteTokens: row.cacheWriteTokens,
   costUsd: row.costUsd,
+  unpricedCalls: row.priced ? 0 : 1,
 });
 
 /** Artifact columns without the content bytes. */

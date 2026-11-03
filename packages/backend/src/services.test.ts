@@ -234,7 +234,12 @@ describe("profiles", () => {
       budgets: { maxTurnsPerRun: 20 },
       sandbox: { limits: { execTimeoutMs: 5_000 } },
     });
-    expect(patched.budgets).toEqual({ maxTurnsPerRun: 20, maxRunMinutes: 5 });
+    expect(patched.budgets).toEqual({
+      maxTurnsPerRun: 20,
+      maxRunMinutes: 5,
+      maxUsdPerTask: 5,
+      maxUsdPerBotPerDay: 20,
+    });
     expect(patched.sandbox.limits).toEqual({
       execTimeoutMs: 5_000,
       maxOutputBytes: 262_144,

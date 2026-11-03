@@ -8,6 +8,7 @@
  * or in a sandbox, and every scripted text says so.
  */
 import {
+  addUsage,
   applyTaskEvent,
   type Bot,
   type BotMemory,
@@ -21,6 +22,7 @@ import {
   emptyUsage,
   isFinishedStatus,
   postTaskMessageCommandSchema,
+  profileBudgetsSchema,
   type RuntimeProfile,
   type SandboxSpec,
   sandboxSpecSchema,
@@ -32,9 +34,11 @@ import {
   type TaskEventType,
   type TaskSummary,
   type TaskView,
+  type UsageReport,
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
+  updateTaskCommandSchema,
   type WorkspaceHint,
   waitingQuestion,
   z,
@@ -62,6 +66,7 @@ import {
   createRootSession,
   type EventRef,
   type IdKind,
+  Ops,
   relayMessage,
   requestCancel,
   type ScriptHost,
@@ -389,12 +394,22 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     }, stepMs);
   };
 
+  /** The coordinator's profile (else the default), as the server picks it. */
+  const budgetsOf = (botId: string) => {
+    const profileId = bots.get(botId)?.bot.runtimeProfileId ?? null;
+    const profile = profileId
+      ? profiles.get(profileId)
+      : [...profiles.values()].find((candidate) => candidate.isDefault);
+    return profile?.budgets ?? profileBudgetsSchema.parse({});
+  };
+
   const newTask = (input: {
     id: string;
     goal: string;
     coordinatorBotId: string;
     participantBotIds: string[];
     title?: string;
+    spendCapUsd?: number | null;
   }): TaskState => {
     const createdAt = now();
     const task: Task = {
@@ -409,6 +424,10 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       error: null,
       cancelReason: null,
       cancelRequestedAt: null,
+      spendCapUsd:
+        input.spendCapUsd !== undefined
+          ? input.spendCapUsd
+          : budgetsOf(input.coordinatorBotId).maxUsdPerTask,
       createdAt,
       updatedAt: createdAt,
       finishedAt: null,
@@ -950,7 +969,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           "find",
           "ls",
         ],
-        budgets: parsed.budgets ?? { maxTurnsPerRun: 60, maxRunMinutes: 30 },
+        budgets: parsed.budgets ?? profileBudgetsSchema.parse({}),
         isDefault: false,
         status: profileStatus(parsed.sandbox),
         createdAt,
@@ -1032,6 +1051,47 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     },
     listDrivers: async () => clone([...DEMO_DRIVERS]),
     getModels: async () => clone(DEMO_MODELS),
+    // Totals of the demo tasks' own usage; every window holds all of it.
+    getUsage: async (): Promise<UsageReport> => {
+      const byBot = new Map<string, TaskView["usage"]["total"]>();
+      let total = emptyUsage();
+      for (const { view } of tasks.values())
+        for (const session of view.sessions) {
+          const used = view.usage.bySession[session.id];
+          if (!used) continue;
+          total = addUsage(total, used);
+          byBot.set(
+            session.botId,
+            addUsage(byBot.get(session.botId) ?? emptyUsage(), used),
+          );
+        }
+      return clone({
+        asOf: now(),
+        instance: {
+          last24h: total,
+          last7d: total,
+          last30d: total,
+          capUsdPerDay: null,
+        },
+        bots: [...bots.values()]
+          .filter((record) => !record.archived)
+          .map((record) => {
+            const used = byBot.get(record.bot.id) ?? emptyUsage();
+            return {
+              botId: record.bot.id,
+              name: record.bot.name,
+              archived: false,
+              last24h: used,
+              last30d: used,
+              chatLast30d: emptyUsage(),
+              capUsdPerDay: budgetsOf(record.bot.id).maxUsdPerBotPerDay,
+            };
+          }),
+        models: total.modelCalls
+          ? [{ model: "demo/sample", last30d: total }]
+          : [],
+      });
+    },
 
     listTasks: async () =>
       [...tasks.values()]
@@ -1098,6 +1158,26 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           409,
         );
       stopState(state, reason ?? null);
+      return clone(state.view.task);
+    },
+    // As services/tasks.ts `updateTaskSettings`: the cap only; it continues nothing.
+    updateTask: async (taskId, command) => {
+      const { spendCapUsd } = validate(updateTaskCommandSchema, command);
+      const state = getState(taskId);
+      const { task } = state.view;
+      if (task.status === "cancelled" || task.cancelRequestedAt)
+        throw new ApiError(
+          "TASK_TERMINAL",
+          task.status === "cancelled"
+            ? "The task was cancelled; start a new task to continue the work."
+            : "The task is stopping and takes no new messages.",
+          undefined,
+          409,
+        );
+      if (spendCapUsd !== undefined && spendCapUsd !== task.spendCapUsd) {
+        new Ops(state.host).updateTask({ spendCapUsd });
+        notify({ type: "tasks.changed", taskId });
+      }
       return clone(state.view.task);
     },
     subscribeTask: (taskId, onView, streamOptions) =>

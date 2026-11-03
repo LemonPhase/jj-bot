@@ -31,6 +31,42 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.3.0 — 2026-11-03 — Spend caps and usage reporting
+
+**Changed by:** backend and frontend ([#28](https://github.com/LemonPhase/jj-bot/issues/28), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/28#issuecomment-6593254682)) · **Compatibility:** additive
+
+- `profileBudgetsSchema`: adds `maxUsdPerTask` (default 5) and `maxUsdPerBotPerDay` (default 20,
+  over any rolling 24 hours, task sessions and chat together), US dollars from `spendCapUsdSchema`
+  (positive, at most `MAX_SPEND_CAP_USD` = 10000), `null` for no cap. Stored profiles without the
+  keys take the defaults. `updateRuntimeProfileCommandSchema.budgets` takes both keys, no defaults.
+- `taskObjectSchema` (so `taskSchema` and `taskSummarySchema`): adds `spendCapUsd`, the task's cap
+  (null for none), copied from the coordinator's profile at creation. It parses as `null` when
+  missing, so events stored before this version still parse.
+- `createTaskCommandObjectSchema`: optional `spendCapUsd` (omitted: the coordinator's profile's
+  cap; `null`: no cap). New `updateTaskCommandSchema` (`{ spendCapUsd }`, at least one field) for
+  `PATCH /api/tasks/:id` → `{ task }`; a cancelled or stopping task answers `409 TASK_TERMINAL`.
+- `usageSchema`: adds `unpricedCalls`, the calls on models with no listed price, whose cost is
+  unknown and not in `costUsd`. It parses as 0 when missing; `emptyUsage` and `addUsage` carry it,
+  so `applyTaskEvent` folds it from `model.finished`.
+- `taskEventSchema`: new markers `spend.capped` (`{ scope, spentUsd, capUsd }`, attributed to the
+  session whose model call was refused) and `spend.threshold` (`{ spentUsd, capUsd }`, once per cap
+  value past `SPEND_SOFT_THRESHOLD` = 0.8 of the task's cap). `spendScopeSchema`: `task`, `bot`,
+  `instance`. Older clients ignore both as unknown types.
+- `API_ERROR_CODES`: adds `SPEND_CAP_REACHED` (409, `details` per `spendCapReachedDetailsSchema`:
+  `{ scope, spentUsd, capUsd, botId? }`), answered to a message that would continue a task at a
+  cap, a task whose coordinator is at its daily cap, and a direct message to a bot at its cap.
+- New `usageReportSchema` for `GET /api/usage`: `{ asOf, instance: { last24h, last7d, last30d,
+  capUsdPerDay }, bots: [{ botId, name, archived, last24h, last30d, chatLast30d, capUsdPerDay }],
+  models: [{ model, last30d }] }`.
+- New pure helpers `formatUsd` and `formatSpendAgainstCap`, so the server's cap messages and the
+  clients show amounts alike: spend next to a cap gets enough places that over never reads as at or
+  under it (`$4.996 of $5.00`).
+
+**Action required (frontend):** none beyond this change, which shows the cap in the task header and
+new-task dialog, the caps in the profile editor, spend on the bot inspector and a Usage tab in
+Settings, and never shows unpriced calls as free.
+**Action required (backend):** none.
+
 ## 1.2.0 — 2026-11-03 — A waiting task's question in its summary
 
 **Changed by:** backend ([#81](https://github.com/LemonPhase/jj-bot/issues/81), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/81#issuecomment-6592902366)) · **Compatibility:** additive

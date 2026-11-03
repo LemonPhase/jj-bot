@@ -7,6 +7,7 @@ import {
   viewTranscript,
 } from "./compaction";
 import { type RetryOptions, redactSecrets, retryPolicy } from "./errors";
+import { ModelCallGate } from "./gate";
 import { budgetProblem, collabAgentTool, runLoop, userMessage } from "./loop";
 import {
   type ModelRegistry,
@@ -117,7 +118,7 @@ export class PiSessionExecutor implements RunExecutor {
     // Checked before draining, so an inbox item is never taken by a run that cannot use it.
     if (input.signal.aborted) return exitEarly({ kind: "aborted" });
     if (input.budgets.deadline.getTime() <= Date.now())
-      return exitEarly({ kind: "budget", finalText: "" });
+      return exitEarly({ kind: "budget", limit: "deadline", finalText: "" });
 
     const policy: OutputPolicy = {
       capBytes: this.capBytes,
@@ -164,6 +165,8 @@ export class PiSessionExecutor implements RunExecutor {
       }
     }
 
+    // One gate for the run's calls and its compaction's, so a refusal holds for both.
+    const gate = new ModelCallGate(hooks.admitModelCall?.bind(hooks));
     const compactor = new ContextCompactor(input.transcript, view, {
       model: resolved.model,
       ref: resolved.ref,
@@ -183,6 +186,7 @@ export class PiSessionExecutor implements RunExecutor {
       },
       scrub: input.redact ?? ((text) => text),
       redactError: (text) => redactSecrets(text, [resolved.getApiKey()]),
+      gate,
     });
 
     // From here runLoop persists repairs and inputs on every path, early exits included.
@@ -199,6 +203,7 @@ export class PiSessionExecutor implements RunExecutor {
       inputs,
       maxTurns: input.budgets.maxTurns,
       deadline: input.budgets.deadline,
+      gate,
       signal,
       retry: this.retry,
       endRequested: () => endRequested,

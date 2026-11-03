@@ -54,6 +54,7 @@ type TaskPatch = Partial<
     | "error"
     | "cancelReason"
     | "cancelRequestedAt"
+    | "spendCapUsd"
   >
 >;
 

@@ -26,6 +26,8 @@ import {
   type UpdateBotCommand,
   type UpdateBotMemoryCommand,
   type UpdateRuntimeProfileCommand,
+  type UpdateTaskCommand,
+  type UsageReport,
   type WorkspaceHint,
 } from "@jj/contracts";
 import type { Database, IdKind } from "@jj/db";
@@ -59,7 +61,8 @@ import {
   type TaskStreamOptions,
   type TaskSubscription,
 } from "./services/stream";
-import { createTask, stopTask } from "./services/tasks";
+import { createTask, stopTask, updateTaskSettings } from "./services/tasks";
+import { usageReport } from "./services/usage";
 import { eventPage, taskSummaries, taskView } from "./services/views";
 import { createWorker, type Worker } from "./worker/worker";
 
@@ -124,6 +127,8 @@ export interface Engine {
   drivers(): Promise<{ drivers: SandboxDriverInfo[] }>;
   /** `GET /api/models`. */
   models(): ModelsView;
+  /** `GET /api/usage`. */
+  usage(): Promise<UsageReport>;
   tasks: {
     list(): Promise<{ tasks: TaskSummary[] }>;
     create(command: CreateTaskCommand): Promise<{ task: Task }>;
@@ -133,6 +138,8 @@ export interface Engine {
       command: PostTaskMessageCommand,
     ): Promise<{ message: TaskMessage }>;
     stop(taskId: string, command?: StopTaskCommand): Promise<{ task: Task }>;
+    /** `PATCH /api/tasks/:id`: the spend cap. */
+    update(taskId: string, command: UpdateTaskCommand): Promise<{ task: Task }>;
     /** `GET /api/tasks/:id/events?after=`. */
     events(
       taskId: string,
@@ -230,6 +237,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
     },
     drivers: async () => ({ drivers: await ctx.drivers.list() }),
     models: () => profileService.modelsView(ctx),
+    usage: () => usageReport(ctx),
     tasks: {
       list: async () => ({
         tasks: await taskSummaries(ctx.db, { redact: await ctx.redactor() }),
@@ -238,6 +246,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       get: (taskId) => taskView(ctx, taskId),
       postMessage: (taskId, command) => postTaskMessage(ctx, taskId, command),
       stop: (taskId, command = {}) => stopTask(ctx, taskId, command),
+      update: (taskId, command) => updateTaskSettings(ctx, taskId, command),
       events: (taskId, options) => eventPage(ctx, taskId, options),
       subscribe: (taskId, options) => subscribeTask(ctx, taskId, options),
       artifactContent: (taskId, artifactId) =>

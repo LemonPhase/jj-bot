@@ -188,7 +188,7 @@ describe("context compaction in the engine", () => {
           row.runId === summary.runId &&
           row.sessionId === sessionId &&
           row.botId === team.byName[ada] &&
-          row.model === "scripted/team" &&
+          row.model === summary.payload.model &&
           row.inputTokens === summary.payload.usage.inputTokens &&
           row.outputTokens === summary.payload.usage.outputTokens,
       ),

@@ -154,6 +154,12 @@ describe("ModelRegistry", () => {
       expect.objectContaining({
         ref: "scripted/team",
         name: "Scripted test model",
+        cost: { inputPerMTok: 0, outputPerMTok: 0 },
+      }),
+      expect.objectContaining({
+        ref: "scripted/team-priced",
+        name: "Scripted test model (fictional price)",
+        cost: { inputPerMTok: 1, outputPerMTok: 4 },
       }),
     ]);
     expect(enabled.defaultModel()).toBe(SCRIPTED_MODEL_REF);

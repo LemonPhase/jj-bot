@@ -5,7 +5,7 @@ import { z } from "zod";
  * additive changes and the major for breaking ones, and record every change in
  * docs/contract-changelog.md.
  */
-export const CONTRACT_VERSION = "1.2.0";
+export const CONTRACT_VERSION = "1.3.0";
 
 /** Longest text a command accepts (messages, goals, instructions). */
 export const COMMAND_TEXT_LIMIT = 20_000;
@@ -25,6 +25,12 @@ export const modelRefSchema = z
     /^[a-z0-9][a-z0-9._-]*\/\S+$/,
     "Use a provider/model reference, for example anthropic/<model-id>.",
   );
+
+/** Largest spend cap, in US dollars. It only rejects runaway values. */
+export const MAX_SPEND_CAP_USD = 10_000;
+
+/** A spend cap in US dollars: positive, at most MAX_SPEND_CAP_USD. */
+export const spendCapUsdSchema = z.number().positive().max(MAX_SPEND_CAP_USD);
 
 /** Unique, non-empty list of ids. */
 export const idListSchema = z

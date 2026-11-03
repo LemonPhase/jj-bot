@@ -22,6 +22,12 @@ import type { ExecutorEvent, PiMessage, RunHooks } from "../ports";
 import type { Redactor } from "../redact";
 import { storeArtifact } from "../services/artifacts";
 import { lockTask, updateSession } from "../services/sessions";
+import {
+  noteCapped,
+  noteThreshold,
+  type SpendStop,
+  spendStop,
+} from "../services/spend";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import type { TaskSandboxes } from "./sandboxes";
 
@@ -95,6 +101,8 @@ export interface RunContext {
   taskFinished: boolean;
   /** Replaces the server's secrets in what this run persists (see redact.ts). */
   redact: Redactor;
+  /** The cap that refused this run's model call, once one did. */
+  spendStop?: SpendStop;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>
@@ -262,6 +270,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
         cacheReadTokens: event.usage.cacheReadTokens,
         cacheWriteTokens: event.usage.cacheWriteTokens,
         costUsd: event.usage.costUsd,
+        priced: event.usage.unpricedCalls === 0,
         createdAt: ctx.clock(),
       });
       await emit(tx, rc.task.id, {
@@ -322,6 +331,27 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
   }
 }
 
+/**
+ * Before a model call: refuses it at a spend cap (recording `spend.capped`),
+ * and records `spend.threshold` when the task's spend passed the soft one.
+ */
+async function admitModelCall(rc: RunContext): Promise<string | undefined> {
+  return writeRun(rc, async (tx) => {
+    const attribution = attributionOf(rc);
+    const stop = await spendStop(tx, rc.deps.ctx, {
+      taskId: rc.task.id,
+      botId: rc.bot.id,
+    });
+    if (!stop) {
+      await noteThreshold(tx, rc.task.id, attribution);
+      return undefined;
+    }
+    rc.spendStop = stop;
+    await noteCapped(tx, rc.task.id, stop, attribution);
+    return stop.message;
+  });
+}
+
 /** The executor's hooks. What they persist is redacted first (see redact.ts). */
 export function runHooks(rc: RunContext): RunHooks {
   const { redact } = rc;
@@ -348,5 +378,6 @@ export function runHooks(rc: RunContext): RunHooks {
     drainInbox: () => takeInbox(rc),
     spillOutput: (text, label) =>
       writeRun(rc, (tx) => spill(tx, rc, redact(text), redact(label))),
+    admitModelCall: () => admitModelCall(rc),
   };
 }
