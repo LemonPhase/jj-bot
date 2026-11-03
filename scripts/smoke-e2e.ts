@@ -579,6 +579,14 @@ async function main(): Promise<boolean> {
         await download(base, headers, task.id, artifact);
     });
 
+    await uploadsInWorkspace({
+      base,
+      headers,
+      expectStatus,
+      coordinatorBotId: bots.Ada,
+      scripted: !realModel,
+    });
+
     if (restoreCommand)
       await restoreSurvival({
         base,
@@ -920,6 +928,147 @@ function removeDockerNamespace() {
  * is never completed. On a real model only the first runs, and only its
  * verified completion is checked.
  */
+/**
+ * Uploads: two files staged as raw bytes (`POST /api/uploads`, the one write
+ * that is not JSON, still refused cross-site and as JSON) and attached at
+ * creation are in the workspace before the coordinator's first model call,
+ * where its first command, `sha256sum uploads/*`, reads exactly those bytes.
+ */
+async function uploadsInWorkspace(options: {
+  base: string;
+  headers: Record<string, string>;
+  expectStatus: ExpectStatus;
+  coordinatorBotId: string;
+  scripted: boolean;
+}) {
+  const { base, headers, expectStatus } = options;
+  const files = {
+    "table.csv": Buffer.from("id,name\n1,Ada\n2,Grace\n"),
+    "blob.bin": Buffer.from([0, 255, 1, 254, 10, 13, 0, 7]),
+  };
+  const put = (
+    name: string,
+    body: Uint8Array,
+    extra: Record<string, string> = {},
+  ) =>
+    fetch(`${base}/api/uploads?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "Content-Type": "application/octet-stream",
+        ...extra,
+      },
+      body,
+    });
+  await step("uploads: refused as JSON and cross-site", async () => {
+    const json = await put("a.txt", Buffer.from("{}"), {
+      "Content-Type": "application/json",
+    });
+    check(json.status === 415, `JSON upload answered ${json.status}`);
+    const crossSite = await put("a.txt", Buffer.from("x"), {
+      "Sec-Fetch-Site": "cross-site",
+    });
+    check(
+      crossSite.status === 403,
+      `cross-site upload answered ${crossSite.status}`,
+    );
+  });
+  const staged = await step(
+    "uploads: stage two files as raw bytes",
+    async () => {
+      const ids: string[] = [];
+      for (const [name, bytes] of Object.entries(files)) {
+        const response = await put(name, bytes);
+        const text = await response.text();
+        check(response.status === 201, `${name}: ${response.status} ${text}`);
+        const { upload } = JSON.parse(text) as {
+          upload: { id: string; sha256: string; sizeBytes: number };
+        };
+        check(
+          upload.sha256 === createHash("sha256").update(bytes).digest("hex"),
+          `${name}: sha256 ${upload.sha256}`,
+        );
+        ids.push(upload.id);
+      }
+      return ids;
+    },
+  );
+  const { task } = await step("uploads: create a task with both", () =>
+    expectStatus("POST", "/api/tasks", 201, {
+      goal: "Check the uploaded files: run `sha256sum uploads/*` once, then complete the task with what it printed.",
+      title: "Uploaded files",
+      coordinatorBotId: options.coordinatorBotId,
+      uploads: staged.map((uploadId) => ({ uploadId })),
+    }),
+  );
+  const events = await step("uploads: follow the task to its end", () =>
+    follow(base, headers, task.id, {
+      after: 0,
+      reconnect: false,
+      until: (event) => event.type === "task.finished",
+    }),
+  );
+  await step(
+    "uploads: placed before the first model call, and downloadable",
+    async () => {
+      const view = (await expectStatus(
+        "GET",
+        `/api/tasks/${task.id}`,
+        200,
+      )) as TaskView;
+      check(view.task.status === "completed", `status ${view.task.status}`);
+      const uploaded = view.artifacts.filter((artifact) => artifact.upload);
+      check(
+        uploaded.length === 2 &&
+          uploaded.every((artifact) => artifact.upload?.state === "placed"),
+        `uploads ${JSON.stringify(uploaded.map((artifact) => [artifact.path, artifact.upload]))}`,
+      );
+      const placed = events.filter(
+        (event) => event.type === "artifact.updated",
+      );
+      const firstCall = events.find((event) => event.type === "model.started");
+      check(placed.length === 2, `${placed.length} artifact.updated`);
+      check(
+        firstCall &&
+          placed.every((event) => event.sequence < firstCall.sequence),
+        "a model call came before the files were placed",
+      );
+      const announced = view.messages.find(
+        (message) =>
+          message.authorKind === "user" && message.intent === "notification",
+      );
+      check(
+        announced?.text ===
+          `Uploaded 2 files: uploads/table.csv (${files["table.csv"].length} B), uploads/blob.bin (8 B)`,
+        `announcement ${JSON.stringify(announced?.text)}`,
+      );
+      for (const artifact of uploaded)
+        await download(base, headers, task.id, artifact);
+      if (!options.scripted) return;
+      const sums = events.find(
+        (event) =>
+          event.type === "tool.finished" &&
+          event.payload.summary === "sha256sum uploads/*",
+      );
+      check(
+        sums?.type === "tool.finished" && sums.payload.ok,
+        "sha256sum did not run",
+      );
+      const expected = Object.entries(files)
+        .map(
+          ([name, bytes]) =>
+            `${createHash("sha256").update(bytes).digest("hex")}  uploads/${name}`,
+        )
+        .sort((a, b) => a.slice(66).localeCompare(b.slice(66)))
+        .join("\n");
+      check(
+        sums.payload.output?.trim() === expected,
+        `sha256sum printed ${JSON.stringify(sums.payload.output)}`,
+      );
+    },
+  );
+}
+
 async function verificationGate(options: {
   expectStatus: ExpectStatus;
   coordinatorBotId: string;

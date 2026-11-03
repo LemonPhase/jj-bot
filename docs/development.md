@@ -157,6 +157,12 @@ Settings are environment variables, read from `.env` at the repository root by t
 | `JJ_MAX_VERIFICATION_ATTEMPTS`          | Verification gate runs one coordinator run may make on a task with a plan, default `3`; after the last failed one the task waits for the user.                                                                     |
 | `JJ_EPHEMERAL_IDLE_MINUTES`             | Minutes an idle ephemeral workspace is kept while its task is open, default `360`; its release discards the files.                                                                                                 |
 | `JJ_MAX_HELD_SANDBOXES`                 | Sandboxes one worker holds at once, default `32`; over it the least recently used idle one is released.                                                                                                            |
+| `JJ_UPLOADS`                            | `off` serves no uploads: bootstrap reports `capabilities.uploads` null and the upload routes answer 404. Default `on`.                                                                                             |
+| `JJ_UPLOAD_MAX_FILE_MB`                 | Largest uploaded file in MiB, default `16`, at most `64`.                                                                                                                                                          |
+| `JJ_UPLOAD_MAX_FILES`                   | Files one command attaches, default and at most `20`. A command also takes at most 64 MiB in all.                                                                                                                  |
+| `JJ_UPLOAD_MAX_TASK_MB`                 | A task's uploads in all, in MiB, default `128`, at most `1024`.                                                                                                                                                    |
+| `JJ_UPLOAD_MAX_STAGED_MB`               | Uploads staged and not attached yet, across the server, in MiB, default `256`, at most `4096`. Staged uploads not attached within an hour are deleted.                                                             |
+| `JJ_UPLOAD_EXTENSIONS`                  | Extensions an uploaded file's name must end with, comma-separated (`.csv,.txt`); unset (default) takes any regular file.                                                                                           |
 | `JJ_SANDBOX_DRIVERS`                    | Drivers to register, comma-separated from `docker` and `local`, default both. `docker` stays registered without a daemon and reports unavailable.                                                                  |
 | `JJ_SANDBOX_ROOT`                       | Workspace root of the `local` driver, default `<os.tmpdir()>/jj-sandbox`; the OS may clear it, so point it somewhere durable. The operator clears it.                                                              |
 | `JJ_DOCKER_NAMESPACE`                   | Container and volume name prefix of the `docker` driver, default `jj-sandbox`.                                                                                                                                     |
@@ -188,37 +194,40 @@ Schema: opening the database applies the SQL migrations in `packages/db/migratio
 
 The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.2); the schemas are in `packages/contracts`. `/health/live`, `/health/ready` and `/metrics` are operational endpoints with no contract schema ([Observability](#observability)).
 
-| Method | Path                                           | Answer                                                      |
-| ------ | ---------------------------------------------- | ----------------------------------------------------------- |
-| `GET`  | `/health/live`, `/health`                      | liveness: the process answers                               |
-| `GET`  | `/health/ready`                                | readiness checks; 200 when ready, 503 otherwise             |
-| `GET`  | `/metrics`                                     | Prometheus metrics, behind the token like `/api`            |
-| `GET`  | `/api/bootstrap`                               | mode, contract version, capabilities, bots, tasks, profiles |
-| `GET`  | `/api/stream`                                  | SSE workspace hints                                         |
-| `GET`  | `/api/bots`, `POST /api/bots`                  | `{ bots }`; `{ bot }` (201)                                 |
-| `GET`  | `/api/bots/:id`, `PATCH`, `DELETE`             | `{ bot }`; `{ bot }`; archives (204)                        |
-| `GET`  | `/api/bots/:id/memory`, `PUT`                  | the bot's memory                                            |
-| `GET`  | `/api/bots/:id/messages`, `POST`               | the conversation; `{ message }` (201), the reply follows    |
-| `GET`  | `/api/runtime-profiles`, `POST`                | `{ profiles }`; `{ profile }` (201)                         |
-| `GET`  | `/api/runtime-profiles/:id`, `PATCH`, `DELETE` | `{ profile }`; `{ profile }`; 204                           |
-| `GET`  | `/api/sandbox-drivers`                         | `{ drivers }` with capabilities and spec JSON Schema        |
-| `GET`  | `/api/models`                                  | providers, their models and the default model               |
-| `PUT`  | `/api/models/providers/:providerId/key`        | stores the provider's key; the models view (`DELETE` too)   |
-| `GET`  | `/api/secrets`                                 | `{ available, secrets }`: names and hints, never a value    |
-| `PUT`  | `/api/secrets/:name`, `DELETE`                 | `{ secret }` (201 new, 200 replaced); 204                   |
-| `GET`  | `/api/tasks`, `POST /api/tasks`                | `{ tasks }` (summaries); `{ task }` (201)                   |
-| `GET`  | `/api/tasks/:id`                               | the task view, with its `cursor`                            |
-| `POST` | `/api/tasks/:id/messages`                      | `{ message }` (201)                                         |
-| `POST` | `/api/tasks/:id/stop`                          | `{ task }`                                                  |
-| `GET`  | `/api/tasks/:id/events?after=&limit=`          | an event page with full output previews                     |
-| `GET`  | `/api/tasks/:id/stream`                        | SSE task events                                             |
-| `GET`  | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |
-| `GET`  | `/api/task-templates`, `POST`                  | `{ templates }`; `{ template }` (201)                       |
-| `GET`  | `/api/task-templates/:id`, `PATCH`, `DELETE`   | `{ template }`; `{ template }`; 204                         |
-| `POST` | `/api/task-templates/:id/tasks`                | `{ task }` (201): a task started from the template          |
+| Method   | Path                                           | Answer                                                      |
+| -------- | ---------------------------------------------- | ----------------------------------------------------------- |
+| `GET`    | `/health/live`, `/health`                      | liveness: the process answers                               |
+| `GET`    | `/health/ready`                                | readiness checks; 200 when ready, 503 otherwise             |
+| `GET`    | `/metrics`                                     | Prometheus metrics, behind the token like `/api`            |
+| `GET`    | `/api/bootstrap`                               | mode, contract version, capabilities, bots, tasks, profiles |
+| `GET`    | `/api/stream`                                  | SSE workspace hints                                         |
+| `GET`    | `/api/bots`, `POST /api/bots`                  | `{ bots }`; `{ bot }` (201)                                 |
+| `GET`    | `/api/bots/:id`, `PATCH`, `DELETE`             | `{ bot }`; `{ bot }`; archives (204)                        |
+| `GET`    | `/api/bots/:id/memory`, `PUT`                  | the bot's memory                                            |
+| `GET`    | `/api/bots/:id/messages`, `POST`               | the conversation; `{ message }` (201), the reply follows    |
+| `GET`    | `/api/runtime-profiles`, `POST`                | `{ profiles }`; `{ profile }` (201)                         |
+| `GET`    | `/api/runtime-profiles/:id`, `PATCH`, `DELETE` | `{ profile }`; `{ profile }`; 204                           |
+| `GET`    | `/api/sandbox-drivers`                         | `{ drivers }` with capabilities and spec JSON Schema        |
+| `GET`    | `/api/models`                                  | providers, their models and the default model               |
+| `PUT`    | `/api/models/providers/:providerId/key`        | stores the provider's key; the models view (`DELETE` too)   |
+| `GET`    | `/api/secrets`                                 | `{ available, secrets }`: names and hints, never a value    |
+| `PUT`    | `/api/secrets/:name`, `DELETE`                 | `{ secret }` (201 new, 200 replaced); 204                   |
+| `GET`    | `/api/tasks`, `POST /api/tasks`                | `{ tasks }` (summaries); `{ task }` (201)                   |
+| `GET`    | `/api/tasks/:id`                               | the task view, with its `cursor`                            |
+| `POST`   | `/api/tasks/:id/messages`                      | `{ message }` (201)                                         |
+| `POST`   | `/api/tasks/:id/stop`                          | `{ task }`                                                  |
+| `GET`    | `/api/tasks/:id/events?after=&limit=`          | an event page with full output previews                     |
+| `GET`    | `/api/tasks/:id/stream`                        | SSE task events                                             |
+| `GET`    | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |
+| `GET`    | `/api/task-templates`, `POST`                  | `{ templates }`; `{ template }` (201)                       |
+| `GET`    | `/api/task-templates/:id`, `PATCH`, `DELETE`   | `{ template }`; `{ template }`; 204                         |
+| `POST`   | `/api/task-templates/:id/tasks`                | `{ task }` (201): a task started from the template          |
+| `POST`   | `/api/uploads?name=`                           | `{ upload }` (201): the raw body staged as one file         |
+| `DELETE` | `/api/uploads/:id`                             | removes a staged upload not attached (204)                  |
+| `POST`   | `/api/tasks/:id/uploads`                       | `{ artifacts, message }` (201): staged uploads attached     |
 
-- **Errors.** Every non-2xx JSON answer is `{ error: { code, message, details? } }` with a contract code and its status (`VALIDATION_FAILED` 400, `UNAUTHORIZED` 401, `NOT_FOUND` 404, `CONFLICT`, `TEMPLATE_UNUSABLE` and the other refusals 409, `MODEL_NOT_CONFIGURED`, `PROFILE_UNSUPPORTED`, `VERIFICATION_UNAVAILABLE` and `MCP_UNAVAILABLE` 422, `RATE_LIMITED` 429). A body that is not JSON is `VALIDATION_FAILED`, one over 1 MiB is `VALIDATION_FAILED` with 413, a template start whose instructions push the goal over the task limit is `VALIDATION_FAILED` with 422, an unknown route is `NOT_FOUND`. Anything unexpected is `500 INTERNAL` with no detail; the stack goes to the server log.
-- **Browser protection.** Every `/api/*` request with `Sec-Fetch-Site: cross-site` is refused with 403. Without a token, only loopback `Host` values (`localhost`, `127.0.0.1`, `[::1]`, any port) are answered (`API_ALLOWED_HOSTS` is refused at boot then, see [Remote access](#remote-access)); any other `Host`, such as a DNS-rebinding page's own name, gets 403. POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise), so a cross-origin write always needs a CORS preflight, and the API sends no CORS headers. The Vite dev proxy keeps the browser's `Host` (`127.0.0.1:5173`), so it passes. With a token, configured or generated, the bearer check replaces the `Host` check.
+- **Errors.** Every non-2xx JSON answer is `{ error: { code, message, details? } }` with a contract code and its status (`VALIDATION_FAILED` 400, `UNAUTHORIZED` 401, `NOT_FOUND` 404, `CONFLICT`, `TEMPLATE_UNUSABLE` and the other refusals 409, `UPLOAD_TOO_LARGE` 413, `MODEL_NOT_CONFIGURED`, `PROFILE_UNSUPPORTED`, `VERIFICATION_UNAVAILABLE` and `MCP_UNAVAILABLE` 422, `RATE_LIMITED` 429). A body that is not JSON is `VALIDATION_FAILED`, one over 1 MiB is `VALIDATION_FAILED` with 413 (an upload's body is bounded by the upload limits instead, `UPLOAD_TOO_LARGE`), an upload without `Content-Length` is `VALIDATION_FAILED` with 411, a template start whose instructions push the goal over the task limit is `VALIDATION_FAILED` with 422, an unknown route is `NOT_FOUND`. Anything unexpected is `500 INTERNAL` with no detail; the stack goes to the server log.
+- **Browser protection.** Every `/api/*` request with `Sec-Fetch-Site: cross-site` is refused with 403. Without a token, only loopback `Host` values (`localhost`, `127.0.0.1`, `[::1]`, any port) are answered (`API_ALLOWED_HOSTS` is refused at boot then, see [Remote access](#remote-access)); any other `Host`, such as a DNS-rebinding page's own name, gets 403. POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise), so a cross-origin write always needs a CORS preflight, and the API sends no CORS headers. The one exception is `POST /api/uploads`, whose body is a file's raw bytes: it needs `Content-Type: application/octet-stream`, which is not CORS-safelisted either, so it needs the same preflight, and it refuses JSON, multipart and form bodies with 415. Its `Content-Length` is checked against the upload limits before any of the body is read. The Vite dev proxy keeps the browser's `Host` (`127.0.0.1:5173`), so it passes. With a token, configured or generated, the bearer check replaces the `Host` check.
 - **Validation.** The engine parses every request body with its contract schema. Path ids, `after`, `limit` and `Last-Event-ID` are checked in the API.
 - **Task stream.** One frame per event: `id:` the sequence, `event:` the type, `data:` the event JSON. It replays events after `Last-Event-ID`, else after `?after=`, else from the start, then streams new ones; each event is sent once, in order. An unknown task answers 404 before the stream opens. The stream stays open after the task finishes, since a message can continue it.
 - **Workspace stream.** One frame per hint, `event:` its type and `data:` the hint JSON, without ids: it is not resumable, so clients refetch on (re)connect.
