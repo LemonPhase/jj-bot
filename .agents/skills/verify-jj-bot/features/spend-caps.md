@@ -23,12 +23,13 @@ Preconditions:
 - Doctor exits 0. A bot that costs something: in Studio, choose the `Model` option `Scripted test model (fictional price) · not a real model` (`$P "$RUN" select "getByRole('combobox', { name: 'Model' })" "Scripted test model (fictional price) · not a real model"`). The default `Scripted test model` lists no price, so no cap ever stops it.
 
 - **Profile caps.** In the profile editor, fill `Spend cap per task (USD)` with `0.004` and choose `Save changes`. `curl -s "$U/api/runtime-profiles"` shows `maxUsdPerTask: 0.004`; the profile card lists `$0.004 per task`.
-- **Stop at the cap.** Start a task for the bot with a goal that runs three commands (``run `echo one > one.txt`, run `echo two > two.txt`, run `echo three > three.txt` ``). Within seconds the header reads `waiting · v1` and its usage button `… $0.0048 of $0.004 · cap reached`, and the chat shows `Stopped: The task reached its spend cap: … Raise the task's spend cap to continue.` `curl -s "$U/api/tasks/<taskId>"` has one `spend.capped` event.
+- **Stop at the cap.** Start a task for the bot with a goal that runs three commands (``run `echo one > one.txt`, run `echo two > two.txt`, run `echo three > three.txt` ``). Within seconds the header reads `waiting · v1` and its usage button `… $0.004789 of $0.004 · cap reached` (amounts next to a cap get the places they need, as in the server's message), and the chat shows `Stopped: The task reached its spend cap: … Raise the task's spend cap to continue.` `curl -s "$U/api/tasks/<taskId>"` has one `spend.capped` event.
 - **Refused message.** Send `Carry on.` from the composer: the alert `Not sent` repeats the cap message (409 `SPEND_CAP_REACHED`).
 - **Raise and continue.** Click the usage button, fill `Spend cap (USD)` with `0.05` (empty means no cap), choose `Save cap`, then send the message again. The task runs to `done`.
 - **Bot cap.** Lower `Spend cap per bot per day (USD)` below what the bot spent and send it a direct message: the alert `Error` reads `<bot> reached its daily spend cap: …`. The `Spend` section of its `Profile` panel reads `Last 24 hours: … · cap reached`.
 - **Usage.** Settings → `Usage` lists `Everything` over 24 hours, 7 days and 30 days, the table `Per bot` (spend against each bot's cap) and `Per model, last 30 days`. Confirm with `curl -s "$U/api/usage"`.
-- **Unpriced.** A task of a bot on the default `Scripted test model` shows `… $0.00 of $5.00 · N unpriced` in its header; the button's tooltip says those calls are not in the cost and no cap bounds them.
+- **Unpriced.** A task of a bot on the default `Scripted test model` shows `… $0.00 of $5.00 · N unpriced` in its header; the button's tooltip says those calls are not in the cost and no cap bounds them. Settings → `Usage` adds `+ N unpriced` to every cell that has such calls.
+- **Update replies.** A task that stops at its coordinator's daily cap waits; the chat's update reply is refused too, so the chat shows the engine's plain update (`(Posted automatically: the reply to this update failed.)`) whose text names the cap, and the banner `Reply failed` reads `Not answered: <bot> reached its daily spend cap: …`.
 
 ## Gotchas
 
