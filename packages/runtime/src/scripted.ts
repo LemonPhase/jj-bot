@@ -38,10 +38,12 @@ import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-option
  *
  * A worker reads its brief from the system prompt's last `## Your brief`
  * section (the engine puts it there), else from its first message; the rest
- * of the system prompt is ignored. In chat it finds tasks by calling
- * `list_tasks` and reading its lines (`- <id> "<title>": <status> · …`), a
- * task's outcome in `get_task`'s `Result:` or `Error:` line, and answers a
- * task update (an input that starts with `[Task update]`) from its text.
+ * of the system prompt is ignored. A coordinator whose goal quotes a question
+ * after "ask" (ask `Which colour?`) asks it first and waits for the user.
+ * In chat it finds tasks by calling `list_tasks` and reading its lines
+ * (`- <id> "<title>": <status> · …`), a task's outcome in `get_task`'s
+ * `Result:` or `Error:` line, and answers a task update (an input that
+ * starts with `[Task update]`) from its text.
  *
  * Like a provider, it refuses a prompt longer than its context window
  * (estimated at four characters a token) with a context overflow error. Asked
@@ -301,6 +303,15 @@ export function scriptedCommands(brief: string): string[] {
     .filter(Boolean);
 }
 
+/**
+ * The question a goal quotes after "ask", as in ask `Which colour?`. A
+ * scripted coordinator asks it before any work and ends its turn, so the
+ * task waits for the user; the next input carries on.
+ */
+export function scriptedQuestion(goal: string): string | undefined {
+  return /\bask `([^`\n]+)`/i.exec(goal)?.[1]?.trim() || undefined;
+}
+
 /** A worker writes the notes file its brief names, else one named after the brief. */
 const notesFileFor = (brief: string) =>
   /\bnotes-[a-z0-9-]+\.md\b/.exec(brief)?.[0] ??
@@ -469,6 +480,17 @@ function coordinatorTurn(conversation: Conversation): ScriptedTurn {
   const { messages, tools, calls } = conversation;
   const goal = userTexts(messages)[0] ?? "the task";
   const trailing = trailingResults(conversation);
+
+  // A goal that says ask `…` waits for the user before any work.
+  const question = scriptedQuestion(goal);
+  const asked = messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.content.some(
+        (block) => block.type === "text" && block.text === question,
+      ),
+  );
+  if (question && !asked) return { text: question };
 
   const completion = trailing.find(
     (result) => result.toolName === "complete_task",

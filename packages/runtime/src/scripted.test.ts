@@ -15,6 +15,7 @@ import {
   SCRIPTED_MODEL_REF,
   scriptedCommands,
   scriptedNotesFile,
+  scriptedQuestion,
   scriptedSummary,
   scriptedTurn,
 } from "./scripted";
@@ -214,6 +215,58 @@ describe("scripted test model", () => {
     )?.[1];
     expect(file).toBeDefined();
     expect(await workspace.sandbox.fs.stat(file ?? "")).toBeDefined();
+  });
+
+  it("asks the question a goal quotes after ask, waits, then carries on", async () => {
+    expect(scriptedQuestion("Paint it. Ask `Which colour?` first.")).toBe(
+      "Which colour?",
+    );
+    expect(scriptedQuestion("Paint it.")).toBeUndefined();
+    const executor = new PiSessionExecutor({
+      models: new ModelRegistry({ env: {}, enableScripted: true }),
+    });
+    const completions: string[] = [];
+    const transcript: TranscriptEntry[] = [];
+    const run = async (inputs: string[]) => {
+      const recorded = recordingHooks();
+      const outcome = await executor.run({
+        sessionId: "asker",
+        runId: `run-${transcript.length}`,
+        systemPrompt: "You are Solo, working alone.",
+        transcript: [...transcript],
+        inputs,
+        model: SCRIPTED_MODEL_REF,
+        sandbox: workspace.sandbox,
+        sandboxLimits: workspace.limits,
+        codingTools: ["write", "bash"],
+        collaborationTools: [
+          {
+            name: "complete_task",
+            description: "Finish.",
+            parameters: Type.Object({ result: Type.String() }),
+            execute: async (args) => {
+              completions.push(String(args.result));
+              return { text: "ok", endRun: true };
+            },
+          },
+        ],
+        budgets: budgets(),
+        signal: new AbortController().signal,
+        hooks: recorded.hooks,
+      });
+      transcript.push(...recorded.entries);
+      return outcome;
+    };
+    expect(
+      await run([
+        "New task. Goal (version 1):\nPaint it. Ask `Which colour?` first.",
+      ]),
+    ).toEqual({ kind: "ended", finalText: "Which colour?" });
+    expect(completions).toEqual([]);
+    expect(await run(["Message from the user:\nBlue."])).toMatchObject({
+      kind: "ended",
+    });
+    expect(completions).toHaveLength(1);
   });
 
   it("runs the commands a brief quotes after run, once each, after writing its notes", async () => {
