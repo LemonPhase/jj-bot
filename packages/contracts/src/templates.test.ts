@@ -4,7 +4,6 @@ import {
   API_ERROR_CODES,
   apiErrorCodeSchema,
   COMMAND_TEXT_LIMIT,
-  CONTRACT_VERSION,
   createTaskTemplateCommandSchema,
   describeTemplateProblem,
   MAX_TASK_TEMPLATES,
@@ -47,14 +46,11 @@ const template = {
 };
 
 describe("contract version 1.9.0 (task templates)", () => {
-  it("is 1.9.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.0");
+  it("is recorded in the changelog", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
-    const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
-    expect(newest).toBe(CONTRACT_VERSION);
     expect(changelog).toMatch(/^## 1\.9\.0 — .* — Task templates$/m);
   });
 

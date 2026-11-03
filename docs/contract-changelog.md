@@ -31,6 +31,21 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.9.1 — 2026-11-03 — Disabled MCP servers need no secret grants
+
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comment "Contract refinement for step 4a (#136): 1.9.1") · **Compatibility:** clarifying (no wire change; a command that was refused can now be accepted)
+
+- `ungrantedMcpSecrets`, and so `refineMcpSecretGrants` in `createRuntimeProfileCommandSchema` and
+  `updateRuntimeProfileCommandSchema`, check enabled servers only. Removing a stored secret disables
+  every MCP server that uses it but keeps its `secretEnv` reference, so a create, or a patch that
+  carries both `secrets` and `mcpServers`, with such a server is accepted. Enabling it again is
+  checked: its secret must be granted. No field records why a server was disabled.
+
+**Action required (frontend):** none; the profile editor may send a disabled server whose secret is
+gone, and should say that enabling it needs the secret stored and granted again.
+**Action required (backend):** none beyond this change: the server checks grants on enabled servers
+of the merged profile.
+
 ## 1.9.0 — 2026-11-03 — Task templates
 
 **Changed by:** backend and frontend ([#91](https://github.com/LemonPhase/jj-bot/issues/91), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/91#issuecomment-6613485332)) · **Compatibility:** additive

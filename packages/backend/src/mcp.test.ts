@@ -1072,6 +1072,44 @@ describe("profile save-time rules", () => {
     expect(remoteAgain.message).toBe(
       "mcpServers.0.secretHeaders.Authorization: no sandbox secret named DOCS_KEY is stored. Add it in Settings → Secrets first.",
     );
+    // The contract's check skips them too: a patch carrying both lists, and
+    // a create, save the disabled servers ...
+    await engine.profiles.update(profile.id, {
+      secrets: [],
+      mcpServers: stored.mcpServers,
+    });
+    const sandbox = { driver: "local", network: { mode: "open" as const } };
+    const { profile: copy } = await engine.profiles.create({
+      name: "Copy",
+      sandbox,
+      secrets: [],
+      mcpServers: stored.mcpServers,
+    });
+    expect(copy.mcpServers.map((server) => server.enabled)).toEqual([
+      false,
+      false,
+    ]);
+    // ... and refuse one enabled without its grant, in both.
+    for (const attempt of [
+      () =>
+        engine.profiles.update(profile.id, {
+          secrets: [],
+          mcpServers: [{ ...(stdio as McpServerInput), enabled: true }],
+        }),
+      () =>
+        engine.profiles.create({
+          name: "Enabled copy",
+          sandbox,
+          secrets: [],
+          mcpServers: [{ ...(stdio as McpServerInput), enabled: true }],
+        }),
+    ]) {
+      const refused = await failure(attempt());
+      expect(refused.code).toBe("VALIDATION_FAILED");
+      expect(refused.message).toBe(
+        "mcpServers.0.secretEnv.DOCS_TOKEN: DOCS_SECRET is not granted by this profile; grant it under secrets first.",
+      );
+    }
   });
 });
 

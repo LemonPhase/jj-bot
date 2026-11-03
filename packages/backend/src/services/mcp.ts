@@ -143,17 +143,16 @@ export function assertMcpRunnable(
 
 /**
  * VALIDATION_FAILED for each stdio `secretEnv` secret the profile does not
- * grant, on enabled servers: one disabled when its secret was removed keeps
- * its reference, and is checked again when it is enabled.
+ * grant, on enabled servers (`ungrantedMcpSecrets`): one disabled when its
+ * secret was removed keeps its reference, and is checked again when it is
+ * enabled.
  */
 export function assertSecretEnvGranted(
   servers: readonly McpServer[],
   grants: readonly string[],
   at: At = inProfile,
 ): void {
-  const missing = ungrantedMcpSecrets(servers, grants).filter(
-    (entry) => servers[entry.index]?.enabled,
-  );
+  const missing = ungrantedMcpSecrets(servers, grants);
   if (missing.length > 0)
     throw new DomainError(
       "VALIDATION_FAILED",

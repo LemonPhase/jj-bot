@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   approvalRuleMatches,
@@ -7,6 +8,7 @@ import {
   approvalSubjectProblem,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
+  CONTRACT_VERSION,
   canonicalForm,
   canonicalJson,
   createRuntimeProfileCommandSchema,
@@ -403,12 +405,31 @@ describe("MCP servers on a runtime profile", () => {
       patch({ mcpServers: [stdio], secrets: ["DOCS_TOKEN"] }).success,
     ).toBe(true);
     expect(patch({ mcpServers: [stdio], secrets: [] }).success).toBe(false);
+    // A disabled server (its secret removed) runs nowhere: not checked.
+    expect(
+      patch({ mcpServers: [{ ...stdio, enabled: false }], secrets: [] })
+        .success,
+    ).toBe(true);
     expect(patch({ mcpServers: [stdio] }).success).toBe(true);
     expect(patch({ secrets: [] }).success).toBe(true);
     expect(patch({ mcpServers: [], skills: [] })).toMatchObject({
       success: true,
       data: { mcpServers: [], skills: [] },
     });
+  });
+
+  it("is contract 1.9.1, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.9.1");
+    const changelog = readFileSync(
+      new URL("../../../docs/contract-changelog.md", import.meta.url),
+      "utf8",
+    );
+    expect(/^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1]).toBe(
+      CONTRACT_VERSION,
+    );
+    expect(changelog).toMatch(
+      /^## 1\.9\.1 — .* — Disabled MCP servers need no secret grants$/m,
+    );
   });
 
   it("lists the ungranted secrets for the server's merged check", () => {
@@ -422,6 +443,14 @@ describe("MCP servers on a runtime profile", () => {
       },
     ]);
     expect(ungrantedMcpSecrets(servers, ["DOCS_TOKEN"])).toEqual([]);
+    // Enabled servers only: a disabled one is checked once it is enabled.
+    const disabled = mcpServersSchema.parse([{ ...stdio, enabled: false }]);
+    expect(ungrantedMcpSecrets(disabled, [])).toEqual([]);
+    expect(
+      command({ mcpServers: [{ ...stdio, enabled: false }], secrets: [] })
+        .success,
+    ).toBe(true);
+    expect(command({ mcpServers: [stdio], secrets: [] }).success).toBe(false);
   });
 
   it("parses profiles from servers before MCP as having none, and stays lenient on read", () => {
