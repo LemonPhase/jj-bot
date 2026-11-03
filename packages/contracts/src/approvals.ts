@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { canonicalJson } from "./canonical";
 import { idSchema, timestampSchema } from "./common";
+import { MCP_TOOL_PREFIX, mcpServerOf, toolSelectorMatches } from "./mcp";
 import { type ApprovalRule, approvalRuleSchema } from "./profiles";
 
 /**
@@ -123,12 +125,15 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 
 /**
  * What a rule's `match` is looked for in: the command for `bash`, the
- * pattern and path for `grep` and `find`, the path for the other file tools.
+ * pattern and path for `grep` and `find`, the path for the other file
+ * tools, and for an MCP tool (`mcp__…`) its arguments as canonical one-line
+ * JSON (keys sorted at every depth, no spaces).
  */
 export function approvalSubject(
   tool: string,
   args: Record<string, unknown>,
 ): string {
+  if (tool.startsWith(MCP_TOOL_PREFIX)) return canonicalJson(args);
   switch (tool) {
     case "bash":
       return text(args.command);
@@ -159,7 +164,8 @@ function inOrder(text: string, parts: readonly string[]): boolean {
 }
 
 /**
- * True when the rule asks for approval of this call: the tool matches and,
+ * True when the rule asks for approval of this call: the tool matches (the
+ * same name, or `mcp__<server>__*` and a tool of that server) and,
  * when the rule has a `match`, its text is found in the call's subject.
  * Case-sensitive; `*` stands for any run of characters, and runs of
  * whitespace in either count as one space. Linear in the subject's length
@@ -185,15 +191,23 @@ export function matchingApprovalRule(
 ): ApprovalRule | undefined {
   let subject: string | undefined;
   return rules.find((rule) => {
-    if (rule.tool !== tool) return false;
+    if (!toolSelectorMatches(rule.tool, tool)) return false;
     if (rule.match === undefined) return true;
     subject ??= collapse(approvalSubject(tool, args));
     return inOrder(subject, collapse(rule.match).split("*"));
   });
 }
 
-/** A rule on one line: "bash calls matching `git push*`", "every write call". */
+/**
+ * A rule on one line: "bash calls matching `git push*`", "every write
+ * call", "every call to MCP server docs".
+ */
 export function describeApprovalRule(rule: ApprovalRule): string {
+  const server = rule.tool.endsWith("__*") ? mcpServerOf(rule.tool) : undefined;
+  if (server !== undefined)
+    return rule.match === undefined
+      ? `every call to MCP server ${server}`
+      : `calls to MCP server ${server} matching \`${rule.match}\``;
   return rule.match === undefined
     ? `every ${rule.tool} call`
     : `${rule.tool} calls matching \`${rule.match}\``;

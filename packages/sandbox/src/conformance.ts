@@ -856,6 +856,9 @@ export function describeSandboxConformance(
         expect(typeof sandbox.metrics === "function").toBe(
           driver.capabilities.metrics,
         );
+        expect(
+          typeof (sandbox as { spawn?: unknown }).spawn === "function",
+        ).toBe(driver.capabilities.spawn);
       },
       testTimeout,
     );

@@ -13,7 +13,13 @@ import {
   spendCapUsdSchema,
   timestampSchema,
 } from "./common";
+import {
+  mcpServersSchema,
+  mcpToolSelectorSchema,
+  refineMcpSecretGrants,
+} from "./mcp";
 import { secretGrantsSchema, storedSecretSchema } from "./secrets";
+import { skillGrantsSchema } from "./skills";
 
 // The sandbox spec is owned by the driver contract; it is re-exported, never redefined.
 export {
@@ -73,13 +79,16 @@ export const MAX_APPROVAL_RULES = 50;
 /**
  * A kind of call that waits for the user's approval before it runs: every
  * call of `tool`, or only those whose subject contains `match` (see
- * `approvalRuleMatches`). Rules guide a cooperative model; they are not a
+ * `approvalRuleMatches`). `tool` is a coding tool, one MCP tool
+ * (`mcp__<server>__<tool>`) or every tool of an MCP server
+ * (`mcp__<server>__*`). Rules guide a cooperative model; they are not a
  * security boundary: a command can reach the same effect in ways no text
  * rule foresees, such as a script it wrote. The sandbox and its network
- * policy remain the boundary.
+ * policy remain the boundary. On a remote MCP server's tools a rule does
+ * stop the effect, since only the worker holds that server's credentials.
  */
 export const approvalRuleSchema = z.object({
-  tool: toolNameSchema,
+  tool: z.union([toolNameSchema, mcpToolSelectorSchema]),
   /**
    * Case-sensitive text, found anywhere in the call's subject; `*` stands
    * for any run of characters, and a run of whitespace for any other.
@@ -141,6 +150,13 @@ export const runtimeProfileSchema = z.object({
    * profile, so every bot in the task can use them.
    */
   secrets: z.array(z.string().min(1)).default([]),
+  /**
+   * MCP servers whose tools this profile's bots may call (see `mcp.ts`).
+   * Parsed as empty from servers before MCP.
+   */
+  mcpServers: mcpServersSchema.default(() => []),
+  /** Skills from the library granted to this profile's bots, by name. Parsed as empty from servers before skills. */
+  skills: skillGrantsSchema.default(() => []),
   isDefault: z.boolean(),
   status: runtimeProfileStatusSchema,
   createdAt: timestampSchema,
@@ -150,18 +166,30 @@ export const runtimeProfileSchema = z.object({
 /**
  * Creates a runtime profile. Omitted fields take server defaults: empty
  * description, every coding tool, default budgets, no secrets, no approval
- * rules, not the default profile. Granted secrets must be stored.
+ * rules, no MCP servers, no skills, not the default profile. Granted secrets
+ * must be stored, and each stdio server's `secretEnv` must name secrets the
+ * same command grants.
  */
-export const createRuntimeProfileCommandSchema = z.object({
-  name: profileNameSchema,
-  description: profileDescriptionSchema.optional(),
-  sandbox: sandboxSpecSchema,
-  tools: toolListSchema.optional(),
-  budgets: profileBudgetsSchema.optional(),
-  approvals: approvalRulesSchema.optional(),
-  secrets: secretGrantsSchema.optional(),
-  isDefault: z.boolean().optional(),
-});
+export const createRuntimeProfileCommandSchema = z
+  .object({
+    name: profileNameSchema,
+    description: profileDescriptionSchema.optional(),
+    sandbox: sandboxSpecSchema,
+    tools: toolListSchema.optional(),
+    budgets: profileBudgetsSchema.optional(),
+    approvals: approvalRulesSchema.optional(),
+    secrets: secretGrantsSchema.optional(),
+    mcpServers: mcpServersSchema.optional(),
+    skills: skillGrantsSchema.optional(),
+    isDefault: z.boolean().optional(),
+  })
+  .superRefine((command, context) =>
+    refineMcpSecretGrants(
+      command.mcpServers ?? [],
+      command.secrets ?? [],
+      context,
+    ),
+  );
 
 const spec = sandboxSpecSchema.shape;
 const limits = sandboxLimitsSchema.shape;
@@ -205,6 +233,8 @@ export const updateRuntimeProfileCommandObjectSchema = z
       .partial(),
     approvals: approvalRulesSchema,
     secrets: secretGrantsSchema,
+    mcpServers: mcpServersSchema,
+    skills: skillGrantsSchema,
     isDefault: z.boolean(),
   })
   .partial();
@@ -212,15 +242,18 @@ export const updateRuntimeProfileCommandObjectSchema = z
 /**
  * Partial update with no defaults. The server deep-merges it onto the stored
  * profile — nested objects field by field, while `tools`, `secrets`,
- * `approvals`, `sandbox.network`, `sandbox.env` and `sandbox.driverConfig`
- * are replaced whole — then validates
- * the merged spec with the driver before saving.
+ * `approvals`, `mcpServers`, `skills`, `sandbox.network`, `sandbox.env` and
+ * `sandbox.driverConfig` are replaced whole — then validates the merged spec
+ * with the driver, and the merged `mcpServers` against the merged `secrets`,
+ * before saving. A patch that carries both is checked here too.
  */
 export const updateRuntimeProfileCommandSchema =
-  updateRuntimeProfileCommandObjectSchema.refine(
-    hasSomeField,
-    SOME_FIELD_REQUIRED,
-  );
+  updateRuntimeProfileCommandObjectSchema
+    .refine(hasSomeField, SOME_FIELD_REQUIRED)
+    .superRefine((command, context) => {
+      if (command.mcpServers && command.secrets)
+        refineMcpSecretGrants(command.mcpServers, command.secrets, context);
+    });
 
 export const driverCapabilitiesSchema = z.object({
   /** Network modes the driver can enforce; a spec asking for another mode is refused. */
@@ -230,6 +263,8 @@ export const driverCapabilitiesSchema = z.object({
   exposePort: z.boolean(),
   snapshot: z.boolean(),
   metrics: z.boolean(),
+  /** Long-lived processes with streamed input and output, such as stdio MCP servers. Parsed as false from servers before it. */
+  spawn: z.boolean().default(false),
 }) satisfies z.ZodType<DriverCapabilities>;
 
 /** A sandbox driver as settings sees it. Forms are generated from `specJsonSchema`. */
@@ -284,6 +319,8 @@ export const modelsViewSchema = z.object({
 });
 
 export type ToolName = z.infer<typeof toolNameSchema>;
+/** What an approval rule's `tool` names: a coding tool, an MCP tool or `mcp__<server>__*`. */
+export type ApprovalRuleTool = z.infer<typeof approvalRuleSchema>["tool"];
 export type CollaborationToolName = (typeof COLLABORATION_TOOLS)[number];
 export type ProfileBudgets = z.infer<typeof profileBudgetsSchema>;
 export type ApprovalRule = z.infer<typeof approvalRuleSchema>;

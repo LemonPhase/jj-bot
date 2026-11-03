@@ -236,6 +236,15 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     },
     previousStatus: "pending",
   },
+  "mcp.server": {
+    profileId: "p1",
+    server: "docs",
+    state: "failed",
+    durationMs: 1200,
+    error: "exited with code 1",
+    stderrTail: "Error: [redacted] is invalid",
+    drift: ["search"],
+  },
   "cancellation.requested": { reason: null },
   "cancellation.completed": {
     stopped: [
@@ -272,8 +281,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.6.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.6.0");
+  it("is version 1.7.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.7.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -478,6 +487,19 @@ describe("contracts 1.0", () => {
     expect(
       activityFromEvent({ ...eventOf("model.started", {}), sessionId: null }),
     ).toBeUndefined();
+
+    const mcp = (state: "starting" | "ready" | "failed" | "exited") =>
+      activityFromEvent(
+        eventOf("mcp.server", { profileId: "p1", server: "docs", state }),
+      );
+    expect(mcp("starting")).toEqual({
+      kind: "command",
+      text: "Starting MCP server docs",
+      since: at,
+    });
+    expect(mcp("ready")).toMatchObject({ text: "Using MCP server docs" });
+    expect(mcp("failed")).toBeUndefined();
+    expect(mcp("exited")).toBeUndefined();
   });
 
   it("truncates activity between code points, never inside a surrogate pair", () => {
@@ -665,6 +687,13 @@ describe("contracts 1.0", () => {
       tools: ["bash", "read", "edit", "write", "grep", "find", "ls"],
       budgets: { maxTurnsPerRun: 60, maxRunMinutes: 30 },
       sandbox: { network: { mode: "none" }, workspace: "task" },
+      mcpServers: [],
+      skills: [],
+    });
+    // A server before 1.7.0 reports neither: nothing is claimed.
+    expect(bootstrap.capabilities).toMatchObject({
+      mcp: { stdio: false, remote: false },
+      skills: false,
     });
   });
 

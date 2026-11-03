@@ -1254,6 +1254,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     exposePort: false,
     snapshot: false,
     metrics: false,
+    spawn: false,
   };
   private readonly engine?: DockerEngine;
   private readonly endpointError?: Error;
