@@ -146,6 +146,84 @@ describe("redactor", () => {
     expect(redact("u:pos")).toBe("u:pos");
   });
 
+  it("masks the piece a cut left of a secret that holds another secret", () => {
+    // A credentials file holding a key, both stored: the cut goes through
+    // the file after the key.
+    const key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const token = "FwoGZXIvYXdzEJr//////////wEaDOpK3hBZ5a9TokenToken";
+    const file = `[default] aws_secret_access_key=${key} aws_session_token=${token}`;
+    const redact = createRedactor([
+      { name: "AWS_SECRET_ACCESS_KEY", value: key },
+      { name: "AWS_CREDENTIALS", value: file },
+    ]);
+    const cut = file.indexOf(token) + 30;
+    expect(redact(`cat:\n${file.slice(0, cut)}`, { end: true })).toBe(
+      `cat:\n${REDACTED}`,
+    );
+    // A rolling tail that starts in the file before the key.
+    const from = file.indexOf(key) - 5;
+    expect(redact(`${file.slice(from)}\nok`, { start: true })).toBe(
+      `${REDACTED}\nok`,
+    );
+  });
+
+  it("masks the piece a cut left of a secret that starts or ends with another", () => {
+    const short = "ghp_abcdefghijklmnop";
+    const long = `${short}qrstuvwxyz0123456789`;
+    const redact = createRedactor([
+      { name: "SHORT", value: short },
+      { name: "LONG", value: long },
+    ]);
+    expect(redact(`t=${long.slice(0, short.length + 10)}`, { end: true })).toBe(
+      `t=${REDACTED}`,
+    );
+    const ending = `0123456789${short}`;
+    const both = createRedactor([
+      { name: "SHORT", value: short },
+      { name: "ENDING", value: ending },
+    ]);
+    expect(both(`${ending.slice(4)} t`, { start: true })).toBe(`${REDACTED} t`);
+  });
+
+  it("masks all of a whole secret whose end a cut piece of another starts in", () => {
+    const whole = "tok_0123456789abcdefWXYZ";
+    const next = "WXYZ_another_secret_0123";
+    const redact = createRedactor([
+      { name: "WHOLE", value: whole },
+      { name: "NEXT", value: next },
+    ]);
+    expect(redact(`a ${whole}`, { end: true })).toBe(`a ${REDACTED}`);
+    expect(redact(`${next} b`, { start: true })).toBe(`${REDACTED} b`);
+    // The secrets around it are left as they are.
+    expect(redact(`${whole} and WXYZ`, { end: true })).toBe(
+      `${REDACTED} and ${REDACTED}`,
+    );
+  });
+
+  it("masks the longest piece at a cut, a database password's included", () => {
+    const redact = createRedactor([
+      {
+        name: "the DATABASE_URL password",
+        value: "correct-horse-battery-staple",
+        inUrl: true,
+      },
+      { name: "TOKEN", value: "staple0123456789abcdef" },
+    ]);
+    expect(
+      redact("postgres://app:correct-horse-battery-staple", { end: true }),
+    ).toBe(`postgres://app:${REDACTED}`);
+    expect(redact("horse-battery-staple@db:5432/app", { start: true })).toBe(
+      `${REDACTED}@db:5432/app`,
+    );
+  });
+
+  it("masks a text cut at both ends that lies inside a secret", () => {
+    const redact = createRedactor([{ name: "OPENAI_API_KEY", value: KEY }]);
+    expect(redact(MIDDLE, { start: true, end: true })).toBe(REDACTED);
+    // Cut at one end only, a middle piece is ordinary text.
+    expect(redact(MIDDLE, { end: true })).toBe(MIDDLE);
+  });
+
   it("masks no piece of a secret too short to redact", () => {
     const redact = createRedactor([{ name: "SHORT_KEY", value: "0123456789" }]);
     expect(redact("key 012345678", { end: true })).toBe("key 012345678");

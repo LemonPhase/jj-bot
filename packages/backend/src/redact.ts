@@ -126,13 +126,21 @@ function overhang(
 const REPLACEMENT = 0xfffd;
 /** A cut through a multi-byte character decodes to replacement characters. */
 const MAX_REPLACEMENTS = 3;
+const COLON = 58;
+const AT = 64;
 
-/** Masks a leading piece of a secret that `text` ends with. */
-function maskEnd(
+/**
+ * Where the span a cut at the end of `text` masks starts: before the longest
+ * piece of a secret the raw text ends with (a bare secret's leading piece of
+ * at least `MIN_CUT_FRAGMENT_LENGTH`, or a database password's piece of any
+ * length after the colon that opens it), widened over every whole secret it
+ * starts inside. `text.length` when there is nothing to mask.
+ */
+function endSpan(
   text: string,
   bare: readonly Pattern[],
   inUrl: readonly string[],
-): string {
+): number {
   let end = text.length;
   while (
     end > 0 &&
@@ -149,29 +157,67 @@ function maskEnd(
     );
     if (length >= MIN_CUT_FRAGMENT_LENGTH && length > longest) longest = length;
   }
-  if (longest > 0) return `${text.slice(0, end - longest)}${REDACTED}`;
-  // A database password's piece of any length right after the colon that
-  // opens it (the `@` that closes it was cut off).
-  for (const password of inUrl) {
-    const from = Math.max(0, end - password.length - 1);
-    for (let colon = from; colon < end - 1; colon += 1)
+  for (const password of inUrl)
+    for (
+      let colon = Math.max(0, end - password.length - 1);
+      colon < end - 1;
+      colon += 1
+    )
       if (
-        text.charCodeAt(colon) === 58 &&
+        text.charCodeAt(colon) === COLON &&
         password.startsWith(text.slice(colon + 1, end))
       ) {
         longest = Math.max(longest, end - colon - 1);
         break;
       }
-  }
-  return longest > 0 ? `${text.slice(0, end - longest)}${REDACTED}` : text;
+  return longest > 0
+    ? widenLeft(text, end - longest, bare, inUrl)
+    : text.length;
 }
 
-/** Masks a trailing piece of a secret that `text` starts with. */
-function maskStart(
+/**
+ * Moves `start` left over every whole secret it falls inside (a database
+ * password with its `@`), until none: what is left before the span never
+ * ends partway into one. Each round looks only at the windows around
+ * `start`, a secret's length on either side.
+ */
+function widenLeft(
+  text: string,
+  start: number,
+  bare: readonly Pattern[],
+  inUrl: readonly string[],
+): number {
+  for (;;) {
+    let next = start;
+    for (const { value } of bare) {
+      const from = Math.max(0, start - value.length + 1);
+      const at = text.slice(from, start + value.length - 1).indexOf(value);
+      if (at >= 0 && from + at < next) next = from + at;
+    }
+    for (const password of inUrl) {
+      const from = Math.max(0, start - password.length - 1);
+      const at = text
+        .slice(from, start + password.length)
+        .indexOf(`:${password}@`);
+      if (at >= 0 && from + at + 1 < next) next = from + at + 1;
+    }
+    if (next === start) return start;
+    start = next;
+  }
+}
+
+/**
+ * Where the span a cut at the start of `text` masks ends: after the longest
+ * piece of a secret the raw text starts with (a bare secret's trailing piece
+ * of at least `MIN_CUT_FRAGMENT_LENGTH`, or a database password's piece of
+ * any length before the `@` that closes it), widened over every whole secret
+ * it ends inside. 0 when there is nothing to mask.
+ */
+function startSpan(
   text: string,
   bare: readonly Pattern[],
   inUrl: readonly string[],
-): string {
+): number {
   let start = 0;
   while (
     start < text.length &&
@@ -191,21 +237,48 @@ function maskStart(
     );
     if (length >= MIN_CUT_FRAGMENT_LENGTH && length > longest) longest = length;
   }
-  if (longest > 0) return `${REDACTED}${text.slice(start + longest)}`;
-  // A database password's piece of any length right before the `@` that
-  // closes it (the colon that opens it was cut off).
-  for (const password of inUrl) {
-    const to = Math.min(text.length - 1, start + password.length);
-    for (let at = to; at > start; at -= 1)
+  for (const password of inUrl)
+    for (
+      let at = Math.min(text.length - 1, start + password.length);
+      at > start;
+      at -= 1
+    )
       if (
-        text.charCodeAt(at) === 64 &&
+        text.charCodeAt(at) === AT &&
         password.endsWith(text.slice(start, at))
       ) {
         longest = Math.max(longest, at - start);
         break;
       }
+  return longest > 0 ? widenRight(text, start + longest, bare, inUrl) : 0;
+}
+
+/** `widenLeft` for the end of a span that starts the text. */
+function widenRight(
+  text: string,
+  end: number,
+  bare: readonly Pattern[],
+  inUrl: readonly string[],
+): number {
+  for (;;) {
+    let next = end;
+    for (const { value } of bare) {
+      const from = Math.max(0, end - value.length + 1);
+      const at = text.slice(from, end + value.length - 1).lastIndexOf(value);
+      if (at >= 0 && from + at + value.length > next)
+        next = from + at + value.length;
+    }
+    for (const password of inUrl) {
+      const from = Math.max(0, end - password.length);
+      const at = text
+        .slice(from, end + password.length + 1)
+        .lastIndexOf(`:${password}@`);
+      if (at >= 0 && from + at + 1 + password.length > next)
+        next = from + at + 1 + password.length;
+    }
+    if (next === end) return end;
+    end = next;
   }
-  return longest > 0 ? `${REDACTED}${text.slice(start + longest)}` : text;
 }
 
 export function createRedactor(secrets: readonly Secret[]): Redactor {
@@ -255,11 +328,26 @@ export function createRedactor(secrets: readonly Secret[]): Redactor {
       out = out.replace(urlPattern, `:${REDACTED}@`);
     return out;
   };
+  // The spans a cut masks are found on the raw text, before anything is
+  // replaced: a secret replaced first could hide the piece of another one
+  // that holds it. What lies between them is then redacted whole.
   const text = (input: string, cut?: CutEdges) => {
-    let out = whole(input);
-    if (cut?.end) out = maskEnd(out, piecesOf(), inUrl);
-    if (cut?.start) out = maskStart(out, piecesOf(), inUrl);
-    return out;
+    if ((!cut?.start && !cut?.end) || input.length === 0) return whole(input);
+    const pieces = piecesOf();
+    // Cut at both ends inside one secret: all of it is a piece of that one.
+    if (
+      cut.start &&
+      cut.end &&
+      input.length >= MIN_CUT_FRAGMENT_LENGTH &&
+      bare.some(
+        (secret) => secret.length > input.length && secret.includes(input),
+      )
+    )
+      return REDACTED;
+    const to = cut.end ? endSpan(input, pieces, inUrl) : input.length;
+    const from = cut.start ? startSpan(input, pieces, inUrl) : 0;
+    if (from >= to) return REDACTED;
+    return `${from > 0 ? REDACTED : ""}${whole(input.slice(from, to))}${to < input.length ? REDACTED : ""}`;
   };
   return <Value>(value: Value, cut?: CutEdges): Value =>
     typeof value === "string"
