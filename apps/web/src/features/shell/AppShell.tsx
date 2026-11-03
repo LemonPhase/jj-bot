@@ -1,9 +1,16 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  lazy,
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Button, ErrorBanner, Spinner } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
-import { SettingsScreen } from "../settings/SettingsScreen";
-import { StudioScreen } from "../studio/StudioScreen";
 import { NewTaskDialog } from "../tasks/NewTaskDialog";
 import {
   canonicalRoute,
@@ -18,9 +25,21 @@ import { Sidebar } from "./Sidebar";
 import { navigate, useRoute } from "./useRoute";
 import "./shell.css";
 
-// The Tasks screen pulls in the graph and (lazily) Three.js; load it on demand.
+// Every screen but Bots, the one the app opens on, loads on demand, so the
+// entry chunk carries none of their code: Tasks pulls in the graph and
+// (lazily) Three.js, and Studio and Settings are visited now and then. Routes
+// are parsed in the entry, so deep links and reloads land on the right screen,
+// which shows a spinner until its chunk arrives.
 const TasksScreen = lazy(() =>
   import("../tasks/TasksScreen").then((m) => ({ default: m.TasksScreen })),
+);
+const StudioScreen = lazy(() =>
+  import("../studio/StudioScreen").then((m) => ({ default: m.StudioScreen })),
+);
+const SettingsScreen = lazy(() =>
+  import("../settings/SettingsScreen").then((m) => ({
+    default: m.SettingsScreen,
+  })),
 );
 
 type OpenDialog = { kind: "none" } | { kind: "task"; botIds: string[] };
@@ -152,31 +171,84 @@ function ShellLoading({ label = "Loading workspace…" }: { label?: string }) {
 function ShellLoadFailed({
   message,
   onRetry,
+  retryLabel = "Retry",
 }: {
   message: string;
   onRetry: () => void;
+  retryLabel?: string;
 }) {
   return (
     <main className="screen screen--center">
       <div className="shell-failed">
         <ErrorBanner word="Couldn't load">{message}</ErrorBanner>
-        <Button onClick={onRetry}>Retry</Button>
+        <Button onClick={onRetry}>{retryLabel}</Button>
       </div>
     </main>
   );
 }
 
+/**
+ * The app could not start: neither the backend nor the demo data is
+ * available (`resolveApi` rejected). Says why, with a reload.
+ */
+export function StartFailed({ message }: { message: string }) {
+  return (
+    <div className="shell">
+      <ShellLoadFailed
+        message={message}
+        onRetry={() => window.location.reload()}
+        retryLabel="Reload"
+      />
+    </div>
+  );
+}
+
+/**
+ * A screen that fails to load or render says so, with a reload, instead of
+ * unmounting the whole app. A lazy screen's chunk can fail to arrive: the
+ * connection dropped, or a redeploy replaced it while the page was open. React
+ * keeps a failed import's rejection, so only a reload fetches it again.
+ * Mounted per screen (keyed by route name), so leaving the screen clears it.
+ */
+class ScreenBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  override state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: unknown): { error: Error } {
+    return { error: error instanceof Error ? error : new Error(String(error)) };
+  }
+
+  override render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    return (
+      <ShellLoadFailed
+        message={`this screen: ${error.message}`}
+        onRetry={() => window.location.reload()}
+        retryLabel="Reload"
+      />
+    );
+  }
+}
+
 /** The routed screen. Later screens plug in here. */
 function Screen({ route }: { route: Route }) {
+  if (route.name === "bots") return <BotsScreen botId={route.botId} />;
+  return (
+    <ScreenBoundary key={route.name}>
+      <Suspense fallback={<ShellLoading label="Loading…" />}>
+        <LazyScreen route={route} />
+      </Suspense>
+    </ScreenBoundary>
+  );
+}
+
+function LazyScreen({ route }: { route: Exclude<Route, { name: "bots" }> }) {
   switch (route.name) {
-    case "bots":
-      return <BotsScreen botId={route.botId} />;
     case "tasks":
-      return (
-        <Suspense fallback={<ShellLoading label="Loading…" />}>
-          <TasksScreen />
-        </Suspense>
-      );
+      return <TasksScreen />;
     case "studio":
       return <StudioScreen botId={route.botId} />;
     case "settings":
