@@ -113,8 +113,10 @@ function updateText(row: ApprovalRow, botName: string): string {
 
 /**
  * Records a pending approval for a call a run holds, and tells the task's
- * coordinator chat. Call it in the run's write-back transaction; the
- * session's partial unique index refuses a second pending one.
+ * coordinator chat. Call it with the task locked; the session's partial
+ * unique index refuses a second pending one. A call made at an older goal
+ * version than the task's (the goal changed while the run was making it)
+ * is recorded already expired: it never waits, and never runs.
  */
 export async function requestApproval(
   tx: Tx,
@@ -130,6 +132,8 @@ export async function requestApproval(
   },
 ): Promise<ApprovalRow> {
   const { task, session, call } = input;
+  const stale = task.goalVersion > session.goalVersion;
+  const now = ctx.clock();
   const [row] = await tx
     .insert(approvals)
     .values({
@@ -145,10 +149,28 @@ export async function requestApproval(
       rule: input.rule as JsonObject,
       text: clip(input.redact(call.text), 2_000),
       goalVersion: session.goalVersion,
-      createdAt: ctx.clock(),
+      createdAt: now,
+      ...(stale
+        ? {
+            status: "expired" as const,
+            reason: `the task's goal or plan changed (now goal version ${task.goalVersion}) before the call was made.`,
+            decidedAt: now,
+            resolvedAt: now,
+          }
+        : {}),
     })
     .returning();
   if (!row) throw new Error("The approval insert returned no row.");
+  if (stale) {
+    await emit(tx, task.id, {
+      type: "approval.requested",
+      payload: { approval: toApproval(row) },
+      botId: row.botId,
+      sessionId: row.sessionId,
+      runId: row.runId,
+    });
+    return row;
+  }
   await emit(tx, task.id, {
     type: "approval.requested",
     payload: { approval: toApproval(row) },

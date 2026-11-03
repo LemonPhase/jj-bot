@@ -14,6 +14,7 @@ import type {
 import {
   claimApproval,
   decisionInput,
+  notRunText,
   pendingApproval,
   pendingApprovals,
   requestApproval,
@@ -54,6 +55,8 @@ export async function reviewCall(
       rule,
       redact: rc.redact,
     });
+    // Made for a goal that changed meanwhile: answered now, never held.
+    if (row.status === "expired") return { refuse: notRunText(row) };
     rc.heldApprovalId = row.id;
     return "hold" as const;
   });

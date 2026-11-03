@@ -663,6 +663,64 @@ describe("approvals", () => {
     ).rejects.toMatchObject({ code: "APPROVAL_NOT_PENDING" });
   });
 
+  it("never holds a call made while the goal changed under the run", async () => {
+    const root = await workspace();
+    let taskId = "";
+    let seen = "";
+    const current = await start(root, [
+      // The user changes the goal while the model is making the call.
+      async () => {
+        await current.engine.tasks.postMessage(taskId, {
+          text: "Tag it instead.",
+          goal: "Tag the release",
+          observedGoalVersion: 1,
+        });
+        return callTool("bash", { command: PUSH });
+      },
+      (context) => {
+        const result = conversation(context).find(
+          (message) => message.role === "toolResult",
+        );
+        seen = textOf(result);
+        return say("On the new goal now.");
+      },
+    ]);
+    const { engine } = current;
+    const bot = await guardedBot(engine);
+    const { task } = await engine.tasks.create({
+      goal: "Push the work",
+      coordinatorBotId: bot.id,
+    });
+    taskId = task.id;
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "waiting" && v.approvals.length > 0,
+    );
+    expect(view.task.goalVersion).toBe(2);
+    expect(view.approvals[0]).toMatchObject({
+      status: "expired",
+      goalVersion: 1,
+    });
+    expect(
+      view.events.some(
+        (event) =>
+          event.type === "approval.updated" ||
+          (event.type === "approval.requested" &&
+            event.payload.approval.status === "pending"),
+      ),
+    ).toBe(false);
+    expect(seen).toBe(
+      "Not run: the task's goal or plan changed (now goal version 2) before the call was made.",
+    );
+    expect(await pushes(root, task.id)).toBe(0);
+    await expect(
+      engine.tasks.decideApproval(task.id, view.approvals[0]?.id as string, {
+        decision: "approve",
+      }),
+    ).rejects.toMatchObject({ code: "APPROVAL_NOT_PENDING" });
+  });
+
   it("expires a call approved for the old goal before it ran", async () => {
     const root = await workspace();
     const first = await start(root, [callTool("bash", { command: PUSH })]);
