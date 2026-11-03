@@ -41,11 +41,15 @@ export function spendLevel(
   return spentUsd >= capUsd * SPEND_SOFT_THRESHOLD ? "warning" : "ok";
 }
 
-/** "$0.42 of $5.00", or "$0.42 · no cap". */
+/** Spend next to a cap: cents, or the places below a cent that a small cap needs. */
+const formatSpent = (usd: number): string =>
+  usd > 0 && usd < 0.01 ? formatCap(usd) : formatCost(usd);
+
+/** "$0.42 of $5.00", "$0.0048 of $0.004", or "$0.42 · no cap". */
 export const spendLine = (spentUsd: number, capUsd: number | null): string =>
   capUsd === null
     ? `${formatCost(spentUsd)} · no cap`
-    : `${formatCost(spentUsd)} of ${formatCap(capUsd)}`;
+    : `${formatSpent(spentUsd)} of ${formatCap(capUsd)}`;
 
 /**
  * Calls on models with no listed price: their cost is unknown, not zero, and

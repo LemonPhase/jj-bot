@@ -77,6 +77,7 @@ describe("spend formats", () => {
     expect(spendLevel(5, 5)).toBe("reached");
     expect(spendLine(0.42, 5)).toBe("$0.42 of $5.00");
     expect(spendLine(0.42, null)).toBe("$0.42 · no cap");
+    expect(spendLine(0.004789, 0.004)).toBe("$0.0048 of $0.004");
   });
 
   it("never shows calls with no listed price as free", () => {
