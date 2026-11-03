@@ -10,13 +10,25 @@ import { SCRIPTED_MODEL_REF } from "./scripted";
 import { callTool, say } from "./test-support";
 import type { CollabTool } from "./types";
 
+interface Listed {
+  id: string;
+  title: string;
+  status: string;
+  result?: string;
+}
+
 /**
- * Chat tools as the engine declares them: bot names and active task ids are
- * schema enums. `send_to_task` is offered only when a task is active.
+ * Chat tools shaped as the engine declares them: bot names are a schema enum,
+ * task ids plain strings. `list_tasks` and `get_task` answer in the engine's
+ * line formats, which the scripted model reads.
  */
-function chatTools(active: { id: string; title: string }[] = []) {
+function chatTools(listed: Listed[] = []) {
   const created: { goal: string; participants: string[] }[] = [];
-  const forwarded: { taskId: string; text: string }[] = [];
+  const forwarded: { id: string; text: string }[] = [];
+  const opened: string[] = [];
+  const stopped: string[] = [];
+  const find = (args: Record<string, unknown>) =>
+    listed.find((task) => task.id === String(args.id));
   const tools: CollabTool[] = [
     {
       name: "create_task",
@@ -37,29 +49,63 @@ function chatTools(active: { id: string; title: string }[] = []) {
         return { text: `Created task task_${created.length}.` };
       },
     },
-  ];
-  if (active.length > 0)
-    tools.push({
-      name: "send_to_task",
-      description: "Forward a message to an active task.",
-      parameters: Type.Object({
-        taskId: Type.Enum(
-          active.map((task) => task.id),
-          {
-            description: `Active task: ${active.map((task) => `${task.id}: ${task.title}`).join("; ")}`,
-          },
-        ),
-        text: Type.String(),
+    {
+      name: "list_tasks",
+      description: "Your tasks, newest first.",
+      parameters: Type.Object({ status: Type.Optional(Type.String()) }),
+      readOnly: true,
+      execute: async () => ({
+        text:
+          listed.length === 0
+            ? "You take part in no tasks yet."
+            : [
+                `Your tasks, newest first (${listed.length} of ${listed.length}):`,
+                ...listed.map(
+                  (task) =>
+                    `- ${task.id} ${JSON.stringify(task.title)}: ${task.status} · you coordinate · updated 2026-11-02T10:00Z${task.result ? ` · Result: ${task.result}` : ""}`,
+                ),
+              ].join("\n"),
       }),
+    },
+    {
+      name: "get_task",
+      description: "One task in detail.",
+      parameters: Type.Object({ id: Type.String() }),
+      readOnly: true,
       execute: async (args) => {
-        forwarded.push({
-          taskId: String(args.taskId),
-          text: String(args.text),
-        });
-        return { text: `Sent to ${String(args.taskId)}.` };
+        const task = find(args);
+        if (!task) return { text: "No such task.", isError: true };
+        opened.push(task.id);
+        return {
+          text: [
+            `Task ${task.id} ${JSON.stringify(task.title)}: ${task.status}`,
+            "Goal (version 1):",
+            task.title,
+            ...(task.result ? [`Result: ${task.result}`] : []),
+          ].join("\n"),
+        };
       },
-    });
-  return { tools, created, forwarded };
+    },
+    {
+      name: "send_to_task",
+      description: "Pass a message on to a task.",
+      parameters: Type.Object({ id: Type.String(), text: Type.String() }),
+      execute: async (args) => {
+        forwarded.push({ id: String(args.id), text: String(args.text) });
+        return { text: `Sent to ${String(args.id)}.` };
+      },
+    },
+    {
+      name: "stop_task",
+      description: "Stop a task you coordinate.",
+      parameters: Type.Object({ id: Type.String() }),
+      execute: async (args) => {
+        stopped.push(String(args.id));
+        return { text: `Stopped the task ${String(args.id)}.` };
+      },
+    },
+  ];
+  return { tools, created, forwarded, opened, stopped };
 }
 
 describe("ChatResponder with the scripted model", () => {
@@ -68,7 +114,7 @@ describe("ChatResponder with the scripted model", () => {
   });
   const reply = (text: string, tools: CollabTool[]) =>
     responder.reply({
-      // Free-form: the scripted model reads bots and tasks from tool schemas.
+      // Free-form: the scripted model reads bots and tasks from tools.
       systemPrompt: "You are Ada, a friendly assistant.",
       history: [
         { role: "user", text: "Hi" },
@@ -107,16 +153,22 @@ describe("ChatResponder with the scripted model", () => {
       "I've started a task for that. Created task task_1.",
     );
     expect(answer.model).toBe(SCRIPTED_MODEL_REF);
-    expect(answer.usage.modelCalls).toBe(2);
+    // list_tasks, create_task, then the answer.
+    expect(answer.usage.modelCalls).toBe(3);
   });
 
-  it("forwards a follow-up about an active task instead of creating another", async () => {
+  it("forwards a follow-up about a task, finished or not, instead of creating another", async () => {
     const { tools, created, forwarded } = chatTools([
-      { id: "task_7", title: "Penguin report" },
-      { id: "task_9", title: "Landing page" },
+      { id: "task_9", title: "Landing page", status: "running" },
+      {
+        id: "task_7",
+        title: "Penguin report",
+        status: "completed",
+        result: "Wrote penguins.md.",
+      },
     ]);
     expect((await reply("Any progress?", tools)).text).toBe(
-      "I'm working on: Penguin report; Landing page.",
+      "I'm working on: Landing page.",
     );
     const answer = await reply(
       "For the penguin report, please add a section on diet.",
@@ -125,7 +177,7 @@ describe("ChatResponder with the scripted model", () => {
     expect(created).toEqual([]);
     expect(forwarded).toEqual([
       {
-        taskId: "task_7",
+        id: "task_7",
         text: "For the penguin report, please add a section on diet.",
       },
     ]);
@@ -139,6 +191,53 @@ describe("ChatResponder with the scripted model", () => {
     ]);
     expect(forwarded).toHaveLength(1);
   });
+
+  it("answers how a task went from its result: list, get, then reply", async () => {
+    const { tools, opened, created } = chatTools([
+      {
+        id: "task_7",
+        title: "Penguin report",
+        status: "completed",
+        result: "Wrote penguins.md with three sections.",
+      },
+    ]);
+    const answer = await reply("How did it go?", tools);
+    expect(opened).toEqual(["task_7"]);
+    expect(created).toEqual([]);
+    expect(answer.text).toBe(
+      '"Penguin report" is completed. Result: Wrote penguins.md with three sections.',
+    );
+    expect(answer.usage.modelCalls).toBe(3);
+  });
+
+  it("stops the task the user asks it to stop", async () => {
+    const { tools, stopped } = chatTools([
+      { id: "task_9", title: "Landing page", status: "running" },
+    ]);
+    const answer = await reply("Please stop that task.", tools);
+    expect(stopped).toEqual(["task_9"]);
+    expect(answer.text).toBe("Stopped the task task_9.");
+  });
+
+  it("tells a task update in its own words, with only the read tools", async () => {
+    const { tools } = chatTools();
+    const readOnly = tools.filter((tool) => tool.readOnly);
+    const answer = await reply(
+      [
+        "[Task update] This comes from JJ Bot, not from the user: a task you coordinate completed.",
+        'Task: task_7 "Penguin report"',
+        "Result, as the task recorded it:",
+        "Wrote penguins.md with three sections.",
+        "",
+        "Tell the user how it went.",
+      ].join("\n"),
+      readOnly,
+    );
+    expect(answer.text).toBe(
+      'Update on "Penguin report": it completed. Wrote penguins.md with three sections.',
+    );
+    expect(answer.usage.modelCalls).toBe(1);
+  });
 });
 
 describe("ChatResponder", () => {
@@ -149,9 +248,7 @@ describe("ChatResponder", () => {
     });
     const { tools } = chatTools();
     faux.setResponses(
-      Array.from({ length: 10 }, () =>
-        callTool("send_to_task", { taskId: "t", text: "x" }),
-      ),
+      Array.from({ length: 10 }, () => callTool("list_tasks", {})),
     );
     await expect(
       responder.reply({
@@ -165,6 +262,27 @@ describe("ChatResponder", () => {
     ).rejects.toMatchObject({ code: "budget" });
     // The budget is capped at six model calls whatever is asked.
     expect(faux.getPendingResponseCount()).toBe(4);
+  });
+
+  it("never answers with a lookup's output when the budget ends the reply", async () => {
+    const faux = fauxProvider();
+    const responder = new ChatResponder({
+      models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+    });
+    const { tools } = chatTools([
+      { id: "task_7", title: "Penguin report", status: "running" },
+    ]);
+    faux.setResponses([callTool("list_tasks", {}), say("never reached")]);
+    await expect(
+      responder.reply({
+        systemPrompt: "x",
+        history: [{ role: "user", text: "How is it going?" }],
+        model: "faux/faux-1",
+        tools,
+        budgets: { maxTurns: 1 },
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "budget" });
   });
 
   it("refuses a history that does not end with the user", async () => {
