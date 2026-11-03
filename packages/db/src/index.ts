@@ -2,6 +2,7 @@ export * from "./bus";
 export * from "./database";
 export * from "./events";
 export * from "./ids";
+export * from "./migrations";
 export * from "./pglite";
 export * from "./queue";
 export * from "./schema";

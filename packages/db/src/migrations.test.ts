@@ -1,14 +1,5 @@
 // Data migrations, checked on rows written under the schema before them.
-import {
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { type SQL, sql } from "drizzle-orm";
 import { drizzle as drizzleNodePg } from "drizzle-orm/node-postgres";
@@ -17,35 +8,19 @@ import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import { Client } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
-import { migrationsFolder } from "./database";
+import { migrationsFolder, shippedMigrations } from "./migrations";
 import { cleanup, OPEN_TIMEOUT, targets } from "./test-helpers";
+import { migrationsThrough } from "./testing";
 
 afterAll(cleanup, OPEN_TIMEOUT);
 
-interface Journal {
-  entries: { tag: string }[];
-}
-
 /** A migrations folder holding only the migrations before `tag`. */
-async function migrationsBefore(tag: string): Promise<string> {
-  const journal = JSON.parse(
-    await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"),
-  ) as Journal;
-  const index = journal.entries.findIndex((entry) => entry.tag === tag);
-  if (index < 1) throw new Error(`No migration before ${tag}.`);
-  const folder = await mkdtemp(join(tmpdir(), "jj-migrations-"));
-  await mkdir(join(folder, "meta"));
-  const entries = journal.entries.slice(0, index);
-  await writeFile(
-    join(folder, "meta", "_journal.json"),
-    JSON.stringify({ ...journal, entries }),
-  );
-  for (const entry of entries)
-    await copyFile(
-      join(migrationsFolder, `${entry.tag}.sql`),
-      join(folder, `${entry.tag}.sql`),
-    );
-  return folder;
+function migrationsBefore(tag: string): Promise<string> {
+  const shipped = shippedMigrations();
+  const index = shipped.findIndex((entry) => entry.tag === tag);
+  const previous = shipped[index - 1];
+  if (index < 1 || !previous) throw new Error(`No migration before ${tag}.`);
+  return migrationsThrough(previous.tag);
 }
 
 interface Upgrade {

@@ -12,6 +12,8 @@ Relational storage for the engine: the Drizzle schema, SQL migrations applied on
 Both modes take an optional `onError` for errors that have no caller: pool clients that the server disconnects, bus listener drops and missed pings, malformed notifications, and handlers that throw. It defaults to `console.error`.
 
 - Migrations are applied before `openDatabase` resolves. On PostgreSQL, openers serialize on a session advisory lock, so processes booting at once against an empty database are safe.
+- Migrations are forward-only. Before applying any, `openDatabase` reads the migration record and refuses a database that records a migration newer than the newest this build ships, with `SchemaTooNewError` ("This database was written by a newer version of JJ Bot: …"), on PGlite and inside PostgreSQL's advisory lock; nothing is applied or changed. `readSchemaLevel(exec)` returns that record against the shipped migrations (applied, the newest applied tag, pending, newer), and `migrationStatus` its counts for readiness.
+- `inspectDatabase(where, read)` runs `read` on a database of any schema version without migrating it, in read-only sessions, then closes it: the data check (`npm run data:check`) reads a restored backup this way. It refuses a PGlite directory that holds no database rather than create one, and locks one that does.
 - PGlite runs in-process on a single connection, so it is single-process. A data directory is locked to the process that opens it by `jj-db.lock` (opened `wx`, holding the pid). A second open while that pid is alive fails with `DatabaseInUseError`; a lock left by a dead pid is taken over. Use PostgreSQL for a separate worker, or for replicas.
 - On PostgreSQL, pooled connections set `lock_timeout` (`lockTimeoutMs`, default 10 s) and `idle_in_transaction_session_timeout` (`idleInTransactionTimeoutMs`, default 60 s); 0 disables either. A statement stuck waiting on a lock, or a transaction left open, therefore fails instead of hanging. Migrations wait on their advisory lock without a timeout.
 - `close()` closes the bus, then the pool or PGlite, and releases the PGlite lock. It resolves once the connections have closed. Repeat calls are safe; callers own shutdown.
@@ -44,7 +46,7 @@ Both modes take an optional `onError` for errors that have no caller: pool clien
 - `retired_secrets` keeps values `secrets` no longer holds (replaced or removed), for redaction only: one row per retirement (`id`, the `kind` and `name` it had, `retired_at`), sealed like `secrets` but with this table in the associated data, so a ciphertext moved between the tables does not open. Rows older than 90 days are deleted at boot and whenever a value is retired.
 - `instance_settings` holds instance-wide values the server creates for itself, by key, such as the generated API token (`api_token`). It has no owner. `instanceSetting(exec, key, initial)` returns the stored value, creating it with `initial()` once; concurrent first calls, across processes too, agree on one value.
 
-To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`, and commit the new SQL in `migrations/` together with `migrations/meta`. Never edit a migration that has been applied; add a new one. All pending migrations apply in one transaction.
+To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`, and commit the new SQL in `migrations/` together with `migrations/meta`. Never edit a migration that has been applied; add a new one, which the data already in the field must pass through (a new `NOT NULL` column needs a default or a backfill). All pending migrations apply in one transaction.
 
 ## Sequences
 
@@ -95,5 +97,7 @@ At most one `session.run` is queued and at most one is running per session, enfo
 - A malformed payload, or a handler that throws, goes to `onError` and does not affect other handlers.
 
 ## Tests
+
+The upgrade tests (`src/upgrade.test.ts`, and `apps/api/src/upgrade.test.ts` through the server) start from `PREVIOUS_RELEASE` in `src/testing.ts`: the previous release's newest migration and a fixture of data its build wrote through its own API (`fixtures/`, never edited). `@jj/db/testing` exports it, with `seedPreviousRelease(location)`, which migrates a new database to that level the way that build did and loads the fixture. They open it through `openDatabase` and check that every record keeps every value, the current schema reads every table, the backfills, that counters carry on, and that the schema equals a new install's; the newer-schema refusal is tested on both drivers. Each release moves `PREVIOUS_RELEASE` forward with a fixture its own build writes.
 
 The store tests always run on PGlite. When `JJ_TEST_DATABASE_URL` is set, they also run on PostgreSQL, including the concurrency tests: concurrent migrators, competing claimers, wakers racing workers on one session and one bot, 50 concurrent appends, the cross-task lock checks, session timeouts and listener reconnects. Each PostgreSQL suite creates and drops its own database on that server, so the user needs the `CREATEDB` privilege.

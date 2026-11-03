@@ -74,6 +74,12 @@ const stampOf = (row: SecretRow) =>
 const retiredStampOf = (row: RetiredSecretRow) =>
   `${row.keyId}:${Buffer.from(row.nonce).toString("hex")}`;
 
+/** The columns of a `secrets` row that seal its value. */
+export type SealedSecret = Pick<
+  SecretRow,
+  "kind" | "name" | "keyId" | "nonce" | "ciphertext"
+>;
+
 export interface SecretStoreOptions {
   db: Executor;
   /** Undefined without `JJ_SECRET_KEY`: nothing can be stored or read. */
@@ -117,7 +123,7 @@ export class SecretStore {
     return `jj-bot/retired-secret/v1\u0000${this.owner}\u0000${kind}\u0000${name}`;
   }
 
-  private open(row: SecretRow): string | undefined {
+  private open(row: SealedSecret): string | undefined {
     return this.keyring?.open(
       { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
       this.aad(row.kind, row.name),
@@ -129,6 +135,14 @@ export class SecretStore {
       { keyId: row.keyId, nonce: row.nonce, ciphertext: row.ciphertext },
       this.retiredAad(row.kind, row.name),
     );
+  }
+
+  /**
+   * Whether a configured key opens a stored row, however the caller read it
+   * (the data check reads rows of any schema version with raw SQL).
+   */
+  opens(row: SealedSecret): boolean {
+    return this.open(row) !== undefined;
   }
 
   /** The columns a value is stored as. Throws without a master key. */

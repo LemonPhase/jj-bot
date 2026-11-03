@@ -254,7 +254,9 @@ export async function assertText(
           detail:
             run.reason === "timeout"
               ? `The regular expression ${shown} was stopped: ${run.message} (it may backtrack catastrophically on this text). Simplify the pattern.`
-              : `The regular expression ${shown} could not be evaluated: ${run.message}`,
+              : run.reason === "busy"
+                ? `The regular expression ${shown} was not evaluated in time: ${run.message}. This says nothing about the pattern.`
+                : `The regular expression ${shown} could not be evaluated: ${run.message}`,
         };
       return run.result.kind === "match"
         ? {
@@ -288,7 +290,9 @@ export async function assertText(
           detail:
             run.reason === "timeout"
               ? `The JSON Schema check was stopped: ${run.message} (a pattern in it may backtrack catastrophically).`
-              : `The JSON Schema cannot be checked: ${run.message}`,
+              : run.reason === "busy"
+                ? `The JSON Schema check was not evaluated in time: ${run.message}. This says nothing about the schema.`
+                : `The JSON Schema cannot be checked: ${run.message}`,
         };
       if (run.result.kind === "valid")
         return {
