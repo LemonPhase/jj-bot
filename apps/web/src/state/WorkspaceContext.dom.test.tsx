@@ -229,18 +229,23 @@ describe("WorkspaceContext: malformed events (b)", () => {
       );
     const { api } = fakeApi({ subscribeTask });
     await mount(api);
-    await waitFor(() => expect(streams).toHaveLength(1));
+    // The stream opens as its snapshot is handed over, and views land a frame
+    // later: wait for the view itself, not for the stream.
+    await waitFor(() => expect(workspace.taskViews["task-1"]?.cursor).toBe(1));
+    expect(streams).toHaveLength(1);
     act(() =>
       streams[0]?.onEvent({ ...posted(2, message(2)), payload: { bad: 1 } }),
     );
     expect(workspace.taskProblem?.error.code).toBe("INVALID_RESPONSE");
     // The view stays on screen while the fresh snapshot loads.
     expect(workspace.taskViews["task-1"]?.cursor).toBe(1);
-    await waitFor(() => expect(streams).toHaveLength(2));
-    expect(workspace.taskViews["task-1"]?.messages.map((m) => m.id)).toEqual([
-      "m1",
-      "m2",
-    ]);
+    await waitFor(() =>
+      expect(workspace.taskViews["task-1"]?.messages.map((m) => m.id)).toEqual([
+        "m1",
+        "m2",
+      ]),
+    );
+    expect(streams).toHaveLength(2);
     expect(workspace.taskProblem).toBeNull();
   });
 });
