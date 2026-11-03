@@ -416,21 +416,26 @@ describe("GET /metrics", () => {
     expect(text).not.toContain(taskId);
   });
 
-  it("counts queued jobs no worker has claimed", async () => {
-    const idle = await testApp({ startWorker: false });
-    try {
-      const [ada] = Object.values(await createBots(idle, ["Ada"]));
-      await idle.call("POST", "/api/tasks", {
-        goal: "Wait",
-        coordinatorBotId: ada,
-      });
-      const text = await (await idle.app.request("/metrics")).text();
-      expect(sample(text, "jj_queue_depth", { kind: "session.run" })).toBe(1);
-      expect(sample(text, "jj_queue_depth", { kind: "chat.reply" })).toBe(0);
-    } finally {
-      await idle.dispose();
-    }
-  });
+  // It opens a database of its own, so it gets the opening budget.
+  it(
+    "counts queued jobs no worker has claimed",
+    async () => {
+      const idle = await testApp({ startWorker: false });
+      try {
+        const [ada] = Object.values(await createBots(idle, ["Ada"]));
+        await idle.call("POST", "/api/tasks", {
+          goal: "Wait",
+          coordinatorBotId: ada,
+        });
+        const text = await (await idle.app.request("/metrics")).text();
+        expect(sample(text, "jj_queue_depth", { kind: "session.run" })).toBe(1);
+        expect(sample(text, "jj_queue_depth", { kind: "chat.reply" })).toBe(0);
+      } finally {
+        await idle.dispose();
+      }
+    },
+    OPEN_TIMEOUT,
+  );
 
   it("is behind the API token like /api, and never served as a page", async () => {
     const guarded = createApp({

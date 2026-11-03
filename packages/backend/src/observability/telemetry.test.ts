@@ -16,6 +16,7 @@ import type { EngineContext } from "../context";
 import { createDriverRegistry } from "../drivers";
 import type { EngineDriver, ExecutorEvent } from "../ports";
 import {
+  OPEN_TIMEOUT,
   openTestDatabase,
   quietLogger,
   type TestDatabase,
@@ -260,7 +261,7 @@ describe("the worker's heartbeat", () => {
   let db: TestDatabase;
   beforeAll(async () => {
     db = await openTestDatabase();
-  });
+  }, OPEN_TIMEOUT);
   afterAll(async () => {
     await db.close();
   });
@@ -273,20 +274,24 @@ describe("the worker's heartbeat", () => {
         .where(eq(workerHeartbeats.workerId, workerId))
     )[0];
 
-  it("is recorded while the loop polls, removed on stop and left by a crash", async () => {
-    const first = await testEngine(db.database);
-    const id = first.engine.context.config.workerId;
-    const beat = await until(() => row(id), { what: "a heartbeat row" });
-    expect(beat.seenAt.getTime()).toBeGreaterThan(Date.now() - 60_000);
-    await first.engine.worker.stop();
-    expect(await row(id)).toBeUndefined();
-    await first.dispose();
+  it(
+    "is recorded while the loop polls, removed on stop and left by a crash",
+    async () => {
+      const first = await testEngine(db.database);
+      const id = first.engine.context.config.workerId;
+      const beat = await until(() => row(id), { what: "a heartbeat row" });
+      expect(beat.seenAt.getTime()).toBeGreaterThan(Date.now() - 60_000);
+      await first.engine.worker.stop();
+      expect(await row(id)).toBeUndefined();
+      await first.dispose();
 
-    const crashed = await testEngine(db.database);
-    const crashedId = crashed.engine.context.config.workerId;
-    await until(() => row(crashedId), { what: "a heartbeat row" });
-    await crashed.engine.worker.abandon();
-    expect(await row(crashedId)).toBeDefined();
-    await crashed.dispose();
-  });
+      const crashed = await testEngine(db.database);
+      const crashedId = crashed.engine.context.config.workerId;
+      await until(() => row(crashedId), { what: "a heartbeat row" });
+      await crashed.engine.worker.abandon();
+      expect(await row(crashedId)).toBeDefined();
+      await crashed.dispose();
+    },
+    OPEN_TIMEOUT,
+  );
 });
