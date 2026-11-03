@@ -1,5 +1,5 @@
 {
-  "id": "27348a3e-06c4-43c1-bd6e-ccc742cac011",
+  "id": "dd2aa83e-be3a-4aaa-8ca3-8c4b1ac885c2",
   "prevId": "d21d3861-ab59-4f23-b821-21caee273562",
   "version": "7",
   "dialect": "postgresql",
@@ -2491,17 +2491,7 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "task_templates_coordinator_bot_id_bots_id_fk": {
-          "name": "task_templates_coordinator_bot_id_bots_id_fk",
-          "tableFrom": "task_templates",
-          "tableTo": "bots",
-          "columnsFrom": ["coordinator_bot_id"],
-          "columnsTo": ["id"],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

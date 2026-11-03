@@ -273,9 +273,11 @@ export const taskTemplates = pgTable(
     ownerId: ownerId(),
     title: text("title").notNull(),
     goal: text("goal").notNull(),
-    coordinatorBotId: text("coordinator_bot_id")
-      .notNull()
-      .references(() => bots.id),
+    /**
+     * Like the participants, a plain id checked against `bots` at save and
+     * at start, not a foreign key: bots are archived, never deleted.
+     */
+    coordinatorBotId: text("coordinator_bot_id").notNull(),
     /** Every participant, the coordinator first; checked against `bots` at save and at start. */
     participantBotIds: jsonb("participant_bot_ids").$type<string[]>().notNull(),
     /** The contract's `verificationPlanSchema`; null for none. */
