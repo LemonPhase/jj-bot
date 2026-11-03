@@ -120,7 +120,7 @@ describe("without API_TOKEN", () => {
       }),
       403,
     );
-    expect(error.message).toContain("API_ALLOWED_HOSTS");
+    expect(error.message).toContain("set API_TOKEN");
     await refused(
       await t.app.request("/api/bots", {
         method: "POST",

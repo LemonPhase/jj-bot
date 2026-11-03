@@ -1036,9 +1036,13 @@ describe("artifacts", () => {
       `attachment; filename="notes-grace.md"; filename*=UTF-8''notes-grace.md`,
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Security-Policy")).toContain(
-      "sandbox",
+    // Its own, stricter policy, never the web app's; the other security
+    // headers as on every answer (headers.ts).
+    expect(response.headers.get("Content-Security-Policy")).toBe(
+      "sandbox; default-src 'none'",
     );
+    expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     const text = await response.text();
     expect(text).toContain("# Notes");
     expect(Number(response.headers.get("Content-Length"))).toBe(
