@@ -142,7 +142,8 @@ describe("bootstrap, models and drivers", () => {
         streaming: true,
         verification: true,
         secretStore: false,
-        // This build runs no MCP server or skill, so neither is claimed.
+        // This build runs no MCP server or skill, so neither is claimed,
+        // although its local driver can spawn the processes stdio servers need.
         mcp: { stdio: false, remote: false },
         skills: false,
         drivers: [{ id: "local", available: true, isolated: false }],
@@ -172,7 +173,7 @@ describe("bootstrap, models and drivers", () => {
       .parse(body);
     expect(drivers.map((driver) => driver.id)).toEqual(["local"]);
     expect(drivers[0]?.capabilities.filesystemIsolation).toBe(false);
-    expect(drivers[0]?.capabilities.spawn).toBe(false);
+    expect(drivers[0]?.capabilities.spawn).toBe(true);
     expect(drivers[0]?.specJsonSchema).toHaveProperty("properties");
   });
 });
