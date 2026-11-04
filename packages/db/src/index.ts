@@ -1,4 +1,5 @@
 export * from "./bus";
+export * from "./bytea";
 export * from "./database";
 export * from "./events";
 export * from "./ids";
