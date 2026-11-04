@@ -35,43 +35,51 @@ rather than landing it and announcing it afterwards.
 
 **Changed by:** backend and frontend ([#40](https://github.com/LemonPhase/jj-bot/issues/40), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/40#issuecomment-6613502548)) · **Compatibility:** additive
 
-- New `cron.ts`, pure and shared by the schedule editor and the scheduler: `parseCron` and
-  `cronProblem` (5 fields of `*`, numbers, ranges, steps after `*` or a range, lists, `JAN`–`DEC`
-  and `SUN`–`SAT` in any case, day of week 0–7; both day fields restricted match either, as in
-  Vixie cron, where a field that starts with `*` is unrestricted; a seconds or year field, macros
-  and `L`, `W`, `#`, `?` are refused, each with one sentence), `canonicalTimeZone` (an IANA name
-  `Intl` knows, in canonical form; offsets refused), `zoneOffsetMs`, `wallTimeToInstant` and the
-  generators `cronFires` and `cronInstants`. A wall time daylight saving skips fires once, at the end
-  of the gap; a repeated one once, at its first occurrence. The zone is read about twice per matching
-  day, never per minute.
-- New `schedules.ts`. `scheduleTriggerSchema`, a union on `kind` with only `cron`
-  (`{ kind, cron, timeZone }`, the expression tidied to single spaces and the zone canonical);
-  `storedTriggerSchema`, its read form, which does not parse them again. `nextFires(trigger, after,
-  n)`, `firesBetween(trigger, after, until, limit)`, `minimumGapMinutes(trigger, from)` (measured on
-  the zone's wall clock, so a daylight-saving change does not count as a short gap; null for fewer
-  than two fires) and `triggerProblem(trigger, from, minIntervalMinutes)`, all over
-  `SCHEDULE_LOOKAHEAD_DAYS` = 366; `formatFireTime` words a fire on the schedule's wall clock.
-- `scheduleSchema`: `id`, `name` (1–80 characters, one line, as bot names), `templateId`, `trigger`,
-  `instructions` (at most 4000, default ""), `enabled`, `overlap` (`"skip"`, the only value),
-  `keepWorkspaces` (0–50, default 10), `chatUpdates` (`"attention"` | `"all"`, default
-  `"attention"`), `nextFireAt` (null while disabled or with no fire in the lookahead),
-  `pausedReason` (`"template_unusable"` | null), `lastFire` and timestamps. `scheduleFireSchema`:
-  `id`, `scheduleId`, `scheduledFor`, `recordedAt`, `outcome` (`started`, `skipped`, `missed`,
-  `refused`), `reason`, `missedCount`, `taskId`, and, beyond the agreed list, a refusal's `code` and
-  `details` (null and absent otherwise), which the agreed acceptance needs ("refused with the
-  `SPEND_CAP_REACHED` details").
-- Commands: `createScheduleCommandSchema` (`name`, `templateId`, `trigger`, optional
-  `instructions`, `enabled` (default true), `overlap`, `keepWorkspaces`, `chatUpdates`) and
-  `updateScheduleCommandSchema` (partial, at least one field). Limits: `MAX_SCHEDULES` = 50,
-  `MAX_ENABLED_SCHEDULES` = 20, `SCHEDULE_FIRES_SHOWN` = 50, `SCHEDULE_FIRES_KEPT` = 200,
-  `SCHEDULE_MIN_INTERVAL_BOUNDS` (15–1440 minutes) and `SCHEDULER_STALE_MS` (2 minutes).
+- New `schedules.ts` (in the index): `scheduleSchema`: `id`, `name` (1–80 characters, one line, as
+  bot names), `templateId`, `trigger` (`storedTriggerSchema`, its read form: `{ kind: "cron", cron,
+  timeZone }`, not parsed again), `instructions` (at most 4000, default ""), `enabled`, `overlap`
+  (`"skip"`, the only value), `keepWorkspaces` (0–50, default 10), `chatUpdates` (`"attention"` |
+  `"all"`, default `"attention"`), `nextFireAt` (null exactly while disabled), `pausedReason`
+  (`SCHEDULE_PAUSED_REASONS`: `"template_unusable"`, `"interval_too_short"`, `"no_next_fire"`, or
+  null), `lastFire` and timestamps. `scheduleFireSchema`: `id`, `scheduleId`, `scheduledFor`,
+  `recordedAt`, `outcome` (`started`, `skipped`, `missed`, `refused`), `reason`, `missedCount`,
+  `taskId`, and, beyond the agreed list, a refusal's `code` and `details` (null and absent
+  otherwise), which the agreed acceptance needs ("refused with the `SPEND_CAP_REACHED` details").
+  Limits: `MAX_SCHEDULES` = 50, `MAX_ENABLED_SCHEDULES` = 20, `SCHEDULE_FIRES_SHOWN` = 50,
+  `SCHEDULE_FIRES_KEPT` = 200, `SCHEDULE_MIN_INTERVAL_BOUNDS` (15–1440 minutes),
+  `SCHEDULE_HORIZON_DAYS` = 2928, `SCHEDULE_GAP_DAYS` = 366 and `SCHEDULER_STALE_MS` (2 minutes).
+- New entry `@jj/contracts/schedule-rules` (`schedule-rules.ts`, with `cron.ts`), kept out of the
+  index so clients load it only where they write or preview a schedule; the index re-exports its
+  types (`ScheduleTrigger`, `CreateScheduleCommand`, `UpdateScheduleCommand`).
+  - The cron grammar: `parseCron` and `cronProblem` (5 fields of `*`, numbers, ranges, steps after
+    `*` or a range, lists, `JAN`–`DEC` and `SUN`–`SAT` in any case, day of week 0–7; both day
+    fields restricted match either, as in Vixie cron, where a field that starts with `*` is
+    unrestricted; a seconds or year field, macros and `L`, `W`, `#`, `?` are refused, each with one
+    sentence) and `canonicalTimeZone` (an IANA name `Intl` knows, in canonical form; offsets
+    refused).
+  - The commands: `scheduleTriggerSchema` (a union on `kind` with only `cron`; `cronSchema` tidies
+    the expression to single spaces, `timeZoneSchema` stores the zone canonical),
+    `createScheduleCommandSchema` (`name`, `templateId`, `trigger`, optional `instructions`,
+    `enabled` (default true), `overlap`, `keepWorkspaces`, `chatUpdates`) and
+    `updateScheduleCommandSchema` (partial, at least one field).
+  - Evaluation: `zoneOffsetMs`, `wallTimeToInstant`, the generators `cronFires` and
+    `cronInstants`, `nextFires(trigger, after, n)` (over `SCHEDULE_HORIZON_DAYS`, so a leap-day
+    schedule always finds its next fire), `firesBetween(trigger, after, until, limit)`,
+    `minimumGapMinutes(trigger, from, stopBelow?)` (over `SCHEDULE_GAP_DAYS`, measured on the zone's
+    wall clock; with `stopBelow` it returns at the first gap under it; null for fewer than two
+    fires), `triggerProblem(trigger, from, minIntervalMinutes)` and `formatFireTime`. A wall time
+    daylight saving skips fires once, at the end of the gap; a repeated one once, at its first
+    occurrence; in real time a change of offset can bring two runs as close as a minute, which the
+    docs state. The zone is read about twice per matching day, never per minute.
 - Routes: `GET /api/schedules` → `scheduleListSchema` (`{ schedules, scheduler: { lastPassAt,
   minIntervalMinutes, graceMinutes } }`, oldest first); `POST` → 201 `scheduleResultSchema`; `GET
   /api/schedules/:id` → `scheduleDetailSchema` (`{ schedule, fires }`, the latest 50, newest
   first); `PATCH` → `{ schedule }`; `DELETE` → 204, leaving its tasks running with their
-  `scheduleId`. A save answers `VALIDATION_FAILED` for a bad cron or zone, one that never runs in the
-  lookahead, a gap under the server's minimum, or a template that is unknown or whose task cap
-  resolves to none, and `CONFLICT` past either limit.
+  `scheduleId`. A save answers `VALIDATION_FAILED` for a bad cron or zone, one that never runs in
+  the horizon, a gap under the server's minimum, or a template that is unknown or whose task cap
+  resolves to none, and `CONFLICT` past either limit. A `PATCH` runs the trigger and template
+  checks only when it changes the trigger or the template or enables the schedule, so one that
+  disables it always applies.
 - `capabilities.schedules` (false by default, so older servers read as without them); while false
   the routes answer 404. `taskObjectSchema.scheduleId` (null by default and for records before
   1.11.0). The hint `schedules.changed`. The error `TEMPLATE_IN_USE` (409, `details` per
@@ -81,8 +89,8 @@ rather than landing it and announcing it afterwards.
 - `refineOneLine` (`bots.ts`) is exported for other one-line names.
 
 **Action required (frontend):** the schedule editor (presets, zone, next 3 runs, refusals inline),
-the schedules list with each last outcome, the stale-scheduler banner and "Scheduled · X" on a
-task. Done in the same change, the demo included.
+the schedules list with each last outcome and pause, the stale-scheduler banner and "Scheduled ·
+X" on a task. Done in the same change, the demo included.
 **Action required (backend):** none beyond this change; a client built against 1.9.0 that parses
 tasks strictly must accept `scheduleId`.
 

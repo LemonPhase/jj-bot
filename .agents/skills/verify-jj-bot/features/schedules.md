@@ -32,6 +32,6 @@ Preconditions:
 ## Gotchas
 
 - The scheduler passes every 30 s on the server's clock, so a fire lands up to 30 s after its time; a cron can name a minute, never a second.
-- The minimum interval (`JJ_SCHEDULE_MIN_INTERVAL_MINUTES`, default 60) is measured on the wall clock: `30 * * * *` is allowed although a spring-forward change runs two of its times 30 minutes apart.
+- The minimum interval (`JJ_SCHEDULE_MIN_INTERVAL_MINUTES`, default 60) is measured on the wall clock: `59 * * * *` is allowed although on the night clocks go forward it runs at 00:59 and 02:00, a minute apart.
 - `schedule-outcomes` (skipped, missed, refused, paused) and `schedule-stale` need a held approval, a stopped server or a cap; they are covered by DOM tests (`apps/web/src/features/schedules/schedules.dom.test.tsx`) and the engine tests (`packages/backend/src/schedules.test.ts`). The embedded worker of a verify instance cannot be stopped without stopping the instance.
 - The section and the `Schedule…` buttons are hidden on a server that reports `capabilities.schedules` false.
