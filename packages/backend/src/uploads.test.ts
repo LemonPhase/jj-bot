@@ -32,7 +32,7 @@ import {
   stage,
   uploadsOf,
 } from "./testing/uploads";
-import { placementNotice } from "./worker/uploads";
+import { placementNotice, settleUpload } from "./worker/uploads";
 
 let db: TestDatabase;
 const engines: TestEngine[] = [];
@@ -577,6 +577,42 @@ describe("limits and refusals", () => {
       maxFiles: 20,
       maxTaskBytes: 128 * 1024 * 1024,
     });
+  });
+});
+
+describe("settling an upload", () => {
+  it("records its outcome once: a later attempt changes nothing, emits nothing and tells nothing", async () => {
+    const { engine, executor } = await engineWith();
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    executor.brain(ada, quick);
+    const { task } = await engine.tasks.create({
+      goal: "Hold an upload",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await untilTask(engine, task.id, (v) => v.task.status === "completed");
+    const staged = await stage(engine, "a.txt", "one");
+    await engine.tasks.upload(task.id, { files: [{ uploadId: staged.id }] });
+    const settle = (
+      outcome: Parameters<typeof settleUpload>[4],
+    ): Promise<boolean> =>
+      engine.context.db.transaction((tx) =>
+        settleUpload(tx, engine.context, task.id, staged.id, outcome, {}),
+      );
+    expect(await settle({ kind: "placed" })).toBe(true);
+    expect(
+      await settle({ kind: "failed", error: "a directory is in the way" }),
+    ).toBe(false);
+    expect(await settle({ kind: "placed" })).toBe(false);
+    const view = await engine.tasks.get(task.id);
+    expect(uploadsOf(view)[0]?.upload).toMatchObject({
+      state: "placed",
+      error: null,
+    });
+    expect(
+      view.events.filter((event) => event.type === "artifact.updated"),
+    ).toHaveLength(1);
+    expect(await notices(engine, task.id)).toHaveLength(1);
   });
 });
 

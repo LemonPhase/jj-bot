@@ -18,8 +18,9 @@ import { formatUploadSize } from "@jj/contracts";
 import { artifacts, type Tx } from "@jj/db";
 import { type Sandbox, SandboxPathError } from "@jj/sandbox/contract";
 import { and, asc, count, eq } from "drizzle-orm";
+import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
-import { emit } from "../events";
+import { type Attribution, emit } from "../events";
 import { toArtifact } from "../records";
 import { uploadPartName, uploadPartPrefix } from "../services/artifacts";
 import { deliver, rootSession } from "../services/messages";
@@ -27,7 +28,7 @@ import { lockTask } from "../services/sessions";
 import { artifactColumns } from "../services/views";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 
-type Outcome =
+export type Outcome =
   | { kind: "placed" }
   | { kind: "failed"; error: string }
   | { kind: "transient"; error: string };
@@ -176,20 +177,28 @@ export async function placeUploads(
         });
         continue;
       }
-      await writeRun(rc, (tx) => recordPlacement(tx, rc, id, outcome));
+      await writeRun(rc, (tx) =>
+        settleUpload(tx, ctx, rc.task.id, id, outcome, attributionOf(rc)),
+      );
     }
   });
 }
 
-/** One upload's outcome, once; the notice when it settles its announcement. */
-async function recordPlacement(
+/**
+ * Records one upload's outcome under the task lock, once: an upload another
+ * attempt settled first is left as it is, with no event and no notice.
+ * Settling an announcement's last upload gives the root session its notice.
+ * True when this call settled it.
+ */
+export async function settleUpload(
   tx: Tx,
-  rc: RunContext,
+  ctx: EngineContext,
+  taskId: string,
   uploadId: string,
   outcome: Exclude<Outcome, { kind: "transient" }>,
-) {
-  const { ctx } = rc.deps;
-  await lockTask(tx, rc.task.id);
+  attribution: Attribution,
+): Promise<boolean> {
+  await lockTask(tx, taskId);
   const [row] = await tx
     .update(artifacts)
     .set(
@@ -201,12 +210,12 @@ async function recordPlacement(
       and(eq(artifacts.id, uploadId), eq(artifacts.uploadState, "pending")),
     )
     .returning(artifactColumns);
-  // Another run recorded it first.
-  if (!row?.uploadMessageId) return;
-  await emit(tx, rc.task.id, {
+  // Another attempt recorded it first.
+  if (!row?.uploadMessageId) return false;
+  await emit(tx, taskId, {
     type: "artifact.updated",
     payload: { artifact: toArtifact(row), previousState: "pending" },
-    ...attributionOf(rc),
+    ...attribution,
   });
   const [left] = await tx
     .select({ value: count() })
@@ -217,14 +226,14 @@ async function recordPlacement(
         eq(artifacts.uploadState, "pending"),
       ),
     );
-  if ((left?.value ?? 0) > 0) return;
+  if ((left?.value ?? 0) > 0) return true;
   const batch = await tx
     .select(artifactColumns)
     .from(artifacts)
     .where(eq(artifacts.uploadMessageId, row.uploadMessageId))
     .orderBy(asc(artifacts.createdAt), asc(artifacts.id));
-  const root = await rootSession(tx, rc.task.id);
-  if (!root) return;
+  const root = await rootSession(tx, taskId);
+  if (!root) return true;
   await deliver(
     tx,
     root,
@@ -235,6 +244,7 @@ async function recordPlacement(
     },
     { wake: false, ctx },
   );
+  return true;
 }
 
 /**
