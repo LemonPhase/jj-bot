@@ -23,6 +23,8 @@ import {
 import { SAMPLE_PAYLOADS } from "./testing/event-samples";
 
 const CAP = MIN_EVENT_PAYLOAD_CAP_BYTES;
+/** Arguments nested this deep overflow a recursive walk, not JSON.stringify. */
+const NESTED_DEPTH = 3_000;
 const bytes = (text: string) => Buffer.byteLength(text, "utf8");
 /** What `emit` stores: the clipped copy, or the payload whole. */
 const stored = (type: TaskEventType, payload: Record<string, unknown>) =>
@@ -105,6 +107,58 @@ describe("clippedPayload", () => {
     const args = clipped?.approval.args as { rows: number[] };
     expect(args.rows.slice(0, 3)).toEqual([0, 1, 2]);
     expect(clipped?.approval.summary).toBe(payload.approval.summary);
+  });
+
+  it("clips a held call's arguments however deeply they nest", () => {
+    // Deeper than a recursive walk can go, within what JSON.stringify can.
+    let deep: unknown = "end";
+    for (let level = 0; level < NESTED_DEPTH; level++)
+      deep = level % 2 === 0 ? { next: deep } : [deep];
+    const content = "x".repeat(300_000);
+    const rows = Array.from({ length: 200_000 }, (_, index) => index);
+    // A long string: clipping strings is enough. Numbers: entries are cut too.
+    for (const extra of [{ content }, { rows }]) {
+      const payload = {
+        approval: {
+          ...SAMPLE_PAYLOADS["approval.requested"].approval,
+          args: { deep, ...extra },
+        },
+      };
+      expect(payloadBytes(payload)).toBeGreaterThan(CAP);
+      const clipped = clippedPayload("approval.requested", payload, CAP);
+      expect(clipped, Object.keys(extra)[0]).toBeDefined();
+      expect(payloadBytes(clipped)).toBeLessThan(CAP);
+      expect(validPayload("approval.requested", clipped)).toBe(true);
+      // Shallow checks only: an assertion would print a value this deep.
+      const kept = clipped?.approval.args.deep as [{ next: unknown }];
+      expect(Array.isArray(kept) && kept.length).toBe(1);
+      expect(Object.keys(kept[0])).toEqual(["next"]);
+      expect(Array.isArray(kept[0].next)).toBe(true);
+    }
+  });
+
+  it("keeps a held call's own __proto__ key as a key", () => {
+    // As JSON.parse reads it: an own key, not the object's prototype.
+    const args = JSON.parse(
+      `{"__proto__":{"polluted":"${"p".repeat(10_000)}"}}`,
+    ) as Record<string, unknown>;
+    const rows = Array.from({ length: 100_000 }, (_, index) => index);
+    // A long string: clipping strings is enough. Numbers: entries are cut too.
+    for (const extra of [{ more: "m".repeat(300_000) }, { rows }]) {
+      const payload = {
+        approval: {
+          ...SAMPLE_PAYLOADS["approval.requested"].approval,
+          args: { ...args, ...extra },
+        },
+      };
+      const clipped = clippedPayload("approval.requested", payload, CAP);
+      const kept = clipped?.approval.args as Record<string, unknown>;
+      expect(Object.keys(kept)).toContain("__proto__");
+      expect(Object.getPrototypeOf(kept)).toBe(Object.prototype);
+      expect(
+        Object.getOwnPropertyDescriptor(kept, "__proto__")?.value,
+      ).toMatchObject({ polluted: expect.stringMatching(/^p+… \[/) });
+    }
   });
 
   it("clips only what no record bounds", () => {

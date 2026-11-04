@@ -23,6 +23,7 @@ import { MIN_EVENT_PAYLOAD_CAP_BYTES } from "./config";
 import type { Engine } from "./engine";
 import { PAYLOAD_STRING_CLIP_BYTES, payloadBytes } from "./event-payloads";
 import { emit } from "./events";
+import { SAMPLE_PAYLOADS } from "./testing/event-samples";
 import { said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
@@ -260,6 +261,48 @@ describe("the event payload cap", () => {
     expect((await engine.metrics.text()).match(spilled)?.[1] ?? "0").toBe("0");
     await ctx.db.transaction(spill);
     expect((await engine.metrics.text()).match(spilled)?.[1]).toBe("1");
+  });
+
+  it("stores a held call whose arguments nest deeply, clipped", async () => {
+    const test = await testEngine(db.database, {
+      start: false,
+      config: { eventPayloadCapBytes: MIN_EVENT_PAYLOAD_CAP_BYTES },
+    });
+    engines.push(test);
+    const { engine } = test;
+    const team = await createTeam(engine, ["Ada"]);
+    const { task } = await engine.tasks.create({
+      goal: "Call a tool with odd arguments",
+      coordinatorBotId: team.ids[0] as string,
+    });
+    // Deeper than a recursive walk can go, within what JSON.stringify can.
+    let deep: unknown = "end";
+    for (let level = 0; level < 3_000; level++)
+      deep = level % 2 === 0 ? { next: deep } : [deep];
+    const rows = Array.from({ length: 100_000 }, (_, index) => index);
+    const approval = {
+      ...SAMPLE_PAYLOADS["approval.requested"].approval,
+      taskId: task.id,
+      args: { deep, rows },
+    };
+    const ctx = engine.context;
+    const event = await ctx.db.transaction((tx) =>
+      emit(tx, ctx, task.id, {
+        type: "approval.requested",
+        payload: { approval },
+      }),
+    );
+    const [stored] = (await allEvents(engine, task.id)).filter(
+      (each) => each.sequence === event.sequence,
+    );
+    expect(taskEventSchema.safeParse(stored).success).toBe(true);
+    expect(payloadBytes(stored?.payload)).toBeLessThan(
+      MIN_EVENT_PAYLOAD_CAP_BYTES,
+    );
+    // As text: comparing values this deep would recurse too.
+    expect(JSON.stringify(await savedCopy(engine, stored as TaskEvent))).toBe(
+      JSON.stringify({ approval }),
+    );
   });
 
   it("spills a held write with 1 MiB of arguments, while its approval keeps them whole", async () => {

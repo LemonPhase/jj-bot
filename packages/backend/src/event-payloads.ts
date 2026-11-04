@@ -116,57 +116,128 @@ function clipString(text: string, bytes: number, max?: number): string {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+// The walks over free-form JSON below are loops, not recursion: a held
+// call's arguments may nest deeper than the call stack goes.
+type Container = unknown[] | Record<string, unknown>;
+type Entry = [key: string | number, value: unknown];
+
+const isContainer = (value: unknown): value is Container =>
+  Array.isArray(value) || isObject(value);
+
+const emptyLike = (value: Container): Container =>
+  Array.isArray(value) ? [] : {};
+
+const entriesOf = (value: Container): Entry[] =>
+  Array.isArray(value)
+    ? value.map((item, index): Entry => [index, item])
+    : Object.entries(value);
+
+/**
+ * Adds an entry to a copy, in order: an own key always, `__proto__` too,
+ * as `JSON.parse` reads it (an assignment would set the copy's prototype).
+ */
+function put(target: Container, key: string | number, value: unknown) {
+  if (Array.isArray(target)) target.push(value);
+  else
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+}
+
 /** A copy with every string (not key) over `bytes` clipped and marked. */
 function clipStrings(value: unknown, bytes: number): unknown {
-  if (typeof value === "string") return clipString(value, bytes);
-  if (Array.isArray(value))
-    return value.map((item) => clipStrings(item, bytes));
-  if (isObject(value))
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        clipStrings(entry, bytes),
-      ]),
-    );
-  return value;
+  const copy = (item: unknown) =>
+    typeof item === "string"
+      ? clipString(item, bytes)
+      : isContainer(item)
+        ? emptyLike(item)
+        : item;
+  const root = copy(value);
+  const pending: [Container, Container][] = isContainer(value)
+    ? [[value, root as Container]]
+    : [];
+  for (let next = pending.pop(); next; next = pending.pop()) {
+    const [source, target] = next;
+    for (const [key, item] of entriesOf(source)) {
+      const kept = copy(item);
+      put(target, key, kept);
+      if (isContainer(item)) pending.push([item, kept as Container]);
+    }
+  }
+  return root;
+}
+
+/** A container `shrink` is filling: what it keeps of `entries`, within `budget`. */
+interface Shrinking {
+  entries: Entry[];
+  next: number;
+  kept: Container;
+  used: number;
+  budget: number;
+  /** What the entry being filled adds beside its value: a comma, or its key. */
+  overhead: number;
 }
 
 /**
  * Free-form JSON within about `budget` bytes: arrays and objects keep their
- * first entries, strings their start, and an object stays an object.
+ * first entries, strings their start, and an object stays an object. Each
+ * entry gets what its earlier siblings left, depth first.
  */
-function shrink(
-  value: unknown,
-  budget: number,
-): { value: unknown; used: number } {
-  if (typeof value === "string") {
-    const text = clipString(value, Math.max(0, budget - 64));
-    return { value: text, used: payloadBytes(text) };
-  }
-  if (Array.isArray(value)) {
-    const kept: unknown[] = [];
-    let used = 2;
-    for (const item of value) {
-      if (used >= budget) break;
-      const next = shrink(item, budget - used - 1);
-      kept.push(next.value);
-      used += next.used + 1;
+function shrink(value: unknown, budget: number): unknown {
+  const leaf = (item: unknown, room: number) => {
+    const kept =
+      typeof item === "string"
+        ? clipString(item, Math.max(0, room - 64))
+        : item;
+    return { kept, used: payloadBytes(kept ?? null) };
+  };
+  const open = (item: Container, room: number): Shrinking => ({
+    entries: entriesOf(item),
+    next: 0,
+    kept: emptyLike(item),
+    used: 2,
+    budget: room,
+    overhead: 0,
+  });
+  if (!isContainer(value)) return leaf(value, budget).kept;
+  const root = open(value, budget);
+  const stack = [root];
+  for (let frame = stack.at(-1); frame; frame = stack.at(-1)) {
+    const entry = frame.entries[frame.next];
+    const inArray = Array.isArray(frame.kept);
+    const overhead =
+      entry === undefined ? 0 : inArray ? 1 : payloadBytes(entry[0]) + 2;
+    const full = inArray
+      ? frame.used >= frame.budget
+      : frame.used + overhead >= frame.budget;
+    if (entry === undefined || full) {
+      // Done: its parent takes what it kept.
+      stack.pop();
+      const parent = stack.at(-1);
+      const slot = parent?.entries[parent.next];
+      if (parent && slot) {
+        put(parent.kept, slot[0], frame.kept);
+        parent.used += parent.overhead + frame.used;
+        parent.next += 1;
+      }
+      continue;
     }
-    return { value: kept, used };
-  }
-  if (isObject(value)) {
-    const kept: Record<string, unknown> = {};
-    let used = 2;
-    for (const [key, entry] of Object.entries(value)) {
-      const keyBytes = payloadBytes(key) + 2;
-      if (used + keyBytes >= budget) break;
-      const next = shrink(entry, budget - used - keyBytes);
-      kept[key] = next.value;
-      used += keyBytes + next.used;
+    const [key, item] = entry;
+    const room = frame.budget - frame.used - overhead;
+    if (isContainer(item)) {
+      frame.overhead = overhead;
+      stack.push(open(item, room));
+      continue;
     }
-    return { value: kept, used };
+    const small = leaf(item, room);
+    put(frame.kept, key, small.kept);
+    frame.used += overhead + small.used;
+    frame.next += 1;
   }
-  return { value, used: payloadBytes(value ?? null) };
+  return root.kept;
 }
 
 /** Applies `fn` to every value at `path` inside `value`, returning a copy. */
@@ -211,7 +282,7 @@ export function clippedPayload<Payload extends Record<string, unknown>>(
     for (const zone of zones)
       if (zone.kind === "json")
         clipped = atPath(clipped, zone.path, (found) =>
-          isObject(found) ? shrink(found, FREE_FORM_BUDGET_BYTES).value : found,
+          isObject(found) ? shrink(found, FREE_FORM_BUDGET_BYTES) : found,
         );
   if (payloadBytes(clipped) >= payloadBytes(payload)) return undefined;
   return validPayload(type, clipped) ? (clipped as Payload) : undefined;
