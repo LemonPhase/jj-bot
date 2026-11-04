@@ -105,20 +105,24 @@ async function recordTaskWorkspace(
   taskId: string,
   driverId: string,
 ): Promise<void> {
-  await ctx.db
-    .update(tasks)
-    .set({ workspaceDriver: driverId })
-    .where(
-      and(
-        eq(tasks.id, taskId),
-        or(isNull(tasks.workspaceDriver), ne(tasks.workspaceDriver, driverId)),
-      ),
-    )
-    .catch((error: unknown) =>
-      ctx.logger.warn(`Recording the workspace of task ${taskId} failed`, {
-        error: errorMessage(error),
-      }),
-    );
+  try {
+    await ctx.db
+      .update(tasks)
+      .set({ workspaceDriver: driverId })
+      .where(
+        and(
+          eq(tasks.id, taskId),
+          or(
+            isNull(tasks.workspaceDriver),
+            ne(tasks.workspaceDriver, driverId),
+          ),
+        ),
+      );
+  } catch (error) {
+    ctx.logger?.warn(`Recording the workspace of task ${taskId} failed`, {
+      error: errorMessage(error),
+    });
+  }
 }
 
 export class TaskSandboxes {
