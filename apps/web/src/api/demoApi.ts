@@ -1271,11 +1271,17 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     // checks it, then fails at once, saying why.
     startMcpDiscovery: async (profileId, command) => {
       const profile = getProfileRecord(profileId);
-      const { server } = validate(startMcpDiscoveryCommandSchema, command);
+      const { server, sandbox } = validate(
+        startMcpDiscoveryCommandSchema,
+        command,
+      );
+      // A draft sandbox is checked as a profile's is; a disabled draft as enabled.
+      if (sandbox) assertSupported(sandbox);
       assertMcp(
         {
           ...profile,
-          mcpServers: [{ ...server, snapshotId: null }],
+          sandbox: sandbox ?? profile.sandbox,
+          mcpServers: [{ ...server, enabled: true, snapshotId: null }],
           approvals: [],
         },
         () => "server",

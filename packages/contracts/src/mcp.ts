@@ -1,3 +1,4 @@
+import { sandboxSpecSchema } from "@jj/sandbox/contract";
 import { z } from "zod";
 import { sha256Hex } from "./canonical";
 import { idSchema, timestampSchema } from "./common";
@@ -557,10 +558,15 @@ export const mcpDiscoverySchema = z.object({
 /**
  * `POST /api/runtime-profiles/:id/mcp-discoveries` → 202 `{ discovery }`.
  * Takes a draft configuration, saved or not; its `secretEnv` secrets must be
- * granted by the stored profile.
+ * granted by the stored profile. `sandbox`, a draft of the profile's sandbox
+ * settings (its `sandbox`, whole), is what the test runs on and what the
+ * snapshot's `configHash` is computed from; without it, the profile's own.
+ * A profile save that changes its sandbox can then pin the snapshot found
+ * with the same settings.
  */
 export const startMcpDiscoveryCommandSchema = z.object({
   server: mcpServerSchema,
+  sandbox: sandboxSpecSchema.optional(),
 });
 
 /** `POST /api/runtime-profiles/:id/mcp-discoveries` and `GET /api/mcp-discoveries/:id`. */

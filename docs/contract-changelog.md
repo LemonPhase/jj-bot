@@ -31,6 +31,22 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.9.2 — 2026-11-04 — An MCP discovery takes a draft sandbox
+
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comment "Contract refinement for step 4a (#136): 1.9.2, discovery takes a draft sandbox") · **Compatibility:** additive
+
+- `startMcpDiscoveryCommandSchema` takes an optional `sandbox` (`sandboxSpecSchema`): a draft of
+  the profile's sandbox settings, in the shape of the profile's `sandbox`. The test runs on it and
+  the snapshot's `configHash` is computed from it; without it, the profile's stored sandbox is used.
+  A stdio server's `configHash` covers its sandbox (driver, image, network, `env`), so a profile save
+  that changes the sandbox can now pin the snapshot found with the same draft, in the same save; the
+  `MCP_SNAPSHOT_MISMATCH` message says so.
+
+**Action required (frontend):** none to keep working; the profile editor sends its draft sandbox with
+a test once the sandbox is edited (step 6).
+**Action required (backend):** none beyond this change: the server validates the draft with its
+driver (`PROFILE_UNSUPPORTED` on refusal) and stores it with the discovery.
+
 ## 1.9.1 — 2026-11-03 — Disabled MCP servers need no secret grants
 
 **Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comment "Contract refinement for step 4a (#136): 1.9.1") · **Compatibility:** clarifying (no wire change; a command that was refused can now be accepted)

@@ -10,6 +10,7 @@ import {
   mcpServerSchema,
   mcpToolSnapshotSchema,
   type SandboxSpec,
+  sandboxSpecSchema,
 } from "@jj/contracts";
 import {
   type ClaimedJob,
@@ -78,9 +79,10 @@ async function acquire(
     signal: AbortSignal.any([signal, AbortSignal.timeout(limitMs)]),
     ...(Object.keys(secrets).length > 0 ? { secrets } : {}),
   });
-  // Bounded whether or not the driver heeds its signal: the job's slot is
-  // given back on time.
+  // Bounded, and stopped by the job, whether or not the driver heeds its
+  // signal: the job's slot is given back on time.
   let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
   try {
     return await Promise.race([
       starting,
@@ -89,11 +91,14 @@ async function acquire(
           () =>
             reject(
               new Error(
-                `it did not start within ${Math.ceil(limitMs / 1000)} s`,
+                `it did not start within ${Math.round(limitMs / 100) / 10} s`,
               ),
             ),
           limitMs,
         );
+        onAbort = () => reject(new Error("the test was stopped"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
       }),
     ]);
   } catch (error) {
@@ -105,6 +110,7 @@ async function acquire(
     throw new Error(`The sandbox could not start: ${errorMessage(error)}`);
   } finally {
     clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -324,13 +330,21 @@ export async function runDiscoveryJob(
         await complete(tx, job.lease);
         return undefined;
       }
-      const parsed = mcpServerSchema.safeParse(row.config);
       const settings = profileSettings(profile);
-      // What the snapshot will describe: the sandbox it runs in now.
+      // The draft sandbox the test was asked to run on, else the profile's now.
+      const draft =
+        row.sandbox === null
+          ? undefined
+          : sandboxSpecSchema.safeParse(row.sandbox);
+      const sandbox = draft?.success ? draft.data : settings.sandbox;
+      const config = mcpServerSchema.safeParse(row.config);
+      const parsed =
+        draft && !draft.success ? ({ success: false } as const) : config;
+      // What the snapshot will describe: the sandbox it runs in.
       let configHash = row.configHash;
       if (parsed.success)
         try {
-          configHash = mcpConfigHash(parsed.data, settings.sandbox);
+          configHash = mcpConfigHash(parsed.data, sandbox);
         } catch {
           // Refused at the test's start already; kept as it was.
         }
@@ -338,11 +352,11 @@ export async function runDiscoveryJob(
         .update(mcpDiscoveries)
         .set({ status: "running", startedAt: ctx.clock(), configHash })
         .where(eq(mcpDiscoveries.id, row.id));
-      return { row, profile, parsed, settings };
+      return { row, profile, parsed, settings, sandbox };
     });
     if (!started || !discoveryId) return;
     const startedAt = performance.now();
-    const { parsed, settings } = started;
+    const { parsed, settings, sandbox } = started;
     ctx.logger.info("MCP discovery started", {
       discoveryId,
       server: started.row.server,
@@ -354,7 +368,7 @@ export async function runDiscoveryJob(
           parsed.data,
           {
             name: started.profile.name,
-            sandbox: settings.sandbox,
+            sandbox,
             secrets: settings.secrets,
           },
           control.controller.signal,

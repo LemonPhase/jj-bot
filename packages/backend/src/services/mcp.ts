@@ -40,6 +40,7 @@ import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { wakeWorkers } from "../events";
 import { profileSettings, toMcpDiscovery, toMcpSnapshot } from "../records";
+import { validateSpec } from "./profiles";
 
 /** Finished discoveries a profile keeps, the newest; older ones go with their unpinned snapshots. */
 export const MAX_KEPT_DISCOVERIES = 20;
@@ -110,9 +111,10 @@ const inProfile: At = {
 const inDiscovery: At = { list: "server", item: () => "server" };
 
 /**
- * MCP_UNAVAILABLE unless this server can run every one of `servers`: it
- * has an MCP client, a stdio server's sandbox driver declares `spawn`, and
- * remote servers are not turned off.
+ * MCP_UNAVAILABLE unless this server can run every enabled one of
+ * `servers`: it has an MCP client, a stdio server's sandbox driver declares
+ * `spawn`, and remote servers are not turned off. A disabled server runs
+ * nowhere, and is checked once it is enabled.
  */
 export function assertMcpRunnable(
   ctx: EngineContext,
@@ -120,7 +122,7 @@ export function assertMcpRunnable(
   sandbox: SandboxSpec,
   at: At = inProfile,
 ): void {
-  if (servers.length === 0) return;
+  if (!servers.some((server) => server.enabled)) return;
   if (!ctx.mcp)
     throw new DomainError(
       "MCP_UNAVAILABLE",
@@ -128,6 +130,7 @@ export function assertMcpRunnable(
     );
   const driver = ctx.drivers.get(sandbox.driver);
   servers.forEach((server, index) => {
+    if (!server.enabled) return;
     if (server.transport === "stdio" && !driver?.capabilities.spawn)
       throw new DomainError(
         "MCP_UNAVAILABLE",
@@ -219,7 +222,9 @@ export async function assertSecretHeadersStored(
  * The snapshots `servers` pin, each locked for the transaction.
  * MCP_SNAPSHOT_MISMATCH unless each exists, was discovered for this
  * profile and this server, and for the configuration the server has now,
- * in the profile's sandbox (`mcpConfigHash`).
+ * in the profile's sandbox (`mcpConfigHash`). A disabled server's pin is
+ * kept as it is (its approval rules still name its tools), and checked
+ * once it is enabled.
  */
 export async function pinnedSnapshots(
   tx: Tx,
@@ -237,7 +242,7 @@ export async function pinnedSnapshots(
     .where(inArray(mcpToolSnapshots.id, [...new Set(ids)]))
     .for("share");
   const problems = servers.flatMap((server, index) => {
-    if (server.snapshotId === null) return [];
+    if (server.snapshotId === null || !server.enabled) return [];
     const row = rows.find((candidate) => candidate.id === server.snapshotId);
     const where = `mcpServers.${index}.snapshotId`;
     if (!row || row.profileId !== profileId || row.server !== server.name)
@@ -246,7 +251,7 @@ export async function pinnedSnapshots(
       ];
     if (row.configHash !== mcpConfigHash(server, sandbox))
       return [
-        `${where}: ${server.snapshotId} was discovered for another configuration of ${server.name}, or another sandbox. Test the server again and pin the new snapshot.`,
+        `${where}: ${server.snapshotId} was discovered for another configuration of ${server.name}, or another sandbox. Test the server again with the new sandbox settings, then save the snapshot it finds together with them.`,
       ];
     return [];
   });
@@ -396,7 +401,14 @@ export async function startDiscovery(
   profileId: string,
   input: StartMcpDiscoveryCommand,
 ): Promise<{ discovery: McpDiscovery }> {
-  const { server } = parseCommand(startMcpDiscoveryCommandSchema, input);
+  const command = parseCommand(startMcpDiscoveryCommandSchema, input);
+  const { server } = command;
+  // A draft sandbox is checked by its driver as a profile save would.
+  const draft = command.sandbox
+    ? validateSpec(ctx, command.sandbox)
+    : undefined;
+  // A disabled draft is tested as it would run once enabled.
+  const tested = { ...server, enabled: true };
   return ctx.db.transaction(async (tx) => {
     const [row] = await tx
       .select()
@@ -405,10 +417,19 @@ export async function startDiscovery(
       .for("no key update");
     if (!row) throw notFound("Runtime profile", profileId);
     const settings = profileSettings(row);
-    assertMcpRunnable(ctx, [server], settings.sandbox, inDiscovery);
-    assertSecretEnvGranted([server], settings.secrets, inDiscovery);
-    await assertSecretHeadersStored(ctx, tx, [server], inDiscovery);
-    const configHash = mcpConfigHash(server, settings.sandbox);
+    const sandbox = draft ?? settings.sandbox;
+    const clashes = settings.secrets.filter((name) =>
+      Object.hasOwn(sandbox.env, name),
+    );
+    if (clashes.length > 0)
+      throw new DomainError(
+        "VALIDATION_FAILED",
+        `sandbox.env: ${clashes.join(", ")} ${clashes.length === 1 ? "is" : "are"} also granted as a secret; a variable comes from one place only.`,
+      );
+    assertMcpRunnable(ctx, [tested], sandbox, inDiscovery);
+    assertSecretEnvGranted([tested], settings.secrets, inDiscovery);
+    await assertSecretHeadersStored(ctx, tx, [tested], inDiscovery);
+    const configHash = mcpConfigHash(server, sandbox);
     // The profile row is held, so no other test of this server starts meanwhile.
     const [active] = await tx
       .select()
@@ -430,6 +451,7 @@ export async function startDiscovery(
         profileId,
         server: server.name,
         config: server,
+        sandbox: draft ?? null,
         configHash,
         createdAt: ctx.clock(),
       })

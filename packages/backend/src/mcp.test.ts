@@ -33,10 +33,11 @@ import type { EngineConfigInput } from "./config";
 import { createDriverRegistry } from "./drivers";
 import type { Engine } from "./engine";
 import { DomainError } from "./errors";
-import type { EngineDriver } from "./ports";
+import type { ChatReply, ChatReplyInput, EngineDriver } from "./ports";
 import { createKeyring } from "./secrets/keyring";
 import { SecretStore } from "./secrets/store";
 import { MAX_KEPT_DISCOVERIES, mcpConfigHash } from "./services/mcp";
+import { FakeChatResponder } from "./testing/fakes";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -193,6 +194,42 @@ function slowLocal(root: string, ms: number): EngineDriver {
   };
 }
 
+/** A chat responder that takes a while, so steady chat keeps the worker's slots busy. */
+class SlowChat extends FakeChatResponder {
+  override async reply(input: ChatReplyInput): Promise<ChatReply> {
+    await sleep(150);
+    return super.reply(input);
+  }
+}
+
+/** Three bots chatting without pause until `stop()`. */
+async function chatLoad(engine: Engine, chat: FakeChatResponder) {
+  const bots: string[] = [];
+  for (const base of ["Ann", "Ben", "Cal"]) {
+    const { bot } = await engine.bots.create({ name: uniqueName(base) });
+    chat.brain(bot.name, () => ({ text: "ok" }));
+    bots.push(bot.id);
+  }
+  let running = true;
+  const sending = (async () => {
+    for (let index = 0; running; index += 1) {
+      await engine.bots
+        .sendMessage(bots[index % bots.length] as string, {
+          text: `message ${index}`,
+        })
+        .catch(() => {});
+      await sleep(40);
+    }
+  })();
+  await until(() => chat.inputs.length > 0, { what: "the chat load" });
+  return {
+    async stop() {
+      running = false;
+      await sending;
+    },
+  };
+}
+
 async function setup(
   options: {
     spawn?: boolean;
@@ -200,6 +237,7 @@ async function setup(
     mcp?: false;
     config?: EngineConfigInput;
     slowAcquireMs?: number;
+    chat?: FakeChatResponder;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "jj-mcp-engine-"));
@@ -212,6 +250,7 @@ async function setup(
   );
   current = await testEngine(db.database, {
     ...(options.config ? { config: options.config } : {}),
+    ...(options.chat ? { chat: options.chat } : {}),
     registry: createDriverRegistry([{ driver: local.driver, label: "Local" }]),
     secretStore: new SecretStore({
       db: db.database.db,
@@ -640,6 +679,29 @@ describe("MCP discovery", () => {
     OPEN_TIMEOUT,
   );
 
+  for (const concurrency of [2, 1])
+    it(
+      `runs a discovery under steady chat load, with ${concurrency} slot${concurrency === 1 ? "" : "s"}`,
+      async () => {
+        const chat = new SlowChat();
+        const { engine, profile } = await setup({
+          chat,
+          config: { concurrency, discoveryMaxWaitMs: 1_000 },
+        });
+        const load = await chatLoad(engine, chat);
+        try {
+          const replies = chat.inputs.length;
+          const discovery = await discover(engine, profile.id, mcpFixture());
+          expect(discovery.status).toBe("succeeded");
+          // The chat kept going meanwhile.
+          expect(chat.inputs.length).toBeGreaterThan(replies);
+        } finally {
+          await load.stop();
+        }
+      },
+      OPEN_TIMEOUT,
+    );
+
   it(
     "runs at most one discovery at a time, so session runs and chat replies keep their slots",
     async () => {
@@ -694,9 +756,37 @@ describe("MCP discovery", () => {
       const discovery = await discover(engine, profile.id, mcpFixture());
       expect(discovery).toMatchObject({
         status: "failed",
-        error: "The sandbox could not start: it did not start within 1 s",
+        error: "The sandbox could not start: it did not start within 0.3 s",
       });
       expect(discovery.durationMs).toBeLessThan(1_500);
+      await until(() => acquired[0]?.released === true, {
+        what: "the late sandbox's release",
+      });
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "stops waiting for a sandbox when the worker stops, and releases the one that starts late",
+    async () => {
+      const { engine, profile, acquired } = await setup({
+        slowAcquireMs: 6_000,
+      });
+      const { discovery } = await engine.mcp.startDiscovery(profile.id, {
+        server: mcpFixture(),
+      });
+      await until(async () =>
+        (await engine.mcp.discovery(discovery.id)).discovery.status ===
+        "running"
+          ? true
+          : undefined,
+      );
+      const stopping = Date.now();
+      await engine.worker.stop();
+      expect(Date.now() - stopping).toBeLessThan(3_000);
+      expect((await engine.mcp.discovery(discovery.id)).discovery.status).toBe(
+        "queued",
+      );
       await until(() => acquired[0]?.released === true, {
         what: "the late sandbox's release",
       });
@@ -823,7 +913,7 @@ describe("profile save-time rules", () => {
       expect(
         await mismatch([{ ...pinned, args: [...pinned.args, "extra"] }]),
       ).toBe(
-        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again and pin the new snapshot.`,
+        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again with the new sandbox settings, then save the snapshot it finds together with them.`,
       );
       await mismatch([{ ...pinned, env: { FIXTURE_MODE: "crash" } }]);
       await mismatch([
@@ -881,7 +971,7 @@ describe("profile save-time rules", () => {
       );
       expect(moved.code).toBe("MCP_SNAPSHOT_MISMATCH");
       expect(moved.message).toBe(
-        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again and pin the new snapshot.`,
+        `mcpServers.0.snapshotId: ${snapshot.id} was discovered for another configuration of docs, or another sandbox. Test the server again with the new sandbox settings, then save the snapshot it finds together with them.`,
       );
       // Limits do not, and the worker calls a remote server whatever the sandbox.
       await engine.profiles.update(profile.id, {
@@ -893,6 +983,66 @@ describe("profile save-time rules", () => {
       await engine.profiles.update(profile.id, {
         sandbox: { env: { REGION: "eu" } },
       });
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "changes the sandbox of a profile with a pinned stdio snapshot: test with the draft, then save both",
+    async () => {
+      const { engine, profile } = await setup();
+      const server = mcpFixture();
+      const first = snapshotOf(await discover(engine, profile.id, server));
+      await engine.profiles.update(profile.id, {
+        mcpServers: [{ ...server, snapshotId: first.id }],
+        approvals: [{ tool: "mcp__docs__search" }],
+      });
+      const sandbox = { env: { REGION: "eu" } };
+      const refused = await failure(
+        engine.profiles.update(profile.id, { sandbox }),
+      );
+      expect(refused.code).toBe("MCP_SNAPSHOT_MISMATCH");
+      expect(refused.message).toBe(
+        `mcpServers.0.snapshotId: ${first.id} was discovered for another configuration of docs, or another sandbox. Test the server again with the new sandbox settings, then save the snapshot it finds together with them.`,
+      );
+      // The test runs on the draft sandbox, and its snapshot is for it ...
+      const draft = { ...profile.sandbox, env: { REGION: "eu" } };
+      const { discovery: queued } = await engine.mcp.startDiscovery(
+        profile.id,
+        { server, sandbox: draft },
+      );
+      const second = snapshotOf(
+        await until(
+          async () => {
+            const { discovery } = await engine.mcp.discovery(queued.id);
+            return discovery.status === "queued" ||
+              discovery.status === "running"
+              ? undefined
+              : discovery;
+          },
+          { what: "the draft's discovery" },
+        ),
+      );
+      expect(second.configHash).toBe(
+        mcpConfigHash(mcpServerSchema.parse(server), draft),
+      );
+      expect(second.configHash).not.toBe(first.configHash);
+      // ... so the change and the new pin save together, the rule kept.
+      const { profile: saved } = await engine.profiles.update(profile.id, {
+        sandbox,
+        mcpServers: [{ ...server, snapshotId: second.id }],
+      });
+      expect(saved.sandbox.env).toEqual({ REGION: "eu" });
+      expect(saved.mcpServers[0]?.snapshotId).toBe(second.id);
+      expect(saved.approvals).toEqual([{ tool: "mcp__docs__search" }]);
+      // A draft the driver cannot enforce is refused before anything queues.
+      const unsupported = await failure(
+        engine.mcp.startDiscovery(profile.id, {
+          server,
+          sandbox: { ...draft, network: { mode: "none" } },
+        }),
+      );
+      expect(unsupported.code).toBe("PROFILE_UNSUPPORTED");
     },
     OPEN_TIMEOUT,
   );
@@ -1023,6 +1173,88 @@ describe("profile save-time rules", () => {
       await engine.profiles.update(profile.id, {
         mcpServers: [{ ...pinned, enabled: false }],
       });
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "leaves disabled servers out of what only running servers need, and checks them once enabled",
+    async () => {
+      // With remote servers off, a disabled remote server still saves ...
+      const off = await setup({ env: { JJ_MCP_REMOTE: "off" } });
+      await off.engine.profiles.update(off.profile.id, {
+        mcpServers: [{ ...remote(), enabled: false }],
+      });
+      // Also beside an enabled server that can run here.
+      await off.engine.profiles.update(off.profile.id, {
+        mcpServers: [mcpFixture(), { ...remote(), enabled: false }],
+      });
+      expect(
+        (
+          await failure(
+            off.engine.profiles.update(off.profile.id, {
+              mcpServers: [remote()],
+            }),
+          )
+        ).code,
+      ).toBe("MCP_UNAVAILABLE");
+      // ... and testing a disabled draft checks it as it would run.
+      expect(
+        (
+          await failure(
+            off.engine.mcp.startDiscovery(off.profile.id, {
+              server: { ...remote(), enabled: false },
+            }),
+          )
+        ).code,
+      ).toBe("MCP_UNAVAILABLE");
+      const ungranted = await failure(
+        off.engine.mcp.startDiscovery(off.profile.id, {
+          server: mcpFixture({
+            enabled: false,
+            secretEnv: { DOCS_TOKEN: "DOCS_KEY" },
+          }),
+        }),
+      );
+      expect(ungranted.message).toBe(
+        "server.secretEnv.DOCS_TOKEN: DOCS_KEY is not granted by this profile; grant it under secrets first.",
+      );
+      await reset();
+
+      // A disabled server's pin does not stop a sandbox change; enabling it
+      // checks the pin against the new sandbox.
+      const { engine, profile } = await setup();
+      const unstored = await failure(
+        engine.mcp.startDiscovery(profile.id, {
+          server: {
+            ...remote({
+              secretHeaders: { "X-Key": { secret: "MISSING_KEY" } },
+            }),
+            enabled: false,
+          },
+        }),
+      );
+      expect(unstored.message).toBe(
+        "server.secretHeaders.X-Key: no sandbox secret named MISSING_KEY is stored. Add it in Settings → Secrets first.",
+      );
+      const server = mcpFixture();
+      const snapshot = snapshotOf(await discover(engine, profile.id, server));
+      await engine.profiles.update(profile.id, {
+        mcpServers: [{ ...server, snapshotId: snapshot.id, enabled: false }],
+        approvals: [{ tool: "mcp__docs__search" }],
+      });
+      await engine.profiles.update(profile.id, {
+        sandbox: { env: { REGION: "eu" } },
+      });
+      expect(
+        (
+          await failure(
+            engine.profiles.update(profile.id, {
+              mcpServers: [{ ...server, snapshotId: snapshot.id }],
+            }),
+          )
+        ).code,
+      ).toBe("MCP_SNAPSHOT_MISMATCH");
     },
     OPEN_TIMEOUT,
   );

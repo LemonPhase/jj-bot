@@ -1032,6 +1032,8 @@ export const mcpDiscoveries = pgTable(
     server: text("server").notNull(),
     /** The configuration tested (`mcpServerSchema`). */
     config: jsonb("config").$type<JsonObject>().notNull(),
+    /** A draft of the profile's sandbox the test runs on (`sandboxSpecSchema`); null: the profile's own. */
+    sandbox: jsonb("sandbox").$type<JsonObject>(),
     configHash: text("config_hash").notNull(),
     status: text("status")
       .$type<McpDiscoveryStatus>()

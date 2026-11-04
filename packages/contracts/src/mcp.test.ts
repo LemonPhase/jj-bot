@@ -418,8 +418,8 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.9.1, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.1");
+  it("is contract 1.9.2, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.9.2");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
@@ -430,6 +430,33 @@ describe("MCP servers on a runtime profile", () => {
     expect(changelog).toMatch(
       /^## 1\.9\.1 — .* — Disabled MCP servers need no secret grants$/m,
     );
+    expect(changelog).toMatch(
+      /^## 1\.9\.2 — .* — An MCP discovery takes a draft sandbox$/m,
+    );
+  });
+
+  it("takes an optional draft sandbox in a discovery, in the profile's shape", () => {
+    const server = { name: "docs", transport: "stdio", command: "docs-mcp" };
+    expect(startMcpDiscoveryCommandSchema.parse({ server }).sandbox).toBe(
+      undefined,
+    );
+    expect(
+      startMcpDiscoveryCommandSchema.parse({
+        server,
+        sandbox: { driver: "docker", env: { REGION: "eu" } },
+      }).sandbox,
+    ).toMatchObject({
+      driver: "docker",
+      env: { REGION: "eu" },
+      network: { mode: "none" },
+      workspace: "task",
+    });
+    expect(
+      startMcpDiscoveryCommandSchema.safeParse({
+        server,
+        sandbox: { env: { REGION: "eu" } },
+      }).success,
+    ).toBe(false);
   });
 
   it("lists the ungranted secrets for the server's merged check", () => {

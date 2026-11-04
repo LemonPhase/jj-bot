@@ -164,17 +164,22 @@ function refuseSkills(command: { skills?: readonly unknown[] }): void {
 }
 
 /**
- * The engine's lock order. A transaction that locks more than one of these
- * takes them in this order, so no two can wait on each other:
+ * The engine's lock order: runtime profile rows first, then whatever else.
  *
- * 1. runtime profiles, by ascending id (`lockProfiles`);
- * 2. secrets (`checkGrants` and `assertSecretHeadersStored` share them,
- *    `deleteSecret` deletes one);
- * 3. MCP tool snapshots, then MCP discoveries.
+ * - A transaction that locks several profiles takes them through this, by
+ *   ascending id: a save takes its profile with the default it replaces,
+ *   a new default the old one, `deleteSecret` every profile.
+ * - One that locks a single profile takes it before anything else: a save,
+ *   `startDiscovery` (FOR NO KEY UPDATE), `deleteProfile` (FOR UPDATE).
+ * - Only after its profile rows does a transaction lock secrets
+ *   (`checkGrants` and `assertSecretHeadersStored` share them,
+ *   `deleteSecret` deletes one), MCP discoveries and snapshots (pruning
+ *   deletes them; a profile's deletion cascades to them).
+ * - A row that references a profile takes it FOR KEY SHARE through its
+ *   foreign key, which only a deletion's FOR UPDATE conflicts with, so a
+ *   discovery's final write takes its profile so before its own row.
  *
- * A foreign key check takes its profile row FOR KEY SHARE, which only a
- * profile's deletion (FOR UPDATE) conflicts with; a discovery's final write
- * takes it so before its own row, as that deletion's cascade does.
+ * No transaction waits for a profile row while it holds any other of these.
  */
 export function lockProfiles(
   tx: Tx,
