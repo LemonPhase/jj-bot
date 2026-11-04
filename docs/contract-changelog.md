@@ -65,15 +65,16 @@ The upload routes are part of the contract, but a server serves them only while 
   null, parsed as null from servers before uploads. A command also attaches at most
   `UPLOAD_COMMAND_MAX_BYTES` = 64 MiB.
 - Routes: `POST /api/uploads?name=…` with the file's bytes as `Content-Type:
-  application/octet-stream` and a `Content-Length` (411 without one) → 201
-  `stagedUploadResultSchema`. It is the only write whose body is not JSON; JSON, multipart and form
-  bodies answer 415. `DELETE /api/uploads/:id` → 204. `POST /api/tasks/:id/uploads` with
-  `uploadToTaskCommandSchema` → 201 `uploadToTaskResultSchema` (`{ artifacts, message }`).
+  application/octet-stream` and a `Content-Length` (411 without one; `Expect: 100-continue` is
+  answered only once the limits pass) → 201 `stagedUploadResultSchema`. It is the only write
+  whose body is not JSON; JSON, multipart and form bodies answer 415. `DELETE /api/uploads/:id` →
+  204. `POST /api/tasks/:id/uploads` with `uploadToTaskCommandSchema` → 201
+  `uploadToTaskResultSchema` (`{ artifacts, message }`).
 - API error code `UPLOAD_TOO_LARGE` (413): a file, a command's files, a task's uploads in all, or
   the server's staging space over its limit. Existing codes cover the rest: `NOT_FOUND` (an
   unknown, expired or removed staged upload), `CONFLICT` (already attached, or an upload waiting
-  to be placed at that path), `TASK_TERMINAL`, `VALIDATION_FAILED` and `RATE_LIMITED` (too many
-  uploads in flight).
+  to be placed at that path), `TASK_TERMINAL`, `VALIDATION_FAILED` (408 for a body that comes too
+  slowly) and `RATE_LIMITED` (too many uploads in flight).
 - `formatUploadSize` and `uploadAnnouncement` word sizes and the task log's announcement
   ("Uploaded 2 files: uploads/a.csv (1.2 KB), …") the same way on every side.
 

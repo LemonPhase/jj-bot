@@ -3,10 +3,11 @@
 // first model call, and again before each turn boundary takes the inbox.
 // Only the sandbox's fs API touches the workspace, so `local` and `docker`
 // place alike. A file is written beside its target as
-// `.jj-upload-<id>-<attempt>.part`, then moved onto the target: a symlink at the target
-// is replaced, never followed, and a reader never sees half a file. One
-// fenced write under the task lock then records the outcome once (`placed`,
-// or `failed` when the workspace refuses it for good) and emits
+// `.jj-upload-<id>-<attempt>.part`, then moved onto the target: a symlink at
+// the target is replaced, never followed, and a reader never sees half a
+// file. A draining run places nothing at the boundary it is handed back at.
+// One fenced write under the task lock then records the outcome once
+// (`placed`, or `failed` when the workspace refuses it for good) and emits
 // `artifact.updated`; the write that settles the last upload of an
 // announcement also gives the root session one notice, which wakes no one.
 // A transient failure leaves the upload pending for a later run. A crash
