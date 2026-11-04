@@ -2,15 +2,23 @@
 // jobs from PostgreSQL next to an API started with JJ_EMBED_WORKER=false.
 // PGlite is single-process, so it is refused. It logs like the API and
 // exports traces when OTEL_EXPORTER_OTLP_ENDPOINT is set; it serves no
-// metrics, so its runs are not in the API's `/metrics`.
-import { ConfigError, loadWorkerConfig, redactEndpoint } from "@jj/api/config";
-import { exitOnUncaught } from "@jj/api/process";
+// metrics, so its runs are not in the API's `/metrics`. SIGINT and SIGTERM
+// drain it as they drain the API's embedded worker.
+import {
+  ConfigError,
+  loadWorkerConfig,
+  redactEndpoint,
+  stopGraceWarning,
+} from "@jj/api/config";
+import {
+  exitOnUncaught,
+  SHUTDOWN_AFTER_DRAIN_MS,
+  stopOnSignals,
+} from "@jj/api/process";
 import { startTracing } from "@jj/api/tracing";
 import { openServices } from "@jj/api/wiring";
 import { createLogger, logSettings } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
-
-const SHUTDOWN_TIMEOUT_MS = 20_000;
 
 const logger = createLogger(logSettings(process.env, true));
 exitOnUncaught(logger);
@@ -34,21 +42,17 @@ async function main() {
   );
   const defaultModelWarning = models.defaultModelWarning();
   if (defaultModelWarning) logger.warn(defaultModelWarning);
+  const graceWarning = stopGraceWarning(config);
+  if (graceWarning) logger.warn(graceWarning);
 
-  let stopping = false;
-  const shutdown = (signal: string) => {
-    if (stopping) {
-      logger.error(`${signal} again: exiting now.`);
-      process.exit(1);
-    }
-    stopping = true;
-    logger.info(`${signal}: handing running work back and shutting down.`);
-    setTimeout(() => {
-      logger.error("Shutdown timed out: exiting.");
-      process.exit(1);
-    }, SHUTDOWN_TIMEOUT_MS).unref();
-    (async () => {
-      await engine.worker.stop();
+  const { drainTimeoutMs } = config;
+  stopOnSignals(logger, {
+    announce: (signal) =>
+      `${signal}: draining (running sessions get up to ${drainTimeoutMs / 1000} s to reach a turn boundary), then shutting down.`,
+    stop: async () => {
+      // Hands back or interrupts what runs, releases the sandboxes and
+      // removes this worker's heartbeat.
+      await engine.worker.drain(drainTimeoutMs);
       await database.close();
       await proxy?.restore();
       // Bounded, and logs its own failure: a dead collector never holds the
@@ -58,16 +62,9 @@ async function main() {
         .catch((error: unknown) =>
           logger.warn("Flushing the traces failed", { error }),
         );
-    })().then(
-      () => process.exit(0),
-      (error: unknown) => {
-        logger.error("Shutdown failed", { error });
-        process.exit(1);
-      },
-    );
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+    },
+    limitMs: drainTimeoutMs + SHUTDOWN_AFTER_DRAIN_MS,
+  });
 }
 
 main().catch((error: unknown) => {

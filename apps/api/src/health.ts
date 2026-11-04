@@ -1,6 +1,7 @@
 // `GET /health/live` (the process answers; `GET /health` is the same) and
 // `GET /health/ready` (the database, the migration level, a worker's
-// heartbeat and a sandbox driver). Both are unauthenticated, so checks report
+// heartbeat and a sandbox driver; never while the process drains to stop).
+// Both are unauthenticated, so checks report
 // states, counts and a short reason, never error text, paths, hosts or ids;
 // failures are logged server-side.
 import type { Engine, Logger } from "@jj/backend";
@@ -16,6 +17,8 @@ export interface ReadinessOptions {
   workerStaleMs: number;
   /** A check that has not answered by then fails as timed out. Default 3 s. */
   checkTimeoutMs?: number;
+  /** True once the process is stopping: it drains first, and is not ready meanwhile. */
+  draining?: () => boolean;
 }
 
 export interface Check {
@@ -27,6 +30,8 @@ export interface Check {
 
 export interface Readiness {
   status: "ready" | "not_ready";
+  /** The process is stopping (draining first): not ready, whatever the checks say. */
+  draining: boolean;
   checks: {
     database: Check;
     migrations: Check;
@@ -96,6 +101,8 @@ function embeddedWorker(engine: Engine, staleMs: number): Check {
     lastPollAt: last?.toISOString() ?? null,
     activeJobs: engine.worker.activeJobs,
   };
+  if (engine.worker.draining)
+    return { ok: false, reason: "the job loop is draining", ...detail };
   if (ageMs === null)
     return { ok: false, reason: "the job loop is not polling", ...detail };
   if (ageMs > staleMs)
@@ -199,10 +206,15 @@ export async function readiness(
     worker,
     drivers: driverCheck,
   };
+  const draining =
+    (options.draining?.() ?? false) ||
+    (options.workerEmbedded && engine.worker.draining);
   return {
-    status: Object.values(checks).every((check) => check.ok)
-      ? "ready"
-      : "not_ready",
+    status:
+      !draining && Object.values(checks).every((check) => check.ok)
+        ? "ready"
+        : "not_ready",
+    draining,
     checks,
   };
 }
