@@ -1,5 +1,5 @@
 {
-  "id": "ad61ae1f-1991-4fb4-b6e9-9e6822109479",
+  "id": "27efd7a1-03bc-479d-8cc2-bc503f3d5b1e",
   "prevId": "dd2aa83e-be3a-4aaa-8ca3-8c4b1ac885c2",
   "version": "7",
   "dialect": "postgresql",
@@ -1085,6 +1085,38 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "jobs_maintenance_compact_queued": {
+          "name": "jobs_maintenance_compact_queued",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"jobs\".\"kind\" = 'maintenance.compact' and \"jobs\".\"status\" = 'queued'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "jobs_maintenance_compact_running": {
+          "name": "jobs_maintenance_compact_running",
+          "columns": [
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"jobs\".\"kind\" = 'maintenance.compact' and \"jobs\".\"status\" = 'running'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -1134,7 +1166,7 @@
         },
         "jobs_kind_check": {
           "name": "jobs_kind_check",
-          "value": "\"jobs\".\"kind\" in ('session.run', 'chat.reply', 'mcp.discover')"
+          "value": "\"jobs\".\"kind\" in ('session.run', 'chat.reply', 'maintenance.compact')"
         },
         "jobs_status_check": {
           "name": "jobs_status_check",
@@ -1145,286 +1177,6 @@
           "value": "\"jobs\".\"status\" <> 'running' or (\"jobs\".\"lease_owner\" is not null and \"jobs\".\"lease_until\" is not null)"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.mcp_discoveries": {
-      "name": "mcp_discoveries",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server": {
-          "name": "server",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "config": {
-          "name": "config",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sandbox": {
-          "name": "sandbox",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "config_hash": {
-          "name": "config_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stderr_tail": {
-          "name": "stderr_tail",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "snapshot_id": {
-          "name": "snapshot_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "duration_ms": {
-          "name": "duration_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "mcp_discoveries_profile_idx": {
-          "name": "mcp_discoveries_profile_idx",
-          "columns": [
-            {
-              "expression": "profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "mcp_discoveries_one_active": {
-          "name": "mcp_discoveries_one_active",
-          "columns": [
-            {
-              "expression": "profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "server",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"mcp_discoveries\".\"status\" in ('queued', 'running')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "mcp_discoveries_profile_id_runtime_profiles_id_fk": {
-          "name": "mcp_discoveries_profile_id_runtime_profiles_id_fk",
-          "tableFrom": "mcp_discoveries",
-          "tableTo": "runtime_profiles",
-          "columnsFrom": ["profile_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "mcp_discoveries_snapshot_id_mcp_tool_snapshots_id_fk": {
-          "name": "mcp_discoveries_snapshot_id_mcp_tool_snapshots_id_fk",
-          "tableFrom": "mcp_discoveries",
-          "tableTo": "mcp_tool_snapshots",
-          "columnsFrom": ["snapshot_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "mcp_discoveries_status_check": {
-          "name": "mcp_discoveries_status_check",
-          "value": "\"mcp_discoveries\".\"status\" in ('queued', 'running', 'succeeded', 'failed')"
-        },
-        "mcp_discoveries_snapshot_check": {
-          "name": "mcp_discoveries_snapshot_check",
-          "value": "\"mcp_discoveries\".\"snapshot_id\" is null or \"mcp_discoveries\".\"status\" = 'succeeded'"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.mcp_tool_snapshots": {
-      "name": "mcp_tool_snapshots",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server": {
-          "name": "server",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "config_hash": {
-          "name": "config_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "server_info": {
-          "name": "server_info",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "tools": {
-          "name": "tools",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "warnings": {
-          "name": "warnings",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "discovered_at": {
-          "name": "discovered_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "mcp_tool_snapshots_profile_idx": {
-          "name": "mcp_tool_snapshots_profile_idx",
-          "columns": [
-            {
-              "expression": "profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "server",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "mcp_tool_snapshots_profile_id_runtime_profiles_id_fk": {
-          "name": "mcp_tool_snapshots_profile_id_runtime_profiles_id_fk",
-          "tableFrom": "mcp_tool_snapshots",
-          "tableTo": "runtime_profiles",
-          "columnsFrom": ["profile_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.retired_secrets": {
@@ -1707,13 +1459,6 @@
         },
         "secrets": {
           "name": "secrets",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'[]'::jsonb"
-        },
-        "mcp_servers": {
-          "name": "mcp_servers",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
@@ -2340,6 +2085,12 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "payload_artifact_id": {
+          "name": "payload_artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "occurred_at": {
           "name": "occurred_at",
           "type": "timestamp with time zone",
@@ -2919,6 +2670,13 @@
           "notNull": true,
           "default": 0
         },
+        "events_compacted_through": {
+          "name": "events_compacted_through",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2995,6 +2753,22 @@
           ],
           "isUnique": true,
           "where": "\"tasks\".\"created_from_message_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tasks_finished_idx": {
+          "name": "tasks_finished_idx",
+          "columns": [
+            {
+              "expression": "finished_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tasks\".\"status\" in ('completed', 'failed', 'cancelled')",
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -418,8 +418,8 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.9.2, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.2");
+  it("is contract 1.10.1, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.10.1");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
@@ -428,10 +428,7 @@ describe("MCP servers on a runtime profile", () => {
       CONTRACT_VERSION,
     );
     expect(changelog).toMatch(
-      /^## 1\.9\.1 — .* — Disabled MCP servers need no secret grants$/m,
-    );
-    expect(changelog).toMatch(
-      /^## 1\.9\.2 — .* — An MCP discovery takes a draft sandbox$/m,
+      /^## 1\.10\.1 — .* — Disabled MCP servers and draft sandboxes in discoveries$/m,
     );
   });
 

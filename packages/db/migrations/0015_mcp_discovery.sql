@@ -38,4 +38,4 @@ ALTER TABLE "mcp_tool_snapshots" ADD CONSTRAINT "mcp_tool_snapshots_profile_id_r
 CREATE INDEX "mcp_discoveries_profile_idx" ON "mcp_discoveries" USING btree ("profile_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "mcp_discoveries_one_active" ON "mcp_discoveries" USING btree ("profile_id","server") WHERE "mcp_discoveries"."status" in ('queued', 'running');--> statement-breakpoint
 CREATE INDEX "mcp_tool_snapshots_profile_idx" ON "mcp_tool_snapshots" USING btree ("profile_id","server");--> statement-breakpoint
-ALTER TABLE "jobs" ADD CONSTRAINT "jobs_kind_check" CHECK ("jobs"."kind" in ('session.run', 'chat.reply', 'mcp.discover'));
+ALTER TABLE "jobs" ADD CONSTRAINT "jobs_kind_check" CHECK ("jobs"."kind" in ('session.run', 'chat.reply', 'maintenance.compact', 'mcp.discover'));

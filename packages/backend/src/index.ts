@@ -5,8 +5,10 @@ export {
   clampOutputCap,
   configFromEnv,
   DEFAULT_ARTIFACT_LIMITS,
+  DEFAULT_EVENT_RETENTION_DAYS,
   type EngineConfig,
   type EngineConfigInput,
+  eventRetentionDaysFromEnv,
   resolveConfig,
 } from "./config";
 export type { EngineContext } from "./context";
@@ -48,5 +50,11 @@ export {
   type StoredProviderKey,
 } from "./secrets/store";
 export { MAX_KEPT_DISCOVERIES, mcpConfigHash } from "./services/mcp";
+export {
+  type CompactionPass,
+  type CompactionPassOptions,
+  type TaskCompaction,
+  waitingOnSnapshots,
+} from "./services/retention";
 export type { TaskStreamOptions, TaskSubscription } from "./services/stream";
 export type { Worker } from "./worker/worker";

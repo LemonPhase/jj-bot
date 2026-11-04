@@ -83,6 +83,7 @@ type ApprovalPatch = Partial<
 /** Updates the approval and emits `approval.updated` with the whole record. */
 async function updateApproval(
   tx: Tx,
+  ctx: EngineContext,
   current: ApprovalRow,
   patch: ApprovalPatch,
   attribution: Attribution = attributionOf(current),
@@ -94,7 +95,7 @@ async function updateApproval(
     .returning();
   if (!row)
     throw new Error(`Approval ${current.id} vanished during an update.`);
-  await emit(tx, row.taskId, {
+  await emit(tx, ctx, row.taskId, {
     type: "approval.updated",
     payload: { approval: toApproval(row), previousStatus: current.status },
     ...attributionOf(row),
@@ -167,7 +168,7 @@ export async function requestApproval(
     })
     .returning();
   if (!row) throw new Error("The approval insert returned no row.");
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "approval.requested",
     payload: { approval: toApproval(row) },
     botId: row.botId,
@@ -272,6 +273,7 @@ export async function claimApproval(
     return false;
   await updateApproval(
     tx,
+    ctx,
     current,
     { startedRunId: runId, startedAt: ctx.clock() },
     { ...attributionOf(current), runId },
@@ -345,6 +347,7 @@ export async function noteResolved(
       : null;
   await updateApproval(
     tx,
+    ctx,
     current,
     {
       resolvedAt: ctx.clock(),
@@ -409,7 +412,7 @@ export async function decideApproval(
         `The approval is ${current.status}, not pending: it can no longer be answered.`,
         { status: current.status },
       );
-    const row = await updateApproval(tx, current, {
+    const row = await updateApproval(tx, ctx, current, {
       status: command.decision === "approve" ? "approved" : "denied",
       reason: command.decision === "deny" ? (command.reason ?? null) : null,
       decidedAt: ctx.clock(),
@@ -446,7 +449,7 @@ export async function expireApprovals(
     )
     .orderBy(asc(approvals.createdAt));
   for (const current of rows) {
-    const row = await updateApproval(tx, current, {
+    const row = await updateApproval(tx, ctx, current, {
       status: "expired",
       reason:
         current.status === "pending"
@@ -490,6 +493,7 @@ export async function cancelApprovals(
   for (const current of rows)
     await updateApproval(
       tx,
+      ctx,
       current,
       {
         status: "cancelled",
@@ -514,6 +518,7 @@ export async function cancelApprovals(
   for (const current of started)
     await updateApproval(
       tx,
+      ctx,
       current,
       {
         outcome: unknown as unknown as JsonObject,

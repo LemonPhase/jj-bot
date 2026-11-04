@@ -239,9 +239,9 @@ describe.each(targets)("migrations on $name", (target) => {
   );
 
   it(
-    "0014 gives existing profiles no MCP servers, and keeps discoveries and snapshots with their profile",
+    "0015 gives existing profiles no MCP servers, and keeps discoveries and snapshots with their profile",
     async () => {
-      const database = await databaseBefore(target, "0014_mcp_discovery");
+      const database = await databaseBefore(target, "0015_mcp_discovery");
       try {
         await database.execute(sql`
           insert into runtime_profiles (id, name, sandbox, tools, budgets)

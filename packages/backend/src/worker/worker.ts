@@ -26,6 +26,7 @@ import type { ChatResponder, RunExecutor } from "../ports";
 import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
+import { runCompactionJob, scheduleCompaction } from "./maintenance";
 import { runDiscoveryJob } from "./mcp-discovery";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
@@ -39,7 +40,11 @@ interface ActiveJob {
 }
 
 /** Jobs that every free slot may take. */
-const WORK_KINDS: readonly JobKind[] = ["session.run", "chat.reply"];
+const WORK_KINDS: readonly JobKind[] = [
+  "session.run",
+  "chat.reply",
+  "maintenance.compact",
+];
 /** Jobs that take at most `maxConcurrentDiscoveries` slots. */
 const DISCOVERY_KINDS: readonly JobKind[] = ["mcp.discover"];
 
@@ -157,9 +162,11 @@ export function createWorker(
       () =>
         (job.kind === "session.run"
           ? runSessionJob(deps, executor, job, control)
-          : job.kind === "mcp.discover"
-            ? runDiscoveryJob(deps, job, control)
-            : runChatJob(deps, chat, job, control)
+          : job.kind === "chat.reply"
+            ? runChatJob(deps, chat, job, control)
+            : job.kind === "mcp.discover"
+              ? runDiscoveryJob(deps, job, control)
+              : runCompactionJob(ctx, job, control)
         ).catch((error: unknown) => {
           ctx.logger.error(`Job ${job.id} (${job.kind}) failed unexpectedly`, {
             error: errorMessage(error),
@@ -531,6 +538,12 @@ export function createWorker(
             }),
         );
       await reapOrphans();
+      // The first compaction pass soon after boot, unless one is queued already.
+      await scheduleCompaction(ctx.db, ctx, 0).catch((error: unknown) =>
+        ctx.logger.warn("Scheduling event compaction failed", {
+          error: errorMessage(error),
+        }),
+      );
       unsubscribers.push(
         await ctx.bus.subscribe("jj_control", (message) => {
           void onControl(message).catch((error: unknown) =>

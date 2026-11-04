@@ -1,4 +1,4 @@
-import type { Bus, Db, IdKind } from "@jj/db";
+import type { Bus, DatabaseMode, Db, IdKind } from "@jj/db";
 import { newId } from "@jj/db";
 import type { Tracer } from "@opentelemetry/api";
 import type { EngineConfig } from "./config";
@@ -14,6 +14,8 @@ export type { Logger } from "./observability/logger";
 export interface EngineContext {
   db: Db;
   bus: Bus;
+  /** Which database `db` is, when the opener said; PGlite reclaims compacted space with VACUUM. */
+  dbMode?: DatabaseMode;
   config: EngineConfig;
   drivers: DriverRegistry;
   models: ModelCatalog;

@@ -31,36 +31,60 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.9.2 — 2026-11-04 — An MCP discovery takes a draft sandbox
+## 1.10.1 — 2026-11-04 — Disabled MCP servers and draft sandboxes in discoveries
 
-**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comment "Contract refinement for step 4a (#136): 1.9.2, discovery takes a draft sandbox") · **Compatibility:** additive
-
-- `startMcpDiscoveryCommandSchema` takes an optional `sandbox` (`sandboxSpecSchema`): a draft of
-  the profile's sandbox settings, in the shape of the profile's `sandbox`. The test runs on it and
-  the snapshot's `configHash` is computed from it; without it, the profile's stored sandbox is used.
-  A stdio server's `configHash` covers its sandbox (driver, image, network, `env`), so a profile save
-  that changes the sandbox can now pin the snapshot found with the same draft, in the same save; the
-  `MCP_SNAPSHOT_MISMATCH` message says so.
-
-**Action required (frontend):** none to keep working; the profile editor sends its draft sandbox with
-a test once the sandbox is edited (step 6).
-**Action required (backend):** none beyond this change: the server validates the draft with its
-driver (`PROFILE_UNSUPPORTED` on refusal) and stores it with the discovery.
-
-## 1.9.1 — 2026-11-03 — Disabled MCP servers need no secret grants
-
-**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comment "Contract refinement for step 4a (#136): 1.9.1") · **Compatibility:** clarifying (no wire change; a command that was refused can now be accepted)
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comments "Contract refinement for step 4a (#136): 1.9.1" and "… 1.9.2, discovery takes a draft sandbox", shipped together as 1.10.1) · **Compatibility:** additive (no wire change for existing clients; commands that were refused can now be accepted)
 
 - `ungrantedMcpSecrets`, and so `refineMcpSecretGrants` in `createRuntimeProfileCommandSchema` and
   `updateRuntimeProfileCommandSchema`, check enabled servers only. Removing a stored secret disables
   every MCP server that uses it but keeps its `secretEnv` reference, so a create, or a patch that
   carries both `secrets` and `mcpServers`, with such a server is accepted. Enabling it again is
   checked: its secret must be granted. No field records why a server was disabled.
+- `startMcpDiscoveryCommandSchema` takes an optional `sandbox` (`sandboxSpecSchema`): a draft of the
+  profile's sandbox settings, in the shape of the profile's `sandbox`. The test runs on it and the
+  snapshot's `configHash` is computed from it; without it, the profile's stored sandbox is used. A
+  stdio server's `configHash` covers its sandbox (driver, image, network, `env`), so a profile save
+  that changes the sandbox can pin the snapshot found with the same draft, in the same save; the
+  `MCP_SNAPSHOT_MISMATCH` message says so.
 
-**Action required (frontend):** none; the profile editor may send a disabled server whose secret is
-gone, and should say that enabling it needs the secret stored and granted again.
-**Action required (backend):** none beyond this change: the server checks grants on enabled servers
-of the merged profile.
+**Action required (frontend):** none to keep working. The profile editor may send a disabled server
+whose secret is gone, and should say that enabling it needs the secret stored and granted again; it
+sends its draft sandbox with a test once the sandbox is edited (step 6).
+**Action required (backend):** none beyond this change: the server checks grants on the enabled
+servers of the merged profile, and validates a draft sandbox with its driver (`PROFILE_UNSUPPORTED`
+on refusal) and stores it with the discovery.
+
+## 1.10.0 — 2026-11-03 — Event retention and payload limits
+
+**Changed by:** backend and frontend ([#32](https://github.com/LemonPhase/jj-bot/issues/32), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/32#issuecomment-6613592061)) · **Compatibility:** additive; a compacted task's log has gaps in its sequences at or below `compactedThrough`, which a reader that assumed gap-free logs must allow
+
+- `task.compacted` (`{ through, removed, stripped }`, integers): a marker the server appends after
+  compacting a finished task's events at or below `through`. `applyTaskEvent` folds it into the
+  view's `compactedThrough` (the larger of the two).
+- `taskViewSchema.compactedThrough` and `taskEventPageSchema.compactedThrough`: integers, default 0
+  (parsed as 0 from servers before 1.10.0). Events at or below it were compacted: activity and
+  superseded snapshots were deleted, and `tool.finished` output and `model.finished` text dropped.
+  For any cursor n, the kept events after n fold onto the view at n into the latest view, its
+  records compared by id, so a stream resumed from any `Last-Event-ID` converges.
+- `eventBaseSchema.payloadArtifactId`, optional: the event's payload was over the server's cap
+  and clipped; its full payload is that `output` artifact, as JSON, at `savedPayloadPath(type)`
+  (`<type> payload`; `savedPayloadType(artifact)` reads it back). Only what no record bounds is
+  clipped (tool output previews, error and stop texts, a held call's arguments), each string over
+  4 KiB within its field's limit and marked (`… [N more characters in the saved copy]`); record
+  snapshots are stored whole, over the cap too, and every stored payload parses with its type's
+  schema. A client folds a clipped event, then refetches the view, whose records are whole.
+- `EVENT_PAYLOAD_CAP_BYTES` = 1 MiB: the ceiling of the server's payload cap.
+- `bootstrapSchema.eventRetentionDays`, optional (absent from servers before 1.10.0): the server's
+  `JJ_EVENT_RETENTION_DAYS`, 0 to 3650, 0 meaning never, so Settings → About can show it.
+
+**Action required (frontend):** none beyond this change: the web app reloads the view after a
+spilled event, notes a compacted task's Progress ("Activity before … was compacted"), marks its
+tool rows "output not kept", links a spilled event's saved copy and shows the retention in
+Settings → About.
+**Action required (backend):** none beyond this change: the `maintenance.compact` job compacts
+finished tasks hourly, and `emit` spills payloads over `JJ_EVENT_PAYLOAD_CAP_BYTES`. Migration
+0014 adds `tasks.events_compacted_through`, `task_events.payload_artifact_id`, the finished-tasks
+index and the job kind.
 
 ## 1.9.0 — 2026-11-03 — Task templates
 

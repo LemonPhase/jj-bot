@@ -1,3 +1,14 @@
+/** "3 Nov 2026": a day, with its year. */
+export function formatDay(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 /** "14:20" today, "Yesterday", or a short date. */
 export function formatMessageTime(iso: string, now = new Date()): string {
   const date = new Date(iso);

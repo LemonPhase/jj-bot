@@ -6,6 +6,8 @@
  *   with `applyTaskEvent`, reopening after the last sequence when the stream
  *   closes. A malformed known event cannot be skipped (the cursor would move
  *   past a change for good), so it closes the stream and reloads the snapshot.
+ *   An event whose payload arrived clipped (`payloadArtifactId`) is folded,
+ *   then the snapshot is reloaded too, since its records are whole there.
  * - `followConversation`: load the conversation, then reload it on every
  *   `conversation.changed` hint for that bot and on a hint-stream resync.
  */
@@ -162,7 +164,14 @@ export function followTask(
           reloadDelay = Math.min(reloadDelay * 2, maxRetry);
           return;
         }
-        if (apply(event)) reloadDelay = baseRetry;
+        if (!apply(event)) return;
+        reloadDelay = baseRetry;
+        // Its payload was over the server's cap and arrived clipped: the
+        // records are whole in a fresh snapshot, which the stream resumes from.
+        if (!("unknown" in event) && event.payloadArtifactId) {
+          dropStream();
+          void load();
+        }
       },
       onError: (retrying) => {
         if (!live()) return;

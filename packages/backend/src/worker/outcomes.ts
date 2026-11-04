@@ -201,7 +201,7 @@ export async function failSessionTx(
     { status: "failed", error: text },
     attribution,
   );
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "task.finished",
     payload: { status: "failed", result: null, error: text },
     ...attribution,
@@ -299,7 +299,7 @@ async function endTurn(
         { status: "completed", result: request.result, error: null },
         attribution,
       );
-      await emit(tx, task.id, {
+      await emit(tx, ctx, task.id, {
         type: "task.finished",
         payload: { status: "completed", result: request.result, error: null },
         ...attribution,
@@ -438,6 +438,7 @@ async function cancelRun(
   const attribution = attributionOf(rc);
   await closeOpenTools(
     tx,
+    ctx,
     rc.run,
     attribution,
     "Interrupted: the task was stopped.",
@@ -459,7 +460,7 @@ async function handOff(rc: RunContext) {
     const attribution = attributionOf(rc);
     const note =
       "The worker stopped; the session resumes from its last completed turn.";
-    await closeOpenTools(tx, rc.run, attribution, note);
+    await closeOpenTools(tx, ctx, rc.run, attribution, note);
     await closeRun(tx, ctx, rc.run, "cancelled", attribution, note);
     if (!isFinishedStatus(session.status))
       await updateSession(tx, ctx, session, { status: "queued" }, attribution);
