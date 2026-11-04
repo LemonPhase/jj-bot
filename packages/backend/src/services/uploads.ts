@@ -113,7 +113,8 @@ export interface StageUploadInput {
  * `POST /api/uploads`: stages one file. Every limit is checked before a
  * byte of the body is read: the name, the extension, the declared size
  * against the file limit, uploads in flight (RATE_LIMITED) and the server's
- * staging space. The body must then be exactly the declared size.
+ * staging space. The body must then be exactly the declared size. The name
+ * is stored redacted.
  */
 export async function stageUpload(
   ctx: EngineContext,
@@ -156,13 +157,18 @@ export async function stageUpload(
         `The server's staging space is full (${size(settings.maxStagedBytes)}): attach or remove staged uploads, or try again once they expire.`,
         { limit: "staged", maxBytes: settings.maxStagedBytes },
       );
+    // Stored redacted, like a file artifact's name: a name holding a server
+    // secret never sits in the staging table (nor a backup of it), and the
+    // file lands in the workspace under the redacted name. The content type
+    // still comes from the real one.
+    const redact = await ctx.redactor();
     const content = await readExactly(input.body, input.sizeBytes);
     const created = ctx.clock();
     const [row] = await ctx.db
       .insert(stagedUploads)
       .values({
         id: ctx.ids("stagedUpload"),
-        name,
+        name: redact(name),
         contentType: contentTypeOf(name, content),
         sizeBytes: content.byteLength,
         sha256: sha256(content),

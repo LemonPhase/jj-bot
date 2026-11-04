@@ -580,6 +580,52 @@ describe("limits and refusals", () => {
   });
 });
 
+describe("secrets in names", () => {
+  it("stages a name holding a server secret redacted, and places the file under that name", async () => {
+    const key = "sk-staged-name-secret-0123456789";
+    const { engine, executor } = await engineWith({
+      secrets: [{ name: "OPENAI_API_KEY", value: key }],
+    });
+    const staged = await stage(engine, `${key}.csv`, "a,b\n");
+    expect(staged.name).toBe("[redacted].csv");
+    // The content type still comes from the real name.
+    expect(staged.contentType).toBe("text/csv; charset=utf-8");
+    const rows = await db.database.db
+      .select({ name: stagedUploads.name })
+      .from(stagedUploads)
+      .where(eq(stagedUploads.id, staged.id));
+    expect(rows).toEqual([{ name: "[redacted].csv" }]);
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    executor.brain(ada, (view) =>
+      said.turns(view) === 0
+        ? { calls: [{ name: "bash", args: { command: "ls uploads" } }] }
+        : lastResult(view)?.name === "complete_task"
+          ? { text: "done" }
+          : {
+              calls: [
+                {
+                  name: "complete_task",
+                  args: { result: lastResult(view)?.text.trim() ?? "" },
+                },
+              ],
+            },
+    );
+    const { task } = await engine.tasks.create({
+      goal: "List the uploads",
+      coordinatorBotId: team.byName[ada] as string,
+      uploads: [{ uploadId: staged.id }],
+    });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (v) => v.task.status === "completed",
+    );
+    expect(view.task.result).toBe("[redacted].csv");
+    expect(uploadsOf(view)[0]?.path).toBe("uploads/[redacted].csv");
+  });
+});
+
 describe("paths that differ only in case", () => {
   /** A finished task with no run left to place what it is given. */
   async function idleTask() {
