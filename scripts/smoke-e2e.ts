@@ -580,14 +580,6 @@ async function main(): Promise<boolean> {
         await download(base, headers, task.id, artifact);
     });
 
-    await uploadsInWorkspace({
-      base,
-      headers,
-      expectStatus,
-      coordinatorBotId: bots.Ada,
-      scripted: !realModel,
-    });
-
     if (restoreCommand)
       await restoreSurvival({
         base,
@@ -595,6 +587,15 @@ async function main(): Promise<boolean> {
         expectStatus,
         taskId: task.id,
       });
+
+    // After the backup: CI's restore checks expect it to hold one task's workspace.
+    await uploadsInWorkspace({
+      base,
+      headers,
+      expectStatus,
+      coordinatorBotId: bots.Ada,
+      scripted: !realModel,
+    });
 
     await step("stop a second task", async () => {
       const { task: second } = await expectStatus("POST", "/api/tasks", 201, {
