@@ -27,6 +27,7 @@ import {
   type ExecOptions,
   type ExecResult,
   type OutputListener,
+  type RemoveWorkspaceRequest,
   resolveExecTimeoutMs,
   type Sandbox,
   SandboxCapabilityError,
@@ -39,6 +40,7 @@ import {
   SandboxRequestError,
   type SandboxSpec,
   type SandboxStat,
+  SandboxWorkspaceInUseError,
   type SpawnExit,
   type SpawnOptions,
   sandboxSpecSchema,
@@ -654,6 +656,8 @@ class LocalSandbox implements Sandbox {
     private readonly shell: string,
     private readonly ephemeral: boolean,
     private readonly killGraceMs: number,
+    /** Called once the sandbox has released, whether or not its release succeeded. */
+    private readonly onReleased: () => void = () => {},
   ) {
     const fs = createFs(workspaceDir);
     this.fs = {
@@ -902,11 +906,21 @@ class LocalSandbox implements Sandbox {
   }
 
   release(options: { persist?: boolean } = {}): Promise<void> {
-    this.releasing ??= this.shutdown(options).catch((error: unknown) => {
-      this.releasing = undefined; // Never cache a failure: a later call retries.
-      throw error;
-    });
+    this.releasing ??= this.shutdown(options).then(
+      () => this.unhold(),
+      (error: unknown) => {
+        this.releasing = undefined; // Never cache a failure: a later call retries.
+        throw error;
+      },
+    );
     return this.releasing;
+  }
+
+  private unheld = false;
+  private unhold() {
+    if (this.unheld) return;
+    this.unheld = true;
+    this.onReleased();
   }
 
   private async shutdown(options: { persist?: boolean }): Promise<void> {
@@ -949,6 +963,10 @@ export class LocalSandboxDriver implements SandboxDriver {
     spawn: true,
   };
   private rootPromise?: Promise<string>;
+  /** Live sandboxes per `task` workspace directory: `removeWorkspace` refuses one in use. */
+  private readonly holders = new Map<string, number>();
+  /** Removals in progress per `task` workspace directory, which an acquire waits for. */
+  private readonly removals = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: LocalDriverOptions = {}) {}
 
@@ -1016,20 +1034,77 @@ export class LocalSandboxDriver implements SandboxDriver {
     // Namespaced by mode, so the same key in two modes never shares files.
     const root = await this.root();
     const parent = join(root, spec.workspace);
-    await mkdir(parent, { recursive: true });
-    const ephemeral = spec.workspace === "ephemeral";
-    const directory = ephemeral
-      ? await mkdtemp(join(parent, `${key}-`))
-      : join(parent, key);
-    await mkdir(directory, { recursive: true });
-    return new LocalSandbox(
-      await realpath(directory),
-      root,
-      spec,
-      request.secrets ?? {},
-      this.options.shell ?? SHELL,
-      ephemeral,
-      this.options.killGraceMs ?? KILL_GRACE_MS,
-    );
+    // Held from here, synchronously after the root resolves, so a removal
+    // that starts later refuses it, and one already under way finishes first.
+    const held = spec.workspace === "task" ? join(parent, key) : undefined;
+    if (held) this.holders.set(held, (this.holders.get(held) ?? 0) + 1);
+    const unhold = () => {
+      if (!held) return;
+      const count = (this.holders.get(held) ?? 1) - 1;
+      if (count > 0) this.holders.set(held, count);
+      else this.holders.delete(held);
+    };
+    try {
+      if (held) await this.removals.get(held)?.catch(() => {});
+      await mkdir(parent, { recursive: true });
+      const ephemeral = spec.workspace === "ephemeral";
+      const directory = ephemeral
+        ? await mkdtemp(join(parent, `${key}-`))
+        : join(parent, key);
+      await mkdir(directory, { recursive: true });
+      return new LocalSandbox(
+        await realpath(directory),
+        root,
+        spec,
+        request.secrets ?? {},
+        this.options.shell ?? SHELL,
+        ephemeral,
+        this.options.killGraceMs ?? KILL_GRACE_MS,
+        unhold,
+      );
+    } catch (error) {
+      unhold();
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes the `task` workspace directory of `workspaceKey` under the root,
+   * refusing while a sandbox of this driver holds it. Another process using
+   * the same root is not seen: on `local` only one worker may use a root.
+   */
+  async removeWorkspace(
+    request: RemoveWorkspaceRequest,
+  ): Promise<{ removed: boolean }> {
+    if (process.platform === "win32") throw new Error(UNSUPPORTED_PLATFORM);
+    if (request.mode !== "task")
+      throw new SandboxRequestError(
+        `Only task workspaces are removed this way, not ${String(request.mode)}`,
+      );
+    const key = assertWorkspaceKey(request.workspaceKey);
+    const directory = join(await this.root(), "task", key);
+    if ((this.holders.get(directory) ?? 0) > 0)
+      throw new SandboxWorkspaceInUseError(key);
+    const removal = (async () => {
+      const info = await lstat(directory).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          return undefined;
+        throw error;
+      });
+      if (!info) return false;
+      if (!info.isDirectory())
+        throw new SandboxRequestError(
+          `The task workspace ${key} is not a directory; refusing to remove it`,
+        );
+      await rm(directory, { recursive: true, force: true });
+      return true;
+    })();
+    this.removals.set(directory, removal);
+    try {
+      return { removed: await removal };
+    } finally {
+      if (this.removals.get(directory) === removal)
+        this.removals.delete(directory);
+    }
   }
 }

@@ -93,8 +93,9 @@ export const resourceLimitsSchema = z.object({
  *
  * - `task` (default): persists across releases and is shared by every sandbox
  *   acquired with the same key. For task execution the key is the task id.
- *   No call in this contract deletes a `task` or `bot` workspace, so deleting
- *   a task does not delete its files: the operator clears a driver's storage.
+ *   Only `removeWorkspace` deletes one, which the engine calls for a
+ *   schedule's oldest finished tasks; deleting a task does not delete its
+ *   files, and the operator clears a driver's storage.
  * - `ephemeral`: a fresh, empty workspace per acquisition, discarded on
  *   release unless `persist` is set. The key is not used for reuse.
  * - `bot`: persists for one bot across tasks. Task execution never uses it:
@@ -455,6 +456,32 @@ export interface SandboxDriver {
    * Workspaces are never deleted: `task` and `bot` files survive it.
    */
   reapOrphans?(): Promise<{ removed: string[] }>;
+  /**
+   * Optional. Deletes the `task` workspace `workspaceKey` with every file in
+   * it, the one call that deletes a `task` workspace: the engine uses it to
+   * bound what a schedule's finished tasks keep. Resolves `removed: false`
+   * when there was none. It never touches another key or mode, and rejects
+   * while a sandbox of this driver holds the workspace (it is in use), with
+   * `SandboxRequestError` for an invalid key, and when the workspace exists
+   * but is not one this driver created for that key.
+   */
+  removeWorkspace?(request: RemoveWorkspaceRequest): Promise<{
+    removed: boolean;
+  }>;
+}
+
+export interface RemoveWorkspaceRequest {
+  /** Only `task` workspaces are removed this way. */
+  mode: "task";
+  workspaceKey: string;
+}
+
+/** A workspace that cannot be removed while a sandbox holds it. */
+export class SandboxWorkspaceInUseError extends Error {
+  constructor(workspaceKey: string) {
+    super(`The workspace ${workspaceKey} is in use by a sandbox`);
+    this.name = "SandboxWorkspaceInUseError";
+  }
 }
 
 export class SandboxPathError extends Error {

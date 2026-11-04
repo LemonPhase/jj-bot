@@ -97,6 +97,7 @@ describe("bootstrap", () => {
       // No MCP server or skill reaches a session on this build.
       mcp: { stdio: false, remote: false },
       skills: false,
+      schedules: true,
       drivers: [
         { id: "local", available: true, isolated: false },
         { id: "docker", available: false, isolated: true },

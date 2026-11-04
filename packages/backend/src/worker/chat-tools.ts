@@ -530,10 +530,11 @@ function sendToTaskTool(input: ChatActInput): CollabTool {
           return { text: `Sent to the task "${task.title}".` };
         }
         let root: Awaited<ReturnType<typeof continueTask>>["root"];
+        let notice: string | undefined;
         let continued = false;
         try {
           continued = task.status !== "queued" && task.status !== "running";
-          root = (await continueTask(tx, ctx, task)).root;
+          ({ root, notice } = await continueTask(tx, ctx, task));
         } catch (error) {
           if (error instanceof DomainError) return refuse(error.message);
           throw error;
@@ -552,7 +553,7 @@ function sendToTaskTool(input: ChatActInput): CollabTool {
           root,
           {
             kind: "steering",
-            text: `Message from ${bot.name}, relayed from the user's direct chat:\n${text}`,
+            text: `${notice ? `${notice}\n\n` : ""}Message from ${bot.name}, relayed from the user's direct chat:\n${text}`,
             sourceMessageId: message.id,
           },
           { wake: true, ctx },

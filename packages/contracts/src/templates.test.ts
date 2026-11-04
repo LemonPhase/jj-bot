@@ -47,15 +47,14 @@ const template = {
 };
 
 describe("contract version 1.9.0 (task templates)", () => {
-  it("is 1.9.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.0");
+  it("is recorded in the changelog, at or before the current version", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
-    const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
-    expect(newest).toBe(CONTRACT_VERSION);
     expect(changelog).toMatch(/^## 1\.9\.0 — .* — Task templates$/m);
+    const [major, minor] = CONTRACT_VERSION.split(".").map(Number);
+    expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThanOrEqual(1009);
   });
 
   it("adds TEMPLATE_UNUSABLE and the templates.changed hint", () => {

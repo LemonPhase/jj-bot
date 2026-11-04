@@ -11,6 +11,9 @@ import {
   modelsViewSchema,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
+  scheduleDetailSchema,
+  scheduleListSchema,
+  scheduleResultSchema,
   sendBotMessageResultSchema,
   taskEventPageSchema,
   taskMessageSchema,
@@ -138,7 +141,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.9.0",
+      contractVersion: "1.11.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -150,6 +153,7 @@ describe("bootstrap, models and drivers", () => {
         // although its local driver can spawn the processes stdio servers need.
         mcp: { stdio: false, remote: false },
         skills: false,
+        schedules: true,
         drivers: [{ id: "local", available: true, isolated: false }],
       },
     });
@@ -1221,5 +1225,70 @@ describe("task templates", () => {
     expect((await t.call("GET", "/api/tasks")).body.tasks).toHaveLength(
       tasksBefore,
     );
+  });
+});
+
+describe("schedules", () => {
+  it("saves (201), lists, reads, patches and deletes (204) a schedule, with 400, 404 and 409 refusals", async () => {
+    const created = await t.call("POST", "/api/task-templates", {
+      title: "Digest",
+      goal: "Write the digest.",
+      coordinatorBotId: bots.Ada,
+      spendCapUsd: 1,
+    });
+    const templateId = taskTemplateResultSchema.parse(created.body).template.id;
+    const saved = await t.call("POST", "/api/schedules", {
+      name: "Morning digest",
+      templateId,
+      trigger: { kind: "cron", cron: "0 9 * * *", timeZone: "UTC" },
+    });
+    expect(saved.status).toBe(201);
+    const { schedule } = scheduleResultSchema.parse(saved.body);
+    const list = scheduleListSchema.parse(
+      (await t.call("GET", "/api/schedules")).body,
+    );
+    expect(list.schedules.map((entry) => entry.id)).toContain(schedule.id);
+    const read = await t.call("GET", `/api/schedules/${schedule.id}`);
+    expect(scheduleDetailSchema.parse(read.body)).toEqual({
+      schedule,
+      fires: [],
+    });
+    const patched = await t.call("PATCH", `/api/schedules/${schedule.id}`, {
+      enabled: false,
+    });
+    expect(patched.status).toBe(200);
+    expect(scheduleResultSchema.parse(patched.body).schedule.enabled).toBe(
+      false,
+    );
+    expectError(
+      await t.call("POST", "/api/schedules", {
+        name: "Too often",
+        templateId,
+        trigger: { kind: "cron", cron: "*/5 * * * *", timeZone: "UTC" },
+      }),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expectError(
+      await t.call("PATCH", `/api/schedules/${schedule.id}`, {}),
+      400,
+      "VALIDATION_FAILED",
+    );
+    expectError(
+      await t.call("DELETE", `/api/task-templates/${templateId}`),
+      409,
+      "TEMPLATE_IN_USE",
+    );
+    expect(
+      (await t.call("DELETE", `/api/schedules/${schedule.id}`)).status,
+    ).toBe(204);
+    expectError(
+      await t.call("GET", `/api/schedules/${schedule.id}`),
+      404,
+      "NOT_FOUND",
+    );
+    expect(
+      (await t.call("DELETE", `/api/task-templates/${templateId}`)).status,
+    ).toBe(204);
   });
 });

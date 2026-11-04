@@ -340,6 +340,71 @@ describe("liveApi against the real server", () => {
       status: 404,
     });
   });
+
+  it("saves, edits and deletes a schedule over /api/schedules, and refuses a template's deletion while it is used", async () => {
+    expect(api.capabilities.schedules).toBe(true);
+    const lead = await api.createBot({ name: "ScheduleLead" });
+    const template = await api.createTemplate({
+      title: "Digest",
+      goal: "Write the digest.",
+      coordinatorBotId: lead.id,
+      spendCapUsd: 1,
+    });
+    const hints: WorkspaceHint[] = [];
+    const states: string[] = [];
+    const offHints = api.subscribeHints((hint) => hints.push(hint), {
+      onState: (state) => states.push(state),
+    });
+    await until(() => states.includes("open"), { what: "the hint stream" });
+    const schedule = await api.createSchedule({
+      name: "Morning digest",
+      templateId: template.id,
+      trigger: { kind: "cron", cron: "0 9 * * 1-5", timeZone: "europe/london" },
+    });
+    expect(schedule).toMatchObject({
+      trigger: { cron: "0 9 * * 1-5", timeZone: "Europe/London" },
+      enabled: true,
+      chatUpdates: "attention",
+      keepWorkspaces: 10,
+    });
+    expect(schedule.nextFireAt).not.toBeNull();
+    await until(() => hints.some((hint) => hint.type === "schedules.changed"), {
+      what: "schedules.changed",
+    });
+    offHints();
+    const list = await api.listSchedules();
+    expect(list.schedules.map((entry) => entry.id)).toContain(schedule.id);
+    expect(list.scheduler).toMatchObject({
+      minIntervalMinutes: 60,
+      graceMinutes: 60,
+    });
+    // The embedded worker passes at start.
+    expect(list.scheduler.lastPassAt).not.toBeNull();
+    const off = await api.updateSchedule(schedule.id, { enabled: false });
+    expect(off).toMatchObject({ enabled: false, nextFireAt: null });
+    expect(await api.getSchedule(schedule.id)).toEqual({
+      schedule: off,
+      fires: [],
+    });
+    const tooOften = await rejection(
+      api.updateSchedule(schedule.id, {
+        trigger: { kind: "cron", cron: "*/30 * * * *", timeZone: "UTC" },
+      }),
+    );
+    expect(tooOften).toMatchObject({ code: "VALIDATION_FAILED", status: 400 });
+    const inUse = await rejection(api.deleteTemplate(template.id));
+    expect(inUse).toMatchObject({
+      code: "TEMPLATE_IN_USE",
+      status: 409,
+      details: { schedules: [{ id: schedule.id, name: "Morning digest" }] },
+    });
+    await api.deleteSchedule(schedule.id);
+    expect(await rejection(api.getSchedule(schedule.id))).toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+    });
+    await api.deleteTemplate(template.id);
+  });
 });
 
 describe("startServer", () => {

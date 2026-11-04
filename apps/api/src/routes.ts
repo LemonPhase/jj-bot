@@ -201,6 +201,21 @@ export function apiRoutes({
       201,
     ),
   );
+  // Schedules (1.11.0)
+  api.get("/schedules", async (c) => c.json(await engine.schedules.list()));
+  api.post("/schedules", async (c) =>
+    c.json(await engine.schedules.create(await command(c)), 201),
+  );
+  api.get("/schedules/:id", async (c) =>
+    c.json(await engine.schedules.get(idParam(c, "id"))),
+  );
+  api.patch("/schedules/:id", async (c) =>
+    c.json(await engine.schedules.update(idParam(c, "id"), await command(c))),
+  );
+  api.delete("/schedules/:id", async (c) => {
+    await engine.schedules.delete(idParam(c, "id"));
+    return c.body(null, 204);
+  });
 
   api.get("/tasks/:id/artifacts/:artifactId/content", async (c) => {
     const { artifact, content } = await engine.tasks.artifactContent(

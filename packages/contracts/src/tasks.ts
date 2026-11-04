@@ -135,6 +135,12 @@ export const taskObjectSchema = z.object({
    * from events stored before templates existed.
    */
   templateId: idSchema.nullable().default(null),
+  /**
+   * The schedule that started the task, null for one started otherwise.
+   * Attribution only: deleting the schedule leaves it set. Parsed as null
+   * from events stored before schedules existed.
+   */
+  scheduleId: idSchema.nullable().default(null),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   finishedAt: timestampSchema.nullable(),

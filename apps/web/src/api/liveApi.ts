@@ -14,6 +14,7 @@ import {
   conversationViewSchema,
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
+  createScheduleCommandSchema,
   createTaskCommandSchema,
   createTaskTemplateCommandSchema,
   decideApprovalCommandSchema,
@@ -23,6 +24,9 @@ import {
   putSecretCommandSchema,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
+  scheduleDetailSchema,
+  scheduleListSchema,
+  scheduleResultSchema,
   secretInfoSchema,
   secretsViewSchema,
   sendBotMessageCommandSchema,
@@ -39,6 +43,7 @@ import {
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
+  updateScheduleCommandSchema,
   updateTaskCommandSchema,
   updateTaskTemplateCommandSchema,
   usageReportSchema,
@@ -562,6 +567,29 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           command(startTemplateCommandSchema, cmd),
         )
       ).task,
+    listSchedules: () => request("GET", "/schedules", scheduleListSchema),
+    getSchedule: (scheduleId) =>
+      request("GET", `/schedules/${id(scheduleId)}`, scheduleDetailSchema),
+    createSchedule: async (cmd) =>
+      (
+        await request(
+          "POST",
+          "/schedules",
+          scheduleResultSchema,
+          command(createScheduleCommandSchema, cmd),
+        )
+      ).schedule,
+    updateSchedule: async (scheduleId, cmd) =>
+      (
+        await request(
+          "PATCH",
+          `/schedules/${id(scheduleId)}`,
+          scheduleResultSchema,
+          command(updateScheduleCommandSchema, cmd),
+        )
+      ).schedule,
+    deleteSchedule: (scheduleId) =>
+      request("DELETE", `/schedules/${id(scheduleId)}`, null),
     subscribeTask: (taskId, onView, streamOptions) =>
       followTask(taskId, getTask, openTaskEvents, onView, {
         retryMs,

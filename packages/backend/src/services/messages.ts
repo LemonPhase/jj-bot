@@ -209,14 +209,16 @@ export async function rootSession(
  * SPEND_CAP_REACHED while the coordinator could not make a model call (the
  * task's, its bot's or the instance's cap is reached). A coordinator that
  * holds a call for the user's approval is left waiting: the message reaches
- * it with the answer.
+ * it with the answer. A task whose workspace was removed continues on a
+ * fresh one: `notice` says so, and the caller puts it ahead of the message
+ * it delivers.
  */
 export async function continueTask(
   tx: Tx,
   ctx: EngineContext,
   task: TaskRow,
   attribution: Attribution = {},
-): Promise<{ task: TaskRow; root: SessionRow }> {
+): Promise<{ task: TaskRow; root: SessionRow; notice?: string }> {
   assertOpen(task);
   await assertWithinCaps(tx, ctx, {
     taskId: task.id,
@@ -224,6 +226,7 @@ export async function continueTask(
   });
   let root = await rootSession(tx, task.id);
   if (!root) throw new Error(`Task ${task.id} has no coordinator session.`);
+  let notice: string | undefined;
   // A coordinator holding a call for approval reads the message with the
   // user's answer: nothing reopens, and the message waits in its inbox.
   if (await pendingApproval(tx, root.id)) return { task, root };
@@ -233,13 +236,20 @@ export async function continueTask(
     task.status === "failed"
   ) {
     const previous = task.status;
+    const removedAt = task.workspaceRemovedAt;
     task = await updateTask(
       tx,
       ctx,
       task,
-      { status: "running", result: null, error: null },
+      {
+        status: "running",
+        result: null,
+        error: null,
+        ...(removedAt ? { workspaceRemovedAt: null } : {}),
+      },
       attribution,
     );
+    if (removedAt) notice = workspaceRemovedNotice(removedAt);
     await emit(tx, task.id, {
       type: "task.reopened",
       payload: { previous },
@@ -259,8 +269,12 @@ export async function continueTask(
       },
       attribution,
     );
-  return { task, root };
+  return { task, root, ...(notice ? { notice } : {}) };
 }
+
+/** What a continued task's coordinator is told first when its workspace was removed. */
+export const workspaceRemovedNotice = (removedAt: Date) =>
+  `Note from JJ Bot: this task's workspace was removed on ${removedAt.toISOString()}, because the schedule that started it keeps only its newest tasks' workspaces. You continue in a fresh, empty workspace: files from earlier runs are not there. The task log, the reports and the stored artifacts remain.`;
 
 /** What the coordinator is told about a new goal version. */
 function changeText(change: {
@@ -376,9 +390,10 @@ export async function postTaskMessage(
       text: command.text,
       recipientBotIds: [task.coordinatorBotId],
     });
-    const text = goalChange
+    const said = goalChange
       ? `${changeText(goalChange)}\n\nTheir message:\n${command.text}`
       : `Message from the user:\n${command.text}`;
+    const text = continued.notice ? `${continued.notice}\n\n${said}` : said;
     const delivered = await deliver(
       tx,
       continued.root,
