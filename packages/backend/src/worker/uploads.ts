@@ -3,7 +3,7 @@
 // first model call, and again before each turn boundary takes the inbox.
 // Only the sandbox's fs API touches the workspace, so `local` and `docker`
 // place alike. A file is written beside its target as
-// `.jj-upload-<id>.part`, then moved onto the target: a symlink at the target
+// `.jj-upload-<id>-<attempt>.part`, then moved onto the target: a symlink at the target
 // is replaced, never followed, and a reader never sees half a file. One
 // fenced write under the task lock then records the outcome once (`placed`,
 // or `failed` when the workspace refuses it for good) and emits
@@ -12,6 +12,7 @@
 // A transient failure leaves the upload pending for a later run. A crash
 // between the move and the record places the same bytes again, and the
 // notice is still written once.
+import { randomBytes } from "node:crypto";
 import { posix } from "node:path";
 import { formatUploadSize } from "@jj/contracts";
 import { artifacts, type Tx } from "@jj/db";
@@ -20,7 +21,7 @@ import { and, asc, count, eq } from "drizzle-orm";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
 import { toArtifact } from "../records";
-import { uploadPartName } from "../services/artifacts";
+import { uploadPartName, uploadPartPrefix } from "../services/artifacts";
 import { deliver, rootSession } from "../services/messages";
 import { lockTask } from "../services/sessions";
 import { artifactColumns } from "../services/views";
@@ -58,18 +59,22 @@ function classify(error: unknown): Outcome {
     : { kind: "transient", error: errorMessage(error) };
 }
 
-/** Writes the bytes beside the target, then moves them onto it. */
-async function writeInto(
+/**
+ * Writes the bytes beside the target, under a part name of this attempt's
+ * own, then moves them onto it. Another attempt at the same upload (a run on
+ * another worker) writes and moves its own part, so a move never carries
+ * another attempt's half-written file. Parts of this upload left by attempts
+ * that died are removed afterwards.
+ */
+export async function writeInto(
   sandbox: Sandbox,
   uploadId: string,
   path: string,
   content: Uint8Array,
 ): Promise<Outcome> {
   const dir = posix.dirname(path);
-  const part =
-    dir === "."
-      ? uploadPartName(uploadId)
-      : `${dir}/${uploadPartName(uploadId)}`;
+  const inDir = (name: string) => (dir === "." ? name : `${dir}/${name}`);
+  const part = inDir(uploadPartName(uploadId, randomBytes(6).toString("hex")));
   try {
     // Whatever sits at the part's name goes first, so a symlink an agent
     // left there is removed, never written through.
@@ -80,6 +85,25 @@ async function writeInto(
   } catch (error) {
     await sandbox.fs.remove(part).catch(() => {});
     return classify(error);
+  } finally {
+    await removeStaleParts(sandbox, dir, uploadId);
+  }
+}
+
+/** Removes the part files of an upload that attempts which died left in `dir`. */
+async function removeStaleParts(
+  sandbox: Sandbox,
+  dir: string,
+  uploadId: string,
+) {
+  const prefix = uploadPartPrefix(uploadId);
+  const entries = await sandbox.fs.list(dir).catch(() => []);
+  for (const entry of entries) {
+    const name = posix.basename(entry.path);
+    if (name.startsWith(prefix) && name.endsWith(".part"))
+      await sandbox.fs
+        .remove(dir === "." ? name : `${dir}/${name}`)
+        .catch(() => {});
   }
 }
 

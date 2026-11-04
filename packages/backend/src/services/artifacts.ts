@@ -47,9 +47,15 @@ export function contentTypeOf(path: string, content: Uint8Array): string {
   }
 }
 
-/** The name upload placement writes a file under before it moves it onto its path. */
-export const uploadPartName = (uploadId: string) =>
-  `.jj-upload-${uploadId}.part`;
+/** What every part file of one upload's placement is named from. */
+export const uploadPartPrefix = (uploadId: string) => `.jj-upload-${uploadId}-`;
+
+/**
+ * The name one attempt to place an upload writes its file under before it
+ * moves it onto its path: its own, so two attempts never share a file.
+ */
+export const uploadPartName = (uploadId: string, attempt: string) =>
+  `${uploadPartPrefix(uploadId)}${attempt}.part`;
 
 /** True for a part file placement is writing or left behind; snapshots never store one. */
 export const isUploadPart = (name: string) =>
