@@ -243,37 +243,36 @@ Schema: opening the database applies the SQL migrations in `packages/db/migratio
 
 The route table and every shape are in [the contract changelog](contract-changelog.md) (1.0.2); the schemas are in `packages/contracts`. `/health/live`, `/health/ready` and `/metrics` are operational endpoints with no contract schema ([Observability](#observability)).
 
-| Method   | Path                                           | Answer                                                      |
-| -------- | ---------------------------------------------- | ----------------------------------------------------------- |
-| `GET`    | `/health/live`, `/health`                      | liveness: the process answers                               |
-| `GET`    | `/health/ready`                                | readiness checks; 200 when ready, 503 otherwise             |
-| `GET`    | `/metrics`                                     | Prometheus metrics, behind the token like `/api`            |
-| `GET`    | `/api/bootstrap`                               | mode, contract version, capabilities, bots, tasks, profiles |
-| `GET`    | `/api/stream`                                  | SSE workspace hints                                         |
-| `GET`    | `/api/bots`, `POST /api/bots`                  | `{ bots }`; `{ bot }` (201)                                 |
-| `GET`    | `/api/bots/:id`, `PATCH`, `DELETE`             | `{ bot }`; `{ bot }`; archives (204)                        |
-| `GET`    | `/api/bots/:id/memory`, `PUT`                  | the bot's memory                                            |
-| `GET`    | `/api/bots/:id/messages`, `POST`               | the conversation; `{ message }` (201), the reply follows    |
-| `GET`    | `/api/runtime-profiles`, `POST`                | `{ profiles }`; `{ profile }` (201)                         |
-| `GET`    | `/api/runtime-profiles/:id`, `PATCH`, `DELETE` | `{ profile }`; `{ profile }`; 204                           |
-| `GET`    | `/api/sandbox-drivers`                         | `{ drivers }` with capabilities and spec JSON Schema        |
-| `GET`    | `/api/models`                                  | providers, their models and the default model               |
-| `PUT`    | `/api/models/providers/:providerId/key`        | stores the provider's key; the models view (`DELETE` too)   |
-| `GET`    | `/api/secrets`                                 | `{ available, secrets }`: names and hints, never a value    |
-| `PUT`    | `/api/secrets/:name`, `DELETE`                 | `{ secret }` (201 new, 200 replaced); 204                   |
-| `GET`    | `/api/tasks`, `POST /api/tasks`                | `{ tasks }` (summaries); `{ task }` (201)                   |
-| `GET`    | `/api/tasks/:id`                               | the task view, with its `cursor`                            |
-| `POST`   | `/api/tasks/:id/messages`                      | `{ message }` (201)                                         |
-| `POST`   | `/api/tasks/:id/stop`                          | `{ task }`                                                  |
-| `GET`    | `/api/tasks/:id/events?after=&limit=`          | an event page with full output previews                     |
-| `GET`    | `/api/tasks/:id/stream`                        | SSE task events                                             |
-| `GET`    | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |
-| `GET`    | `/api/task-templates`, `POST`                  | `{ templates }`; `{ template }` (201)                       |
-| `GET`    | `/api/task-templates/:id`, `PATCH`, `DELETE`   | `{ template }`; `{ template }`; 204                         |
-| `POST`   | `/api/task-templates/:id/tasks`                | `{ task }` (201): a task started from the template          |
-| `POST`   | `/api/uploads?name=`                           | `{ upload }` (201): the raw body staged as one file         |
-| `DELETE` | `/api/uploads/:id`                             | removes a staged upload not attached (204)                  |
-| `POST`   | `/api/tasks/:id/uploads`                       | `{ artifacts, message }` (201): staged uploads attached     |
+| Method | Path                                           | Answer                                                      |
+| ------ | ---------------------------------------------- | ----------------------------------------------------------- |
+| `GET`  | `/health/live`, `/health`                      | liveness: the process answers                               |
+| `GET`  | `/health/ready`                                | readiness checks; 200 when ready, 503 otherwise             |
+| `GET`  | `/metrics`                                     | Prometheus metrics, behind the token like `/api`            |
+| `GET`  | `/api/bootstrap`                               | mode, contract version, capabilities, bots, tasks, profiles |
+| `GET`  | `/api/stream`                                  | SSE workspace hints                                         |
+| `GET`  | `/api/bots`, `POST /api/bots`                  | `{ bots }`; `{ bot }` (201)                                 |
+| `GET`  | `/api/bots/:id`, `PATCH`, `DELETE`             | `{ bot }`; `{ bot }`; archives (204)                        |
+| `GET`  | `/api/bots/:id/memory`, `PUT`                  | the bot's memory                                            |
+| `GET`  | `/api/bots/:id/messages`, `POST`               | the conversation; `{ message }` (201), the reply follows    |
+| `GET`  | `/api/runtime-profiles`, `POST`                | `{ profiles }`; `{ profile }` (201)                         |
+| `GET`  | `/api/runtime-profiles/:id`, `PATCH`, `DELETE` | `{ profile }`; `{ profile }`; 204                           |
+| `GET`  | `/api/sandbox-drivers`                         | `{ drivers }` with capabilities and spec JSON Schema        |
+| `GET`  | `/api/models`                                  | providers, their models and the default model               |
+| `PUT`  | `/api/models/providers/:providerId/key`        | stores the provider's key; the models view (`DELETE` too)   |
+| `GET`  | `/api/secrets`                                 | `{ available, secrets }`: names and hints, never a value    |
+| `PUT`  | `/api/secrets/:name`, `DELETE`                 | `{ secret }` (201 new, 200 replaced); 204                   |
+| `GET`  | `/api/tasks`, `POST /api/tasks`                | `{ tasks }` (summaries); `{ task }` (201)                   |
+| `GET`  | `/api/tasks/:id`                               | the task view, with its `cursor`                            |
+| `POST` | `/api/tasks/:id/messages`                      | `{ message }` (201)                                         |
+| `POST` | `/api/tasks/:id/stop`                          | `{ task }`                                                  |
+| `GET`  | `/api/tasks/:id/events?after=&limit=`          | an event page with full output previews                     |
+| `GET`  | `/api/tasks/:id/stream`                        | SSE task events                                             |
+| `GET`  | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |
+| `GET`  | `/api/task-templates`, `POST`                  | `{ templates }`; `{ template }` (201)                       |
+| `GET`  | `/api/task-templates/:id`, `PATCH`, `DELETE`   | `{ template }`; `{ template }`; 204                         |
+| `POST` | `/api/task-templates/:id/tasks`                | `{ task }` (201): a task started from the template          |
+| `POST` | `/api/uploads?name=`                           | `{ upload }` (201); `DELETE /api/uploads/:id`: 204          |
+| `POST` | `/api/tasks/:id/uploads`                       | `{ artifacts, message }` (201): staged uploads attached     |
 
 - **Errors.** Every non-2xx JSON answer is `{ error: { code, message, details? } }` with a contract code and its status (`VALIDATION_FAILED` 400, `UNAUTHORIZED` 401, `NOT_FOUND` 404, `CONFLICT`, `TEMPLATE_UNUSABLE` and the other refusals 409, `UPLOAD_TOO_LARGE` 413, `MODEL_NOT_CONFIGURED`, `PROFILE_UNSUPPORTED`, `VERIFICATION_UNAVAILABLE` and `MCP_UNAVAILABLE` 422, `RATE_LIMITED` 429). A body that is not JSON is `VALIDATION_FAILED`, one over 1 MiB is `VALIDATION_FAILED` with 413 (an upload's body is bounded by the upload limits instead, `UPLOAD_TOO_LARGE`), an upload without `Content-Length` is `VALIDATION_FAILED` with 411, a template start whose instructions push the goal over the task limit is `VALIDATION_FAILED` with 422, an unknown route is `NOT_FOUND`. Anything unexpected is `500 INTERNAL` with no detail; the stack goes to the server log.
 - **Browser protection.** Every `/api/*` request with `Sec-Fetch-Site: cross-site` is refused with 403. Without a token, only loopback `Host` values (`localhost`, `127.0.0.1`, `[::1]`, any port) are answered (`API_ALLOWED_HOSTS` is refused at boot then, see [Remote access](#remote-access)); any other `Host`, such as a DNS-rebinding page's own name, gets 403. POST, PUT and PATCH need `Content-Type: application/json` (415 otherwise), so a cross-origin write always needs a CORS preflight, and the API sends no CORS headers. The one exception is `POST /api/uploads`, whose body is a file's raw bytes: it needs `Content-Type: application/octet-stream`, which is not CORS-safelisted either, so it needs the same preflight, and it refuses JSON, multipart and form bodies with 415. Its `Content-Length` is checked against the upload limits before any of the body is read. The Vite dev proxy keeps the browser's `Host` (`127.0.0.1:5173`), so it passes. With a token, configured or generated, the bearer check replaces the `Host` check.
