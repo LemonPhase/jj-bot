@@ -27,6 +27,12 @@ export interface EngineConfig {
   maxConcurrentDiscoveries: number;
   /** How long a discovery waits for its ephemeral sandbox to start, default 60 s. */
   discoveryAcquireMs: number;
+  /**
+   * With `concurrency` 1, how long a queued discovery yields to session runs
+   * and chat replies before it takes the next free slot, default 60 s.
+   * With more slots, a waiting discovery goes first into its own.
+   */
+  discoveryMaxWaitMs: number;
   leaseMs: number;
   /** How often the worker claims when no wake arrives. */
   pollIntervalMs: number;
@@ -112,6 +118,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     concurrency: 4,
     maxConcurrentDiscoveries: 1,
     discoveryAcquireMs: 60_000,
+    discoveryMaxWaitMs: 60_000,
     leaseMs: 30_000,
     pollIntervalMs: 1_000,
     maxSessionsPerTask: 16,
@@ -164,6 +171,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "maxHeldSandboxes",
     "maxConcurrentDiscoveries",
     "discoveryAcquireMs",
+    "discoveryMaxWaitMs",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)

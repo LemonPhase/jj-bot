@@ -216,22 +216,37 @@ export function createWorker(
       do {
         again = false;
         while (!stopping && !draining && active.size < ctx.config.concurrency) {
-          // Session runs and chat replies first; discoveries only into their
-          // own slots, so they never hold the ones runs and replies need.
+          // Discoveries take at most their own slots, which leave session
+          // runs and chat replies at least `concurrency - 1`. With slots to
+          // spare a waiting discovery goes first, so steady chat never
+          // starves it; with one slot, once it has waited
+          // `discoveryMaxWaitMs`, or when nothing else waits.
           const free = ctx.config.concurrency - active.size;
-          const work = await claimOf(free, WORK_KINDS);
           const discovering = [...active.values()].filter(
             (entry) => entry.job.kind === "mcp.discover",
           ).length;
-          const slots = Math.min(
-            free - work,
+          const room = Math.min(
+            free,
             ctx.config.maxConcurrentDiscoveries - discovering,
           );
-          const discoveries =
-            slots > 0 && !stopping && !draining
-              ? await claimOf(slots, DISCOVERY_KINDS)
+          const single = ctx.config.concurrency === 1;
+          const first =
+            room > 0
+              ? await claimOf(
+                  room,
+                  DISCOVERY_KINDS,
+                  single ? ctx.config.discoveryMaxWaitMs : undefined,
+                )
               : 0;
-          if (work + discoveries === 0) break;
+          const work =
+            free > first && !stopping && !draining
+              ? await claimOf(free - first, WORK_KINDS)
+              : 0;
+          const idle =
+            single && room > first && work === 0 && !stopping && !draining
+              ? await claimOf(room - first, DISCOVERY_KINDS)
+              : 0;
+          if (first + work + idle === 0) break;
         }
       } while (again && !stopping && !draining);
       if (!stopping && !draining) {
@@ -247,10 +262,14 @@ export function createWorker(
     }
   }
 
-  /** Claims up to `limit` jobs of `kinds` and launches them; returns how many it claimed. */
+  /**
+   * Claims up to `limit` jobs of `kinds` (queued ones due for at least
+   * `waitedMs`, when given) and launches them; returns how many it claimed.
+   */
   async function claimOf(
     limit: number,
     kinds: readonly JobKind[],
+    waitedMs?: number,
   ): Promise<number> {
     // Never its own runs: a stall that held their heartbeats past the
     // lease leaves them alive, not abandoned.
@@ -259,7 +278,11 @@ export function createWorker(
       ctx.config.workerId,
       limit,
       ctx.config.leaseMs,
-      { running: [...active.keys()], kinds },
+      {
+        running: [...active.keys()],
+        kinds,
+        ...(waitedMs !== undefined ? { waitedMs } : {}),
+      },
     );
     for (const job of exhausted) {
       const result = await handleExhausted(ctx, job).catch((error: unknown) => {

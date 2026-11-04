@@ -66,8 +66,8 @@ To change the schema, edit `src/schema.ts`, run `npm run db:generate -w @jj/db`,
 Pass `db` for autocommit, or a `tx` to make the job change atomic with other writes. Every operation is one SQL statement, except `claim`, which is two.
 
 - `enqueue(exec, job)` inserts a queued job and returns it, or returns `null` when it was coalesced. `session.run` requires `sessionId`, and `chat.reply` requires `botId`.
-- `claim(exec, owner, limit, leaseMs, { running, kinds })` returns `{ jobs, exhausted }`:
-  - With `kinds`, it claims only jobs of those kinds; exhausted jobs of every kind are still failed and returned. The worker claims session runs and chat replies first, and MCP discoveries only into slots of their own.
+- `claim(exec, owner, limit, leaseMs, { running, kinds, waitedMs })` returns `{ jobs, exhausted }`:
+  - With `kinds`, it claims only jobs of those kinds; exhausted jobs of every kind are still failed and returned. With `waitedMs`, it claims only queued jobs due for at least that long (expired ones as usual). The worker claims MCP discoveries into slots of their own and session runs and chat replies into the rest.
   - It takes due queued jobs, and running jobs whose lease expired and that have attempts left, with `FOR UPDATE SKIP LOCKED`. Two claimers never get the same job and never wait on each other. Jobs are returned oldest `run_after` first, and times use the database clock.
   - Each claim increments `attempts`, which is also the lease generation. Each claimed job carries `lease = { jobId, owner, attempt, kind }`.
   - `running` lists the jobs the claimer is still running. They are neither reclaimed nor failed as exhausted by that claim, even once their lease expired: their owner is alive, its heartbeats only fell behind, and it can still extend the lease. Another claimer takes them over as usual.
