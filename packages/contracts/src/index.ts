@@ -21,5 +21,6 @@ export * from "./secrets";
 export * from "./skills";
 export * from "./tasks";
 export * from "./templates";
+export * from "./uploads";
 export * from "./usage";
 export * from "./verification";

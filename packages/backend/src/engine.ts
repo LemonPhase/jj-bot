@@ -23,6 +23,7 @@ import {
   type SecretsView,
   type SendBotMessageCommand,
   type SendBotMessageResult,
+  type StagedUpload,
   type StartTemplateCommand,
   type StopTaskCommand,
   type Task,
@@ -36,6 +37,8 @@ import {
   type UpdateRuntimeProfileCommand,
   type UpdateTaskCommand,
   type UpdateTaskTemplateCommand,
+  type UploadToTaskCommand,
+  type UploadToTaskResult,
   type UsageReport,
   type WorkspaceHint,
 } from "@jj/contracts";
@@ -74,6 +77,14 @@ import {
 } from "./services/stream";
 import { createTask, stopTask, updateTaskSettings } from "./services/tasks";
 import * as templateService from "./services/templates";
+import {
+  deleteStagedUpload,
+  type StageUploadInput,
+  stageUpload,
+  sweepStagedUploads,
+  uploadLimits,
+  uploadToTask,
+} from "./services/uploads";
 import { usageReport } from "./services/usage";
 import { VERIFICATION_ENFORCED } from "./services/verification";
 import { eventPage, taskSummaries, taskView } from "./services/views";
@@ -202,6 +213,18 @@ export interface Engine {
       taskId: string,
       artifactId: string,
     ): Promise<{ artifact: Artifact; content: Uint8Array }>;
+    /** `POST /api/tasks/:id/uploads`: attaches staged uploads; wakes nothing. */
+    upload(
+      taskId: string,
+      command: UploadToTaskCommand,
+    ): Promise<UploadToTaskResult>;
+  };
+  /** Staged uploads; every method answers NOT_FOUND while uploads are off. */
+  uploads: {
+    /** `POST /api/uploads`: every limit is checked before the body is read. */
+    stage(input: StageUploadInput): Promise<{ upload: StagedUpload }>;
+    /** `DELETE /api/uploads/:id`. */
+    delete(uploadId: string): Promise<void>;
   };
   /** Task templates: saved task setups the user starts again. */
   templates: {
@@ -286,6 +309,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       `${name} is shorter than ${MIN_BARE_SECRET_LENGTH} characters, so it is not redacted from task history: a value that short is too likely to be an ordinary word. Use a longer value.`,
     );
   await store.purgeRetired(retiredBefore(ctx.clock()));
+  const swept = await sweepStagedUploads(ctx);
+  if (swept > 0)
+    ctx.logger.info(`Deleted ${swept} staged upload(s) past their time`);
   await store.rotate(ctx.logger);
   await store.refresh();
   warnUnreadable(store, ctx.logger);
@@ -331,6 +357,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
           mcp: { stdio: false, remote: false },
           skills: false,
+          uploads: uploadLimits(ctx),
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,
@@ -391,6 +418,11 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       subscribe: (taskId, options) => subscribeTask(ctx, taskId, options),
       artifactContent: (taskId, artifactId) =>
         artifactContent(ctx, taskId, artifactId),
+      upload: (taskId, command) => uploadToTask(ctx, taskId, command),
+    },
+    uploads: {
+      stage: (input) => stageUpload(ctx, input),
+      delete: (uploadId) => deleteStagedUpload(ctx, uploadId),
     },
     templates: {
       list: () => templateService.listTemplates(ctx),

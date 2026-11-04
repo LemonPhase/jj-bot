@@ -37,7 +37,9 @@ export function ArtifactRows({
         const session = view.sessions.find((s) => s.id === artifact.sessionId);
         const producer = session
           ? `${botName(getBot(session.botId))} · ${ordinals.get(session.id) ?? "s-?"}`
-          : "task";
+          : artifact.upload
+            ? "Uploaded by you"
+            : "task";
         return (
           <li key={artifact.id} className="artifact">
             <span className="artifact__text">
@@ -62,7 +64,7 @@ export function ArtifactRows({
  * send the Authorization header, so the content is fetched with it and saved
  * from a blob instead.
  */
-function ArtifactDownload({
+export function ArtifactDownload({
   taskId,
   artifact,
 }: {

@@ -101,6 +101,24 @@ export const resumeCursor = (c: Context): number =>
   parseNumber(cursorSchema, "after", c.req.query("after")) ??
   0;
 
+/**
+ * The request's `Content-Length`, which an upload must send: without it
+ * (a chunked body) the limits could not be checked before the body is read.
+ */
+export function contentLength(c: Context): number {
+  const raw = c.req.header("Content-Length")?.trim();
+  if (raw === undefined || raw === "")
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      "An upload needs a Content-Length: send the file whole, not chunked.",
+      undefined,
+      411,
+    );
+  if (!/^\d{1,16}$/.test(raw) || !Number.isSafeInteger(Number(raw)))
+    throw invalid(`Content-Length: "${raw}" is not a byte count.`);
+  return Number(raw);
+}
+
 /** The JSON body, or undefined when there is none. */
 export async function jsonBody(c: Context): Promise<unknown> {
   const raw = await c.req.text();

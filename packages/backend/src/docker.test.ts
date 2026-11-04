@@ -21,6 +21,7 @@ import {
   delegatingCoordinator,
   lastResult,
 } from "./testing/scenarios";
+import { placementScenario } from "./testing/uploads";
 
 // The docker variant of the shared-workspace scenario. Skips without a
 // reachable daemon. Image: JJ_SANDBOX_TEST_IMAGE, else jj-sandbox:base-1 when
@@ -315,5 +316,29 @@ describe.skipIf(!health.ok)("docker driver", () => {
     expect(view.verificationChecks).toMatchObject([
       { outcome: "passed", exitCode: 0, output: "inside\n" },
     ]);
+  }, 120_000);
+
+  it("places uploads in the task container before the first model call, replacing a symlink and failing a directory in the way", async () => {
+    const docker = new DockerSandboxDriver({
+      namespace: `jj-engine-${runId}-u`,
+      labels,
+      killGraceMs: 300,
+    });
+    await current?.dispose();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([{ driver: docker, label: "Docker" }]),
+    });
+    const { engine, executor } = current;
+    await engine.profiles.create({
+      name: "Docker uploads",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      isDefault: true,
+    });
+    await placementScenario(engine, executor);
   }, 120_000);
 });
