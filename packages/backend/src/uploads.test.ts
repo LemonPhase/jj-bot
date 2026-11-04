@@ -580,6 +580,42 @@ describe("limits and refusals", () => {
   });
 });
 
+describe("a draining worker", () => {
+  it("places nothing in a run it is handing back, even where the turn has ended", async () => {
+    const { engine, executor } = await engineWith();
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    let answer = () => {};
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    let thinking = () => {};
+    const started = new Promise<void>((resolve) => {
+      thinking = resolve;
+    });
+    // The model's only turn ends with text, while the worker drains.
+    executor.brain(ada, async () => {
+      thinking();
+      await answered;
+      return { text: "Which format do you want?" };
+    });
+    const { task } = await engine.tasks.create({
+      goal: "Ask first",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await started;
+    const staged = await stage(engine, "late.txt", "late");
+    await engine.tasks.upload(task.id, { files: [{ uploadId: staged.id }] });
+    const drained = engine.worker.drain(600_000);
+    answer();
+    await drained;
+    const view = await engine.tasks.get(task.id);
+    expect(view.task.status).toBe("waiting");
+    expect(uploadsOf(view)[0]?.upload?.state).toBe("pending");
+    expect(await notices(engine, task.id)).toHaveLength(0);
+  });
+});
+
 describe("settling an upload", () => {
   it("records its outcome once: a later attempt changes nothing, emits nothing and tells nothing", async () => {
     const { engine, executor } = await engineWith();

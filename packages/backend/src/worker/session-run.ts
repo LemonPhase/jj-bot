@@ -513,8 +513,10 @@ async function executeRun(
     const held = hold;
     // Pending uploads go into the workspace before every take of the inbox:
     // before the run's first model call, and at each boundary after it.
+    // A draining run is handed back without another model call, so it
+    // places nothing: the next run does, before its own.
     const take = async (continuingOnly: boolean) => {
-      await placeUploads(rc, held.sandbox);
+      if (!rc.control.draining) await placeUploads(rc, held.sandbox);
       return takeInbox(rc, continuingOnly);
     };
     // Each executor call takes the inbox, in order; input that arrives as a
