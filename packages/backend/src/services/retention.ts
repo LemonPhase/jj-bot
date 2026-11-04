@@ -124,16 +124,27 @@ const FINISHED = ["completed", "failed", "cancelled"] as const;
  */
 function compactable(finishedBefore: Date): SQL {
   return and(
+    ...compactableButForSnapshots(finishedBefore),
+    sql`not ${pendingSnapshot}`,
+  ) as SQL;
+}
+
+/** A run of the task is pending its final snapshot. */
+const pendingSnapshot = sql`exists (select 1 from ${runs} where ${runs.taskId} = ${tasks.id} and ${runs.snapshotPending})`;
+
+/** Every guard of `compactable` but the pending snapshot's. */
+function compactableButForSnapshots(finishedBefore: Date): SQL[] {
+  return [
     inArray(tasks.status, [...FINISHED]),
     isNotNull(tasks.finishedAt),
     lt(tasks.finishedAt, finishedBefore),
     gt(tasks.eventSeq, sql`${tasks.eventsCompactedThrough} + 1`),
-    or(isNull(tasks.cancelRequestedAt), eq(tasks.status, "cancelled")),
+    or(isNull(tasks.cancelRequestedAt), eq(tasks.status, "cancelled")) as SQL,
     sql`not exists (select 1 from ${sessions} where ${sessions.taskId} = ${tasks.id} and ${sessions.status} in ('queued', 'running'))`,
     sql`not exists (select 1 from ${jobs} where ${jobs.taskId} = ${tasks.id} and ${jobs.status} in ('queued', 'running'))`,
-    sql`not exists (select 1 from ${runs} where ${runs.taskId} = ${tasks.id} and (${runs.status} = 'running' or ${runs.snapshotPending}))`,
+    sql`not exists (select 1 from ${runs} where ${runs.taskId} = ${tasks.id} and ${runs.status} = 'running')`,
     sql`not exists (select 1 from ${approvals} where ${approvals.taskId} = ${tasks.id} and ${approvals.status} = 'pending')`,
-  ) as SQL;
+  ];
 }
 
 export interface TaskCompaction {
@@ -301,7 +312,8 @@ export function compactionCandidates(
 /**
  * Finished tasks past the cutoff, with events to compact, that compaction
  * leaves alone only because a finished run of theirs is still pending a
- * snapshot (its sandbox was gone before the final snapshot could run).
+ * snapshot (its sandbox was gone before the final snapshot could run): every
+ * other guard lets them be compacted.
  */
 export async function waitingOnSnapshots(
   exec: Executor,
@@ -310,14 +322,7 @@ export async function waitingOnSnapshots(
   const [row] = await exec
     .select({ value: count() })
     .from(tasks)
-    .where(
-      and(
-        inArray(tasks.status, [...FINISHED]),
-        lt(tasks.finishedAt, finishedBefore),
-        gt(tasks.eventSeq, sql`${tasks.eventsCompactedThrough} + 1`),
-        sql`exists (select 1 from ${runs} where ${runs.taskId} = ${tasks.id} and ${runs.status} <> 'running' and ${runs.snapshotPending})`,
-      ),
-    );
+    .where(and(...compactableButForSnapshots(finishedBefore), pendingSnapshot));
   return row?.value ?? 0;
 }
 

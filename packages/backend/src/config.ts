@@ -8,6 +8,7 @@ import {
 
 /** Longest `JJ_EVENT_RETENTION_DAYS`: ten years. */
 export const MAX_EVENT_RETENTION_DAYS = 3650;
+export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 /** Smallest `JJ_EVENT_PAYLOAD_CAP_BYTES`, so ordinary events never spill. */
 export const MIN_EVENT_PAYLOAD_CAP_BYTES = 128 * 1024;
 export const DEFAULT_EVENT_PAYLOAD_CAP_BYTES = 256 * 1024;
@@ -148,7 +149,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
-    eventRetentionDays: 30,
+    eventRetentionDays: DEFAULT_EVENT_RETENTION_DAYS,
     eventPayloadCapBytes: DEFAULT_EVENT_PAYLOAD_CAP_BYTES,
     compactionIntervalMs: 60 * 60_000,
     compactionMaxTasks: 50,
@@ -221,6 +222,19 @@ function checkPayloadCap(value: number, name: string): number {
   return value;
 }
 
+/**
+ * `JJ_EVENT_RETENTION_DAYS` alone, read as `configFromEnv` reads it: the
+ * default when unset. Throws on a value the server would refuse to boot with.
+ */
+export function eventRetentionDaysFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env.JJ_EVENT_RETENTION_DAYS?.trim();
+  return raw
+    ? checkRetentionDays(Number(raw), "JJ_EVENT_RETENTION_DAYS")
+    : DEFAULT_EVENT_RETENTION_DAYS;
+}
+
 /** The output cap the engine and events use: at most the contract's preview limit. */
 export function clampOutputCap(requested: number): number {
   if (!Number.isFinite(requested) || requested <= 0)
@@ -275,7 +289,9 @@ export function configFromEnv(
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
-    eventRetentionDays: checked("JJ_EVENT_RETENTION_DAYS", checkRetentionDays),
+    eventRetentionDays: env.JJ_EVENT_RETENTION_DAYS?.trim()
+      ? eventRetentionDaysFromEnv(env)
+      : undefined,
     eventPayloadCapBytes: checked(
       "JJ_EVENT_PAYLOAD_CAP_BYTES",
       checkPayloadCap,

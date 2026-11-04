@@ -7,10 +7,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  configFromEnv,
   createKeyring,
-  resolveConfig,
+  DEFAULT_EVENT_RETENTION_DAYS,
+  eventRetentionDaysFromEnv,
   SecretStore,
+  waitingOnSnapshots as tasksWaitingOnSnapshots,
 } from "@jj/backend";
 import { CONTRACT_VERSION } from "@jj/contracts";
 import {
@@ -153,25 +154,27 @@ async function hasColumn(
 }
 
 /**
- * Finished tasks past the retention, with events to compact, that a finished
- * run pending a snapshot keeps from compaction; 0 with retention off or
- * before the retention's migration.
+ * Finished tasks past the retention, with events to compact, that only a
+ * finished run pending a snapshot keeps from compaction, counted as the
+ * compaction pass counts them; 0 with retention off or before the
+ * retention's migration.
  */
 async function waitingOnSnapshots(exec: Db, env: Env): Promise<number> {
-  let days = 30;
+  let days = DEFAULT_EVENT_RETENTION_DAYS;
   try {
-    days = resolveConfig(configFromEnv(env)).eventRetentionDays;
+    // That setting alone: the others do not change the count.
+    days = eventRetentionDaysFromEnv(env);
   } catch {
-    // A setting that cannot work is the server's to refuse; count with the default.
+    // A retention that cannot work is the server's to refuse; count with the default.
   }
   if (
     days === 0 ||
     !(await hasColumn(exec, "tasks", "events_compacted_through"))
   )
     return 0;
-  return count(
+  return tasksWaitingOnSnapshots(
     exec,
-    `select count(*) as n from tasks t where t.status in ('completed', 'failed', 'cancelled') and t.finished_at < now() - interval '${days} days' and t.event_seq > t.events_compacted_through + 1 and exists (select 1 from runs r where r.task_id = t.id and r.status <> 'running' and r.snapshot_pending)`,
+    new Date(Date.now() - days * 24 * 60 * 60_000),
   );
 }
 

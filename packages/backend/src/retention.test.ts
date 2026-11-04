@@ -702,6 +702,18 @@ describe("the compaction pass", () => {
     expect(await engine.metrics.text()).toMatch(
       new RegExp(`jj_events_compaction_waiting_tasks ${before + 1}\\b`),
     );
+    // Held back by another guard too (a stop in progress), it is not counted:
+    // its snapshot is not all it waits for.
+    await store
+      .update(tasks)
+      .set({ cancelRequestedAt: new Date() })
+      .where(eq(tasks.id, pending.task.id));
+    expect((await compactNow(engine)).waitingOnSnapshots).toBe(before);
+    await store
+      .update(tasks)
+      .set({ cancelRequestedAt: null })
+      .where(eq(tasks.id, pending.task.id));
+    expect((await compactNow(engine)).waitingOnSnapshots).toBe(before + 1);
     await store
       .update(runs)
       .set({ snapshotPending: false })

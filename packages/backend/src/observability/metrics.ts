@@ -170,7 +170,7 @@ export function createMetrics(options: MetricsOptions = {}): EngineMetrics {
 
   const waiting = new Gauge({
     name: "jj_events_compaction_waiting_tasks",
-    help: "Finished tasks past the retention that the last compaction pass left alone because a run is still pending a snapshot.",
+    help: "Finished tasks past the retention that the last compaction pass left alone only because a run is still pending a snapshot.",
     registers: [registry],
   });
 

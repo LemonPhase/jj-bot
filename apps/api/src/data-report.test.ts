@@ -290,12 +290,35 @@ describe("readDataReport", () => {
         "1 finished task past the retention wait on a run pending a snapshot and are not compacted",
       );
       expect(formatEnv(report)).toContain("\nevents_waiting_on_snapshots=1\n");
-      // Within a longer retention, or with retention off, nothing waits.
+      // Within a longer retention, or with retention off, nothing waits, even
+      // when another setting is one the server would refuse.
       for (const days of ["50", "0"])
-        expect(
-          (await readDataReport(setting, { JJ_EVENT_RETENTION_DAYS: days }))
-            .records?.waitingOnSnapshots,
-        ).toBe(0);
+        for (const other of [{}, { JJ_CONCURRENCY: "none" }])
+          expect(
+            (
+              await readDataReport(setting, {
+                JJ_EVENT_RETENTION_DAYS: days,
+                ...other,
+              })
+            ).records?.waitingOnSnapshots,
+            `${days} days, ${JSON.stringify(other)}`,
+          ).toBe(0);
+      // A task another guard holds back too (a stop in progress) waits on
+      // more than its snapshot, so it is not counted.
+      const t2 = await testApp({
+        startWorker: false,
+        database: setting,
+      });
+      try {
+        await t2.database.db.execute(
+          sql`update tasks set cancel_requested_at = now() where id = (select task_id from runs where snapshot_pending limit 1)`,
+        );
+      } finally {
+        await t2.dispose();
+      }
+      expect(
+        (await readDataReport(setting, {})).records?.waitingOnSnapshots,
+      ).toBe(0);
     },
     OPEN_TIMEOUT,
   );
