@@ -4,19 +4,21 @@
 // Schedules are the user's: no agent tool lists, creates or edits them.
 import {
   type CreateScheduleCommand,
-  createScheduleCommandSchema,
   MAX_ENABLED_SCHEDULES,
   MAX_SCHEDULES,
-  nextFires,
   SCHEDULE_FIRES_SHOWN,
   type Schedule,
   type ScheduleDetail,
   type SchedulerStatus,
   type StoredTrigger,
-  triggerProblem,
   type UpdateScheduleCommand,
-  updateScheduleCommandSchema,
 } from "@jj/contracts";
+import {
+  createScheduleCommandSchema,
+  nextFires,
+  triggerProblem,
+  updateScheduleCommandSchema,
+} from "@jj/contracts/schedule-rules";
 import {
   type Executor,
   readInstanceSetting,
@@ -140,19 +142,74 @@ interface Draft {
   chatUpdates: "attention" | "all";
 }
 
+/** Where a save leaves the schedule: its next fire, or a pause when none is found. */
+interface Placement {
+  nextFireAt: Date | null;
+  pausedReason?: "no_next_fire";
+}
+
 /**
- * The checks every save makes, in the save's transaction: the trigger
- * (`triggerProblem` against the server's minimum interval), the template
- * (it exists, and its task cap resolves to an amount), and the limits
- * (MAX_SCHEDULES, MAX_ENABLED_SCHEDULES). Returns the next fire.
+ * The checks a save makes, in the save's transaction: with `full`, the
+ * trigger (`triggerProblem` against the server's minimum interval) and the
+ * template (it exists, and its task cap resolves to an amount); always, the
+ * limits (MAX_SCHEDULES, MAX_ENABLED_SCHEDULES). Returns the next fire. A
+ * save without `full` on an enabled schedule whose next fire cannot be
+ * found (its zone no longer known) pauses it instead of refusing.
  */
 async function checkSave(
   tx: Tx,
   ctx: EngineContext,
   draft: Draft,
   existingId: string | undefined,
-): Promise<Date | null> {
+  full = true,
+): Promise<Placement> {
   const now = ctx.clock();
+  if (full) await checkTriggerAndTemplate(tx, ctx, draft, now);
+  // Concurrent saves count one at a time, so the limits hold.
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtext('jj-bot:schedules'))`,
+  );
+  const others = existingId ? ne(schedules.id, existingId) : undefined;
+  if (!existingId) {
+    const [stored] = await tx.select({ value: count() }).from(schedules);
+    if ((stored?.value ?? 0) >= MAX_SCHEDULES)
+      throw new DomainError(
+        "CONFLICT",
+        `This server keeps at most ${MAX_SCHEDULES} schedules; delete one before saving another.`,
+        { limit: MAX_SCHEDULES },
+      );
+  }
+  if (draft.enabled) {
+    const [enabled] = await tx
+      .select({ value: count() })
+      .from(schedules)
+      .where(and(eq(schedules.enabled, true), others));
+    if ((enabled?.value ?? 0) >= MAX_ENABLED_SCHEDULES)
+      throw new DomainError(
+        "CONFLICT",
+        `At most ${MAX_ENABLED_SCHEDULES} schedules can be enabled at once; disable one first.`,
+        { limit: MAX_ENABLED_SCHEDULES },
+      );
+  }
+  if (!draft.enabled) return { nextFireAt: null };
+  let next: Date | undefined;
+  try {
+    next = nextFires(draft.trigger, now, 1)[0];
+  } catch {
+    next = undefined;
+  }
+  return next
+    ? { nextFireAt: next }
+    : { nextFireAt: null, pausedReason: "no_next_fire" };
+}
+
+/** The trigger and template checks of a save: VALIDATION_FAILED for what would not run. */
+async function checkTriggerAndTemplate(
+  tx: Tx,
+  ctx: EngineContext,
+  draft: Draft,
+  now: Date,
+): Promise<void> {
   const problem = triggerProblem(
     draft.trigger,
     now,
@@ -180,33 +237,6 @@ async function checkSave(
       `templateId: "${template.title}" starts tasks with no spend cap, and a scheduled task needs one. Give the template a cap, or its coordinator's runtime profile a task cap.`,
       { field: "templateId" },
     );
-  // Concurrent saves count one at a time, so the limits hold.
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtext('jj-bot:schedules'))`,
-  );
-  const others = existingId ? ne(schedules.id, existingId) : undefined;
-  if (!existingId) {
-    const [stored] = await tx.select({ value: count() }).from(schedules);
-    if ((stored?.value ?? 0) >= MAX_SCHEDULES)
-      throw new DomainError(
-        "CONFLICT",
-        `This server keeps at most ${MAX_SCHEDULES} schedules; delete one before saving another.`,
-        { limit: MAX_SCHEDULES },
-      );
-  }
-  if (draft.enabled) {
-    const [enabled] = await tx
-      .select({ value: count() })
-      .from(schedules)
-      .where(and(eq(schedules.enabled, true), others));
-    if ((enabled?.value ?? 0) >= MAX_ENABLED_SCHEDULES)
-      throw new DomainError(
-        "CONFLICT",
-        `At most ${MAX_ENABLED_SCHEDULES} schedules can be enabled at once; disable one first.`,
-        { limit: MAX_ENABLED_SCHEDULES },
-      );
-  }
-  return draft.enabled ? (nextFires(draft.trigger, now, 1)[0] ?? null) : null;
 }
 
 /** `POST /api/schedules`. */
@@ -225,7 +255,7 @@ export async function createSchedule(
     chatUpdates: command.chatUpdates ?? "attention",
   };
   const row = await ctx.db.transaction(async (tx) => {
-    const nextFireAt = await checkSave(tx, ctx, draft, undefined);
+    const { nextFireAt } = await checkSave(tx, ctx, draft, undefined);
     const now = ctx.clock();
     const [inserted] = await tx
       .insert(schedules)
@@ -248,10 +278,13 @@ export async function createSchedule(
 }
 
 /**
- * `PATCH /api/schedules/:id`: the patch merged onto the stored schedule and
- * checked as a save. Every edit computes the next fire from now, so nothing
- * missed while it was disabled or due starts afterwards; enabling clears a
- * pause.
+ * `PATCH /api/schedules/:id`: the patch merged onto the stored schedule. A
+ * patch that changes the trigger or the template, or enables the schedule,
+ * is checked as a save; any other (disabling it, or changing its name,
+ * instructions, kept workspaces or chat updates) applies even when the
+ * schedule would no longer pass those checks, so it can always be turned
+ * off. Every edit computes the next fire from now, so nothing missed while
+ * it was disabled or due starts afterwards; enabling clears a pause.
  */
 export async function updateSchedule(
   ctx: EngineContext,
@@ -270,14 +303,23 @@ export async function updateSchedule(
       keepWorkspaces: command.keepWorkspaces ?? current.keepWorkspaces,
       chatUpdates: command.chatUpdates ?? current.chatUpdates,
     };
-    const nextFireAt = await checkSave(tx, ctx, draft, scheduleId);
+    const full =
+      command.trigger !== undefined ||
+      command.templateId !== undefined ||
+      command.enabled === true;
+    const placed = await checkSave(tx, ctx, draft, scheduleId, full);
     const [updated] = await tx
       .update(schedules)
       .set({
         ...draft,
         trigger: draft.trigger as unknown as Record<string, unknown>,
-        nextFireAt,
-        pausedReason: command.enabled === true ? null : current.pausedReason,
+        nextFireAt: placed.nextFireAt,
+        ...(placed.pausedReason
+          ? { enabled: false, pausedReason: placed.pausedReason }
+          : {
+              pausedReason:
+                command.enabled === true ? null : current.pausedReason,
+            }),
         updatedAt: ctx.clock(),
       })
       .where(eq(schedules.id, scheduleId))

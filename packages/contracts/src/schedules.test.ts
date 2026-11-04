@@ -4,29 +4,32 @@ import {
   API_ERROR_CODES,
   CONTRACT_VERSION,
   capabilitiesSchema,
-  createScheduleCommandSchema,
-  cronProblem,
   DEFAULT_KEEP_WORKSPACES,
-  firesBetween,
-  formatFireTime,
   MAX_KEEP_WORKSPACES,
-  minimumGapMinutes,
-  nextFires,
-  parseCron,
+  SCHEDULE_PAUSED_REASONS,
   type StoredTrigger,
   scheduleDetailSchema,
   scheduleFireSchema,
   scheduleSchema,
-  scheduleTriggerSchema,
   taskEventSchema,
   taskObjectSchema,
   templateInUseDetailsSchema,
+  workspaceHintSchema,
+} from "./index";
+import {
+  createScheduleCommandSchema,
+  cronProblem,
+  firesBetween,
+  formatFireTime,
+  minimumGapMinutes,
+  nextFires,
+  parseCron,
+  scheduleTriggerSchema,
   timeZoneSchema,
   triggerProblem,
   updateScheduleCommandSchema,
   wallTimeToInstant,
-  workspaceHintSchema,
-} from "./index";
+} from "./schedule-rules";
 
 const at = "2026-11-03T12:00:00.000Z";
 const cron = (expression: string, timeZone = "UTC"): StoredTrigger => ({
@@ -311,7 +314,7 @@ describe("minimumGapMinutes and triggerProblem", () => {
       /30 minutes apart at times, under this server's minimum of 60 minutes/,
     );
     expect(triggerProblem(cron("0 0 30 2 *"), from, 60)).toMatch(
-      /never runs in the next 366 days/,
+      /never runs: no time in the next 8 years matches it/,
     );
     expect(triggerProblem(cron("0 * * * *", "Europe/London"), from, 60)).toBe(
       undefined,
@@ -320,6 +323,62 @@ describe("minimumGapMinutes and triggerProblem", () => {
       /not a time zone/,
     );
     expect(triggerProblem(cron("0 0 * * * *"), from, 60)).toMatch(/6 fields/);
+  });
+
+  it("finds a leap day's next fire however far ahead, across a century without one", () => {
+    const leap = cron("0 0 29 2 *");
+    // Saved in mid-2027: the next 29 February is 2028's, 9 months on.
+    expect(iso(nextFires(leap, new Date("2027-06-01T00:00:00Z"), 1))).toEqual([
+      "2028-02-29T00:00:00.000Z",
+    ]);
+    // After a fire, the next is four years on: still found.
+    expect(iso(nextFires(leap, new Date("2028-02-29T00:00:01Z"), 1))).toEqual([
+      "2032-02-29T00:00:00.000Z",
+    ]);
+    // 2100 is no leap year: 2096's next is 2104's, eight years on.
+    expect(iso(nextFires(leap, new Date("2096-02-29T00:00:01Z"), 1))).toEqual([
+      "2104-02-29T00:00:00.000Z",
+    ]);
+    expect(triggerProblem(leap, new Date(at), 60)).toBeUndefined();
+  });
+
+  it("stops measuring at the first gap under the minimum", () => {
+    const spy = vi.spyOn(Intl.DateTimeFormat.prototype, "formatToParts");
+    try {
+      // Every two minutes: about 263,000 fires a year, refused at its first gap.
+      expect(triggerProblem(cron("*/2 * * * *"), from, 60)).toMatch(
+        /2 minutes apart at times/,
+      );
+      expect(spy.mock.calls.length).toBeLessThan(20);
+      expect(minimumGapMinutes(cron("*/2 * * * *"), from, 60)).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+    // Without a bound, or above it, the walk finds the true minimum.
+    expect(minimumGapMinutes(cron("0 9,10 * * *"), from, 30)).toBe(60);
+    expect(minimumGapMinutes(cron("0 9,10 * * *"), from)).toBe(60);
+  });
+
+  it("can bring two runs closer in real time than on the wall clock, as documented", () => {
+    // 00:59 GMT, then 01:59 is skipped and runs at the end of the gap: 02:00 BST.
+    const fires = iso(
+      firesBetween(
+        cron("59 * * * *", "Europe/London"),
+        new Date("2026-03-29T00:30:00Z"),
+        new Date("2026-03-29T02:30:00Z"),
+        10,
+      ),
+    );
+    expect(fires.slice(0, 2)).toEqual([
+      "2026-03-29T00:59:00.000Z",
+      "2026-03-29T01:00:00.000Z",
+    ]);
+    expect(
+      minimumGapMinutes(
+        cron("59 * * * *", "Europe/London"),
+        new Date("2026-03-28T00:00:00Z"),
+      ),
+    ).toBe(60);
   });
 
   it("consults the zone a bounded number of times per day, never per minute", () => {
@@ -402,6 +461,14 @@ describe("schedule records and commands", () => {
     createdAt: at,
     updatedAt: at,
   };
+
+  it("names why the server paused a schedule", () => {
+    expect(SCHEDULE_PAUSED_REASONS).toEqual([
+      "template_unusable",
+      "interval_too_short",
+      "no_next_fire",
+    ]);
+  });
 
   it("reads a schedule with its defaults", () => {
     const parsed = scheduleSchema.parse(schedule);

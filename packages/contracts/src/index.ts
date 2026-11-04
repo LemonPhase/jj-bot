@@ -4,7 +4,10 @@
  * (what a client sends), and servers use the parsed output. Persistence-only
  * shapes (transcripts, jobs, leases) live in `packages/db`, not here.
  *
- * Record every change in docs/contract-changelog.md.
+ * Record every change in docs/contract-changelog.md. The cron grammar,
+ * the schedule commands and evaluating schedule times are in the
+ * `@jj/contracts/schedule-rules` entry, kept out of this one so clients load
+ * them only where they write or preview a schedule.
  */
 
 // Keep API validation on the same schema implementation as the shared contracts.
@@ -14,10 +17,14 @@ export * from "./approvals";
 export * from "./bots";
 export * from "./canonical";
 export * from "./common";
-export * from "./cron";
 export * from "./events";
 export * from "./mcp";
 export * from "./profiles";
+export type {
+  CreateScheduleCommand,
+  ScheduleTrigger,
+  UpdateScheduleCommand,
+} from "./schedule-rules";
 export * from "./schedules";
 export * from "./secrets";
 export * from "./skills";

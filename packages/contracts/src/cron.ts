@@ -1,6 +1,9 @@
 /**
- * Cron schedules over IANA time zones, pure and shared by the schedule
- * editor's preview and the server's scheduler, so both name the same times.
+ * The cron grammar of schedules, pure and shared by the schedule editor and
+ * the server. It is part of the `@jj/contracts/schedule-rules` entry
+ * (`schedule-rules.ts`, which also evaluates an expression in a time zone),
+ * not of the index, so clients load it only where they write or preview a
+ * schedule.
  *
  * Grammar: five fields (minute, hour, day of month, month, day of week),
  * each a comma-separated list of `*`, a number, a range `a-b`, or a step
@@ -18,12 +21,6 @@
  * offset), never per minute, so every computation over a year is bounded
  * whatever the expression.
  */
-
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
-/** No zone is ahead of UTC by more than this, nor behind by more than 12 h. */
-const MAX_OFFSET_MS = 14 * HOUR_MS;
 
 const MONTH_NAMES = [
   "JAN",
@@ -210,102 +207,6 @@ export function cronProblem(cron: string): string | undefined {
   return parsed.ok ? undefined : parsed.problem;
 }
 
-// --- Time zones -------------------------------------------------------------
-
-const formatters = new Map<string, Intl.DateTimeFormat>();
-
-function formatter(timeZone: string): Intl.DateTimeFormat {
-  let format = formatters.get(timeZone);
-  if (!format) {
-    format = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      hourCycle: "h23",
-      era: "short",
-      year: "numeric",
-      month: "numeric",
-      day: "numeric",
-      hour: "numeric",
-      minute: "numeric",
-      second: "numeric",
-    });
-    formatters.set(timeZone, format);
-  }
-  return format;
-}
-
-/** The zone's wall clock at an instant, as a UTC-based millisecond count. */
-function wallClock(instantMs: number, timeZone: string): number {
-  const parts: Record<string, string> = {};
-  for (const part of formatter(timeZone).formatToParts(instantMs))
-    parts[part.type] = part.value;
-  const year =
-    parts.era === "BC" || parts.era === "B"
-      ? 1 - Number(parts.year)
-      : Number(parts.year);
-  const wall = Date.UTC(
-    year,
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour) % 24,
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  // Date.UTC maps years 0–99 to 1900–1999.
-  return year >= 0 && year < 100 ? new Date(wall).setUTCFullYear(year) : wall;
-}
-
-/** The zone's offset from UTC at an instant, in milliseconds (whole seconds). */
-export function zoneOffsetMs(instantMs: number, timeZone: string): number {
-  const second = Math.floor(instantMs / 1000) * 1000;
-  return wallClock(second, timeZone) - second;
-}
-
-/**
- * Converts the wall times of one day (`dayMs`, a UTC-based midnight) to
- * instants. The zone is read twice, 14 hours either side of the day (no
- * zone is further from UTC); when the two offsets differ, the change between
- * them is found to the second once, and each wall time then maps without
- * another reading: to its first occurrence where the zone repeats it, and
- * to the change itself (the end of the gap) where the zone skips it.
- */
-function dayConverter(
-  dayMs: number,
-  timeZone: string,
-): (wallMs: number) => number {
-  const lowMs = dayMs - MAX_OFFSET_MS;
-  const highMs = dayMs + DAY_MS + MAX_OFFSET_MS;
-  const early = zoneOffsetMs(lowMs, timeZone);
-  const late = zoneOffsetMs(highMs, timeZone);
-  if (early === late) return (wallMs) => wallMs - early;
-  let low = lowMs / 1000;
-  let high = highMs / 1000;
-  while (high - low > 1) {
-    const middle = Math.floor((low + high) / 2);
-    if (zoneOffsetMs(middle * 1000, timeZone) === early) low = middle;
-    else high = middle;
-  }
-  const change = high * 1000;
-  return (wallMs) => {
-    const before = wallMs - early;
-    const after = wallMs - late;
-    const beforeValid = before < change;
-    const afterValid = after >= change;
-    if (beforeValid && afterValid) return Math.min(before, after);
-    if (beforeValid) return before;
-    if (afterValid) return after;
-    return change;
-  };
-}
-
-/**
- * The instant a wall time (a UTC-based millisecond count) names in the
- * zone: its first occurrence when the zone repeats it, and the end of the
- * gap when the zone skips it.
- */
-export function wallTimeToInstant(wallMs: number, timeZone: string): number {
-  return dayConverter(Math.floor(wallMs / DAY_MS) * DAY_MS, timeZone)(wallMs);
-}
-
 /**
  * The zone's canonical IANA name, or undefined when this runtime does not
  * know it. Offsets such as `+05:00` are not zone names and are refused.
@@ -321,64 +222,4 @@ export function canonicalTimeZone(name: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-// --- Evaluation -------------------------------------------------------------
-
-function dayMatches(fields: CronFields, dayMs: number): boolean {
-  const date = new Date(dayMs);
-  if (!fields.months[date.getUTCMonth() + 1]) return false;
-  const day = fields.days[date.getUTCDate()] ?? false;
-  const weekday = fields.weekdays[date.getUTCDay()] ?? false;
-  return fields.daysRestricted && fields.weekdaysRestricted
-    ? day || weekday
-    : day && weekday;
-}
-
-/** One fire: its instant, and the wall time (UTC-based) that named it first. */
-export interface CronFire {
-  instant: number;
-  wall: number;
-}
-
-/**
- * The fires the expression names in the zone, strictly after `afterMs` and
- * at most `untilMs`, ascending and each instant once. A fire several skipped
- * wall times share (they all run at the end of the gap) carries the first.
- */
-export function* cronFires(
-  fields: CronFields,
-  timeZone: string,
-  afterMs: number,
-  untilMs: number,
-): Generator<CronFire> {
-  const startWall = wallClock(Math.floor(afterMs / 1000) * 1000, timeZone);
-  let dayMs = Math.floor(startWall / DAY_MS) * DAY_MS - DAY_MS;
-  let last = Number.NEGATIVE_INFINITY;
-  while (dayMs - MAX_OFFSET_MS <= untilMs) {
-    if (dayMatches(fields, dayMs)) {
-      const toInstant = dayConverter(dayMs, timeZone);
-      for (const hour of fields.hours)
-        for (const minute of fields.minutes) {
-          const wall = dayMs + hour * HOUR_MS + minute * MINUTE_MS;
-          const instant = toInstant(wall);
-          if (instant <= afterMs || instant <= last) continue;
-          if (instant > untilMs) return;
-          last = instant;
-          yield { instant, wall };
-        }
-    }
-    dayMs += DAY_MS;
-  }
-}
-
-/** The instants of `cronFires`. */
-export function* cronInstants(
-  fields: CronFields,
-  timeZone: string,
-  afterMs: number,
-  untilMs: number,
-): Generator<number> {
-  for (const fire of cronFires(fields, timeZone, afterMs, untilMs))
-    yield fire.instant;
 }

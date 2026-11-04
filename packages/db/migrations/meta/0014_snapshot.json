@@ -1,5 +1,5 @@
 {
-  "id": "d0d113e2-13b4-462c-90bb-d7149ec8938c",
+  "id": "b72251da-05b7-411d-b773-5b592577c2ad",
   "prevId": "dd2aa83e-be3a-4aaa-8ca3-8c4b1ac885c2",
   "version": "7",
   "dialect": "postgresql",
@@ -1762,7 +1762,7 @@
         },
         "schedules_paused_reason_check": {
           "name": "schedules_paused_reason_check",
-          "value": "\"schedules\".\"paused_reason\" is null or \"schedules\".\"paused_reason\" in ('template_unusable')"
+          "value": "\"schedules\".\"paused_reason\" is null or \"schedules\".\"paused_reason\" in ('template_unusable', 'interval_too_short', 'no_next_fire')"
         },
         "schedules_keep_workspaces_check": {
           "name": "schedules_keep_workspaces_check",
@@ -2922,6 +2922,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'all'"
+        },
+        "workspace_driver": {
+          "name": "workspace_driver",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_removing_at": {
+          "name": "workspace_removing_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "workspace_removed_at": {
           "name": "workspace_removed_at",

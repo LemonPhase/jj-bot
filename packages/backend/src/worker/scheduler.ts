@@ -11,14 +11,17 @@
 // crash or a race included. Every time comes from the engine's clock.
 import {
   FINISHED_TASK_STATUSES,
+  SCHEDULE_FIRES_KEPT,
+  type ScheduleFireOutcome,
+  type SchedulePausedReason,
+  type StoredTrigger,
+} from "@jj/contracts";
+import {
   firesBetween,
   formatFireTime,
   minimumGapMinutes,
   nextFires,
-  SCHEDULE_FIRES_KEPT,
-  type ScheduleFireOutcome,
-  type StoredTrigger,
-} from "@jj/contracts";
+} from "@jj/contracts/schedule-rules";
 import {
   approvals,
   jobs,
@@ -36,6 +39,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -101,16 +105,19 @@ export async function runSchedulerPass(
       continue;
     }
     if (!handled) break;
-    outcomes.push({ scheduleId: handled.scheduleId, outcome: handled.outcome });
-    if (handled.outcome === "started")
-      await trimWorkspaces(ctx, handled, options.holds ?? (() => false)).catch(
-        (error: unknown) =>
-          ctx.logger.warn(
-            `Removing old workspaces of schedule ${handled.scheduleId} failed`,
-            { error: errorMessage(error) },
-          ),
-      );
+    if (handled.outcome)
+      outcomes.push({
+        scheduleId: handled.scheduleId,
+        outcome: handled.outcome,
+      });
   }
+  // Every pass, so a removal that could not happen then is retried.
+  await trimWorkspaces(ctx, options.holds ?? (() => false)).catch(
+    (error: unknown) =>
+      ctx.logger.warn("Removing old workspaces of scheduled tasks failed", {
+        error: errorMessage(error),
+      }),
+  );
   return { outcomes };
 }
 
@@ -139,8 +146,8 @@ async function nextDue(
 
 interface Handled {
   scheduleId: string;
-  outcome: ScheduleFireOutcome;
-  keepWorkspaces: number;
+  /** The latest due time's outcome; undefined when it was recorded already. */
+  outcome?: ScheduleFireOutcome;
 }
 
 interface Fire {
@@ -149,8 +156,8 @@ interface Fire {
   taskId?: string;
   code?: string;
   details?: unknown;
-  /** The template cannot start: the schedule is paused. */
-  pause?: boolean;
+  /** Why the schedule is turned off with this fire, when it is. */
+  pause?: SchedulePausedReason;
 }
 
 async function fireSchedule(
@@ -168,13 +175,36 @@ async function fireSchedule(
     next = nextFires(trigger, now, 1)[0] ?? null;
   } catch (error) {
     // The zone is unknown to this runtime's ICU now: nothing can be computed.
-    await record(tx, ctx, schedule, first, {
+    const fire: Fire = {
       outcome: "refused",
       code: "VALIDATION_FAILED",
       reason: `The schedule's times cannot be computed: ${errorMessage(error)}`,
-    });
-    await settle(tx, ctx, schedule, { next: null, pause: false });
-    return { scheduleId: schedule.id, outcome: "refused", keepWorkspaces: 0 };
+      pause: "no_next_fire",
+    };
+    await record(tx, ctx, schedule, first, fire, 0, true);
+    await settle(tx, ctx, schedule, { next: null, pause: fire.pause });
+    return { scheduleId: schedule.id, outcome: "refused" };
+  }
+  // A due time recorded already (an edit on a clock behind the worker's
+  // can set one again) is not handled twice: the schedule moves past it.
+  const recorded = new Set(
+    (
+      await tx
+        .select({ at: scheduleFires.scheduledFor })
+        .from(scheduleFires)
+        .where(
+          and(
+            eq(scheduleFires.scheduleId, schedule.id),
+            gte(scheduleFires.scheduledFor, first),
+            lte(scheduleFires.scheduledFor, now),
+          ),
+        )
+    ).map((row) => row.at.getTime()),
+  );
+  due = due.filter((at) => !recorded.has(at.getTime()));
+  if (due.length === 0) {
+    await settle(tx, ctx, schedule, nextOrPause(next));
+    return { scheduleId: schedule.id };
   }
   const latest = due.at(-1) as Date;
   const graceMinutes = ctx.config.scheduleGraceMinutes;
@@ -185,7 +215,7 @@ async function fireSchedule(
       tx,
       ctx,
       schedule,
-      first,
+      missed[0] as Date,
       {
         outcome: "missed",
         reason: `The scheduler did not run within ${graceMinutes} minutes of ${
@@ -193,19 +223,28 @@ async function fireSchedule(
         }: the server or its worker was not running.`,
       },
       missed.length,
+      true,
     );
   let fire: Fire = { outcome: "missed" };
   if (!late) {
     fire = await fireDue(tx, ctx, schedule, trigger, latest);
+    // Strict: the unique key is what lets no due time start two tasks.
     await record(tx, ctx, schedule, latest, fire);
   }
-  await settle(tx, ctx, schedule, { next, pause: fire.pause === true });
-  return {
-    scheduleId: schedule.id,
-    outcome: fire.outcome,
-    keepWorkspaces: schedule.keepWorkspaces,
-  };
+  await settle(
+    tx,
+    ctx,
+    schedule,
+    fire.pause ? { next: null, pause: fire.pause } : nextOrPause(next),
+  );
+  return { scheduleId: schedule.id, outcome: fire.outcome };
 }
+
+/** The schedule's next fire, or a pause when none is found in the horizon. */
+const nextOrPause = (
+  next: Date | null,
+): { next: Date | null; pause?: SchedulePausedReason } =>
+  next ? { next } : { next: null, pause: "no_next_fire" };
 
 /** What the scheduler does about the latest due time, inside the pass's transaction. */
 async function fireDue(
@@ -216,12 +255,13 @@ async function fireDue(
   dueAt: Date,
 ): Promise<Fire> {
   const minimum = ctx.config.scheduleMinIntervalMinutes;
-  const gap = minimumGapMinutes(trigger, dueAt);
+  const gap = minimumGapMinutes(trigger, dueAt, minimum);
   if (gap !== null && gap < minimum)
     return {
       outcome: "refused",
       code: "VALIDATION_FAILED",
-      reason: `The schedule runs ${gap} minutes apart at times, under this server's minimum of ${minimum} minutes between runs; change its times.`,
+      reason: `The schedule runs ${gap} minutes apart at times, under this server's minimum of ${minimum} minutes between runs; change its times, then turn it on again.`,
+      pause: "interval_too_short",
     };
   const open = await openTask(tx, schedule.id);
   if (open) return { outcome: "skipped", taskId: open.id, reason: open.reason };
@@ -235,14 +275,14 @@ async function fireDue(
       outcome: "refused",
       code: "TEMPLATE_UNUSABLE",
       reason: "The schedule's template no longer exists.",
-      pause: true,
+      pause: "template_unusable",
     };
   if ((await templateTaskCap(tx, template)) === null)
     return {
       outcome: "refused",
       code: "VALIDATION_FAILED",
-      reason: `"${template.title}" would start a task with no spend cap, and a scheduled task needs one. Give the template or its coordinator's runtime profile a task cap, then enable the schedule again.`,
-      pause: true,
+      reason: `"${template.title}" would start a task with no spend cap, and a scheduled task needs one. Give the template or its coordinator's runtime profile a task cap, then turn the schedule on again.`,
+      pause: "template_unusable",
     };
   try {
     // A savepoint: a refusal leaves nothing of the start behind.
@@ -271,7 +311,9 @@ async function fireDue(
       reason: error.message,
       ...(error.details !== undefined ? { details: error.details } : {}),
       // A cap lifts on its own or when raised; anything else is the template's.
-      pause: error.code !== "SPEND_CAP_REACHED",
+      ...(error.code !== "SPEND_CAP_REACHED"
+        ? { pause: "template_unusable" as const }
+        : {}),
     };
   }
 }
@@ -324,8 +366,10 @@ async function record(
   scheduledFor: Date,
   fire: Fire,
   missedCount = 0,
+  /** Leave a row recorded already for that time as it is. */
+  lenient = false,
 ): Promise<void> {
-  await tx.insert(scheduleFires).values({
+  const insert = tx.insert(scheduleFires).values({
     id: ctx.ids("scheduleFire"),
     scheduleId: schedule.id,
     scheduledFor,
@@ -340,6 +384,11 @@ async function record(
     missedCount,
     taskId: fire.taskId ?? null,
   });
+  await (lenient
+    ? insert.onConflictDoNothing({
+        target: [scheduleFires.scheduleId, scheduleFires.scheduledFor],
+      })
+    : insert);
 }
 
 /** Moves the schedule past now (or pauses it), keeps its newest fires, and sends the hint. */
@@ -347,17 +396,13 @@ async function settle(
   tx: Tx,
   ctx: EngineContext,
   schedule: ScheduleRow,
-  { next, pause }: { next: Date | null; pause: boolean },
+  { next, pause }: { next: Date | null; pause?: SchedulePausedReason },
 ): Promise<void> {
   await tx
     .update(schedules)
     .set(
       pause
-        ? {
-            enabled: false,
-            pausedReason: "template_unusable",
-            nextFireAt: null,
-          }
+        ? { enabled: false, pausedReason: pause, nextFireAt: null }
         : { nextFireAt: next },
     )
     .where(eq(schedules.id, schedule.id));
@@ -378,98 +423,125 @@ async function settle(
   await hint(tx, { type: "schedules.changed" });
 }
 
+/** A removal claimed this long ago, with no result recorded, is taken as lost (a crash) and retried. */
+const REMOVAL_STALE_MS = 5 * 60_000;
+
 /**
- * Keeps the `task` workspaces of the schedule's newest `keepWorkspaces`
- * finished tasks and removes the older ones' through the sandbox drivers.
- * Artifacts, transcripts and the task log stay. Each removal is marked on
- * the task first, under its lock and only while it is finished with nothing
- * queued or running, so a continuation after the mark knows it starts on a
- * fresh workspace; a removal that fails clears the mark again for a later
- * fire to retry.
+ * Keeps the `task` workspaces of each schedule's newest `keepWorkspaces`
+ * finished tasks and removes the older ones through the driver that holds
+ * each (`tasks.workspace_driver`). It runs every pass, so a removal that
+ * could not happen (the driver unavailable or refusing, the sandbox held, a
+ * job queued) is retried by a later pass. A task with no `task` workspace
+ * (an ephemeral one, or none) is neither counted nor removed. Artifacts,
+ * transcripts and the task log stay.
+ *
+ * A removal is claimed on the task (`workspace_removing_at`) under its lock,
+ * only while it is finished with nothing queued or running; a continuation
+ * meanwhile is refused. The removal is recorded (`workspace_removed_at`,
+ * `workspace.removed`) only once the driver answers that the workspace is
+ * gone; a failure releases the claim.
  */
 async function trimWorkspaces(
   ctx: EngineContext,
-  handled: Handled,
   holds: (taskId: string) => boolean,
 ): Promise<void> {
-  const finished = await ctx.db
-    .select({ id: tasks.id })
+  const rows = await ctx.db
+    .select({
+      id: tasks.id,
+      scheduleId: tasks.scheduleId,
+      driver: tasks.workspaceDriver,
+      keep: schedules.keepWorkspaces,
+    })
     .from(tasks)
+    .innerJoin(schedules, eq(schedules.id, tasks.scheduleId))
     .where(
       and(
-        eq(tasks.scheduleId, handled.scheduleId),
         inArray(tasks.status, [...FINISHED_TASK_STATUSES]),
+        isNotNull(tasks.workspaceDriver),
         isNull(tasks.workspaceRemovedAt),
       ),
     )
-    .orderBy(desc(tasks.createdAt), desc(tasks.id));
-  const removable = finished.slice(handled.keepWorkspaces);
+    .orderBy(asc(tasks.scheduleId), desc(tasks.createdAt), desc(tasks.id));
+  const removable: typeof rows = [];
+  const seen = new Map<string, number>();
+  for (const row of rows) {
+    const index = seen.get(row.scheduleId as string) ?? 0;
+    seen.set(row.scheduleId as string, index + 1);
+    if (index >= row.keep) removable.push(row);
+  }
   if (removable.length === 0) return;
   const infos = await ctx.drivers.list();
-  const drivers = ctx.drivers
-    .all()
-    .filter(
-      (driver) =>
-        driver.removeWorkspace &&
-        infos.some((info) => info.id === driver.id && info.available),
-    );
-  if (drivers.length === 0) return;
-  for (const { id } of removable) {
-    if (holds(id)) continue;
-    const marked = await ctx.db.transaction(async (tx) => {
-      const task = await lockTask(tx, id);
+  for (const row of removable) {
+    const driver = ctx.drivers.get(row.driver as string);
+    if (
+      !driver?.removeWorkspace ||
+      !infos.some((info) => info.id === driver.id && info.available) ||
+      holds(row.id)
+    )
+      continue;
+    const claimed = await ctx.db.transaction(async (tx) => {
+      const task = await lockTask(tx, row.id);
+      const now = ctx.clock();
       if (
         !task ||
         task.workspaceRemovedAt ||
-        !(FINISHED_TASK_STATUSES as readonly string[]).includes(task.status)
+        task.workspaceDriver !== driver.id ||
+        !(FINISHED_TASK_STATUSES as readonly string[]).includes(task.status) ||
+        (task.workspaceRemovingAt &&
+          now.getTime() - task.workspaceRemovingAt.getTime() < REMOVAL_STALE_MS)
       )
         return undefined;
       const [active] = await tx
         .select({ value: count() })
         .from(jobs)
         .where(
-          and(eq(jobs.taskId, id), inArray(jobs.status, ["queued", "running"])),
+          and(
+            eq(jobs.taskId, row.id),
+            inArray(jobs.status, ["queued", "running"]),
+          ),
         );
       if ((active?.value ?? 0) > 0) return undefined;
-      const at = ctx.clock();
       await tx
         .update(tasks)
-        .set({ workspaceRemovedAt: at })
-        .where(eq(tasks.id, id));
-      return at;
+        .set({ workspaceRemovingAt: now })
+        .where(eq(tasks.id, row.id));
+      return now;
     });
-    if (!marked) continue;
-    let removed = false;
+    if (!claimed) continue;
+    let removed: boolean | undefined;
     let failure: unknown;
-    for (const driver of drivers)
-      try {
-        const result = await driver.removeWorkspace?.({
-          mode: "task",
-          workspaceKey: id,
-        });
-        removed ||= result?.removed === true;
-      } catch (error) {
-        failure ??= error;
-      }
+    try {
+      ({ removed } = await driver.removeWorkspace({
+        mode: "task",
+        workspaceKey: row.id,
+      }));
+    } catch (error) {
+      failure = error;
+    }
     await ctx.db.transaction(async (tx) => {
-      await lockTask(tx, id);
-      if (failure)
-        await tx
-          .update(tasks)
-          .set({ workspaceRemovedAt: null })
-          .where(and(eq(tasks.id, id), eq(tasks.workspaceRemovedAt, marked)));
+      const task = await lockTask(tx, row.id);
+      if (task?.workspaceRemovingAt?.getTime() !== claimed.getTime()) return;
+      await tx
+        .update(tasks)
+        .set(
+          failure
+            ? { workspaceRemovingAt: null }
+            : { workspaceRemovingAt: null, workspaceRemovedAt: ctx.clock() },
+        )
+        .where(eq(tasks.id, row.id));
       if (removed)
-        await emit(tx, id, {
+        await emit(tx, row.id, {
           type: "workspace.removed",
           payload: {
-            scheduleId: handled.scheduleId,
-            keepWorkspaces: handled.keepWorkspaces,
+            scheduleId: row.scheduleId as string,
+            keepWorkspaces: row.keep,
           },
         });
     });
     if (failure)
-      ctx.logger.warn(`Removing the workspace of task ${id} failed`, {
-        error: errorMessage(failure),
-      });
+      ctx.logger.warn(
+        `Removing the workspace of task ${row.id} failed; a later pass retries`,
+        { error: errorMessage(failure) },
+      );
   }
 }

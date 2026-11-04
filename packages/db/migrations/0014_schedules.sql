@@ -31,12 +31,14 @@ CREATE TABLE "schedules" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "schedules_overlap_check" CHECK ("schedules"."overlap" in ('skip')),
 	CONSTRAINT "schedules_chat_updates_check" CHECK ("schedules"."chat_updates" in ('all', 'attention')),
-	CONSTRAINT "schedules_paused_reason_check" CHECK ("schedules"."paused_reason" is null or "schedules"."paused_reason" in ('template_unusable')),
+	CONSTRAINT "schedules_paused_reason_check" CHECK ("schedules"."paused_reason" is null or "schedules"."paused_reason" in ('template_unusable', 'interval_too_short', 'no_next_fire')),
 	CONSTRAINT "schedules_keep_workspaces_check" CHECK ("schedules"."keep_workspaces" between 0 and 50)
 );
 --> statement-breakpoint
 ALTER TABLE "tasks" ADD COLUMN "schedule_id" text;--> statement-breakpoint
 ALTER TABLE "tasks" ADD COLUMN "chat_updates" text DEFAULT 'all' NOT NULL;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "workspace_driver" text;--> statement-breakpoint
+ALTER TABLE "tasks" ADD COLUMN "workspace_removing_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "tasks" ADD COLUMN "workspace_removed_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "schedule_fires" ADD CONSTRAINT "schedule_fires_schedule_id_schedules_id_fk" FOREIGN KEY ("schedule_id") REFERENCES "public"."schedules"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "schedules" ADD CONSTRAINT "schedules_template_id_task_templates_id_fk" FOREIGN KEY ("template_id") REFERENCES "public"."task_templates"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

@@ -230,6 +230,11 @@ export async function continueTask(
   // A coordinator holding a call for approval reads the message with the
   // user's answer: nothing reopens, and the message waits in its inbox.
   if (await pendingApproval(tx, root.id)) return { task, root };
+  if (task.workspaceRemovingAt)
+    throw new DomainError(
+      "CONFLICT",
+      "This task's workspace is being removed right now (its schedule keeps only its newest tasks' workspaces); send the message again in a minute.",
+    );
   if (
     task.status === "waiting" ||
     task.status === "completed" ||

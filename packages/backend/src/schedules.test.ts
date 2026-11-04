@@ -40,10 +40,13 @@ import {
   fauxText,
   fauxToolCall,
 } from "@jj/runtime/testing";
+import { LocalSandboxDriver } from "@jj/sandbox";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createDriverRegistry } from "./drivers";
 import type { Engine } from "./engine";
 import { DomainError } from "./errors";
+import type { EngineDriver } from "./ports";
 import { workspaceRemovedNotice } from "./services/messages";
 import {
   type BrainView,
@@ -254,7 +257,7 @@ describe("saving a schedule", () => {
       ],
       [
         { kind: "cron", cron: "0 0 30 2 *", timeZone: "UTC" },
-        /never runs in the next 366 days/,
+        /never runs: no time in the next 8 years/,
       ],
       [{ kind: "cron", cron: "@daily", timeZone: "UTC" }, /Macros/],
       [
@@ -745,6 +748,101 @@ describe("the scheduler pass", () => {
   });
 });
 
+describe("a schedule that no longer passes the save checks", () => {
+  /** An hourly schedule, saved at a 60-minute minimum, and an engine whose minimum is now 120. */
+  async function tooOften() {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template } = await templateFor(engine.engine);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, {
+        trigger: { kind: "cron", cron: "0 * * * *", timeZone: "UTC" },
+      }),
+    );
+    const strict = await setup(clock, {
+      config: { scheduleMinIntervalMinutes: 120 },
+    });
+    return { clock, schedule, strict };
+  }
+
+  it("can still be renamed, retuned and turned off", async () => {
+    const { schedule, strict } = await tooOften();
+    const { schedule: renamed } = await strict.engine.schedules.update(
+      schedule.id,
+      { name: "Renamed", chatUpdates: "all", keepWorkspaces: 2 },
+    );
+    expect(renamed).toMatchObject({
+      name: "Renamed",
+      enabled: true,
+      chatUpdates: "all",
+      keepWorkspaces: 2,
+      nextFireAt: "2026-01-13T09:00:00.000Z",
+    });
+    const { schedule: off } = await strict.engine.schedules.update(
+      schedule.id,
+      { enabled: false },
+    );
+    expect(off).toMatchObject({ enabled: false, nextFireAt: null });
+    // Turning it on again is checked as a save.
+    expect(
+      (
+        await refusal(
+          strict.engine.schedules.update(schedule.id, { enabled: true }),
+        )
+      ).code,
+    ).toBe("VALIDATION_FAILED");
+  });
+
+  it("pauses at its next due time with the reason, instead of refusing every one", async () => {
+    const { clock, schedule, strict } = await tooOften();
+    clock.set("2026-01-13T09:00:01Z");
+    await pass(strict);
+    clock.set("2026-01-13T10:00:01Z");
+    await pass(strict);
+    const fires = await firesOf(schedule.id);
+    expect(fires.map((fire) => [fire.outcome, fire.code])).toEqual([
+      ["refused", "VALIDATION_FAILED"],
+    ]);
+    const { schedule: paused } = await strict.engine.schedules.get(schedule.id);
+    expect(paused).toMatchObject({
+      enabled: false,
+      pausedReason: "interval_too_short",
+      nextFireAt: null,
+    });
+    expect(await tasksOf(schedule.id)).toEqual([]);
+  });
+
+  it("can be turned off while its template's task cap resolves to none", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template, profile } = await templateFor(engine.engine, {
+      budgets: { maxUsdPerTask: 3 },
+    });
+    await engine.engine.templates.update(template.id, {
+      spendCapUsd: "profile",
+    });
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id),
+    );
+    await engine.engine.profiles.update(profile?.id as string, {
+      budgets: { maxUsdPerTask: null },
+    });
+    const { schedule: off } = await engine.engine.schedules.update(
+      schedule.id,
+      { enabled: false },
+    );
+    expect(off).toMatchObject({ enabled: false, nextFireAt: null });
+    // Changing its template or turning it on is checked as a save.
+    expect(
+      (
+        await refusal(
+          engine.engine.schedules.update(schedule.id, { enabled: true }),
+        )
+      ).message,
+    ).toMatch(/no spend cap/);
+  });
+});
+
 describe("a schedule's tasks", () => {
   it("tell their chat only what needs the user with attention, and every update with all", async () => {
     const clock = fakeClock("2026-01-13T08:00:00Z");
@@ -1055,6 +1153,305 @@ describe("a held approval", () => {
       engine.engine,
       all[1]?.id as string,
       (v) => v.task.status === "completed",
+    );
+  });
+});
+
+describe("no next fire, and clocks that disagree", () => {
+  it("finds a leap-day schedule's next fire four years on, and stays enabled", async () => {
+    // Ahead of real time: nothing runs, so no run deadline applies.
+    const clock = fakeClock("2027-06-01T00:00:00Z");
+    const engine = await setup(clock);
+    const { template } = await templateFor(engine.engine);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, {
+        trigger: { kind: "cron", cron: "0 0 29 2 *", timeZone: "UTC" },
+      }),
+    );
+    expect(schedule.nextFireAt).toBe("2028-02-29T00:00:00.000Z");
+    clock.set("2028-02-29T00:00:10Z");
+    expect((await pass(engine)).outcomes).toEqual([
+      { scheduleId: schedule.id, outcome: "started" },
+    ]);
+    expect(
+      (await engine.engine.schedules.get(schedule.id)).schedule,
+    ).toMatchObject({
+      enabled: true,
+      pausedReason: null,
+      nextFireAt: "2032-02-29T00:00:00.000Z",
+    });
+  });
+
+  it("pauses a schedule whose times can no longer be computed, rather than leave it enabled and dormant", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template } = await templateFor(engine.engine);
+    // As a build with another ICU would leave it: a zone this one does not know.
+    const id = `sched_unknown_zone_${Date.now()}`;
+    await db.database.db.insert(schedules).values({
+      id,
+      name: "Elsewhere",
+      templateId: template.id,
+      trigger: { kind: "cron", cron: "0 9 * * *", timeZone: "Mars/Base" },
+      nextFireAt: new Date("2026-01-13T09:00:00Z"),
+    });
+    clock.set("2026-01-13T09:00:10Z");
+    await pass(engine);
+    const { schedule, fires } = await engine.engine.schedules.get(id);
+    expect(fires.map((fire) => fire.outcome)).toEqual(["refused"]);
+    expect(schedule).toMatchObject({
+      enabled: false,
+      pausedReason: "no_next_fire",
+      nextFireAt: null,
+    });
+  });
+
+  it("moves past a due time recorded already, which an edit on a clock behind the worker's set again", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template } = await templateFor(engine.engine);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id),
+    );
+    clock.set("2026-01-13T09:00:01Z");
+    await pass(engine);
+    // An API 30 s behind the worker edits it: from its now, 09:00 is next.
+    const behind = await setup(fakeClock("2026-01-13T08:59:30Z"));
+    expect(
+      (await behind.engine.schedules.update(schedule.id, { name: "Renamed" }))
+        .schedule.nextFireAt,
+    ).toBe("2026-01-13T09:00:00.000Z");
+    const warned = quietLogger.warnings.length;
+    clock.set("2026-01-13T09:00:40Z");
+    await pass(engine);
+    expect(
+      quietLogger.warnings
+        .slice(warned)
+        .filter((line) => line.includes("could not handle schedule")),
+    ).toEqual([]);
+    expect(
+      (await engine.engine.schedules.get(schedule.id)).schedule.nextFireAt,
+    ).toBe("2026-01-14T09:00:00.000Z");
+    expect((await firesOf(schedule.id)).map((fire) => fire.outcome)).toEqual([
+      "started",
+    ]);
+    expect(await tasksOf(schedule.id)).toHaveLength(1);
+  });
+});
+
+describe("removing the workspaces a schedule does not keep", () => {
+  /** A bot whose tasks write a file, then complete; continued, it reports whether the file is still there. */
+  function writingBrain(engine: TestEngine, name: string) {
+    engine.executor.brain(name, (view) => {
+      const since = resultsSince(view, "Check the notes again.");
+      if (said.heard(view, "Check the notes again.")) {
+        const last = since.at(-1);
+        if (!last)
+          return {
+            calls: [
+              {
+                name: "bash",
+                args: {
+                  command: "test -e notes.md && echo kept || echo fresh",
+                },
+              },
+            ],
+          };
+        return last.name === "complete_task"
+          ? { text: "done" }
+          : {
+              calls: [
+                { name: "complete_task", args: { result: last.text.trim() } },
+              ],
+            };
+      }
+      if (said.turns(view) === 0)
+        return {
+          calls: [
+            { name: "write", args: { path: "notes.md", content: "# Notes\n" } },
+          ],
+        };
+      return lastResult(view)?.name === "complete_task"
+        ? { text: "done" }
+        : { calls: [{ name: "complete_task", args: { result: "ok" } }] };
+    });
+  }
+
+  /** Fires the schedule at `at`, runs its task to completion, and stops the worker. */
+  async function finishRun(
+    engine: TestEngine,
+    clock: Clock,
+    scheduleId: string,
+    at: string,
+  ) {
+    clock.set(at);
+    await pass(engine);
+    await engine.engine.worker.start();
+    const started = await tasksOf(scheduleId);
+    await untilTask(
+      engine.engine,
+      started.at(-1)?.id as string,
+      (v) => v.task.status === "completed",
+    );
+    await engine.engine.worker.stop();
+    return started.at(-1)?.id as string;
+  }
+
+  it("neither counts nor removes an ephemeral workspace, and tells a continuation nothing", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { profile } = await engine.engine.profiles.create({
+      name: uniqueName("Ephemeral"),
+      sandbox: {
+        driver: "local",
+        network: { mode: "open" },
+        workspace: "ephemeral",
+      },
+    });
+    const { bot } = await engine.engine.bots.create({
+      name: uniqueName("Eph"),
+      runtimeProfileId: profile.id,
+    });
+    const { template } = await engine.engine.templates.create({
+      title: "Notes",
+      goal: "Write the notes.",
+      coordinatorBotId: bot.id,
+      spendCapUsd: 2,
+    });
+    writingBrain(engine, bot.name);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, { keepWorkspaces: 0 }),
+    );
+    const first = await finishRun(
+      engine,
+      clock,
+      schedule.id,
+      "2026-01-13T09:00:01Z",
+    );
+    clock.set("2026-01-14T09:00:01Z");
+    await pass(engine);
+    const [row] = await db.database.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, first));
+    expect(row).toMatchObject({
+      workspaceDriver: null,
+      workspaceRemovedAt: null,
+      workspaceRemovingAt: null,
+    });
+    const view = await engine.engine.tasks.get(first);
+    expect(
+      view.events.filter((event) => event.type === "workspace.removed"),
+    ).toEqual([]);
+    await engine.engine.tasks.postMessage(first, {
+      text: "Check the notes again.",
+    });
+    const [steering] = await db.database.db
+      .select()
+      .from(sessionInbox)
+      .where(
+        and(eq(sessionInbox.taskId, first), eq(sessionInbox.kind, "steering")),
+      );
+    expect(steering?.text).toBe(
+      "Message from the user:\nCheck the notes again.",
+    );
+  });
+
+  it("retries a removal its driver could not make, on a later pass with no fire", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const root = await mkdtemp(join(tmpdir(), "jj-sched-trim-"));
+    roots.push(root);
+    const local = new LocalSandboxDriver({ root, killGraceMs: 200 });
+    let available = true;
+    const toggled: EngineDriver = Object.assign(
+      Object.create(local) as LocalSandboxDriver,
+      {
+        probe: async () =>
+          available ? local.probe() : { ok: false, detail: "down" },
+      },
+    );
+    const engine = await setup(clock, {
+      workspaceRoot: root,
+      registry: createDriverRegistry([{ driver: toggled, label: "Local" }], {
+        ttlMs: 0,
+      }),
+    });
+    const { template, bot } = await templateFor(engine.engine);
+    writingBrain(engine, bot.name);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, { keepWorkspaces: 0 }),
+    );
+    const first = await finishRun(
+      engine,
+      clock,
+      schedule.id,
+      "2026-01-13T09:00:01Z",
+    );
+    const dir = join(root, "task", first);
+    expect(existsSync(join(dir, "notes.md"))).toBe(true);
+    const [recorded] = await db.database.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, first));
+    expect(recorded?.workspaceDriver).toBe("local");
+
+    // The next fire starts while the driver is down: nothing is removed or marked.
+    available = false;
+    clock.set("2026-01-14T09:00:01Z");
+    await pass(engine);
+    expect(existsSync(dir)).toBe(true);
+    const [kept] = await db.database.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, first));
+    expect(kept).toMatchObject({
+      workspaceRemovedAt: null,
+      workspaceRemovingAt: null,
+    });
+
+    // Back up: a pass with nothing due removes it, and records it.
+    available = true;
+    clock.set("2026-01-14T09:05:00Z");
+    expect((await pass(engine)).outcomes).toEqual([]);
+    expect(existsSync(dir)).toBe(false);
+    const [removed] = await db.database.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, first));
+    expect(removed?.workspaceRemovedAt?.toISOString()).toBe(
+      "2026-01-14T09:05:00.000Z",
+    );
+    const view = await engine.engine.tasks.get(first);
+    expect(
+      view.events.filter((event) => event.type === "workspace.removed"),
+    ).toHaveLength(1);
+  });
+
+  it("refuses a continuation while the removal is under way", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template, bot } = await templateFor(engine.engine);
+    writingBrain(engine, bot.name);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id),
+    );
+    const first = await finishRun(
+      engine,
+      clock,
+      schedule.id,
+      "2026-01-13T09:00:01Z",
+    );
+    await db.database.db
+      .update(tasks)
+      .set({ workspaceRemovingAt: new Date("2026-01-13T09:30:00Z") })
+      .where(eq(tasks.id, first));
+    const error = await refusal(
+      engine.engine.tasks.postMessage(first, { text: "One more thing." }),
+    );
+    expect(error.code).toBe("CONFLICT");
+    expect(error.message).toMatch(/workspace is being removed/);
+    expect((await engine.engine.tasks.get(first)).task.status).toBe(
+      "completed",
     );
   });
 });

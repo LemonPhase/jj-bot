@@ -81,7 +81,11 @@ export const SCHEDULE_FIRE_OUTCOMES = [
 /** Which task updates a task's coordinator tells its chat: `all`, or `attention` (not completions). */
 export const CHAT_UPDATE_MODES = ["all", "attention"] as const;
 export const SCHEDULE_OVERLAPS = ["skip"] as const;
-export const SCHEDULE_PAUSED_REASONS = ["template_unusable"] as const;
+export const SCHEDULE_PAUSED_REASONS = [
+  "template_unusable",
+  "interval_too_short",
+  "no_next_fire",
+] as const;
 /** What a stored secret is: a model provider's key, or a sandbox secret granted by name. */
 export const SECRET_KINDS = ["provider", "sandbox"] as const;
 export const JOB_STATUSES = [
@@ -271,9 +275,22 @@ export const tasks = pgTable(
       .notNull()
       .default("all"),
     /**
-     * When the task's `task` workspace was removed through its sandbox
-     * driver (a schedule's `keep_workspaces`); null while it may hold one.
-     * Cleared when the task continues on a fresh workspace.
+     * The driver of the task's `task` workspace, set when a sandbox with one
+     * is acquired for it; null for a task that never had one (an ephemeral
+     * workspace, or no command run). A schedule removes workspaces only
+     * through this driver.
+     */
+    workspaceDriver: text("workspace_driver"),
+    /**
+     * Set while a removal of that workspace is under way (the task is locked
+     * when it is set and when it is cleared); a continuation meanwhile is
+     * refused, since the files may or may not still be there.
+     */
+    workspaceRemovingAt: optionalTime("workspace_removing_at"),
+    /**
+     * When the driver removed the task's `task` workspace (a schedule's
+     * `keep_workspaces`), recorded once it has. Cleared when the task
+     * continues on a fresh workspace.
      */
     workspaceRemovedAt: optionalTime("workspace_removed_at"),
     /** Last allocated `task_events.sequence`; see `appendEvent`. */
