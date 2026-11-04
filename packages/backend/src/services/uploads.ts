@@ -29,7 +29,12 @@ import {
 import { and, eq, gt, inArray, isNotNull, lte, sql, sum } from "drizzle-orm";
 import type { UploadSettings } from "../config";
 import type { EngineContext } from "../context";
-import { DomainError, notFound, parseCommand } from "../errors";
+import {
+  DomainError,
+  isUniqueViolation,
+  notFound,
+  parseCommand,
+} from "../errors";
 import { emit } from "../events";
 import { toArtifact, toMessage } from "../records";
 import type { Redactor } from "../redact";
@@ -309,11 +314,21 @@ export async function attachUploadsTx(
       throw new DomainError("VALIDATION_FAILED", `${path}: ${problem}`);
     return { row, path: redact(path) };
   });
+  // Paths are compared as the database folds case, which the pending-path
+  // index uses: JavaScript folds some letters otherwise (İ, final Σ).
+  const keys = await foldedPaths(
+    tx,
+    files.map((file) => file.path),
+  );
   for (const [index, file] of files.entries())
     if (
       files
         .slice(0, index)
-        .some((other) => sameUploadPath(other.path, file.path))
+        .some(
+          (other, earlier) =>
+            sameUploadPath(other.path, file.path) ||
+            keys[earlier] === keys[index],
+        )
     )
       throw new DomainError(
         "VALIDATION_FAILED",
@@ -344,10 +359,7 @@ export async function attachUploadsTx(
       and(
         eq(artifacts.taskId, task.id),
         eq(artifacts.uploadState, "pending"),
-        inArray(
-          sql`lower(${artifacts.path})`,
-          files.map((file) => file.path.toLowerCase()),
-        ),
+        inArray(sql`lower(${artifacts.path})`, keys),
       ),
     );
   if (pending.length > 0)
@@ -371,12 +383,24 @@ export async function attachUploadsTx(
   for (const file of files) {
     const name = file.path.split("/").pop() || file.path;
     // Copied inside the database: the bytes never pass through the server again.
-    await tx.execute(sql`
+    try {
+      await tx.execute(sql`
       insert into ${artifacts} (id, owner_id, task_id, session_id, run_id, kind, path, name,
         content_type, size_bytes, sha256, content, upload_message_id, upload_state, created_at)
       select id, owner_id, ${task.id}, null, null, 'file', ${file.path}, ${name},
         content_type, size_bytes, sha256, content, ${message.id}, 'pending', ${created}
       from ${stagedUploads} where id = ${file.row.id}`);
+    } catch (error) {
+      // The pending-path index is the last word on a clash the checks above
+      // could not see (a command racing this one on another connection).
+      if (isUniqueViolation(error))
+        throw new DomainError(
+          "CONFLICT",
+          `An upload waiting to be placed already goes to ${file.path}; give this one another path, or upload it once that one is in the workspace.`,
+          { paths: [file.path] },
+        );
+      throw error;
+    }
     const [row] = await tx
       .select(artifactColumns)
       .from(artifacts)
@@ -391,6 +415,25 @@ export async function attachUploadsTx(
   }
   await tx.delete(stagedUploads).where(inArray(stagedUploads.id, ids));
   return { artifacts: stored, message: toMessage(message) };
+}
+
+/** Each path as the database folds its case (`lower`), in order. */
+async function foldedPaths(
+  tx: Tx,
+  paths: readonly string[],
+): Promise<string[]> {
+  if (paths.length === 0) return [];
+  // Both drivers answer `execute` with `{ rows }`.
+  const result = (await tx.execute(
+    sql`select ${sql.join(
+      paths.map(
+        (path, index) => sql`lower(${path}) as ${sql.identifier(`k${index}`)}`,
+      ),
+      sql`, `,
+    )}`,
+  )) as unknown as { rows: Record<string, unknown>[] };
+  const [row] = result.rows;
+  return paths.map((_, index) => String(row?.[`k${index}`] ?? ""));
 }
 
 /**

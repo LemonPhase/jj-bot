@@ -7,7 +7,7 @@ import type { StagedUpload } from "@jj/contracts";
 import { artifacts, jobs, runs, stagedUploads } from "@jj/db";
 import { LocalSandboxDriver } from "@jj/sandbox";
 import type { Sandbox } from "@jj/sandbox/contract";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
 import { DomainError } from "./errors";
@@ -577,6 +577,63 @@ describe("limits and refusals", () => {
       maxFiles: 20,
       maxTaskBytes: 128 * 1024 * 1024,
     });
+  });
+});
+
+describe("paths that differ only in case", () => {
+  /** A finished task with no run left to place what it is given. */
+  async function idleTask() {
+    const { engine, executor } = await engineWith();
+    const team = await createTeam(engine, ["Ada"]);
+    const [ada] = team.names as [string];
+    executor.brain(ada, quick);
+    const { task } = await engine.tasks.create({
+      goal: "Hold uploads",
+      coordinatorBotId: team.byName[ada] as string,
+    });
+    await untilTask(engine, task.id, (v) => v.task.status === "completed");
+    return { engine, taskId: task.id };
+  }
+
+  it("refuses a second pending upload at a non-ASCII path with 409, as the database folds case", async () => {
+    const { engine, taskId } = await idleTask();
+    const dotted = `uploads/${String.fromCodePoint(0x130)}.txt`;
+    const first = await stage(engine, "a.txt", "one");
+    await engine.tasks.upload(taskId, {
+      files: [{ uploadId: first.id, path: dotted }],
+    });
+    const second = await stage(engine, "b.txt", "two");
+    const again = await refusal(
+      engine.tasks.upload(taskId, {
+        files: [{ uploadId: second.id, path: dotted }],
+      }),
+    );
+    expect(again.code).toBe("CONFLICT");
+    expect(again.message).toMatch(/already goes to/);
+  });
+
+  it("refuses two uploads of one command that the database folds to one path", async () => {
+    const { engine, taskId } = await idleTask();
+    // JavaScript folds a final capital sigma to ς, the database to σ.
+    const capital = `uploads/a${String.fromCodePoint(0x3a3)}`;
+    const small = `uploads/a${String.fromCodePoint(0x3c3)}`;
+    const [folded] = (
+      (await db.database.db.execute(
+        sql`select lower(${capital}) as capital, lower(${small}) as small`,
+      )) as unknown as { rows: { capital: string; small: string }[] }
+    ).rows;
+    const a = await stage(engine, "a.txt", "one");
+    const b = await stage(engine, "b.txt", "two");
+    const both = engine.tasks.upload(taskId, {
+      files: [
+        { uploadId: a.id, path: capital },
+        { uploadId: b.id, path: small },
+      ],
+    });
+    if (folded?.capital === folded?.small) {
+      const error = await refusal(both);
+      expect(["CONFLICT", "VALIDATION_FAILED"]).toContain(error.code);
+    } else await both;
   });
 });
 
