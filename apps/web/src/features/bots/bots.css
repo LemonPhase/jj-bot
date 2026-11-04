@@ -352,6 +352,11 @@
     min-height: 44px;
   }
 
+  /* "memory" alone is narrower than 44px. */
+  .bot-about__links .text-link {
+    min-width: 44px;
+  }
+
   .bot-inspector {
     width: 100%;
     border-left: 0;

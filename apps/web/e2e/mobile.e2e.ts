@@ -159,6 +159,12 @@ test.describe("at 360px", () => {
     // Preconditions through the API: two bots, a finished task with a
     // passed check and a task waiting for approval.
     const nova = await createBot(request, "Nova");
+    // Nova remembers something, so its About link reads "memory" before its
+    // memory loads and after: the narrowest label, measured on every run.
+    const remembered = await request.put(`/api/bots/${nova.id}/memory`, {
+      data: { text: "Penguins live in the south." },
+    });
+    expect(remembered.status()).toBe(200);
     const pixel = await createBot(request, "Pixel");
     const created = await request.post("/api/tasks", {
       data: {
