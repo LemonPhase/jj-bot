@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Card, StatusTag } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
-import { ArtifactRows } from "./ArtifactList";
+import { ArtifactRows, SavedCopy } from "./ArtifactList";
 import { usageDetail, usageLine } from "./format";
 import { botName, formatToolCall, TASK_NODE, type ToolCall } from "./taskModel";
 import { useOrdinals, useSessionTools } from "./useTaskModel";
@@ -45,6 +45,7 @@ function SessionInspector({
   const ordinal = useOrdinals(view).get(session.id) ?? "s-?";
   const usage = view.usage.bySession[session.id];
   const files = view.artifacts.filter((a) => a.sessionId === session.id);
+  const large = tools.calls.filter((call) => call.savedCopy);
   return (
     <Card as="section" aria-label="Selected session" className="inspector">
       <div className="inspector__head">
@@ -82,7 +83,17 @@ function SessionInspector({
             · partial: earlier events are not loaded
           </span>
         )}
+        {tools.calls.some((call) => call.outputGone) && (
+          <span className="inspector__note"> · output not kept</span>
+        )}
       </Line>
+      {large.map((call) => (
+        <Line key={call.id} label={call.tool}>
+          <span title={formatToolCall(call)}>
+            <SavedCopy view={view} artifactId={call.savedCopy as string} />
+          </span>
+        </Line>
+      ))}
       <Line label="Usage">
         {usage ? (
           <span title={usageDetail(usage)}>{usageLine(usage)}</span>

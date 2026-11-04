@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  applyTaskEvent,
   botMemorySchema,
+  type TaskEvent,
   type TaskView,
   taskEventSchema,
   taskViewSchema,
@@ -18,6 +20,7 @@ import { openDatabase, shippedMigrations } from "@jj/db";
 import { PREVIOUS_RELEASE, seedPreviousRelease } from "@jj/db/testing";
 import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
+import { readDataReport } from "./data-report";
 import { OPEN_TIMEOUT, type TestApp, testApp, untilTask } from "./testing";
 
 const directories: string[] = [];
@@ -119,6 +122,84 @@ describe(`the ${PREVIOUS_RELEASE.name} database on this build`, () => {
       const runs = (view: TaskView) =>
         view.sessions.reduce((sum, session) => sum + session.runCount, 0);
       expect(runs(after)).toBeGreaterThan(runs(before));
+    },
+    OPEN_TIMEOUT * 2,
+  );
+
+  it(
+    "compacts its finished tasks, whose records and folded views stay the same",
+    async () => {
+      const path = await directory();
+      await seedPreviousRelease({ mode: "pglite", path });
+      const setting = { mode: "pglite" as const, path };
+      const before = await readDataReport(setting, {});
+      const upgraded = await testApp({
+        startWorker: false,
+        database: { mode: "pglite", path },
+      });
+      const compacted: string[] = [];
+      try {
+        const { call } = upgraded;
+        const listed = (await call("GET", "/api/tasks")).body.tasks as {
+          id: string;
+          status: string;
+        }[];
+        const views = new Map<string, TaskView>();
+        const logs = new Map<string, TaskEvent[]>();
+        for (const { id } of listed) {
+          views.set(
+            id,
+            taskViewSchema.parse((await call("GET", `/api/tasks/${id}`)).body),
+          );
+          logs.set(
+            id,
+            (await call("GET", `/api/tasks/${id}/events?after=0&limit=500`))
+              .body.events,
+          );
+        }
+        const pass = await upgraded.engine.maintenance.compactEvents({
+          finishedBefore: new Date(Date.now() + 60_000),
+        });
+        compacted.push(...pass.tasks.map((done) => done.taskId));
+        // Its completed task is compacted; whatever it holds, nothing breaks.
+        const done = listed.filter((task) => task.status === "completed");
+        expect(done.length).toBeGreaterThan(0);
+        for (const task of done) expect(compacted).toContain(task.id);
+        for (const id of compacted) {
+          const view = taskViewSchema.parse(
+            (await call("GET", `/api/tasks/${id}`)).body,
+          );
+          const was = views.get(id) as TaskView;
+          const recordsOf = ({
+            events: _events,
+            firstSequence: _first,
+            hasEarlier: _earlier,
+            cursor: _cursor,
+            compactedThrough: _through,
+            ...rest
+          }: TaskView) => rest;
+          expect(recordsOf(view)).toEqual(recordsOf(was));
+          expect(view.compactedThrough).toBe(was.cursor);
+          // A client holding the old view folds the kept events into the new one.
+          const kept = (
+            await call("GET", `/api/tasks/${id}/events?after=0&limit=500`)
+          ).body.events as TaskEvent[];
+          expect(kept.length).toBeLessThan((logs.get(id) ?? []).length);
+          const folded = kept.reduce(applyTaskEvent, was);
+          expect(recordsOf(folded)).toEqual(recordsOf(view));
+          expect(folded.compactedThrough).toBe(view.compactedThrough);
+        }
+      } finally {
+        await upgraded.dispose();
+      }
+      const after = await readDataReport(setting, {});
+      expect(after.records?.events).toBeLessThan(
+        before.records?.events as number,
+      );
+      expect(after.records?.eventBytes).toBeLessThan(
+        before.records?.eventBytes as number,
+      );
+      expect(after.records?.compactedTasks).toBe(compacted.length);
     },
     OPEN_TIMEOUT * 2,
   );

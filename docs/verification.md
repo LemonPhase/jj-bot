@@ -8,7 +8,7 @@ Plans are accepted only while bootstrap reports `capabilities.verification: true
 
 ## Always recorded
 
-Gating is optional; the audit trail is not. Whether or not a task has a plan, the event log records every tool call and its result, every command's exit code, and every artifact produced. The product never presents an unverified result as verified.
+Gating is optional; the audit trail is not. Whether or not a task has a plan, the event log records every tool call and its outcome, every command's exit code, and every artifact produced; a tool call's output preview is kept for the event retention period ([Event retention](architecture.md#event-retention)), its spilled full output for good. The product never presents an unverified result as verified.
 
 ## Defining a plan
 

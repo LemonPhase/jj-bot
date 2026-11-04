@@ -348,6 +348,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         firstSequence: 1,
         hasEarlier: false,
         cursor: 0,
+        compactedThrough: 0,
       },
       log: [],
       steps: [],

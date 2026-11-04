@@ -99,6 +99,13 @@
       "when": 1793741094576,
       "tag": "0013_task_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793744389846,
+      "tag": "0014_event_retention",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
-import { MAX_SPEND_CAP_USD, TOOL_OUTPUT_PREVIEW_LIMIT } from "@jj/contracts";
+import {
+  EVENT_PAYLOAD_CAP_BYTES,
+  MAX_SPEND_CAP_USD,
+  TOOL_OUTPUT_PREVIEW_LIMIT,
+} from "@jj/contracts";
+
+/** Longest `JJ_EVENT_RETENTION_DAYS`: ten years. */
+export const MAX_EVENT_RETENTION_DAYS = 3650;
+export const DEFAULT_EVENT_RETENTION_DAYS = 30;
+/** Smallest `JJ_EVENT_PAYLOAD_CAP_BYTES`, so ordinary events never spill. */
+export const MIN_EVENT_PAYLOAD_CAP_BYTES = 128 * 1024;
+export const DEFAULT_EVENT_PAYLOAD_CAP_BYTES = 256 * 1024;
 
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
@@ -76,6 +87,24 @@ export interface EngineConfig {
   streamPollMs: number;
   /** How long a driver probe result is reused. */
   probeTtlMs: number;
+  /**
+   * `JJ_EVENT_RETENTION_DAYS`: a completed, failed or cancelled task's
+   * events are compacted this many days after it finished (default 30, at
+   * most 3650); 0 never compacts.
+   */
+  eventRetentionDays: number;
+  /**
+   * `JJ_EVENT_PAYLOAD_CAP_BYTES`: an event payload whose JSON is larger is
+   * stored in full as an `output` artifact and clipped in the event (default
+   * 256 KiB, from 128 KiB to the contract's 1 MiB ceiling).
+   */
+  eventPayloadCapBytes: number;
+  /** Time between compaction passes (one hour). */
+  compactionIntervalMs: number;
+  /** Most tasks one compaction pass compacts. */
+  compactionMaxTasks: number;
+  /** A compaction pass starts no task after this long. */
+  compactionMaxMs: number;
 }
 
 export type EngineConfigInput = Partial<Omit<EngineConfig, "artifacts">> & {
@@ -120,6 +149,11 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
+    eventRetentionDays: DEFAULT_EVENT_RETENTION_DAYS,
+    eventPayloadCapBytes: DEFAULT_EVENT_PAYLOAD_CAP_BYTES,
+    compactionIntervalMs: 60 * 60_000,
+    compactionMaxTasks: 50,
+    compactionMaxMs: 30_000,
     ...stripUndefined(rest),
     artifacts: {
       ...DEFAULT_ARTIFACT_LIMITS,
@@ -127,6 +161,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     },
   };
   config.outputCapBytes = clampOutputCap(config.outputCapBytes);
+  checkRetentionDays(config.eventRetentionDays, "eventRetentionDays");
+  checkPayloadCap(config.eventPayloadCapBytes, "eventPayloadCapBytes");
   if (
     config.maxUsdPerDay !== null &&
     !(
@@ -151,12 +187,52 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "chatMaxTurns",
     "ephemeralIdleMs",
     "maxHeldSandboxes",
+    "compactionIntervalMs",
+    "compactionMaxTasks",
+    "compactionMaxMs",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`${key} must be a positive integer.`);
   }
   return config;
+}
+
+function checkRetentionDays(value: number, name: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > MAX_EVENT_RETENTION_DAYS
+  )
+    throw new RangeError(
+      `${name} must be a whole number of days from 0 (never compact) to ${MAX_EVENT_RETENTION_DAYS}.`,
+    );
+  return value;
+}
+
+function checkPayloadCap(value: number, name: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < MIN_EVENT_PAYLOAD_CAP_BYTES ||
+    value > EVENT_PAYLOAD_CAP_BYTES
+  )
+    throw new RangeError(
+      `${name} must be a number of bytes from ${MIN_EVENT_PAYLOAD_CAP_BYTES} (128 KiB) to ${EVENT_PAYLOAD_CAP_BYTES} (1 MiB).`,
+    );
+  return value;
+}
+
+/**
+ * `JJ_EVENT_RETENTION_DAYS` alone, read as `configFromEnv` reads it: the
+ * default when unset. Throws on a value the server would refuse to boot with.
+ */
+export function eventRetentionDaysFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env.JJ_EVENT_RETENTION_DAYS?.trim();
+  return raw
+    ? checkRetentionDays(Number(raw), "JJ_EVENT_RETENTION_DAYS")
+    : DEFAULT_EVENT_RETENTION_DAYS;
 }
 
 /** The output cap the engine and events use: at most the contract's preview limit. */
@@ -191,6 +267,13 @@ export function configFromEnv(
       );
     return value;
   };
+  const checked = (
+    name: string,
+    check: (value: number, name: string) => number,
+  ) => {
+    const raw = env[name]?.trim();
+    return raw ? check(Number(raw), name) : undefined;
+  };
   // PostgreSQL when DATABASE_URL is set, else PGlite at JJ_DATABASE_PATH,
   // where `memory://` keeps nothing across restarts.
   const inMemory =
@@ -206,6 +289,13 @@ export function configFromEnv(
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
+    eventRetentionDays: env.JJ_EVENT_RETENTION_DAYS?.trim()
+      ? eventRetentionDaysFromEnv(env)
+      : undefined,
+    eventPayloadCapBytes: checked(
+      "JJ_EVENT_PAYLOAD_CAP_BYTES",
+      checkPayloadCap,
+    ),
     persistence: !inMemory,
     workerHeartbeat: Boolean(env.DATABASE_URL?.trim()),
   };

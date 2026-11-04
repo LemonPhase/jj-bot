@@ -187,6 +187,7 @@ export async function assertWithinCaps(
  */
 export async function noteCapped(
   tx: Tx,
+  ctx: EngineContext,
   taskId: string,
   stop: SpendStop,
   attribution: Attribution,
@@ -220,7 +221,7 @@ export async function noteCapped(
     )
       return;
   }
-  await emit(tx, taskId, {
+  await emit(tx, ctx, taskId, {
     type: "spend.capped",
     payload: {
       scope: stop.scope,
@@ -238,6 +239,7 @@ export async function noteCapped(
  */
 export async function noteThreshold(
   tx: Tx,
+  ctx: EngineContext,
   taskId: string,
   attribution: Attribution,
 ): Promise<void> {
@@ -273,7 +275,7 @@ export async function noteThreshold(
     crossed.capUsd
   )
     return;
-  await emit(tx, taskId, {
+  await emit(tx, ctx, taskId, {
     type: "spend.threshold",
     payload: crossed,
     ...attribution,
