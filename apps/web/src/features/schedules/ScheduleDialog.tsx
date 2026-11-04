@@ -291,7 +291,9 @@ function ScheduleEditor({
             <div id={runsId} className="schedule-editor__runs">
               {preview.runs.length > 0 && (
                 <>
-                  <span className="schedule-editor__runs-label">Next runs</span>
+                  <span className="schedule-editor__runs-label">
+                    Next runs · {trigger.timeZone}
+                  </span>
                   <ol>
                     {preview.runs.map((run) => (
                       <li key={run.toISOString()}>
