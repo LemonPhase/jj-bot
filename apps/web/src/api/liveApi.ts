@@ -684,7 +684,7 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
       http.upload(file, name, uploadOptions),
     deleteUpload: (uploadId) =>
       request("DELETE", `/uploads/${id(uploadId)}`, null),
-    uploadToTask: (taskId, cmd) =>
+    uploadToTask: async (taskId, cmd) =>
       request(
         "POST",
         `/tasks/${id(taskId)}/uploads`,
