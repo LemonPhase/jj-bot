@@ -130,6 +130,40 @@ describe.each(targets)("job queue on $name", (target) => {
     expect(await complete(db, lease)).toBe(false);
   });
 
+  it("claims only the kinds it is asked for, and with waitedMs only queued jobs due that long", async () => {
+    const { db } = database;
+    const { sessions } = await seedSessions(db, 1);
+    const [bot] = await seedBots(db, 1);
+    const run = must(
+      await enqueue(db, { kind: "session.run", sessionId: sessions[0]?.id }),
+    );
+    const reply = must(
+      await enqueue(db, { kind: "chat.reply", botId: bot?.id }),
+    );
+    const fresh = must(
+      await enqueue(db, {
+        kind: "mcp.discover",
+        payload: { discoveryId: "mcpd_fresh" },
+      }),
+    );
+    const waited = must(
+      await enqueue(db, {
+        kind: "mcp.discover",
+        payload: { discoveryId: "mcpd_waited" },
+        runAfter: new Date(Date.now() - 120_000),
+      }),
+    );
+    const ids = async (options: Parameters<typeof claim>[4]) =>
+      (await claim(db, "a", 10, 30_000, options)).jobs.map((job) => job.id);
+    expect(await ids({ kinds: ["mcp.discover"], waitedMs: 60_000 })).toEqual([
+      waited.id,
+    ]);
+    expect(await ids({ kinds: ["mcp.discover"] })).toEqual([fresh.id]);
+    expect(
+      (await ids({ kinds: ["session.run", "chat.reply"] })).sort(),
+    ).toEqual([run.id, reply.id].sort());
+  });
+
   it("respects the claim limit and validates its arguments", async () => {
     const { db } = database;
     for (const bot of await seedBots(db, 5))

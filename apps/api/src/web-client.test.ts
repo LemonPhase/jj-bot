@@ -170,6 +170,57 @@ describe("liveApi against the real server", () => {
     offHints();
   });
 
+  it("tests an MCP server in the worker and reads the discovery and its snapshot", async () => {
+    const server = {
+      name: "echo",
+      transport: "stdio" as const,
+      command: process.execPath,
+      args: [
+        "-e",
+        'const r=require("readline").createInterface({input:process.stdin});r.on("line",l=>{const m=JSON.parse(l);if(m.id===undefined)return;const o=m.method==="initialize"?{protocolVersion:"2025-11-25",capabilities:{tools:{}},serverInfo:{name:"client-fixture",version:"1"}}:m.method==="tools/list"?{tools:[{name:"say",inputSchema:{type:"object"}}]}:null;process.stdout.write(JSON.stringify(o?{jsonrpc:"2.0",id:m.id,result:o}:{jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"no"}})+"\\n")});r.on("close",()=>process.exit(0))',
+      ],
+    };
+    const profile = await api.createProfile({
+      name: "MCP client",
+      sandbox: { driver: "local", network: { mode: "open" } },
+      mcpServers: [server],
+    });
+    const queued = await api.startMcpDiscovery(profile.id, { server });
+    expect(queued).toMatchObject({ status: "queued", server: "echo" });
+    const done = await until(
+      async () => {
+        const now = await api.getMcpDiscovery(queued.id);
+        return now.status === "succeeded" || now.status === "failed"
+          ? now
+          : undefined;
+      },
+      { what: "the discovery" },
+    );
+    expect(done.error).toBeNull();
+    const snapshot = await api.getMcpSnapshot(done.snapshot?.id ?? "");
+    expect(snapshot).toEqual(done.snapshot);
+    expect(snapshot.tools.map((tool) => tool.exposedName)).toEqual([
+      "mcp__echo__say",
+    ]);
+    const pinned = await api.updateProfile(profile.id, {
+      mcpServers: [{ ...server, snapshotId: snapshot.id }],
+    });
+    expect(pinned.mcpServers[0]?.snapshotId).toBe(snapshot.id);
+    expect(await rejection(api.getMcpDiscovery("mcpd_missing"))).toMatchObject({
+      code: "NOT_FOUND",
+      status: 404,
+    });
+    expect(
+      await rejection(
+        api.updateProfile(profile.id, {
+          mcpServers: [
+            { ...server, args: ["-e", "0"], snapshotId: snapshot.id },
+          ],
+        }),
+      ),
+    ).toMatchObject({ code: "MCP_SNAPSHOT_MISMATCH", status: 409 });
+  });
+
   it("follows a conversation and the workspace hints", async () => {
     const linus = await api.createBot({ name: "Linus" });
     const hints: WorkspaceHint[] = [];

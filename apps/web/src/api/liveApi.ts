@@ -18,6 +18,8 @@ import {
   createTaskTemplateCommandSchema,
   decideApprovalCommandSchema,
   type ModelsView,
+  mcpDiscoveryResultSchema,
+  mcpSnapshotResultSchema,
   modelsViewSchema,
   postTaskMessageCommandSchema,
   putSecretCommandSchema,
@@ -27,6 +29,7 @@ import {
   secretsViewSchema,
   sendBotMessageCommandSchema,
   sendBotMessageResultSchema,
+  startMcpDiscoveryCommandSchema,
   startTemplateCommandSchema,
   stopTaskCommandSchema,
   TASK_EVENT_TYPES,
@@ -445,6 +448,31 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
       ).profile,
     deleteProfile: (profileId) =>
       request("DELETE", `/runtime-profiles/${id(profileId)}`, null),
+    startMcpDiscovery: async (profileId, cmd) =>
+      (
+        await request(
+          "POST",
+          `/runtime-profiles/${id(profileId)}/mcp-discoveries`,
+          mcpDiscoveryResultSchema,
+          command(startMcpDiscoveryCommandSchema, cmd),
+        )
+      ).discovery,
+    getMcpDiscovery: async (discoveryId) =>
+      (
+        await request(
+          "GET",
+          `/mcp-discoveries/${id(discoveryId)}`,
+          mcpDiscoveryResultSchema,
+        )
+      ).discovery,
+    getMcpSnapshot: async (snapshotId) =>
+      (
+        await request(
+          "GET",
+          `/mcp-snapshots/${id(snapshotId)}`,
+          mcpSnapshotResultSchema,
+        )
+      ).snapshot,
     listDrivers: async () =>
       (await request("GET", "/sandbox-drivers", RESPONSES.drivers)).drivers,
     getModels: () => request("GET", "/models", modelsViewSchema),

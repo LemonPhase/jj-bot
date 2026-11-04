@@ -611,23 +611,61 @@ describe("demo API", () => {
     expect(profile).toMatchObject({ mcpServers: [], skills: [] });
   });
 
-  it("refuses MCP servers and skills, which the demo cannot run", async () => {
+  it("stores MCP servers under a server's rules, tests none and refuses skills", async () => {
     const api = demo();
     expect((await api.bootstrap()).capabilities).toMatchObject({
       mcp: { stdio: false, remote: false },
       skills: false,
     });
+    const docs = {
+      name: "docs",
+      transport: "http" as const,
+      url: "https://mcp.example.com",
+    };
+    const stdio = {
+      name: "files",
+      transport: "stdio" as const,
+      command: "npx",
+      args: ["-y", "@example/files-mcp"],
+    };
+    const created = await api.createProfile({
+      name: "With MCP",
+      sandbox: { driver: "docker", network: { mode: "open" } },
+      mcpServers: [docs, stdio],
+    });
+    expect(created.mcpServers.map((server) => server.name)).toEqual([
+      "docs",
+      "files",
+    ]);
+    expect(created.mcpServers[0]).toMatchObject({
+      url: "https://mcp.example.com/",
+      askUnlessReadOnly: true,
+      snapshotId: null,
+    });
     const before = await api.listProfiles();
+    // The demo tests no server, so it has no snapshot to pin ...
     await rejects(
-      api.createProfile({
-        name: "With MCP",
-        sandbox: { driver: "docker", network: { mode: "open" } },
+      api.updateProfile(created.id, {
+        mcpServers: [{ ...docs, snapshotId: "mcps-1" }],
+      }),
+      "MCP_SNAPSHOT_MISMATCH",
+    );
+    // ... stores no secret a server could use ...
+    await rejects(
+      api.updateProfile(created.id, {
         mcpServers: [
-          { name: "docs", transport: "http", url: "https://mcp.example.com" },
+          { ...docs, secretHeaders: { "X-Key": { secret: "KEY" } } },
         ],
       }),
-      "MCP_UNAVAILABLE",
+      "VALIDATION_FAILED",
     );
+    await rejects(
+      api.updateProfile(created.id, {
+        mcpServers: [{ ...stdio, secretEnv: { TOKEN: "TOKEN" } }],
+      }),
+      "VALIDATION_FAILED",
+    );
+    // ... and has no skills library.
     await rejects(
       api.updateProfile("profile-docker", { skills: ["pdf-tools"] }),
       "MCP_UNAVAILABLE",
@@ -644,6 +682,31 @@ describe("demo API", () => {
       approvals: [{ tool: "mcp__docs__*" }],
     });
     expect(ruled.approvals).toEqual([{ tool: "mcp__docs__*" }]);
+
+    // A test is checked as a server checks it, then fails, saying why.
+    const discovery = await api.startMcpDiscovery(created.id, {
+      server: docs,
+    });
+    expect(discovery).toMatchObject({
+      profileId: created.id,
+      server: "docs",
+      status: "failed",
+      snapshot: null,
+    });
+    expect(discovery.error).toMatch(/^Demo data: no MCP server runs/);
+    expect(await api.getMcpDiscovery(discovery.id)).toEqual(discovery);
+    await rejects(api.getMcpDiscovery("mcp-discovery-99"), "NOT_FOUND");
+    await rejects(api.getMcpSnapshot("mcps-1"), "NOT_FOUND");
+    await rejects(
+      api.startMcpDiscovery("profile-missing", { server: docs }),
+      "NOT_FOUND",
+    );
+    await rejects(
+      api.startMcpDiscovery(created.id, {
+        server: { ...stdio, secretEnv: { TOKEN: "TOKEN" } },
+      }),
+      "VALIDATION_FAILED",
+    );
   });
 
   it("keeps a reopened seeded task moving on its own", async () => {
