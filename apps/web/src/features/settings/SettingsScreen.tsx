@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { TabPanel, Tabs } from "../../components/ui";
 import { ScreenHeader } from "../shell/ScreenHeader";
+import { AboutPanel } from "./AboutPanel";
 import { DriversPanel } from "./DriversPanel";
 import { ModelsPanel } from "./ModelsPanel";
 import { ProfilesPanel } from "./ProfilesPanel";
@@ -9,7 +10,13 @@ import { UsagePanel } from "./UsagePanel";
 import { useDrivers } from "./useDrivers";
 import "./settings.css";
 
-type Section = "models" | "secrets" | "profiles" | "drivers" | "usage";
+type Section =
+  | "models"
+  | "secrets"
+  | "profiles"
+  | "drivers"
+  | "usage"
+  | "about";
 
 const SECTIONS: readonly { value: Section; label: string }[] = [
   { value: "models", label: "Models" },
@@ -17,6 +24,7 @@ const SECTIONS: readonly { value: Section; label: string }[] = [
   { value: "profiles", label: "Runtime profiles" },
   { value: "drivers", label: "Drivers" },
   { value: "usage", label: "Usage" },
+  { value: "about", label: "About" },
 ];
 
 const SECTION_KEY = "jj.settings.section";
@@ -46,7 +54,8 @@ function useSection(): [Section, (section: Section) => void] {
 /**
  * `#/settings` (frontend brief, "Settings"; not in the design, built in the
  * same language): models and providers with their keys, sandbox secrets,
- * runtime profiles, sandbox drivers, and usage with the spend caps.
+ * runtime profiles, sandbox drivers, usage with the spend caps, and about
+ * this server (its event retention).
  * Keys and secrets are write-only: typed once, sent once, never shown again.
  */
 export function SettingsScreen() {
@@ -59,7 +68,8 @@ export function SettingsScreen() {
           <>
             <h1 className="screen-title">Settings</h1>
             <span className="settings-subtitle">
-              Models, secrets, runtime profiles, sandbox drivers and usage
+              Models, secrets, runtime profiles, sandbox drivers, usage and this
+              server
             </span>
           </>
         }
@@ -80,6 +90,7 @@ export function SettingsScreen() {
           {section === "profiles" && <ProfilesPanel drivers={drivers} />}
           {section === "drivers" && <DriversPanel drivers={drivers} />}
           {section === "usage" && <UsagePanel />}
+          {section === "about" && <AboutPanel />}
         </TabPanel>
       </div>
     </main>

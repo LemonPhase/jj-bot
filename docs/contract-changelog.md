@@ -31,6 +31,38 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.10.0 — 2026-11-03 — Event retention and payload limits
+
+**Changed by:** backend and frontend ([#32](https://github.com/LemonPhase/jj-bot/issues/32), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/32#issuecomment-6613592061)) · **Compatibility:** additive; a compacted task's log has gaps in its sequences at or below `compactedThrough`, which a reader that assumed gap-free logs must allow
+
+- `task.compacted` (`{ through, removed, stripped }`, integers): a marker the server appends after
+  compacting a finished task's events at or below `through`. `applyTaskEvent` folds it into the
+  view's `compactedThrough` (the larger of the two).
+- `taskViewSchema.compactedThrough` and `taskEventPageSchema.compactedThrough`: integers, default 0
+  (parsed as 0 from servers before 1.10.0). Events at or below it were compacted: activity and
+  superseded snapshots were deleted, and `tool.finished` output and `model.finished` text dropped.
+  For any cursor n, the kept events after n fold onto the view at n into the latest view, its
+  records compared by id, so a stream resumed from any `Last-Event-ID` converges.
+- `eventBaseSchema.payloadArtifactId`, optional: the event's payload was over the server's cap
+  and clipped; its full payload is that `output` artifact, as JSON, at `savedPayloadPath(type)`
+  (`<type> payload`; `savedPayloadType(artifact)` reads it back). Only what no record bounds is
+  clipped (tool output previews, error and stop texts, a held call's arguments), each string over
+  4 KiB within its field's limit and marked (`… [N more characters in the saved copy]`); record
+  snapshots are stored whole, over the cap too, and every stored payload parses with its type's
+  schema. A client folds a clipped event, then refetches the view, whose records are whole.
+- `EVENT_PAYLOAD_CAP_BYTES` = 1 MiB: the ceiling of the server's payload cap.
+- `bootstrapSchema.eventRetentionDays`, optional (absent from servers before 1.10.0): the server's
+  `JJ_EVENT_RETENTION_DAYS`, 0 to 3650, 0 meaning never, so Settings → About can show it.
+
+**Action required (frontend):** none beyond this change: the web app reloads the view after a
+spilled event, notes a compacted task's Progress ("Activity before … was compacted"), marks its
+tool rows "output not kept", links a spilled event's saved copy and shows the retention in
+Settings → About.
+**Action required (backend):** none beyond this change: the `maintenance.compact` job compacts
+finished tasks hourly, and `emit` spills payloads over `JJ_EVENT_PAYLOAD_CAP_BYTES`. Migration
+0014 adds `tasks.events_compacted_through`, `task_events.payload_artifact_id`, the finished-tasks
+index and the job kind.
+
 ## 1.9.0 — 2026-11-03 — Task templates
 
 **Changed by:** backend and frontend ([#91](https://github.com/LemonPhase/jj-bot/issues/91), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/91#issuecomment-6613485332)) · **Compatibility:** additive

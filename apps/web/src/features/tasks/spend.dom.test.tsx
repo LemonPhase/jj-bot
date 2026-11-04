@@ -77,6 +77,7 @@ function viewWith(
     firstSequence: 1,
     hasEarlier: false,
     cursor: 0,
+    compactedThrough: 0,
   };
 }
 

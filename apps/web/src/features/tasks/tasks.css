@@ -423,6 +423,29 @@
   color: var(--ink-muted);
 }
 
+.progress__compacted {
+  margin: 0 0 var(--sp-8);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.saved-copy {
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+}
+
+.task-chat__large {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.task-chat__large > .saved-copy {
+  align-self: flex-start;
+}
+
 .progress__empty {
   padding-left: 36px;
   font-family: var(--font-mono);
@@ -484,6 +507,12 @@
   font-size: var(--fs-mono);
   color: var(--ink-3);
   overflow-wrap: anywhere;
+}
+
+.progress__tools-note {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-muted);
 }
 
 .progress__evidence {

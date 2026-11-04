@@ -296,6 +296,7 @@ test.describe("at 360px", () => {
       "Runtime profiles",
       "Drivers",
       "Usage",
+      "About",
     ]) {
       await page.getByRole("tab", { name: section }).click();
       const panel = page.getByRole("tabpanel", { name: section });

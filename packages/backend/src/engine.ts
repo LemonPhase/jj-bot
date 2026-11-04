@@ -41,6 +41,7 @@ import {
 } from "@jj/contracts";
 import { type Database, type IdKind, queueDepth } from "@jj/db";
 import { type Tracer, trace } from "@opentelemetry/api";
+import { withCommitHooks } from "./commit-hooks";
 import { type EngineConfigInput, resolveConfig } from "./config";
 import { defaultIds, type EngineContext, type Logger } from "./context";
 import { errorMessage } from "./errors";
@@ -66,6 +67,7 @@ import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
 import { postTaskMessage } from "./services/messages";
 import * as profileService from "./services/profiles";
+import { type CompactionPass, compactionPass } from "./services/retention";
 import * as secretService from "./services/secrets";
 import {
   subscribeTask,
@@ -81,7 +83,7 @@ import { createWorker, type Worker } from "./worker/worker";
 
 export interface EngineOptions {
   /** The opened store (`openDatabase`). */
-  db: Pick<Database, "db" | "bus">;
+  db: Pick<Database, "db" | "bus"> & Partial<Pick<Database, "mode">>;
   drivers: DriverRegistry;
   executor: RunExecutor;
   chat: ChatResponder;
@@ -203,6 +205,14 @@ export interface Engine {
       artifactId: string,
     ): Promise<{ artifact: Artifact; content: Uint8Array }>;
   };
+  maintenance: {
+    /**
+     * Runs one compaction pass now, as the worker's hourly one does.
+     * `finishedBefore` replaces the retention cutoff, so tasks that finished
+     * since can be compacted too (for tests and maintenance by hand).
+     */
+    compactEvents(options?: { finishedBefore?: Date }): Promise<CompactionPass>;
+  };
   /** Task templates: saved task setups the user starts again. */
   templates: {
     /** `GET /api/task-templates`, oldest first, each with its problems now. */
@@ -251,8 +261,10 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   let built = 0;
   let applied = 0;
   const ctx: EngineContext = {
-    db: options.db.db,
+    // Its transactions run their afterCommit hooks once they commit.
+    db: withCommitHooks(options.db.db),
     bus: options.db.bus,
+    ...(options.db.mode ? { dbMode: options.db.mode } : {}),
     config: resolveConfig(options.config),
     drivers: options.drivers,
     models: options.models,
@@ -338,6 +350,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           })),
         },
         defaultModel: ctx.models.defaultModel(),
+        eventRetentionDays: ctx.config.eventRetentionDays,
         bots: bots.bots,
         tasks,
         profiles: profiles.profiles,
@@ -391,6 +404,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       subscribe: (taskId, options) => subscribeTask(ctx, taskId, options),
       artifactContent: (taskId, artifactId) =>
         artifactContent(ctx, taskId, artifactId),
+    },
+    maintenance: {
+      compactEvents: (options) => compactionPass(ctx, options),
     },
     templates: {
       list: () => templateService.listTemplates(ctx),
