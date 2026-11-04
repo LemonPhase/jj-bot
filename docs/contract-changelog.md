@@ -62,6 +62,7 @@ Settings → About.
 finished tasks hourly, and `emit` spills payloads over `JJ_EVENT_PAYLOAD_CAP_BYTES`. Migration
 0014 adds `tasks.events_compacted_through`, `task_events.payload_artifact_id`, the finished-tasks
 index and the job kind.
+
 ## 1.9.0 — 2026-11-03 — Task templates
 
 **Changed by:** backend and frontend ([#91](https://github.com/LemonPhase/jj-bot/issues/91), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/91#issuecomment-6613485332)) · **Compatibility:** additive

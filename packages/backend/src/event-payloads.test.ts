@@ -4,11 +4,15 @@
 // type). The events the engine reads back stay far below the cap, and
 // clipping never changes a field the engine reads.
 import {
+  CHECK_SCHEMA_LIMIT,
+  COMMAND_TEXT_LIMIT,
   EVENT_PAYLOAD_CAP_BYTES,
+  RECORD_TEXT_LIMIT,
   TASK_EVENT_TYPES,
   type TaskEventOf,
   type TaskEventType,
   TOOL_OUTPUT_PREVIEW_LIMIT,
+  VERIFICATION_PLAN_LIMIT,
 } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
 import { MIN_EVENT_PAYLOAD_CAP_BYTES } from "./config";
@@ -90,6 +94,64 @@ describe("clippedPayload", () => {
       expect(payloadBytes(payload), type).toBeGreaterThan(CAP);
       expect(validPayload(type, payload), type).toBe(true);
       expect(clippedPayload(type, payload, CAP), type).toBeUndefined();
+    }
+  });
+
+  it("stores record snapshots whole at their schemas' limits: about 5.1 MB at most", () => {
+    // Control characters: one code unit each, six bytes in JSON (\u0001).
+    const most = (units: number) => "\u0001".repeat(units);
+    // The object (2), its key (11 + 3) and the string (its length + 2).
+    const schema = { description: most(CHECK_SCHEMA_LIMIT - 2 - 14 - 2) };
+    const plan = Array.from(
+      { length: VERIFICATION_PLAN_LIMIT },
+      (_, index) => ({
+        id: `c${String(index).padStart(63, "0")}`,
+        description: most(500),
+        method: "file" as const,
+        path: most(1024),
+        expect: "json" as const,
+        schema,
+      }),
+    );
+    const updated = SAMPLE_PAYLOADS["task.updated"];
+    const session = SAMPLE_PAYLOADS["session.updated"];
+    const largest: [TaskEventType, Record<string, unknown>, number][] = [
+      [
+        "task.updated",
+        {
+          ...updated,
+          task: {
+            ...updated.task,
+            title: most(120),
+            goal: most(COMMAND_TEXT_LIMIT),
+            result: most(RECORD_TEXT_LIMIT),
+            error: most(RECORD_TEXT_LIMIT),
+            verificationPlan: plan,
+          },
+        },
+        5.1,
+      ],
+      [
+        "session.updated",
+        {
+          ...session,
+          session: {
+            ...session.session,
+            brief: most(RECORD_TEXT_LIMIT),
+            result: most(RECORD_TEXT_LIMIT),
+            error: most(RECORD_TEXT_LIMIT),
+          },
+        },
+        3.6,
+      ],
+    ];
+    for (const [type, payload, megabytes] of largest) {
+      expect(validPayload(type, payload), type).toBe(true);
+      expect(clippedPayload(type, payload, CAP), type).toBeUndefined();
+      // The bound docs/architecture.md states, in MB.
+      expect(Math.round(payloadBytes(payload) / 100_000) / 10, type).toBe(
+        megabytes,
+      );
     }
   });
 
