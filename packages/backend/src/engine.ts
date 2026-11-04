@@ -83,6 +83,7 @@ import {
   stageUpload,
   sweepStagedUploads,
   uploadLimits,
+  uploadSettings,
   uploadToTask,
 } from "./services/uploads";
 import { usageReport } from "./services/usage";
@@ -221,6 +222,8 @@ export interface Engine {
   };
   /** Staged uploads; every method answers NOT_FOUND while uploads are off. */
   uploads: {
+    /** NOT_FOUND while uploads are off, before anything about a request is read. */
+    assertServed(): void;
     /** `POST /api/uploads`: every limit is checked before the body is read. */
     stage(input: StageUploadInput): Promise<{ upload: StagedUpload }>;
     /** `DELETE /api/uploads/:id`. */
@@ -421,6 +424,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       upload: (taskId, command) => uploadToTask(ctx, taskId, command),
     },
     uploads: {
+      assertServed: () => {
+        uploadSettings(ctx);
+      },
       stage: (input) => stageUpload(ctx, input),
       delete: (uploadId) => deleteStagedUpload(ctx, uploadId),
     },

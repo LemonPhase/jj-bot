@@ -107,6 +107,12 @@ export interface StageUploadInput {
   sizeBytes: number;
   /** The raw body, read only once every check before it passed. */
   body: AsyncIterable<Uint8Array> | null;
+  /**
+   * Called once every check passed, just before the body is read: where the
+   * client sent `Expect: 100-continue`, the transport invites the body then,
+   * so a refused upload is never sent at all.
+   */
+  beforeRead?: () => void;
 }
 
 /**
@@ -162,6 +168,7 @@ export async function stageUpload(
     // file lands in the workspace under the redacted name. The content type
     // still comes from the real one.
     const redact = await ctx.redactor();
+    input.beforeRead?.();
     const content = await readExactly(input.body, input.sizeBytes, {
       bytesPerSecond: settings.minBytesPerSecond,
       windowMs: settings.slowWindowMs,

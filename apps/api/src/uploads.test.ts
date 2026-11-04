@@ -353,6 +353,11 @@ describe("expired and switched off", () => {
     expect(
       (await put("a.txt", "x", { "Content-Length": "1" }, off.app)).status,
     ).toBe(404);
+    // Off comes first: no length, or a nonsense one, is still 404.
+    expect((await put("a.txt", null, {}, off.app)).status).toBe(404);
+    expect(
+      (await put("a.txt", null, { "Content-Length": "1e9" }, off.app)).status,
+    ).toBe(404);
     expect(
       (await off.app.request("/api/uploads/upl_x", { method: "DELETE" }))
         .status,
@@ -386,6 +391,63 @@ describe("over a socket", () => {
   afterAll(async () => {
     await server?.close();
     if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  /** Sends the headers of an upload with `Expect: 100-continue`; returns the socket and its first answer. */
+  function expectContinue(length: number) {
+    const url = new URL(server.url);
+    const socket = connect(Number(url.port), url.hostname);
+    const first = new Promise<string>((resolve, reject) => {
+      let received = "";
+      const onData = (chunk: Buffer) => {
+        received += chunk.toString("latin1");
+        if (received.includes("\r\n\r\n")) {
+          socket.off("data", onData);
+          resolve(received);
+        }
+      };
+      socket.on("data", onData);
+      socket.on("error", reject);
+    });
+    socket.write(
+      [
+        "POST /api/uploads?name=a.bin HTTP/1.1",
+        `Host: 127.0.0.1:${url.port}`,
+        "Content-Type: application/octet-stream",
+        `Content-Length: ${length}`,
+        "Expect: 100-continue",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    return { socket, first };
+  }
+
+  it("with Expect: 100-continue, refuses an oversized upload before inviting its body", async () => {
+    const { socket, first } = expectContinue(2 * 1024 * 1024);
+    try {
+      expect(await first).toMatch(/^HTTP\/1\.1 413 /);
+    } finally {
+      socket.destroy();
+    }
+  });
+
+  it("with Expect: 100-continue, invites the body of an upload within the limits", async () => {
+    const { socket, first } = expectContinue(5);
+    try {
+      expect(await first).toMatch(/^HTTP\/1\.1 100 Continue/);
+      const answer = new Promise<string>((resolve) => {
+        let received = "";
+        socket.on("data", (chunk: Buffer) => {
+          received += chunk.toString("latin1");
+          if (received.includes("}")) resolve(received);
+        });
+      });
+      socket.write("hello");
+      expect(await answer).toMatch(/^HTTP\/1\.1 201 /);
+    } finally {
+      socket.destroy();
+    }
   });
 
   it("answers a huge Content-Length with 413 before any of the body is sent", async () => {
