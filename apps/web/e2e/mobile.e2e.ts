@@ -1,4 +1,4 @@
-import type { RuntimeProfile, Task, TaskView } from "@jj/contracts";
+import type { Bot, RuntimeProfile, Task, TaskView } from "@jj/contracts";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { createBot, getJson, openChat, taskCards } from "./app";
 import { expect, test } from "./fixtures";
@@ -132,7 +132,7 @@ async function heldTask(request: APIRequestContext) {
     data: { name: "Gatekeeper", runtimeProfileId: guarded.id },
   });
   expect(bot.status()).toBe(201);
-  const { bot: gatekeeper } = (await bot.json()) as { bot: { id: string } };
+  const { bot: gatekeeper } = (await bot.json()) as { bot: Bot };
   const response = await request.post("/api/tasks", {
     data: {
       goal: "Ship the release: run `echo shipped > shipped.txt # git push`",
@@ -140,7 +140,10 @@ async function heldTask(request: APIRequestContext) {
     },
   });
   expect(response.status()).toBe(201);
-  return ((await response.json()) as { task: Task }).task;
+  return {
+    bot: gatekeeper,
+    task: ((await response.json()) as { task: Task }).task,
+  };
 }
 
 const goal = "Penguin report: run `echo penguins > facts.txt`";
@@ -176,7 +179,7 @@ test.describe("at 360px", () => {
     });
     expect(created.status()).toBe(201);
     const { task } = (await created.json()) as { task: Task };
-    const held = await heldTask(request);
+    const { bot: gatekeeper, task: held } = await heldTask(request);
     await expect
       .poll(
         async () =>
@@ -195,11 +198,17 @@ test.describe("at 360px", () => {
     const { chat } = await openChat(page, nova);
     await expect(taskCards(chat, goal)).toBeVisible({ timeout: 30_000 });
     await check("bot chat");
-    await chat.getByRole("button", { name: "Profile" }).click();
+    // A profile that lists a task: Gatekeeper's waits for approval all
+    // through this test, so its link is always there to measure (Nova's
+    // task may or may not have left Nova's active tasks by now).
+    const gate = await openChat(page, gatekeeper);
+    await gate.chat.getByRole("button", { name: "Profile" }).click();
     const profile = page.getByRole("complementary", {
-      name: "Nova's profile",
+      name: "Gatekeeper's profile",
     });
-    await expect(profile).toBeVisible();
+    await expect(
+      profile.getByRole("link", { name: /^Ship the release/ }),
+    ).toBeVisible();
     await check("bot profile");
     await profile.getByRole("button", { name: "Close profile" }).click();
 
