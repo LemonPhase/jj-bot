@@ -381,6 +381,37 @@ describe("limits and refusals", () => {
     await stage(engine, "fits.bin", Buffer.alloc(500));
   });
 
+  it("answers 408 to a body that comes too slowly, and frees its slot", async () => {
+    const { engine } = await engineWith({
+      start: false,
+      config: {
+        uploads: { maxInFlight: 1, minBytesPerSecond: 1024, slowWindowMs: 200 },
+      },
+    });
+    async function* stalled() {
+      yield Buffer.alloc(10);
+      await new Promise(() => {});
+    }
+    const deadline = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("still waiting for the body")), 10_000),
+    );
+    const slow = await refusal(
+      Promise.race([
+        engine.uploads.stage({
+          name: "slow.bin",
+          sizeBytes: 100_000,
+          body: stalled(),
+        }),
+        deadline,
+      ]),
+    );
+    expect(slow.code).toBe("VALIDATION_FAILED");
+    expect(slow.status).toBe(408);
+    expect(slow.message).toMatch(/too slowly/);
+    // The one slot is free again.
+    await stage(engine, "next.bin", "x");
+  });
+
   it("refuses bad names, other extensions and bodies that differ from their length", async () => {
     const { engine } = await engineWith({
       start: false,

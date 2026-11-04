@@ -162,7 +162,10 @@ export async function stageUpload(
     // file lands in the workspace under the redacted name. The content type
     // still comes from the real one.
     const redact = await ctx.redactor();
-    const content = await readExactly(input.body, input.sizeBytes);
+    const content = await readExactly(input.body, input.sizeBytes, {
+      bytesPerSecond: settings.minBytesPerSecond,
+      windowMs: settings.slowWindowMs,
+    });
     const created = ctx.clock();
     const [row] = await ctx.db
       .insert(stagedUploads)
@@ -194,16 +197,68 @@ async function stagedBytes(ctx: EngineContext): Promise<number> {
   return Number(row?.value ?? 0);
 }
 
-/** The body, which must hold exactly `expected` bytes. */
+/** How fast a body must come: at least `bytesPerSecond` over every window. */
+interface Pace {
+  bytesPerSecond: number;
+  windowMs: number;
+}
+
+const tooSlow = (pace: Pace) =>
+  new DomainError(
+    "VALIDATION_FAILED",
+    `The upload came too slowly: under ${size(pace.bytesPerSecond)} a second over ${pace.windowMs / 1000} s. Try again on a faster connection.`,
+    { minBytesPerSecond: pace.bytesPerSecond, windowMs: pace.windowMs },
+    408,
+  );
+
+/**
+ * The body, which must hold exactly `expected` bytes and come at `pace`:
+ * in every window, at least its bytes a second times the window, or the
+ * rest of the file. A body that falls behind is abandoned with 408, so a
+ * stalled sender does not hold an upload slot until the server's own
+ * request timeout.
+ */
 async function readExactly(
   body: AsyncIterable<Uint8Array> | null,
   expected: number,
+  pace: Pace,
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let received = 0;
-  try {
-    if (body)
-      for await (const chunk of body) {
+  if (body) {
+    const iterator = body[Symbol.asyncIterator]();
+    let windowStart = Date.now();
+    let atWindowStart = 0;
+    let next: Promise<IteratorResult<Uint8Array>> | undefined;
+    try {
+      for (;;) {
+        next ??= iterator.next();
+        let timer: NodeJS.Timeout | undefined;
+        const elapsed = new Promise<"elapsed">((resolve) => {
+          timer = setTimeout(
+            () => resolve("elapsed"),
+            Math.max(0, windowStart + pace.windowMs - Date.now()),
+          );
+        });
+        const result = await Promise.race([next, elapsed]).finally(() =>
+          clearTimeout(timer),
+        );
+        if (result === "elapsed") {
+          const owed = Math.min(
+            (pace.bytesPerSecond * pace.windowMs) / 1000,
+            expected - atWindowStart,
+          );
+          if (received - atWindowStart < owed) {
+            void iterator.return?.()?.catch(() => {});
+            throw tooSlow(pace);
+          }
+          windowStart = Date.now();
+          atWindowStart = received;
+          continue;
+        }
+        next = undefined;
+        if (result.done) break;
+        const chunk = result.value;
         received += chunk.byteLength;
         if (received > expected)
           throw new DomainError(
@@ -212,12 +267,13 @@ async function readExactly(
           );
         chunks.push(chunk);
       }
-  } catch (error) {
-    if (error instanceof DomainError) throw error;
-    throw new DomainError(
-      "VALIDATION_FAILED",
-      "The upload was cut off before its end.",
-    );
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      throw new DomainError(
+        "VALIDATION_FAILED",
+        "The upload was cut off before its end.",
+      );
+    }
   }
   if (received !== expected)
     throw new DomainError(

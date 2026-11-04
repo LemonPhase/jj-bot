@@ -29,6 +29,12 @@ export interface UploadSettings {
   /** How long a staged upload waits to be attached before it is deleted. */
   stagedTtlMs: number;
   /**
+   * The slowest an upload's body may come: under this many bytes a second
+   * over `slowWindowMs` (16 KiB over 30 s), it is abandoned with 408.
+   */
+  minBytesPerSecond: number;
+  slowWindowMs: number;
+  /**
    * Extensions a name must end with (`JJ_UPLOAD_EXTENSIONS`, lowercase,
    * with the dot), or null for any regular file.
    */
@@ -51,6 +57,8 @@ export const DEFAULT_UPLOAD_SETTINGS: UploadSettings = {
   maxStagedBytes: 256 * MiB,
   maxInFlight: 4,
   stagedTtlMs: 60 * 60_000,
+  minBytesPerSecond: 16 * 1024,
+  slowWindowMs: 30_000,
   extensions: null,
 };
 
@@ -230,6 +238,8 @@ function checkUploadSettings(settings: UploadSettings) {
     "maxStagedBytes",
     "maxInFlight",
     "stagedTtlMs",
+    "minBytesPerSecond",
+    "slowWindowMs",
   ] as const) {
     const value = settings[key];
     if (!Number.isSafeInteger(value) || value < 1)

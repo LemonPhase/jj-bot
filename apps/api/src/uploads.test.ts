@@ -280,13 +280,51 @@ describe("expired and switched off", () => {
   let off: TestApp;
   beforeAll(async () => {
     [expiring, off] = await Promise.all([
-      testApp({ startWorker: false, engine: { uploads: { stagedTtlMs: 1 } } }),
+      testApp({
+        startWorker: false,
+        engine: {
+          uploads: {
+            stagedTtlMs: 1,
+            maxInFlight: 1,
+            minBytesPerSecond: 1024,
+            slowWindowMs: 200,
+          },
+        },
+      }),
       testApp({ startWorker: false, engine: { uploads: null } }),
     ]);
   }, OPEN_TIMEOUT);
   afterAll(async () => {
     await expiring?.dispose();
     await off?.dispose();
+  });
+
+  it("answers 408 to a body that stalls, and takes the next upload", async () => {
+    const stalled = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          controller.enqueue(new Uint8Array(10));
+          // Nothing more ever comes.
+          return new Promise(() => {});
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const slow = await put(
+      "slow.bin",
+      stalled,
+      { "Content-Length": "100000" },
+      expiring.app,
+    );
+    expect(slow.status).toBe(408);
+    expect(refused(slow.body).message).toMatch(/too slowly/);
+    const next = await put(
+      "next.bin",
+      "x",
+      { "Content-Length": "1" },
+      expiring.app,
+    );
+    expect(next.status).toBe(201);
   });
 
   it("answers 404 for an expired staged upload", async () => {
