@@ -179,6 +179,19 @@ describe("the Schedules sidebar section", () => {
             nextFireAt: null,
             pausedReason: "template_unusable",
           }),
+          schedule({
+            id: "f",
+            name: "Too often one",
+            enabled: false,
+            nextFireAt: null,
+            pausedReason: "interval_too_short",
+          }),
+          schedule({
+            id: "g",
+            name: "Off one",
+            enabled: false,
+            nextFireAt: null,
+          }),
         ],
       }),
     );
@@ -203,6 +216,10 @@ describe("the Schedules sidebar section", () => {
     expect((await row("Paused one")).textContent).toContain(
       "Paused: its template could not start",
     );
+    expect((await row("Too often one")).textContent).toContain(
+      "Paused: its times are closer than this server's minimum",
+    );
+    expect((await row("Off one")).textContent).toContain("Off");
   });
 
   it("warns while the scheduler's last pass is more than 2 minutes old", async () => {
@@ -329,7 +346,9 @@ describe("the schedule editor", () => {
     expect(save).toHaveProperty("disabled", true);
     fireEvent.change(cron, { target: { value: "0 0 30 2 *" } });
     expect(
-      await screen.findByText("This schedule never runs in the next 366 days."),
+      await screen.findByText(
+        "This schedule never runs: no time in the next 8 years matches it.",
+      ),
     ).toBeTruthy();
     fireEvent.change(cron, { target: { value: "@daily" } });
     expect(await screen.findByText(/Macros such as @daily/)).toBeTruthy();

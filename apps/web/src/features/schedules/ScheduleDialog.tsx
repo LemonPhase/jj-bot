@@ -26,10 +26,11 @@ import {
   knownTimeZones,
   PRESETS,
   type PresetValue,
+  pausedLine,
   presetOf,
-  previewTrigger,
   uncappedTemplate,
 } from "./scheduleModel";
+import { previewTrigger } from "./scheduleTimes";
 import "./schedules.css";
 
 const reasonOf = (reason: unknown, fallback: string) =>
@@ -146,8 +147,10 @@ function ScheduleEditor({
   const preset = presetOf(cron);
   const templateProblems = template ? problemLines(template.problems) : [];
   const noCap = template ? uncappedTemplate(template, bots, profiles) : false;
-  const pausedNote =
-    schedule?.pausedReason === "template_unusable" && !schedule.enabled;
+  const paused =
+    schedule?.pausedReason && !schedule.enabled
+      ? schedule.pausedReason
+      : undefined;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -348,11 +351,13 @@ function ScheduleEditor({
             />
             On: start tasks at these times
           </label>
-          {pausedNote && (
+          {paused && (
             <p className="schedule-editor__note" role="note">
-              Paused: a run could not start its template. Fix the template, then
-              turn the schedule on; it starts from its next time, not the ones
-              it missed.
+              Paused: {pausedLine(paused)}.{" "}
+              {paused === "template_unusable"
+                ? "Fix the template, then turn the schedule on;"
+                : "Change its times, then turn it on;"}{" "}
+              it starts from its next time, not the ones it missed.
             </p>
           )}
           {error && <ErrorBanner word="Not saved">{error}</ErrorBanner>}

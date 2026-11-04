@@ -60,6 +60,9 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
   "src/features/schedules/ScheduleDialog.tsx": {
     what: "the schedule dialogs",
   },
+  "../../packages/contracts/src/schedule-rules.ts": {
+    what: "the cron grammar, the schedule commands and their time zone math",
+  },
   "src/features/office/Office3D.tsx": {
     what: "the 3D office",
     after: [TASKS_SCREEN],

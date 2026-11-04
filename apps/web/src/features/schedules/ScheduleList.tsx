@@ -4,7 +4,12 @@ import { Button, Icon, IconButton, SectionLabel } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { taskHref } from "../shell/router";
 import { useShell } from "../shell/ShellContext";
-import { formatRun, outcomeLine, schedulerStale } from "./scheduleModel";
+import {
+  formatRun,
+  outcomeLine,
+  pausedLine,
+  schedulerStale,
+} from "./scheduleModel";
 import "./schedules.css";
 
 /** How often the list refetches the scheduler's last pass while a schedule is enabled. */
@@ -97,8 +102,8 @@ function ScheduleRow({ schedule }: { schedule: Schedule }) {
     <li className="schedule-row">
       <span className="schedule-row__title clamp2">{schedule.name}</span>
       <span className="schedule-row__meta">
-        {schedule.pausedReason === "template_unusable"
-          ? "Paused: its template could not start"
+        {schedule.pausedReason && !schedule.enabled
+          ? `Paused: ${pausedLine(schedule.pausedReason)}`
           : !schedule.enabled
             ? "Off"
             : schedule.nextFireAt

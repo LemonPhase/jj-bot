@@ -14,7 +14,6 @@ import {
   conversationViewSchema,
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
-  createScheduleCommandSchema,
   createTaskCommandSchema,
   createTaskTemplateCommandSchema,
   decideApprovalCommandSchema,
@@ -43,7 +42,6 @@ import {
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
-  updateScheduleCommandSchema,
   updateTaskCommandSchema,
   updateTaskTemplateCommandSchema,
   usageReportSchema,
@@ -576,7 +574,8 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           "POST",
           "/schedules",
           scheduleResultSchema,
-          command(createScheduleCommandSchema, cmd),
+          // The server parses it, with the trigger checks this bundle leaves out.
+          cmd,
         )
       ).schedule,
     updateSchedule: async (scheduleId, cmd) =>
@@ -585,7 +584,7 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           "PATCH",
           `/schedules/${id(scheduleId)}`,
           scheduleResultSchema,
-          command(updateScheduleCommandSchema, cmd),
+          cmd,
         )
       ).schedule,
     deleteSchedule: (scheduleId) =>

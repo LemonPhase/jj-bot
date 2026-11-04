@@ -47,7 +47,9 @@ test("schedules a template from the Templates list: presets, the next 3 runs, in
   await expect(save).toBeDisabled();
   await cron.fill("0 0 30 2 *");
   await expect(
-    editor.getByText("This schedule never runs in the next 366 days."),
+    editor.getByText(
+      "This schedule never runs: no time in the next 8 years matches it.",
+    ),
   ).toBeVisible();
   await cron.fill("0 9 * * 1-5");
   await expect(runs).toHaveCount(3);
