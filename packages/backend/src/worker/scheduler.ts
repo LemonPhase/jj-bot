@@ -440,8 +440,10 @@ async function settle(
  * A removal is claimed on the task (`workspace_removing_at`) under its lock,
  * only while it is finished with nothing queued or running; a continuation
  * meanwhile is refused. The removal is recorded (`workspace_removed_at`,
- * `workspace.removed`) only once the driver answers that the workspace is
- * gone; a failure releases the claim. A claim older than
+ * `workspace.removed`) only once the driver answers that it removed the
+ * workspace; a failure releases the claim, and an answer that there was
+ * none records nothing and forgets the task's driver, so it is not asked
+ * again. A claim older than
  * WORKSPACE_REMOVAL_STALE_MS was lost by a worker that stopped: each pass
  * releases it first, whether or not the task is still one to remove.
  */
@@ -538,7 +540,11 @@ async function trimWorkspaces(
         .set(
           failure
             ? { workspaceRemovingAt: null }
-            : { workspaceRemovingAt: null, workspaceRemovedAt: ctx.clock() },
+            : removed
+              ? { workspaceRemovingAt: null, workspaceRemovedAt: ctx.clock() }
+              : // The driver found none: nothing removed, nothing to keep or
+                // ask about again until a sandbox makes one.
+                { workspaceRemovingAt: null, workspaceDriver: null },
         )
         .where(eq(tasks.id, row.id));
       if (removed)

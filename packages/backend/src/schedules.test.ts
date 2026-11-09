@@ -1464,6 +1464,72 @@ describe("removing the workspaces a schedule does not keep", () => {
     ).toHaveLength(1);
   });
 
+  it("records nothing, and tells a continuation nothing, when the driver finds no workspace to remove", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const root = await mkdtemp(join(tmpdir(), "jj-sched-none-"));
+    roots.push(root);
+    const local = new LocalSandboxDriver({ root, killGraceMs: 200 });
+    let asked = 0;
+    // As when the operator cleared the workspace: the driver has none.
+    const none: EngineDriver = Object.assign(
+      Object.create(local) as LocalSandboxDriver,
+      {
+        removeWorkspace: async () => {
+          asked += 1;
+          return { removed: false };
+        },
+      },
+    );
+    const engine = await setup(clock, {
+      workspaceRoot: root,
+      registry: createDriverRegistry([{ driver: none, label: "Local" }], {
+        ttlMs: 0,
+      }),
+    });
+    const { template, bot } = await templateFor(engine.engine);
+    writingBrain(engine, bot.name);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, { keepWorkspaces: 0 }),
+    );
+    const first = await finishRun(
+      engine,
+      clock,
+      schedule.id,
+      "2026-01-13T09:00:01Z",
+    );
+    clock.set("2026-01-13T09:05:00Z");
+    await pass(engine);
+    expect(asked).toBe(1);
+    const [row] = await db.database.db
+      .select()
+      .from(tasks)
+      .where(eq(tasks.id, first));
+    expect(row).toMatchObject({
+      workspaceDriver: null,
+      workspaceRemovedAt: null,
+      workspaceRemovingAt: null,
+    });
+    clock.set("2026-01-13T09:06:00Z");
+    await pass(engine);
+    expect(asked).toBe(1);
+    const view = await engine.engine.tasks.get(first);
+    expect(
+      view.events.filter((event) => event.type === "workspace.removed"),
+    ).toEqual([]);
+    await engine.engine.tasks.postMessage(first, {
+      text: "Check the notes again.",
+    });
+    const [steering] = await db.database.db
+      .select()
+      .from(sessionInbox)
+      .where(
+        and(eq(sessionInbox.taskId, first), eq(sessionInbox.kind, "steering")),
+      );
+    expect(steering?.text).toBe(
+      "Message from the user:\nCheck the notes again.",
+    );
+  });
+
   it("takes a claim older than 5 minutes as lost: a pass releases it, and a continuation goes ahead", async () => {
     const clock = fakeClock("2026-01-13T08:00:00Z");
     const engine = await setup(clock);
