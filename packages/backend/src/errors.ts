@@ -38,6 +38,7 @@ export const HTTP_STATUS: Record<ApiErrorCode, number> = {
   MCP_UNAVAILABLE: 422,
   MCP_SNAPSHOT_MISMATCH: 409,
   TEMPLATE_UNUSABLE: 409,
+  UPLOAD_TOO_LARGE: 413,
   UNAUTHORIZED: 401,
   INTERNAL: 500,
 };
@@ -65,10 +66,21 @@ export function parseCommand<Schema extends z.ZodType>(
   );
 }
 
-/** A unique-constraint violation from either driver (wrapped by Drizzle or not). */
-export function isUniqueViolation(error: unknown): boolean {
+/**
+ * A unique-constraint violation from either driver (wrapped by Drizzle or
+ * not); with `constraint`, only a violation of that constraint or index.
+ */
+export function isUniqueViolation(
+  error: unknown,
+  constraint?: string,
+): boolean {
   for (let current = error, depth = 0; current && depth < 4; depth += 1) {
-    if ((current as { code?: unknown }).code === "23505") return true;
+    const { code, constraint: violated } = current as {
+      code?: unknown;
+      constraint?: unknown;
+    };
+    if (code === "23505")
+      return constraint === undefined || violated === constraint;
     current = (current as { cause?: unknown }).cause;
   }
   return false;

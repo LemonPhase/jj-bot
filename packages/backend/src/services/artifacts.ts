@@ -47,6 +47,20 @@ export function contentTypeOf(path: string, content: Uint8Array): string {
   }
 }
 
+/** What every part file of one upload's placement is named from. */
+export const uploadPartPrefix = (uploadId: string) => `.jj-upload-${uploadId}-`;
+
+/**
+ * The name one attempt to place an upload writes its file under before it
+ * moves it onto its path: its own, so two attempts never share a file.
+ */
+export const uploadPartName = (uploadId: string, attempt: string) =>
+  `${uploadPartPrefix(uploadId)}${attempt}.part`;
+
+/** True for a part file placement is writing or left behind; snapshots never store one. */
+export const isUploadPart = (name: string) =>
+  /^\.jj-upload-[A-Za-z0-9_-]+\.part$/.test(name);
+
 export const sha256 = (content: Uint8Array) =>
   createHash("sha256").update(content).digest("hex");
 
@@ -165,6 +179,8 @@ export async function* changedFiles(
         continue;
       }
       if (entry.kind !== "file") continue;
+      // A file placement is writing (worker/uploads.ts), never one of the task's.
+      if (isUploadPart(name)) continue;
       const info = await sandbox.fs.stat(path).catch(() => undefined);
       if (!info || info.kind !== "file") continue;
       if (info.size > limits.maxFileBytes) continue;

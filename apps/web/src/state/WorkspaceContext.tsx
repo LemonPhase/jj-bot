@@ -14,6 +14,7 @@ import {
   type TaskView,
   type UpdateBotCommand,
   type UpdateTaskTemplateCommand,
+  type UploadEntry,
   type VerificationPlan,
   verificationSummary,
 } from "@jj/contracts";
@@ -70,6 +71,8 @@ export interface NewTaskInput {
   verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's cap. Null: no cap. */
   spendCapUsd?: number | null;
+  /** Staged uploads to attach, placed before the coordinator starts. */
+  uploads?: UploadEntry[];
 }
 
 interface WorkspaceValue {
@@ -625,6 +628,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         participantBotIds,
         verificationPlan,
         spendCapUsd,
+        uploads,
       }) => {
         const [coordinatorBotId] = participantBotIds;
         if (!coordinatorBotId)
@@ -635,6 +639,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           participantBotIds,
           ...(verificationPlan ? { verificationPlan } : {}),
           ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
+          ...(uploads && uploads.length > 0 ? { uploads } : {}),
         });
         openCreated(task);
         return task;

@@ -14,6 +14,7 @@ import { ChecksEditor } from "./ChecksEditor";
 import { formatCap } from "./format";
 import { readCapInput } from "./SpendControl";
 import { rosterOf, TeamPicker } from "./TeamPicker";
+import { UploadField, useDiscardOnUnmount, useUploadDrafts } from "./uploads";
 import { type CheckDraft, planFromDrafts } from "./verification";
 
 export interface NewTaskDialogProps {
@@ -25,13 +26,18 @@ export interface NewTaskDialogProps {
 /**
  * Starts a task: the goal, the coordinator who plans and delegates, and any
  * number of other participants, and, where the server enforces them,
- * optional verification checks. On success the task opens.
+ * optional verification checks, and where it takes them, files to upload
+ * into the workspace. On success the task opens; a dialog closed unsent
+ * removes the files it staged.
  */
 export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const { bots, profiles, createTask } = useWorkspace();
   const api = useApi();
   const formId = useId();
   const checksLabelId = useId();
+  const filesLabelId = useId();
+  const uploads = useUploadDrafts();
+  useDiscardOnUnmount(uploads);
   const [drafts, setDrafts] = useState<CheckDraft[]>([]);
   const [checkErrors, setCheckErrors] = useState<Record<string, string>>({});
   const known = initialBotIds.filter((botId) =>
@@ -56,7 +62,12 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const participants = rosterOf(coordinatorId, others);
-  const canStart = goal.trim().length > 0 && Boolean(coordinatorId) && !busy;
+  const canStart =
+    goal.trim().length > 0 &&
+    Boolean(coordinatorId) &&
+    !busy &&
+    !uploads.uploading &&
+    !uploads.failed;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -77,7 +88,10 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
         verificationPlan: checks.plan,
         // An untouched field leaves the cap to the server (the profile's).
         ...(capText !== null ? { spendCapUsd: cap.value } : {}),
+        ...(uploads.entries.length > 0 ? { uploads: uploads.entries } : {}),
       });
+      // Attached now: nothing staged is left to remove.
+      uploads.clear();
       onClose();
     } catch (reason) {
       setError(
@@ -95,7 +109,9 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
       }}
       title="New task"
       description="Describe the goal and pick the team. The coordinator plans the work and delegates to the others; everyone sees the whole chat."
-      dismissible={!goal.trim() && drafts.length === 0}
+      dismissible={
+        !goal.trim() && drafts.length === 0 && uploads.drafts.length === 0
+      }
       width={drafts.length > 0 ? 600 : 520}
       footer={
         <>
@@ -155,6 +171,16 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
             value={capValue}
             onChange={(event) => setCapText(event.target.value)}
           />
+          {uploads.limits && (
+            <div className="new-task-form__files">
+              <SectionLabel id={filesLabelId} tracking="part">
+                Files · optional
+              </SectionLabel>
+              <div role="group" aria-labelledby={filesLabelId}>
+                <UploadField uploads={uploads} disabled={busy} />
+              </div>
+            </div>
+          )}
           {api.capabilities.verification && (
             <div className="new-task-form__checks">
               <SectionLabel id={checksLabelId} tracking="part">
@@ -173,6 +199,11 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
                 />
               </div>
             </div>
+          )}
+          {uploads.failed && (
+            <p className="new-task-form__note" role="status">
+              Remove the files that did not upload to start the task.
+            </p>
           )}
           {error && <ErrorBanner word="Not started">{error}</ErrorBanner>}
         </form>

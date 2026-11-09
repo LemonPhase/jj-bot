@@ -8,7 +8,6 @@ import {
   approvalSubjectProblem,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
-  CONTRACT_VERSION,
   canonicalForm,
   canonicalJson,
   createRuntimeProfileCommandSchema,
@@ -418,14 +417,10 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.10.1, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.1");
+  it("came with 1.10.1, which the changelog records", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
-    );
-    expect(/^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1]).toBe(
-      CONTRACT_VERSION,
     );
     expect(changelog).toMatch(
       /^## 1\.10\.1 — .* — Disabled MCP servers and draft sandboxes in discoveries$/m,

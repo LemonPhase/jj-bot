@@ -59,6 +59,7 @@ import {
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
   updateTaskTemplateCommandSchema,
+  uploadToTaskCommandSchema,
   type WorkspaceHint,
   waitingQuestion,
   withCoordinator,
@@ -79,6 +80,7 @@ import {
   DEMO_MODELS,
   DEMO_TASKS,
   DEMO_TEMPLATES,
+  DEMO_UPLOAD_LIMITS,
   type DemoTaskSeed,
   demoProfiles,
 } from "./demoFixtures";
@@ -96,6 +98,7 @@ import {
   teamScript,
   userMessage,
 } from "./demoScript";
+import { DemoUploads } from "./demoUploads";
 import {
   followConversation,
   followTask,
@@ -401,12 +404,15 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     return state;
   };
   const artifactContent = new Map<string, string>();
+  const uploads = new DemoUploads(DEMO_UPLOAD_LIMITS, now);
 
   /** Runs one step of a task's script, then tells the workspace what changed. */
   const step = (state: TaskState) => {
     const next = state.steps.shift();
     if (!next) return false;
     const before = botState();
+    // As a run places uploads before its next model call.
+    uploads.place(state.host);
     next();
     notify({ type: "tasks.changed", taskId: state.view.task.id });
     if (botState() !== before) notify({ type: "bots.changed" });
@@ -520,6 +526,13 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       id: `task-${++taskCounter}`,
       templateId: templateId ?? null,
     });
+    try {
+      uploads.attach(state.host, parsed.uploads);
+    } catch (error) {
+      // As the server's transaction: a refused upload creates no task.
+      tasks.delete(state.view.task.id);
+      throw error;
+    }
     state.steps = teamScript(state.host);
     notify({ type: "tasks.changed", taskId: state.view.task.id });
     if (botState() !== before) notify({ type: "bots.changed" });
@@ -1588,7 +1601,30 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         retryMs: 500,
         ...streamOptions,
       }),
+    stageUpload: (file, name, uploadOptions) =>
+      uploads.stage(file, name, uploadOptions),
+    deleteUpload: async (uploadId) => uploads.delete(uploadId),
+    // As services/uploads.ts `uploadToTask`: it wakes and reopens nothing.
+    uploadToTask: async (taskId, command) => {
+      const parsed = validate(uploadToTaskCommandSchema, command);
+      const state = getState(taskId);
+      const { task } = state.view;
+      if (task.status === "cancelled" || task.cancelRequestedAt)
+        throw new ApiError(
+          "TASK_TERMINAL",
+          task.status === "cancelled"
+            ? "The task was cancelled; start a new task to continue the work."
+            : "The task is stopping and takes no new messages.",
+          undefined,
+          409,
+        );
+      const attached = uploads.attach(state.host, parsed.files);
+      if (!attached) throw new Error("No uploads to attach.");
+      notify({ type: "tasks.changed", taskId });
+      return clone(attached);
+    },
     artifactUrl: (_taskId, artifactId) =>
+      uploads.url(artifactId) ??
       `data:text/markdown;charset=utf-8,${encodeURIComponent(
         artifactContent.get(artifactId) ??
           "Demo data: this artifact has no content.",

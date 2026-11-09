@@ -192,6 +192,7 @@ const artifact = {
   contentType: "text/plain",
   sizeBytes: 90_000,
   sha256: "b".repeat(64),
+  upload: null,
   createdAt: time(20),
 };
 

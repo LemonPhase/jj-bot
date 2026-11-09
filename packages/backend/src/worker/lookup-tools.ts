@@ -195,7 +195,7 @@ export function lookupTools(rc: RunContext): CollabTool[] {
     {
       name: "task_state",
       description:
-        "This task's current state: its goal and goal version, its status (with the result or error once there is one), and every session on it with its id, bot, role, status and the first line of its brief. Not for waiting on delegations: their results arrive as messages.",
+        "This task's current state: its goal and goal version, its status (with the result or error once there is one), every session on it with its id, bot, role, status and the first line of its brief, and the files the user uploaded with where each one stands. Not for waiting on delegations: their results arrive as messages.",
       parameters: {
         type: "object",
         properties: {},
