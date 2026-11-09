@@ -20,6 +20,7 @@ import type { EngineContext } from "../context";
 import { type Attribution, emit } from "../events";
 import { toSession, toTask } from "../records";
 import { cancelApprovals } from "./approvals";
+import { cancelSpendApprovals } from "./spend-approvals";
 
 /** Row-locks the task for the rest of the transaction. Every task write takes this first. */
 export async function lockTask(
@@ -57,6 +58,7 @@ type TaskPatch = Partial<
     | "cancelReason"
     | "cancelRequestedAt"
     | "spendCapUsd"
+    | "approveSpendPastThreshold"
   >
 >;
 
@@ -92,6 +94,9 @@ export async function updateTask(
     },
     ...attribution,
   });
+  // Spend past a threshold that waits for the user never goes on now.
+  if (finishing && !isFinishedStatus(current.status))
+    await cancelSpendApprovals(tx, ctx, row, attribution);
   return row;
 }
 

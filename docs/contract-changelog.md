@@ -31,6 +31,43 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.11.0 — 2026-11-09 — Spend approvals past the soft threshold
+
+**Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.10 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
+
+- `profileBudgetsSchema.approveSpendPastThreshold`: boolean, default false (parsed as false from
+  stored profiles). Optional in `updateRuntimeProfileCommandSchema.budgets`; omitting it keeps the
+  stored value, so an older editor never turns it off.
+- `taskObjectSchema.approveSpendPastThreshold`: boolean, false when missing (events stored before
+  1.11.0). Copied from the coordinator's profile when the task is created, like `spendCapUsd`;
+  optional in `createTaskCommandObjectSchema` (omitted: the profile's) and in
+  `updateTaskCommandSchema` (PATCH). Not in the template create command: a task started from a
+  template takes the coordinator's profile's.
+- `approvalSchema` is a union on `kind`: `toolApprovalSchema` (`kind: "tool"`, today's shape; a
+  record without `kind` parses as it, so stored events still parse) and `spendApprovalSchema`
+  (`kind: "spend"`, `id`, `taskId`, `sessionId`, `runId`, `botId`, `scope`: `task` | `bot`
+  (`SPEND_APPROVAL_SCOPES`), `spentUsd`, `capUsd`, `thresholdUsd`, `status`, `reason`, `createdAt`,
+  `decidedAt`). `pendingApprovalSchema` takes the same union (`pendingToolApprovalSchema`, whose
+  `kind` defaults to `tool`, and `pendingSpendApprovalSchema`, with `scope`, the amounts, a
+  `summary` from `spendApprovalSummary` ("Spend past $4.00 of the task's $5.00 cap") and
+  `shownInFull: true`). `pendingApprovalOf` takes either kind; `shownInFull` takes a tool approval.
+- `formatUsd` and `formatSpendAgainstCap` moved to a module of their own (`money.ts`), still
+  exported from the package as before.
+- Reused unchanged: `approval.requested` and `approval.updated`, `decideApprovalCommandSchema` and
+  `POST /api/tasks/:taskId/approvals/:approvalId`, `APPROVAL_NOT_PENDING`, `TASK_TERMINAL`,
+  `waitingFor: "approval"`, `spend.threshold` (still recorded first) and the rule matchers. No new
+  event and no new error code.
+
+**Action required (frontend):** none beyond this change: the task chat shows a spend approval's
+card (Approve, Deny, Raise cap…) and its states, the header and lists count it as an approval
+waiting, the chat task card offers Approve from its summary, and the profile editor, new-task
+dialog and cap dialog carry "Ask before spending past 80% of a cap". The demo mirrors it.
+**Action required (backend):** none beyond this change: the engine holds a model call past the
+threshold of a cap whose option is on and that no approval covers, the API answers spend
+approvals with the existing route, and PATCH or a profile change expires a pending one. The
+migration adds `approvals.kind`, the `spend` column, a check per kind, the one-pending-spend-per-cap
+index and `tasks.approve_spend_past_threshold`.
+
 ## 1.10.0 — 2026-11-03 — Event retention and payload limits
 
 **Changed by:** backend and frontend ([#32](https://github.com/LemonPhase/jj-bot/issues/32), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/32#issuecomment-6613592061)) · **Compatibility:** additive; a compacted task's log has gaps in its sequences at or below `compactedThrough`, which a reader that assumed gap-free logs must allow

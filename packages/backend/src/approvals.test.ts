@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Approval, TaskView } from "@jj/contracts";
+import type { ToolApproval as Approval, TaskView } from "@jj/contracts";
 import { approvals, chatTaskUpdates, jobs, tasks as tasksTable } from "@jj/db";
 import {
   INTERRUPTED_BY_RESTART,
@@ -113,7 +113,9 @@ async function guardedBot(engine: TestEngine["engine"], base = "Ada") {
 }
 
 const pending = (view: TaskView) =>
-  view.approvals.find((approval) => approval.status === "pending");
+  view.approvals.find((approval) => approval.status === "pending") as
+    | Approval
+    | undefined;
 
 /** Starts a task whose coordinator's first call is held; returns once it waits. */
 async function heldTask(engine: TestEngine["engine"], goal = "Push the work") {
@@ -218,7 +220,9 @@ describe("approvals", () => {
       status: "approved",
       outcome: { ok: true, exitCode: 0, interrupted: "no" },
     });
-    expect(done.approvals[0]?.startedAt).not.toBeNull();
+    expect(
+      (done.approvals[0] as Approval | undefined)?.startedAt,
+    ).not.toBeNull();
     expect(
       done.events.filter(
         (event) =>
@@ -298,7 +302,7 @@ describe("approvals", () => {
     );
     expect(seen).toBe(INTERRUPTED_BY_RESTART);
     expect(await pushes(root, task.id)).toBe(0);
-    expect(view.approvals[0]?.outcome).toEqual({
+    expect((view.approvals[0] as Approval | undefined)?.outcome).toEqual({
       ok: false,
       interrupted: "unknown",
     });
@@ -369,7 +373,7 @@ describe("approvals", () => {
     const view = await engine.engine.tasks.get(task.id);
     const row = view.approvals.find((a) => a.id === approval.id);
     expect(row?.status).toBe("approved");
-    expect(row?.startedAt).not.toBeNull();
+    expect((row as Approval | undefined)?.startedAt).not.toBeNull();
   });
 
   it("leaves an approval answered before it started alone on a goal change or a stop", async () => {
@@ -436,7 +440,7 @@ describe("approvals", () => {
       "Not run: the user denied this call. Their reason: push to a branch instead",
     );
     expect(await pushes(root, task.id)).toBe(0);
-    expect(view.approvals[0]?.outcome).toBeNull();
+    expect((view.approvals[0] as Approval | undefined)?.outcome).toBeNull();
   });
 
   it("redacts a stored secret's value from the approval, its events and the chat update", async () => {
@@ -1007,6 +1011,7 @@ describe("approvals", () => {
       messageId: null,
       answeredAt: null,
       approvalId: "appr_1",
+      approvalKind: "tool" as const,
       title: "Push",
       status: "waiting" as const,
       cancelRequestedAt: null,

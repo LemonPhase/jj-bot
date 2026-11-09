@@ -48,6 +48,7 @@ const taskQueued: Task = {
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: null,
+  approveSpendPastThreshold: false,
   templateId: null,
   createdAt: time(1),
   updatedAt: time(1),

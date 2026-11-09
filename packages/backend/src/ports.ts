@@ -142,10 +142,12 @@ export interface RunHooks {
   spillOutput(text: string, label: string): Promise<string>;
   /**
    * Asked before every model call, compaction summaries included: why the
-   * call may not start (a spend cap), or undefined. A refused call is never
-   * sent; the run ends with `budget` and `limit: "spend"`.
+   * call may not start (a spend cap), `{ hold }` when it waits for a spend
+   * approval the engine recorded, or undefined. A refused or held call is
+   * never sent and writes no transcript entry; a refusal ends the run with
+   * `budget` and `limit: "spend"`, a hold with `held`.
    */
-  admitModelCall?(): Promise<string | undefined>;
+  admitModelCall?(): Promise<string | { hold: string } | undefined>;
   /** Asked before each tool call runs (absent: every call runs). A rejection ends the run. */
   reviewToolCall?(call: PendingToolCall): Promise<ToolCallVerdict>;
   /**

@@ -24,6 +24,7 @@ import {
 const at = "2026-11-03T10:00:00.000Z";
 
 const approval: Approval = {
+  kind: "tool",
   id: "ap1",
   taskId: "t1",
   sessionId: "s1",
@@ -57,6 +58,7 @@ const task = {
   cancelReason: null,
   cancelRequestedAt: null,
   spendCapUsd: 5,
+  approveSpendPastThreshold: false,
   templateId: null,
   verificationPlan: null,
   createdAt: at,

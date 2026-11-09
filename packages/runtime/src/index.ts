@@ -4,6 +4,7 @@ export * from "./chat";
 export * from "./compaction";
 export * from "./errors";
 export * from "./executor";
+export type { ModelCallAdmission } from "./gate";
 export { NOT_STARTED_TEXT } from "./loop";
 export * from "./mcp";
 export * from "./models";

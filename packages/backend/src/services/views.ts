@@ -4,6 +4,7 @@
 import {
   addUsage,
   emptyUsage,
+  type PendingApproval,
   pendingApprovalOf,
   questionExcerpt,
   TASK_VIEW_EVENT_LIMIT,
@@ -303,8 +304,10 @@ export async function taskSummaries(
       // the call was held is not shown either.
       pendingApprovals: pending
         .filter((approval) => approval.taskId === row.id)
-        .map((approval) => {
+        .map((approval): PendingApproval => {
           const pendingOne = pendingApprovalOf(toApproval(approval));
+          // A spend approval holds amounts only: nothing to redact.
+          if (pendingOne.kind === "spend") return pendingOne;
           const summary = redact(pendingOne.summary);
           // A summary redaction changed no longer shows what runs.
           return {

@@ -96,6 +96,7 @@ export function toTask(row: TaskRow, participantBotIds: string[]): Task {
     cancelRequestedAt: isoOrNull(row.cancelRequestedAt),
     verificationPlan: planOf(row.verificationPlan),
     spendCapUsd: row.spendCapUsd,
+    approveSpendPastThreshold: row.approveSpendPastThreshold,
     templateId: row.templateId,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),

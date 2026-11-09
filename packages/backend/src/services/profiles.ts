@@ -28,6 +28,7 @@ import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { profileSettings, toProfile } from "../records";
+import { recheckSpendApprovals } from "./spend-approvals";
 
 /** Validates a spec with its driver: PROFILE_UNSUPPORTED with the driver's message on refusal. */
 export function validateSpec(ctx: EngineContext, spec: unknown): SandboxSpec {
@@ -229,6 +230,8 @@ export async function createProfile(
         updatedAt: now,
       })
       .returning();
+    // A new default gives the bots without a profile its budgets.
+    if (command.isDefault) await recheckSpendApprovals(tx, ctx);
     await hint(tx, { type: "profiles.changed" });
     return inserted as RuntimeProfileRow;
   });
@@ -313,6 +316,10 @@ export async function updateProfile(
       .where(eq(runtimeProfiles.id, id))
       .returning();
     if (!updated) throw notFound("Runtime profile", id);
+    // A bot's daily cap or its question past the threshold may have
+    // changed: a pending spend approval about the old one expires.
+    if (command.budgets !== undefined || command.isDefault !== undefined)
+      await recheckSpendApprovals(tx, ctx);
     await hint(tx, { type: "profiles.changed" });
     return updated;
   });

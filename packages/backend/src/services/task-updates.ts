@@ -6,6 +6,7 @@
 // message; the reply, or the engine's fallback when the reply fails, marks it
 // answered in the transaction that stores the message, so it is told once.
 import {
+  type ApprovalKind,
   type ApprovalStatus,
   approvals,
   type ChatTaskUpdateRow,
@@ -95,6 +96,8 @@ export type PendingUpdate = ChatTaskUpdateRow & {
   cancelRequestedAt: Date | null;
   /** An `approval` update's approval status now. */
   approvalStatus: ApprovalStatus | null;
+  /** An `approval` update's approval kind: a held call or held spend. */
+  approvalKind: ApprovalKind | null;
 };
 
 const pendingColumns = {
@@ -103,6 +106,7 @@ const pendingColumns = {
   status: tasks.status,
   cancelRequestedAt: tasks.cancelRequestedAt,
   approvalStatus: approvals.status,
+  approvalKind: approvals.kind,
 };
 
 const toPending = (row: {
@@ -111,12 +115,14 @@ const toPending = (row: {
   status: TaskStatus;
   cancelRequestedAt: Date | null;
   approvalStatus: ApprovalStatus | null;
+  approvalKind: ApprovalKind | null;
 }): PendingUpdate => ({
   ...row.update,
   title: row.title,
   status: row.status,
   cancelRequestedAt: row.cancelRequestedAt,
   approvalStatus: row.approvalStatus,
+  approvalKind: row.approvalKind,
 });
 
 /**
@@ -194,17 +200,20 @@ function statusNow(update: PendingUpdate): string {
 }
 
 /**
- * What an update tells: its event, or `capped` for a task that waits because
- * a spend cap stopped it (its text carries the engine's `Stopped: …` line).
+ * What an update tells: its event, `capped` for a task that waits because a
+ * spend cap stopped it (its text carries the engine's `Stopped: …` line),
+ * or `spend` for an approval to spend past a cap's threshold.
  */
-type UpdateKind = TaskUpdateEvent | "capped";
+type UpdateKind = TaskUpdateEvent | "capped" | "spend";
 
-const CAP_STOP = /^Stopped: .*spend cap/m;
+const CAP_STOP = /^Stopped: .*(spend cap|cap was not approved)/m;
 
 const kindOf = (update: PendingUpdate): UpdateKind =>
   update.event === "waiting" && CAP_STOP.test(update.text)
     ? "capped"
-    : update.event;
+    : update.event === "approval" && update.approvalKind === "spend"
+      ? "spend"
+      : update.event;
 
 const HAPPENED: Record<UpdateKind, string> = {
   completed: "completed",
@@ -213,6 +222,8 @@ const HAPPENED: Record<UpdateKind, string> = {
   capped: "is waiting for the user: a spend cap stopped it",
   approval:
     "has a call waiting for the user's approval: it has not run, and its session waits for the answer",
+  spend:
+    "passed 80% of a spend cap and asks the user before spending more: no model call it covers starts until they answer",
 };
 
 const BODY: Record<UpdateKind, string> = {
@@ -221,6 +232,7 @@ const BODY: Record<UpdateKind, string> = {
   waiting: "Your question",
   capped: "Why it stopped",
   approval: "The call",
+  spend: "The spend",
 };
 
 const NEXT: Record<UpdateKind, string> = {
@@ -234,6 +246,8 @@ const NEXT: Record<UpdateKind, string> = {
     "Tell the user which cap stopped it and what lets it go on, in your own words and briefly; the task's card is shown under your message.",
   approval:
     "Tell the user, in your own words and briefly, what waits for their approval; the task's card under your message has Approve and Deny buttons. Only the user can answer it: you cannot approve or deny it, and `send_to_task` does not answer it.",
+  spend:
+    "Tell the user, in your own words and briefly, how much the task spent and that it waits for their go-ahead to continue up to the cap; the task's card under your message has Approve and Deny buttons. Only the user can answer it: you cannot approve or deny it, and `send_to_task` does not answer it.",
 };
 
 /** The input of the reply that tells the user about an update. */
@@ -262,6 +276,7 @@ const PLAIN: Record<UpdateKind, string> = {
   waiting: "is waiting for your answer",
   capped: "stopped at a spend cap and is waiting for you",
   approval: "has a call waiting for your approval",
+  spend: "passed 80% of a spend cap and waits for your go-ahead",
 };
 
 const PLAIN_BODY: Record<UpdateKind, string> = {
@@ -270,6 +285,7 @@ const PLAIN_BODY: Record<UpdateKind, string> = {
   waiting: "Question",
   capped: "Why it stopped",
   approval: "The call (approve or deny it on the task's card)",
+  spend: "The spend (approve or deny it on the task's card)",
 };
 
 /** The message the engine posts when the bot's reply to an update fails. */

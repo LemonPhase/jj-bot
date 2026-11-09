@@ -15,12 +15,12 @@ import {
   claimApproval,
   decisionInput,
   notRunText,
-  pendingApproval,
   pendingApprovals,
   requestApproval,
   unresolvedDecision,
 } from "../services/approvals";
 import { lockTask, updateSession, updateTask } from "../services/sessions";
+import { holdingApproval } from "../services/spend-approvals";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import { closeRun, closeStaleRun } from "./runs";
@@ -113,9 +113,10 @@ export async function parkHeld(
 }
 
 /**
- * At a run's launch: a session that holds a pending approval does not run.
- * It waits for the answer (again, after a crash that left its run open),
- * and its inbox waits with it. True when it was parked.
+ * At a run's launch: a session that a pending approval holds (its own held
+ * call, or a spend approval that covers it) does not run. It waits for the
+ * answer (again, after a crash that left its run open), and its inbox waits
+ * with it. True when it was parked.
  */
 export async function parkIfHeld(
   tx: Tx,
@@ -123,7 +124,8 @@ export async function parkIfHeld(
   session: SessionRow,
   stale: RunRow | undefined,
 ): Promise<boolean> {
-  if (!(await pendingApproval(tx, session.id))) return false;
+  const holding = await holdingApproval(tx, session);
+  if (!holding) return false;
   if (stale)
     await closeStaleRun(
       tx,
@@ -131,7 +133,9 @@ export async function parkIfHeld(
       session,
       stale,
       "failed",
-      "Interrupted by a worker restart; the session waits for the user's approval of its held call.",
+      holding.kind === "spend"
+        ? "Interrupted by a worker restart; the session waits for the user's approval to spend past the threshold."
+        : "Interrupted by a worker restart; the session waits for the user's approval of its held call.",
     );
   if (session.status !== "waiting" || session.waitingFor !== "approval")
     await updateSession(tx, ctx, session, {

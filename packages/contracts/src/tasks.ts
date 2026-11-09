@@ -129,6 +129,14 @@ export const taskObjectSchema = z.object({
    */
   spendCapUsd: spendCapUsdSchema.nullable().default(null),
   /**
+   * Ask the user before the task spends past SPEND_SOFT_THRESHOLD (80%) of
+   * its cap: model calls wait for a spend approval there. Copied from the
+   * coordinator's profile (`budgets.approveSpendPastThreshold`) when the task
+   * is created, unless the creator gives it; changed with `PATCH
+   * /api/tasks/:taskId`. Parsed as false from events stored before it.
+   */
+  approveSpendPastThreshold: z.boolean().default(false),
+  /**
    * The task template the task was started from (`POST
    * /api/task-templates/:id/tasks`), null for one created otherwise.
    * Attribution only: deleting the template leaves it set. Parsed as null
@@ -280,6 +288,8 @@ export const createTaskCommandObjectSchema = z.object({
   verificationPlan: verificationPlanSchema.nullable().optional(),
   /** Omitted: the coordinator's profile's `budgets.maxUsdPerTask`. Null: no cap. */
   spendCapUsd: spendCapUsdSchema.nullable().optional(),
+  /** Omitted: the coordinator's profile's `budgets.approveSpendPastThreshold`. */
+  approveSpendPastThreshold: z.boolean().optional(),
 });
 
 /** The command with its coordinator added to the participants when missing, first. */
@@ -355,13 +365,17 @@ export const updateTaskCommandObjectSchema = z
   .object({
     /** The new spend cap (null for none). It may be below what the task has spent: no further call starts. */
     spendCapUsd: spendCapUsdSchema.nullable(),
+    /** Ask before spending past 80% of the cap; omitted keeps the stored value. */
+    approveSpendPastThreshold: z.boolean(),
   })
   .partial();
 
 /**
  * `PATCH /api/tasks/:taskId`. Changing the cap does not continue a task that
- * stopped at it; a user message does. A cancelled task, or one with
- * `cancelRequestedAt` set, answers 409 TASK_TERMINAL.
+ * stopped at it; a user message does. Changing or clearing the cap, or
+ * turning `approveSpendPastThreshold` off, expires the task's pending spend
+ * approval of its cap, and the sessions it held check again. A cancelled
+ * task, or one with `cancelRequestedAt` set, answers 409 TASK_TERMINAL.
  */
 export const updateTaskCommandSchema = updateTaskCommandObjectSchema.refine(
   hasSomeField,
@@ -380,8 +394,9 @@ export const taskSummaryObjectSchema = taskObjectSchema.extend({
    */
   question: z.string().min(1).max(TASK_QUESTION_LIMIT).optional(),
   /**
-   * The task's calls waiting for the user's approval, oldest first: at most
-   * one per session. Parsed as empty from servers before approvals.
+   * The task's approvals waiting for the user, oldest first: at most one
+   * tool call per session, and one spend approval per cap value. Parsed as
+   * empty from servers before approvals.
    */
   pendingApprovals: z.array(pendingApprovalSchema).default(() => []),
   /**

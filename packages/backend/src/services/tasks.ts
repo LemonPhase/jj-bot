@@ -39,7 +39,8 @@ import {
   updateSession,
   updateTask,
 } from "./sessions";
-import { assertWithinCaps, taskCapFor } from "./spend";
+import { assertWithinCaps, taskSpendFor } from "./spend";
+import { recheckSpendApprovals } from "./spend-approvals";
 
 /** A title from the goal's first line when the creator gives none. */
 export function deriveTitle(goal: string): string {
@@ -62,6 +63,8 @@ export interface NewTaskInput {
   verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's `maxUsdPerTask`. Null: no cap. */
   spendCapUsd?: number | null;
+  /** Omitted: the coordinator's profile's `approveSpendPastThreshold`. */
+  approveSpendPastThreshold?: boolean;
   /** The task template the user started the task from. */
   templateId?: string | null;
 }
@@ -77,10 +80,11 @@ export async function createTaskTx(
   input: NewTaskInput,
 ): Promise<{ task: TaskRow; root: SessionRow }> {
   await assertWithinCaps(tx, ctx, { botId: input.coordinatorBotId });
+  const fromProfile = await taskSpendFor(tx, input.coordinatorBotId);
   const spendCapUsd =
-    input.spendCapUsd !== undefined
-      ? input.spendCapUsd
-      : await taskCapFor(tx, input.coordinatorBotId);
+    input.spendCapUsd !== undefined ? input.spendCapUsd : fromProfile.capUsd;
+  const approveSpendPastThreshold =
+    input.approveSpendPastThreshold ?? fromProfile.approveSpendPastThreshold;
   const now = ctx.clock();
   const [task] = await tx
     .insert(tasks)
@@ -93,6 +97,7 @@ export async function createTaskTx(
       createdFromMessageId: input.createdFromMessageId ?? null,
       verificationPlan: input.verificationPlan ?? null,
       spendCapUsd,
+      approveSpendPastThreshold,
       templateId: input.templateId ?? null,
       createdAt: now,
       updatedAt: now,
@@ -194,8 +199,10 @@ export async function createTask(
 }
 
 /**
- * `PATCH /api/tasks/:id`: the spend cap. It does not continue a task that
- * stopped at its cap; the user's next message does.
+ * `PATCH /api/tasks/:id`: the spend cap and whether to ask before spending
+ * past 80% of it. It does not continue a task that stopped at its cap; the
+ * user's next message does. A change that leaves the task's pending spend
+ * approval about a cap value it no longer has, or asks no more, expires it.
  */
 export async function updateTaskSettings(
   ctx: EngineContext,
@@ -207,12 +214,20 @@ export async function updateTaskSettings(
     const task = await lockTask(tx, taskId);
     if (!task) throw notFound("Task", taskId);
     assertOpen(task);
-    if (
-      command.spendCapUsd === undefined ||
-      command.spendCapUsd === task.spendCapUsd
-    )
-      return task;
-    return updateTask(tx, ctx, task, { spendCapUsd: command.spendCapUsd });
+    const patch = {
+      ...(command.spendCapUsd !== undefined &&
+      command.spendCapUsd !== task.spendCapUsd
+        ? { spendCapUsd: command.spendCapUsd }
+        : {}),
+      ...(command.approveSpendPastThreshold !== undefined &&
+      command.approveSpendPastThreshold !== task.approveSpendPastThreshold
+        ? { approveSpendPastThreshold: command.approveSpendPastThreshold }
+        : {}),
+    };
+    if (Object.keys(patch).length === 0) return task;
+    const updated = await updateTask(tx, ctx, task, patch);
+    await recheckSpendApprovals(tx, ctx, { taskId });
+    return updated;
   });
   return { task: toTask(row, await participantIds(ctx.db, taskId)) };
 }

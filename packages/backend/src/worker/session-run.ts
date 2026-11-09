@@ -171,9 +171,12 @@ async function startRun(
     // Only briefs, results, steering and an approval's answer start a run. A
     // plain message waiting in the inbox rides along with a run that happens
     // anyway; it never makes a coalesced wake launch one (notification semantics).
+    // A session still waiting for approval here holds nothing any more (a
+    // spend approval it waited for was answered or expired): it resumes.
     const hasInput =
       (await hasContinuingInput(tx, sessionId)) ||
-      (await hasDecision(tx, sessionId));
+      (await hasDecision(tx, sessionId)) ||
+      (session.status === "waiting" && session.waitingFor === "approval");
     const recovering =
       stale !== undefined ||
       session.status === "running" ||

@@ -7,6 +7,7 @@ import type { ModelRef, ToolName, Usage } from "@jj/contracts";
 import type { Interrupted, Sandbox, SandboxLimits } from "@jj/sandbox";
 import type { TSchema } from "typebox";
 import type { RunErrorCode } from "./errors";
+import type { ModelCallAdmission } from "./gate";
 import type { McpToolBinding } from "./mcp/adapter";
 import type { CutEdges } from "./tools";
 
@@ -176,10 +177,12 @@ export interface RunHooks {
   /**
    * Asked before every model call of the run, compaction summaries and
    * overflow retries included. Returns why the call may not start (a spend
-   * cap was reached), or undefined to let it go. A refused call is never sent
-   * and reports no events; the run ends with `budget` (`limit: "spend"`).
+   * cap was reached), `{ hold }` when it waits for the user's approval (the
+   * engine recorded one), or undefined to let it go. A refused or held call
+   * is never sent, reports no events and writes no transcript entry; a
+   * refusal ends the run with `budget` (`limit: "spend"`), a hold `held`.
    */
-  admitModelCall?(): Promise<string | undefined>;
+  admitModelCall?(): Promise<ModelCallAdmission>;
   /**
    * Asked before each tool call runs, after its arguments are validated
    * (absent: every call runs). See `ToolCallVerdict`. A rejection ends the
@@ -277,7 +280,11 @@ export type RunOutcome =
   | { kind: "ended"; finalText: string }
   /** Woken with no inputs and an empty inbox: nothing was run. */
   | { kind: "idle" }
-  /** A call waits for the user's approval (`reviewToolCall` held it); the run ended after its batch. */
+  /**
+   * A call waits for the user's approval: `reviewToolCall` held a tool call
+   * (the run ended after its batch), or `admitModelCall` held a model call
+   * (the run ended before it, without making it).
+   */
   | { kind: "held" }
   /**
    * The signal was aborted, or the sandbox was released under the run

@@ -31,6 +31,7 @@ import {
   type SpendStop,
   spendStop,
 } from "../services/spend";
+import { spendApprovalVerdict } from "../services/spend-approvals";
 import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import { hasContinuingInput, isContinuing } from "./runs";
@@ -147,7 +148,7 @@ export interface RunContext {
   redact: Redactor;
   /** Verification gate runs in this run (gate.ts); capped by `maxVerificationAttempts`. */
   verificationAttempts: number;
-  /** The cap that refused this run's model call, once one did. */
+  /** The cap (or denied spend approval) that refused this run's model call, once one did. */
   spendStop?: SpendStop;
   /**
    * The run's polling turns since it last did work or its inbox last
@@ -415,21 +416,40 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
 /**
  * Before a model call: refuses it at a spend cap (recording `spend.capped`),
  * and records `spend.threshold` when the task's spend passed the soft one.
+ * Past the threshold of a cap whose option asks first, it holds the call for
+ * the cap's spend approval (`{ hold }`: the run ends `held` without making
+ * it), or refuses it as at a cap when the user denied it.
  */
-async function admitModelCall(rc: RunContext): Promise<string | undefined> {
+async function admitModelCall(
+  rc: RunContext,
+): Promise<string | { hold: string } | undefined> {
   return writeRun(rc, async (tx) => {
     const attribution = attributionOf(rc);
-    const stop = await spendStop(tx, rc.deps.ctx, {
+    const { ctx } = rc.deps;
+    const stop = await spendStop(tx, ctx, {
       taskId: rc.task.id,
       botId: rc.bot.id,
     });
-    if (!stop) {
-      await noteThreshold(tx, rc.deps.ctx, rc.task.id, attribution);
-      return undefined;
+    if (stop) {
+      rc.spendStop = stop;
+      await noteCapped(tx, ctx, rc.task.id, stop, attribution);
+      return stop.message;
     }
-    rc.spendStop = stop;
-    await noteCapped(tx, rc.deps.ctx, rc.task.id, stop, attribution);
-    return stop.message;
+    await noteThreshold(tx, ctx, rc.task.id, attribution);
+    const verdict = await spendApprovalVerdict(tx, ctx, {
+      taskId: rc.task.id,
+      session: rc.session,
+      runId: rc.run.id,
+      attribution,
+    });
+    if (verdict.kind === "hold") return { hold: verdict.text };
+    if (verdict.kind === "denied") {
+      // A denial stops the run as the cap would, at the threshold; it is no
+      // cap stop, so no `spend.capped` is recorded.
+      rc.spendStop = verdict.stop;
+      return verdict.stop.message;
+    }
+    return undefined;
   });
 }
 

@@ -86,9 +86,15 @@ export const taskTemplateSchema = taskTemplateObjectSchema.superRefine(
   coordinatorParticipates,
 );
 
-/** The create command before participant normalization: the create-task fields, with a title. */
+/**
+ * The create command before participant normalization: the create-task
+ * fields, with a title. A task started from a template takes the
+ * coordinator's profile's `approveSpendPastThreshold`.
+ */
 export const createTaskTemplateCommandObjectSchema =
-  createTaskCommandObjectSchema.extend({ title: titleSchema });
+  createTaskCommandObjectSchema
+    .omit({ approveSpendPastThreshold: true })
+    .extend({ title: titleSchema });
 
 /**
  * `POST /api/task-templates`. The coordinator is added to the participants

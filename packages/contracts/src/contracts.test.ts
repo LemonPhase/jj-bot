@@ -76,6 +76,7 @@ const task = {
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: 5,
+  approveSpendPastThreshold: false,
   templateId: null,
   createdAt: at,
   updatedAt: at,
@@ -128,6 +129,7 @@ const artifact = {
 };
 
 const approval = {
+  kind: "tool" as const,
   id: "ap1",
   taskId: "t1",
   sessionId: "s1",
@@ -286,7 +288,7 @@ const loneSurrogate =
 
 describe("contracts 1.0", () => {
   it("is version 1.10.0", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.0");
+    expect(CONTRACT_VERSION).toBe("1.11.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {
@@ -896,6 +898,7 @@ describe("spend caps and usage (1.3.0)", () => {
       maxRunMinutes: 5,
       maxUsdPerTask: 5,
       maxUsdPerBotPerDay: 20,
+      approveSpendPastThreshold: false,
     });
     expect(
       profileBudgetsSchema.parse({

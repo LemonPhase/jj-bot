@@ -30,9 +30,10 @@ import type { EngineContext } from "../context";
 import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import { planOf, toMessage } from "../records";
-import { expireApprovals, pendingApproval } from "./approvals";
+import { expireApprovals } from "./approvals";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
+import { endSpendStretch, holdingApproval } from "./spend-approvals";
 import { describePlan } from "./verification";
 
 export interface PostMessageInput {
@@ -224,9 +225,10 @@ export async function continueTask(
   });
   let root = await rootSession(tx, task.id);
   if (!root) throw new Error(`Task ${task.id} has no coordinator session.`);
-  // A coordinator holding a call for approval reads the message with the
-  // user's answer: nothing reopens, and the message waits in its inbox.
-  if (await pendingApproval(tx, root.id)) return { task, root };
+  // A coordinator an approval holds (its own call, or spend past a
+  // threshold) reads the message with the user's answer: nothing reopens,
+  // and the message waits in its inbox.
+  if (await holdingApproval(tx, root)) return { task, root };
   if (
     task.status === "waiting" ||
     task.status === "completed" ||
@@ -245,6 +247,8 @@ export async function continueTask(
       payload: { previous },
       ...attribution,
     });
+    // A new stretch of work: a denied spend approval asks again.
+    await endSpendStretch(tx, ctx, task.id);
   }
   if (isFinishedStatus(root.status))
     root = await updateSession(
