@@ -14,6 +14,7 @@ import {
   SPEND_SOFT_THRESHOLD,
   type SpendApproval,
   type SpendApprovalScope,
+  type SpendExpiryCause,
 } from "@jj/contracts";
 import {
   type ApprovalRow,
@@ -65,6 +66,8 @@ export function toSpendApproval(row: ApprovalRow): SpendApproval {
     thresholdUsd: spend.thresholdUsd,
     status: row.status,
     reason: row.reason,
+    expiredBecause:
+      row.status === "expired" ? (spend.expiredBecause ?? null) : null,
     createdAt: row.createdAt.toISOString(),
     decidedAt: isoOrNull(row.decidedAt),
   };
@@ -376,27 +379,46 @@ export async function recheckSpendApprovals(
       .for("update");
     if (!task || row?.status !== "pending") continue;
     const spend = spendOf(row);
-    let reason: string | undefined;
+    let expiry: { cause: SpendExpiryCause; reason: string } | undefined;
     if (spend.scope === "task") {
       if (task.spendCapUsd === null)
-        reason = "the task's spend cap was removed before the user answered.";
+        expiry = {
+          cause: "cap_removed",
+          reason: "the task's spend cap was removed before the user answered.",
+        };
       else if (task.spendCapUsd !== spend.capUsd)
-        reason = `the task's spend cap changed to ${formatUsd(task.spendCapUsd)} before the user answered.`;
+        expiry = {
+          cause: "cap_changed",
+          reason: `the task's spend cap changed to ${formatUsd(task.spendCapUsd)} before the user answered.`,
+        };
       else if (!task.approveSpendPastThreshold)
-        reason = `asking before spending past ${percent} of the cap was turned off before the user answered.`;
+        expiry = {
+          cause: "asking_turned_off",
+          reason: `asking before spending past ${percent} of the cap was turned off before the user answered.`,
+        };
     } else {
       const bot = await botCapUsd(tx, row.botId);
       if (bot.capUsd === null)
-        reason = `${bot.name}'s daily spend cap was removed before the user answered.`;
+        expiry = {
+          cause: "cap_removed",
+          reason: `${bot.name}'s daily spend cap was removed before the user answered.`,
+        };
       else if (bot.capUsd !== spend.capUsd)
-        reason = `${bot.name}'s daily spend cap changed to ${formatUsd(bot.capUsd)} before the user answered.`;
+        expiry = {
+          cause: "cap_changed",
+          reason: `${bot.name}'s daily spend cap changed to ${formatUsd(bot.capUsd)} before the user answered.`,
+        };
       else if (!bot.approveSpendPastThreshold)
-        reason = `asking before spending past ${percent} of ${bot.name}'s cap was turned off before the user answered.`;
+        expiry = {
+          cause: "asking_turned_off",
+          reason: `asking before spending past ${percent} of ${bot.name}'s cap was turned off before the user answered.`,
+        };
     }
-    if (!reason) continue;
+    if (!expiry) continue;
     const expired = await updateApproval(tx, ctx, row, {
       status: "expired",
-      reason,
+      reason: expiry.reason,
+      spend: { ...spend, expiredBecause: expiry.cause },
       decidedAt: ctx.clock(),
     });
     if (expired) woken.add(row.taskId);
@@ -443,6 +465,7 @@ export async function expireReachedCaps(
       await updateApproval(tx, ctx, row, {
         status: "expired",
         reason,
+        spend: { ...spend, expiredBecause: "cap_reached" },
         decidedAt: ctx.clock(),
       })
     )

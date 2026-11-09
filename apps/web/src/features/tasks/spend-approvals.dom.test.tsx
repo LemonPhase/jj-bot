@@ -47,6 +47,7 @@ const spend = (patch: Partial<SpendApproval> = {}): SpendApproval => ({
   thresholdUsd: 4,
   status: "pending",
   reason: null,
+  expiredBecause: null,
   createdAt: at,
   decidedAt: null,
   ...patch,
@@ -206,14 +207,24 @@ describe("a spend approval's card", () => {
           status: "expired",
           reason:
             "the task's spend cap changed to $8.00 before the user answered.",
+          expiredBecause: "cap_changed",
         },
         "expired · cap changed",
       ],
       [
         {
           status: "expired",
+          reason: "the task's spend cap was removed before the user answered.",
+          expiredBecause: "cap_removed",
+        },
+        "expired · cap removed",
+      ],
+      [
+        {
+          status: "expired",
           reason:
             "asking before spending past 80% of the cap was turned off before the user answered.",
+          expiredBecause: "asking_turned_off",
         },
         "expired · question turned off",
       ],
@@ -222,8 +233,30 @@ describe("a spend approval's card", () => {
           status: "expired",
           reason:
             "the task reached its spend cap ($0.0512 of $0.05) before the user answered.",
+          expiredBecause: "cap_reached",
         },
         "expired · cap reached",
+      ],
+      // The label comes from the cause, never from the words of the reason.
+      [
+        {
+          scope: "bot",
+          status: "expired",
+          reason:
+            "Unreached's daily spend cap changed to $30.00 before the user answered.",
+          expiredBecause: "cap_changed",
+        },
+        "expired · cap changed",
+      ],
+      [
+        {
+          scope: "bot",
+          status: "expired",
+          reason:
+            "asking before spending past 80% of Turned Off's cap was turned off before the user answered.",
+          expiredBecause: "asking_turned_off",
+        },
+        "expired · question turned off",
       ],
       [{ status: "cancelled" }, "cancelled"],
     ];

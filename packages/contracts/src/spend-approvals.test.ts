@@ -12,6 +12,7 @@ import {
   pendingApprovalOf,
   pendingApprovalSchema,
   profileBudgetsSchema,
+  SPEND_EXPIRY_CAUSES,
   type SpendApproval,
   spendApprovalSummary,
   taskEventSchema,
@@ -36,6 +37,7 @@ const spend: SpendApproval = {
   thresholdUsd: 4,
   status: "pending",
   reason: null,
+  expiredBecause: null,
   createdAt: at,
   decidedAt: null,
 };
@@ -105,6 +107,22 @@ describe("spend approvals (1.13.0)", () => {
     expect(approvalSchema.safeParse(partial).success).toBe(false);
     expect(
       approvalSchema.safeParse({ ...spend, scope: "instance" }).success,
+    ).toBe(false);
+    // Why one expired is a value the contract lists.
+    for (const cause of SPEND_EXPIRY_CAUSES)
+      expect(
+        approvalSchema.parse({
+          ...spend,
+          status: "expired",
+          expiredBecause: cause,
+        }),
+      ).toMatchObject({ expiredBecause: cause });
+    expect(
+      approvalSchema.safeParse({
+        ...spend,
+        status: "expired",
+        expiredBecause: "reached",
+      }).success,
     ).toBe(false);
     // A tool record cannot pass as a spend one, nor the reverse.
     expect(

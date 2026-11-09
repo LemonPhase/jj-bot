@@ -1014,12 +1014,18 @@ export const approvals = pgTable(
   ],
 );
 
-/** `approvals.spend`: a spend approval's cap and amounts. */
+/** `approvals.spend`: a spend approval's cap and amounts, and why it expired. */
 export interface SpendApprovalColumn {
   scope: "task" | "bot";
   spentUsd: number;
   capUsd: number;
   thresholdUsd: number;
+  /** Set when it expires (`SpendExpiryCause` in the contracts). */
+  expiredBecause?:
+    | "cap_changed"
+    | "cap_removed"
+    | "asking_turned_off"
+    | "cap_reached";
 }
 
 export const jobs = pgTable(

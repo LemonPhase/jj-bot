@@ -96,6 +96,7 @@ type ApprovalPatch = Partial<
     ApprovalRow,
     | "status"
     | "reason"
+    | "spend"
     | "outcome"
     | "decidedAt"
     | "startedRunId"

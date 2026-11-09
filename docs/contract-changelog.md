@@ -46,8 +46,11 @@ rather than landing it and announcing it afterwards.
 - `approvalSchema` is a union on `kind`: `toolApprovalSchema` (`kind: "tool"`, today's shape; a
   record without `kind` parses as it, so stored events still parse) and `spendApprovalSchema`
   (`kind: "spend"`, `id`, `taskId`, `sessionId`, `runId`, `botId`, `scope`: `task` | `bot`
-  (`SPEND_APPROVAL_SCOPES`), `spentUsd`, `capUsd`, `thresholdUsd`, `status`, `reason`, `createdAt`,
-  `decidedAt`). `pendingApprovalSchema` takes the same union (`pendingToolApprovalSchema`, whose
+  (`SPEND_APPROVAL_SCOPES`), `spentUsd`, `capUsd`, `thresholdUsd`, `status`, `reason`,
+  `expiredBecause`, `createdAt`, `decidedAt`). `expiredBecause` says why an expired one expired, as
+  a value a client labels it by rather than by the words of `reason`: `cap_changed`, `cap_removed`,
+  `asking_turned_off` or `cap_reached` (`SPEND_EXPIRY_CAUSES`, `spendExpiryCauseSchema`); null in
+  every other status. `pendingApprovalSchema` takes the same union (`pendingToolApprovalSchema`, whose
   `kind` defaults to `tool`, and `pendingSpendApprovalSchema`, with `scope`, the amounts, a
   `summary` from `spendApprovalSummary` ("Spend past $4.00 of the task's $5.00 cap") and
   `shownInFull: true`). `pendingApprovalOf` takes either kind; `shownInFull` takes a tool approval.
@@ -64,7 +67,8 @@ waiting, the chat task card offers Approve from its summary, and the profile edi
 dialog and cap dialog carry "Ask before spending past 80% of a cap". The demo mirrors it.
 **Action required (backend):** none beyond this change: the engine holds a model call past the
 threshold of a cap whose option is on and that no approval covers, the API answers spend
-approvals with the existing route, and PATCH or a profile change expires a pending one. The
+approvals with the existing route, and PATCH, a profile or bot change, or spend reaching the cap
+expires a pending one with its `expiredBecause`. The
 migration adds `approvals.kind`, the `spend` column, a check per kind, the one-pending-spend-per-cap
 index and `tasks.approve_spend_past_threshold`.
 

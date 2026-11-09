@@ -404,6 +404,7 @@ describe("spend approvals past the soft threshold", () => {
       id: first.id,
       status: "expired",
       reason: "the task's spend cap changed to $0.08 before the user answered.",
+      expiredBecause: "cap_changed",
     });
     const expired = sequenceOf(again, first.id, "expired");
     expect(startedAfter(again, expired).length).toBeGreaterThan(0);
@@ -419,6 +420,7 @@ describe("spend approvals past the soft threshold", () => {
       status: "expired",
       reason:
         "asking before spending past 80% of the cap was turned off before the user answered.",
+      expiredBecause: "asking_turned_off",
     });
     expect(spendApprovals(capped)).toHaveLength(2);
   });
@@ -636,6 +638,7 @@ describe("spend approvals past the soft threshold", () => {
     expect(expired).toMatchObject({
       status: "expired",
       reason: expect.stringContaining("daily spend cap changed to $2.00"),
+      expiredBecause: "cap_changed",
     });
   });
 });
@@ -712,7 +715,11 @@ describe("a cap reached while the question waits", () => {
     );
     expect(slowed).toBe(true);
     const [approval] = spendApprovals(stopped);
-    expect(approval).toMatchObject({ status: "expired", capUsd: 0.05 });
+    expect(approval).toMatchObject({
+      status: "expired",
+      capUsd: 0.05,
+      expiredBecause: "cap_reached",
+    });
     expect(approval?.reason).toMatch(
       /^the task reached its spend cap \(\$0\.\d+ of \$0\.05\) before the user answered\.$/,
     );

@@ -8,6 +8,7 @@ import {
   MCP_TOOL_PREFIX,
   type PendingApproval,
   type SpendApproval,
+  type SpendExpiryCause,
   type TaskView,
   type ToolApproval,
 } from "@jj/contracts";
@@ -59,6 +60,14 @@ export function approvalState(approval: Approval): ApprovalState {
   }
 }
 
+/** An expired spend approval's state line, by why it expired. */
+const EXPIRED_TEXT: Record<SpendExpiryCause, string> = {
+  cap_changed: "expired · cap changed",
+  cap_removed: "expired · cap removed",
+  asking_turned_off: "expired · question turned off",
+  cap_reached: "expired · cap reached",
+};
+
 /**
  * A spend approval's state line: no model call it covers starts while it
  * waits; a denial stopped the task at the threshold; an expiry means the cap
@@ -81,11 +90,7 @@ export function spendApprovalState(approval: SpendApproval): ApprovalState {
       };
     case "expired":
       return {
-        text: approval.reason?.includes("turned off")
-          ? "expired · question turned off"
-          : approval.reason?.includes("reached")
-            ? "expired · cap reached"
-            : "expired · cap changed",
+        text: EXPIRED_TEXT[approval.expiredBecause ?? "cap_changed"],
         tone: "idle",
       };
     case "cancelled":

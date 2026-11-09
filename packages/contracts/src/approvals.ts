@@ -106,6 +106,20 @@ export const SPEND_APPROVAL_SCOPES = ["task", "bot"] as const;
 export const spendApprovalScopeSchema = z.enum(SPEND_APPROVAL_SCOPES);
 
 /**
+ * Why a spend approval expired: its cap changed (`cap_changed`) or was
+ * removed (`cap_removed`), asking past the threshold was turned off
+ * (`asking_turned_off`), or spend reached the cap while it waited
+ * (`cap_reached`).
+ */
+export const SPEND_EXPIRY_CAUSES = [
+  "cap_changed",
+  "cap_removed",
+  "asking_turned_off",
+  "cap_reached",
+] as const;
+export const spendExpiryCauseSchema = z.enum(SPEND_EXPIRY_CAUSES);
+
+/**
  * Spend past SPEND_SOFT_THRESHOLD of a cap, held for the user's go-ahead
  * because the cap's option (`approveSpendPastThreshold`: the task's for its
  * own cap, the bot's profile's for the bot's) is on. One per cap value:
@@ -116,8 +130,9 @@ export const spendApprovalScopeSchema = z.enum(SPEND_APPROVAL_SCOPES);
  *   for good on task scope, and for 24 hours after `decidedAt` on bot scope.
  * - `denied`: the sessions stop as at a cap; a message that continues the
  *   task asks again.
- * - `expired`: the cap changed, or the option was turned off, before the
- *   user answered; the sessions check again.
+ * - `expired`: the cap changed or was removed, the option was turned off,
+ *   or spend reached the cap, before the user answered (`expiredBecause`);
+ *   the sessions check again.
  * - `cancelled`: the task was stopped, or finished, before the user answered.
  *
  * It holds no call and no content: `sessionId`, `runId` and `botId` name the
@@ -140,6 +155,8 @@ export const spendApprovalSchema = z.object({
   status: approvalStatusSchema,
   /** Denied: the user's reason, if they gave one. Expired or cancelled: why. */
   reason: z.string().nullable(),
+  /** Expired: why, as a value (`reason` says it in words). Null in every other status. */
+  expiredBecause: spendExpiryCauseSchema.nullable(),
   createdAt: timestampSchema,
   decidedAt: timestampSchema.nullable(),
 });
@@ -464,6 +481,7 @@ export type ApprovalOutcome = z.infer<typeof approvalOutcomeSchema>;
 export type ToolApproval = z.infer<typeof toolApprovalSchema>;
 export type SpendApproval = z.infer<typeof spendApprovalSchema>;
 export type SpendApprovalScope = z.infer<typeof spendApprovalScopeSchema>;
+export type SpendExpiryCause = z.infer<typeof spendExpiryCauseSchema>;
 export type Approval = z.infer<typeof approvalSchema>;
 export type PendingToolApproval = z.infer<typeof pendingToolApprovalSchema>;
 export type PendingSpendApproval = z.infer<typeof pendingSpendApprovalSchema>;
