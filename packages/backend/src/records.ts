@@ -380,6 +380,7 @@ export function toMcpDiscovery(
     id: row.id,
     profileId: row.profileId,
     server: row.server,
+    configHash: row.configHash,
     status: row.status,
     error: row.error,
     stderrTail: row.stderrTail,

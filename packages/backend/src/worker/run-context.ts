@@ -35,6 +35,8 @@ import {
   expireReachedCaps,
   spendApprovalVerdict,
 } from "../services/spend-approvals";
+import type { McpConnections } from "./mcp-connections";
+import type { RunMcp } from "./mcp-tools";
 import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import { hasContinuingInput, isContinuing } from "./runs";
@@ -111,6 +113,8 @@ export class LeaseLostError extends Error {
 export interface WorkerDeps {
   ctx: EngineContext;
   sandboxes: TaskSandboxes;
+  /** The worker's MCP server connections, shared by its runs. */
+  mcp: McpConnections;
 }
 
 /** Runs `fn` in a transaction that first re-checks (and row-locks) the job lease. */
@@ -160,6 +164,8 @@ export interface RunContext {
   lookupTurns: number;
   /** The approval rules of the bot's own profile. */
   approvalRules?: readonly ApprovalRule[];
+  /** The session's MCP tools, for the approval review (mcp-tools.ts). */
+  mcp?: RunMcp;
   /** The approval this run recorded for a call it held, once it did. */
   heldApprovalId?: string;
   /** The held call whose decision this run applies, while its result is not stored. */

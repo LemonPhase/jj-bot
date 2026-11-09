@@ -173,6 +173,19 @@ describe("ActivityTrace", () => {
           /secret|list the files|cannot access/,
         );
   });
+
+  it("labels declared MCP tools mcp, so server-chosen names never become label values", () => {
+    const activity = new ActivityTrace(
+      tracer,
+      createMetrics(),
+      SPANS.sessionRun,
+      {},
+    );
+    activity.declareTools(["bash"], ["mcp__docs__search"]);
+    expect(activity.toolLabel("bash")).toBe("bash");
+    expect(activity.toolLabel("mcp__docs__search")).toBe("mcp");
+    expect(activity.toolLabel("mcp__docs__other")).toBe("other");
+  });
 });
 
 describe("sandbox starts", () => {

@@ -96,6 +96,7 @@ import {
   stageUpload,
   sweepStagedUploads,
   uploadLimits,
+  uploadReceiveMs,
   uploadSettings,
   uploadToTask,
 } from "./services/uploads";
@@ -256,6 +257,12 @@ export interface Engine {
     assertServed(): void;
     /** `POST /api/uploads`: every limit is checked before the body is read. */
     stage(input: StageUploadInput): Promise<{ upload: StagedUpload }>;
+    /**
+     * The longest an upload of this size may take to arrive, at the slowest
+     * pace staging accepts; null while uploads are off. The API gives an
+     * upload's request this long instead of its usual deadline.
+     */
+    receiveMs(sizeBytes: number): number | null;
     /** `DELETE /api/uploads/:id`. */
     delete(uploadId: string): Promise<void>;
   };
@@ -413,10 +420,15 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           streaming: true,
           verification: VERIFICATION_ENFORCED,
           secretStore: store.available,
-          // Profiles store MCP servers and discovery tests them, but no
-          // server reaches a session on this build, so bots cannot use one.
-          // Skills are refused.
-          mcp: { stdio: false, remote: false },
+          // A kind is reported only where sessions can really use it: a
+          // stdio server needs an available driver that can spawn it, a
+          // remote one JJ_MCP_REMOTE not off. Skills are refused.
+          mcp: {
+            stdio:
+              ctx.mcp !== undefined &&
+              drivers.some((info) => info.available && info.capabilities.spawn),
+            remote: ctx.mcp?.remote === true,
+          },
           skills: false,
           // Every worker runs the scheduler; `lastPassAt` says whether one does.
           schedules: true,
@@ -495,6 +507,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
         uploadSettings(ctx);
       },
       stage: (input) => stageUpload(ctx, input),
+      receiveMs: (sizeBytes) => uploadReceiveMs(ctx, sizeBytes),
       delete: (uploadId) => deleteStagedUpload(ctx, uploadId),
     },
     maintenance: {

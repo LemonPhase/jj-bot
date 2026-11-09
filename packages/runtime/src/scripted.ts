@@ -23,6 +23,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
+import { canonicalJson } from "@jj/contracts";
 
 /**
  * The scripted test model: a keyless, deterministic stand-in for a real model
@@ -39,7 +40,10 @@ import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-option
  *
  * A worker reads its brief from the system prompt's last `## Your brief`
  * section (the engine puts it there), else from its first message; the rest
- * of the system prompt is ignored. A coordinator whose goal quotes a question
+ * of the system prompt is ignored. A brief (or a solo coordinator's goal)
+ * that quotes an MCP call after "call", as in
+ * call `mcp__docs__search {"query":"x"}`, makes it once when the tool is
+ * declared. A coordinator whose goal quotes a question
  * after "ask" (ask `Which colour?`) asks it first and waits for the user.
  * Told that its verification checks did not pass, a coordinator runs the
  * fix its goal names after "if a check fails, fix it with" and completes again, or
@@ -328,6 +332,33 @@ export function scriptedCommands(brief: string): string[] {
   return [...brief.matchAll(/\brun `([^`\n]+)`/gi)]
     .map((match) => match[1]?.trim() ?? "")
     .filter(Boolean);
+}
+
+/**
+ * MCP calls a brief quotes after "call", as in
+ * call `mcp__docs__search {"query":"x"}`: the exposed tool name, then its
+ * arguments as a JSON object (none, or JSON that is not an object, is `{}`).
+ * A scripted worker makes each once, when the tool is declared, after the
+ * commands its brief asks it to run.
+ */
+export function scriptedToolCalls(brief: string): PlannedCall[] {
+  return [
+    ...brief.matchAll(/\bcall `(mcp__[A-Za-z0-9_]+)(?:\s+(\{[^`\n]*\}))?`/gi),
+  ].map((match) => {
+    let args: JsonObject = {};
+    try {
+      const parsed: unknown = JSON.parse(match[2] ?? "{}");
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        !Array.isArray(parsed)
+      )
+        args = parsed as JsonObject;
+    } catch {
+      // Not JSON: called without arguments.
+    }
+    return { name: match[1] ?? "", args };
+  });
 }
 
 /**
@@ -728,6 +759,17 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
   );
   if (requested && tools.has("bash"))
     return { calls: [{ name: "bash", args: { command: requested } }] };
+  const mcp = scriptedToolCalls(brief).find(
+    (planned) =>
+      tools.has(planned.name) &&
+      !calls.some(
+        ({ call }) =>
+          call.name === planned.name &&
+          // Stored arguments come back with their keys reordered (jsonb).
+          canonicalJson(call.arguments) === canonicalJson(planned.args),
+      ),
+  );
+  if (mcp) return { calls: [mcp] };
   if (!listed && tools.has("bash"))
     return { calls: [{ name: "bash", args: { command: "ls -la" } }] };
 
@@ -748,8 +790,16 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
   const listing = listed?.result
     ? `\nWorkspace listing:\n${clip(textOf(listed.result.content), 1500)}`
     : "";
+  const answers = calls
+    .filter(({ call, result }) => call.name.startsWith("mcp__") && result)
+    .map(
+      ({ call, result }) =>
+        `- ${call.name}${result?.isError ? " (failed)" : ""}: ${clip(textOf(result?.content ?? []), 300)}`,
+    );
+  const mcpResults =
+    answers.length > 0 ? `\nMCP results:\n${answers.join("\n")}` : "";
   return {
-    text: `Done: I wrote ${file} describing my piece of "${clip(brief, 200)}".${writeFailed}${listing}`,
+    text: `Done: I wrote ${file} describing my piece of "${clip(brief, 200)}".${writeFailed}${listing}${mcpResults}`,
   };
 }
 

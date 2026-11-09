@@ -17,6 +17,7 @@ import {
   CONTRACT_VERSION,
   type ConversationMessage,
   type ConversationView,
+  canonicalJson,
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
@@ -221,6 +222,20 @@ const oneLine = (text: string, max = 200) => {
   const line = text.replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 };
+
+/**
+ * SHA-256 in hex by the browser's Web Crypto, so no hash function of the
+ * contracts weighs on the first load for the demo's sake. Without it (an
+ * insecure context) the demo has no hash to give, and says so with zeros.
+ */
+async function demoHash(text: string): Promise<string> {
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return "0".repeat(64);
+  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   const clock = options.now ?? (() => new Date());
@@ -1609,6 +1624,11 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         id: `mcp-discovery-${++discoveryCounter}`,
         profileId,
         server: server.name,
+        // A hash of what it was asked to test, as the record carries one.
+        configHash: await demoHash(
+          canonicalJson({ server, sandbox: sandbox ?? profile.sandbox }) ??
+            server.name,
+        ),
         status: "failed",
         error:
           "Demo data: no MCP server runs in demo mode. Connect JJ Bot to a server to test it.",

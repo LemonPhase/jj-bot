@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   API_ERROR_CODES,
-  CONTRACT_VERSION,
   capabilitiesSchema,
   DEFAULT_KEEP_WORKSPACES,
   MAX_KEEP_WORKSPACES,
@@ -40,13 +39,11 @@ const cron = (expression: string, timeZone = "UTC"): StoredTrigger => ({
 const iso = (dates: Date[]) => dates.map((date) => date.toISOString());
 
 describe("contract version 1.12.0 (schedules)", () => {
-  it("came with 1.12.0, and the changelog's newest entry is the current version", () => {
+  it("came with 1.12.0, which the changelog records", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
-    const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
-    expect(newest).toBe(CONTRACT_VERSION);
     expect(changelog).toMatch(/^## 1\.12\.0 — .* — Schedules$/m);
   });
 

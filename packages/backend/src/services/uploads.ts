@@ -66,6 +66,25 @@ export function uploadSettings(ctx: EngineContext): UploadSettings {
   return settings;
 }
 
+/**
+ * The longest the body of a `sizeBytes` upload may take to arrive at the
+ * slowest pace staging accepts (`readExactly`): each window must bring the
+ * window's share at `minBytesPerSecond`, or the rest of the file, so the
+ * last byte comes at most one window per share after the first, plus one
+ * window of slack. Sizes over the file limit count as the limit: those are
+ * refused before the body is read. Null while uploads are off.
+ */
+export function uploadReceiveMs(
+  ctx: EngineContext,
+  sizeBytes: number,
+): number | null {
+  const settings = ctx.config.uploads;
+  if (!settings) return null;
+  const size = Math.min(Math.max(0, sizeBytes), settings.maxFileBytes);
+  const perWindow = (settings.minBytesPerSecond * settings.slowWindowMs) / 1000;
+  return (Math.ceil(size / perWindow) + 1) * settings.slowWindowMs;
+}
+
 const tooLarge = (message: string, details?: unknown) =>
   new DomainError("UPLOAD_TOO_LARGE", message, details);
 

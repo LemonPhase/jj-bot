@@ -1,10 +1,12 @@
-// Contract 1.13.0 (#106): spend approvals share the approval records, events
+// Contract 1.14.0 (#106): spend approvals share the approval records, events
 // and summaries with tool approvals, as a union on `kind`. What servers
 // stored before it (approvals without `kind`, tasks and profiles without the
 // option) still parses, as a tool approval and with the option off.
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   approvalSchema,
+  CONTRACT_VERSION,
   createTaskCommandSchema,
   createTaskTemplateCommandSchema,
   emptyUsage,
@@ -42,7 +44,7 @@ const spend: SpendApproval = {
   decidedAt: null,
 };
 
-/** An `approval.requested` event exactly as a server before 1.13 stored and streamed it. */
+/** An `approval.requested` event exactly as a server before 1.14 stored and streamed it. */
 const storedBefore = {
   id: "evt_01",
   taskId: "task_1",
@@ -77,8 +79,22 @@ const storedBefore = {
   },
 };
 
-describe("spend approvals (1.13.0)", () => {
-  it("parses approvals stored before 1.13 as tool approvals", () => {
+describe("spend approvals (1.14.0)", () => {
+  it("is contract 1.14.0, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.14.0");
+    const changelog = readFileSync(
+      new URL("../../../docs/contract-changelog.md", import.meta.url),
+      "utf8",
+    );
+    expect(/^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1]).toBe(
+      CONTRACT_VERSION,
+    );
+    expect(changelog).toMatch(
+      /^## 1\.14\.0 — .* — Spend approvals past the soft threshold$/m,
+    );
+  });
+
+  it("parses approvals stored before 1.14 as tool approvals", () => {
     const parsed = taskEventSchema.parse(storedBefore);
     expect(parsed.type).toBe("approval.requested");
     if (parsed.type !== "approval.requested") throw new Error("unreachable");
