@@ -68,6 +68,29 @@ approvals with the existing route, and PATCH or a profile change expires a pendi
 migration adds `approvals.kind`, the `spend` column, a check per kind, the one-pending-spend-per-cap
 index and `tasks.approve_spend_past_threshold`.
 
+## 1.10.1 — 2026-11-04 — Disabled MCP servers and draft sandboxes in discoveries
+
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comments "Contract refinement for step 4a (#136): 1.9.1" and "… 1.9.2, discovery takes a draft sandbox", shipped together as 1.10.1) · **Compatibility:** additive (no wire change for existing clients; commands that were refused can now be accepted)
+
+- `ungrantedMcpSecrets`, and so `refineMcpSecretGrants` in `createRuntimeProfileCommandSchema` and
+  `updateRuntimeProfileCommandSchema`, check enabled servers only. Removing a stored secret disables
+  every MCP server that uses it but keeps its `secretEnv` reference, so a create, or a patch that
+  carries both `secrets` and `mcpServers`, with such a server is accepted. Enabling it again is
+  checked: its secret must be granted. No field records why a server was disabled.
+- `startMcpDiscoveryCommandSchema` takes an optional `sandbox` (`sandboxSpecSchema`): a draft of the
+  profile's sandbox settings, in the shape of the profile's `sandbox`. The test runs on it and the
+  snapshot's `configHash` is computed from it; without it, the profile's stored sandbox is used. A
+  stdio server's `configHash` covers its sandbox (driver, image, network, `env`), so a profile save
+  that changes the sandbox can pin the snapshot found with the same draft, in the same save; the
+  `MCP_SNAPSHOT_MISMATCH` message says so.
+
+**Action required (frontend):** none to keep working. The profile editor may send a disabled server
+whose secret is gone, and should say that enabling it needs the secret stored and granted again; it
+sends its draft sandbox with a test once the sandbox is edited (step 6).
+**Action required (backend):** none beyond this change: the server checks grants on the enabled
+servers of the merged profile, and validates a draft sandbox with its driver (`PROFILE_UNSUPPORTED`
+on refusal) and stores it with the discovery.
+
 ## 1.10.0 — 2026-11-03 — Event retention and payload limits
 
 **Changed by:** backend and frontend ([#32](https://github.com/LemonPhase/jj-bot/issues/32), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/32#issuecomment-6613592061)) · **Compatibility:** additive; a compacted task's log has gaps in its sequences at or below `compactedThrough`, which a reader that assumed gap-free logs must allow
@@ -178,9 +201,10 @@ queued inbox items, first inputs, approval texts and transcripts.
 
 **Changed by:** backend and frontend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/29#issuecomment-6602672162)) · **Compatibility:** additive for writers; a 1.6.0 reader that parses profiles strictly cannot parse one holding an approval rule on an MCP tool (`approvalRuleSchema.tool` was the coding tools only)
 
-The routes below are part of the contract, but a server serves them only once it reports the
-capability they belong to (`capabilities.mcp`, `capabilities.skills`); until then they answer 404,
-bootstrap reports both false, and a profile asking for MCP servers or skills is refused with
+`capabilities.mcp` says, per kind, whether sessions can use MCP servers of that kind. While it is
+false, servers of that kind may still be stored and discovered, through the MCP routes below, but
+they reach no session. The skills routes are served only once a server reports
+`capabilities.skills`; until then they answer 404, and a profile granting a skill is refused with
 `MCP_UNAVAILABLE`.
 
 - New `mcp.ts`. `mcpServerSchema`, a union on `transport` of `mcpStdioServerSchema` (`command`,

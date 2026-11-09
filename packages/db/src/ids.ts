@@ -19,6 +19,8 @@ export const ID_PREFIXES = {
   check: "chk",
   job: "job",
   retiredSecret: "rsec",
+  mcpSnapshot: "mcps",
+  mcpDiscovery: "mcpd",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

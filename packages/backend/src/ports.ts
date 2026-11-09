@@ -1,8 +1,12 @@
-// The engine's ports: what it needs from the agent runtime, the model registry
-// and the sandbox drivers. The engine depends on these shapes only, never on
-// `@jj/runtime` or a concrete driver, so `apps/api` passes the runtime objects
-// (`PiSessionExecutor`, `ChatResponder`, `ModelRegistry`) straight in.
+// The engine's ports: what it needs from the agent runtime (sessions, chat
+// replies and MCP discovery), the model registry and the sandbox drivers.
+// The engine depends on these shapes only, never on `@jj/runtime` or a
+// concrete driver, so `apps/api` passes the runtime objects
+// (`PiSessionExecutor`, `ChatResponder`, `McpDiscoverer`, `ModelRegistry`)
+// straight in.
 import type {
+  McpServer,
+  McpTool,
   ModelRef,
   ModelsView,
   ProviderInfo,
@@ -309,6 +313,39 @@ export interface ModelCatalog {
    * engine reports that as MODEL_NOT_CONFIGURED.
    */
   resolve(ref: ModelRef | null): unknown;
+}
+
+/** One test of an MCP server configuration, run by the `mcp.discover` job. */
+export interface McpDiscoverInput {
+  /** The configuration, parsed with `mcpServerSchema`. */
+  server: McpServer;
+  /** A stdio server's ephemeral sandbox, whose driver declares `spawn`. */
+  sandbox?: Sandbox;
+  /** A remote server's `secretHeaders` with their stored values, by header name. */
+  secretHeaders?: Readonly<Record<string, { prefix: string; value: string }>>;
+  /** Replaces the server's secrets in every text returned or thrown. */
+  redact: (text: string, cut?: CutEdges) => string;
+  /** Aborting stops the discovery and the server. */
+  signal?: AbortSignal;
+}
+
+/** What a discovery found: sanitized, redacted tools for a snapshot. */
+export interface McpDiscoverResult {
+  serverInfo: { name: string; version: string; protocolVersion: string };
+  tools: McpTool[];
+  warnings: string[];
+}
+
+/**
+ * Starts an MCP server, calls `initialize` and `tools/list` only, and
+ * closes it, whatever happens. A failure throws an error whose message is
+ * redacted and, for a stdio server, may carry `stderrTail`, the redacted
+ * end of its stderr.
+ */
+export interface McpDiscoverer {
+  /** Remote servers may be called (`JJ_MCP_REMOTE` is not off). */
+  readonly remote: boolean;
+  discover(input: McpDiscoverInput): Promise<McpDiscoverResult>;
 }
 
 /**

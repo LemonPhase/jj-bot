@@ -1,3 +1,4 @@
+import { sandboxSpecSchema } from "@jj/sandbox/contract";
 import { z } from "zod";
 import { sha256Hex } from "./canonical";
 import { idSchema, timestampSchema } from "./common";
@@ -400,10 +401,12 @@ export interface UngrantedMcpSecret {
 }
 
 /**
- * Every `secretEnv` entry of the servers whose secret is not among the
- * profile's `secrets` grants: a stdio server can only use what the sandbox
- * it runs in was granted. Pure, so commands, the server and the profile
- * editor check alike.
+ * Every `secretEnv` entry of the enabled servers whose secret is not among
+ * the profile's `secrets` grants: a stdio server can only use what the
+ * sandbox it runs in was granted. A disabled server runs nowhere, so it is
+ * skipped (removing a secret disables the servers that use it), and checked
+ * once it is enabled. Pure, so commands, the server and the profile editor
+ * check alike.
  */
 export function ungrantedMcpSecrets(
   servers: readonly McpServer[],
@@ -411,7 +414,7 @@ export function ungrantedMcpSecrets(
 ): UngrantedMcpSecret[] {
   const granted = new Set(grants);
   return servers.flatMap((server, index) =>
-    server.transport === "stdio"
+    server.transport === "stdio" && server.enabled
       ? Object.entries(server.secretEnv)
           .filter(([, secret]) => !granted.has(secret))
           .map(([variable, secret]) => ({
@@ -424,7 +427,7 @@ export function ungrantedMcpSecrets(
   );
 }
 
-/** Adds an issue at `mcpServers.<i>.secretEnv.<VAR>` for each ungranted secret. */
+/** Adds an issue at `mcpServers.<i>.secretEnv.<VAR>` for each ungranted secret of an enabled server. */
 export function refineMcpSecretGrants(
   servers: readonly McpServer[],
   grants: readonly string[],
@@ -555,10 +558,15 @@ export const mcpDiscoverySchema = z.object({
 /**
  * `POST /api/runtime-profiles/:id/mcp-discoveries` → 202 `{ discovery }`.
  * Takes a draft configuration, saved or not; its `secretEnv` secrets must be
- * granted by the stored profile.
+ * granted by the stored profile. `sandbox`, a draft of the profile's sandbox
+ * settings (its `sandbox`, whole), is what the test runs on and what the
+ * snapshot's `configHash` is computed from; without it, the profile's own.
+ * A profile save that changes its sandbox can then pin the snapshot found
+ * with the same settings.
  */
 export const startMcpDiscoveryCommandSchema = z.object({
   server: mcpServerSchema,
+  sandbox: sandboxSpecSchema.optional(),
 });
 
 /** `POST /api/runtime-profiles/:id/mcp-discoveries` and `GET /api/mcp-discoveries/:id`. */

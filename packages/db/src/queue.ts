@@ -99,6 +99,8 @@ const SINGLE_RUN: Record<
     keyName: "kind",
     pending: sql`${jobs.kind} = 'maintenance.compact' and ${jobs.status} = 'queued'`,
   },
+  // One job per discovery, which its payload names.
+  "mcp.discover": null,
 };
 
 /**
@@ -155,13 +157,20 @@ export async function enqueue(
  * attempts left are failed first and returned as `exhausted`. Jobs listed in
  * `running`, which the claimer is still running, are neither: their owner is
  * alive though its heartbeats fell behind the lease, and can still extend it.
+ * With `kinds`, only jobs of those kinds are claimed (exhausted jobs of every
+ * kind are still failed and returned), and with `waitedMs` only queued jobs
+ * due for at least that long (expired ones are claimed as usual).
  */
 export async function claim(
   exec: Executor,
   owner: string,
   limit: number,
   leaseMs: number,
-  options: { running?: readonly string[] } = {},
+  options: {
+    running?: readonly string[];
+    kinds?: readonly JobKind[];
+    waitedMs?: number;
+  } = {},
 ): Promise<ClaimResult> {
   if (!owner) throw new Error("A lease owner is required.");
   positiveInteger(limit, "Claim limit");
@@ -211,13 +220,21 @@ export async function claim(
     .select({ id: jobs.id })
     .from(jobs)
     .where(
-      or(
-        and(
-          eq(jobs.status, "queued"),
-          lte(jobs.runAfter, sql`now()`),
-          ...waitsForRun,
+      and(
+        options.kinds ? inArray(jobs.kind, [...options.kinds]) : undefined,
+        or(
+          and(
+            eq(jobs.status, "queued"),
+            lte(
+              jobs.runAfter,
+              options.waitedMs
+                ? sql`now() - ${Math.floor(options.waitedMs)}::integer * interval '1 millisecond'`
+                : sql`now()`,
+            ),
+            ...waitsForRun,
+          ),
+          and(expired, sql`${jobs.attempts} < ${jobs.maxAttempts}`),
         ),
-        and(expired, sql`${jobs.attempts} < ${jobs.maxAttempts}`),
       ),
     )
     .orderBy(asc(jobs.runAfter), asc(jobs.id))

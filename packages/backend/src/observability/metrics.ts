@@ -66,6 +66,7 @@ const JOB_KINDS: readonly JobKind[] = [
   "session.run",
   "chat.reply",
   "maintenance.compact",
+  "mcp.discover",
 ];
 
 export function createMetrics(options: MetricsOptions = {}): EngineMetrics {

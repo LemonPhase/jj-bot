@@ -2,11 +2,9 @@
 // budgets. A spec the driver cannot enforce is refused with the driver's own
 // message (PROFILE_UNSUPPORTED); nothing is silently downgraded.
 import {
-  type ApprovalRule,
   CODING_TOOLS,
   type CreateRuntimeProfileCommand,
   createRuntimeProfileCommandSchema,
-  mcpRulesWithoutTool,
   profileBudgetsSchema,
   type RuntimeProfile,
   type RuntimeProfileStatus,
@@ -23,11 +21,12 @@ import {
   secrets,
   type Tx,
 } from "@jj/db";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, type SQL, sql } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { profileSettings, toProfile } from "../records";
+import { checkMcpServers } from "./mcp";
 import { recheckSpendApprovals } from "./spend-approvals";
 
 /** Validates a spec with its driver: PROFILE_UNSUPPORTED with the driver's message on refusal. */
@@ -153,46 +152,49 @@ async function checkGrants(
 }
 
 /**
- * No MCP server or skill reaches a session on this server
- * (`capabilities.mcp` and `capabilities.skills` are false), so a profile
- * asking for one is refused instead of saved as if it worked. An empty list
- * is what every profile holds, and is accepted.
+ * No skill reaches a session on this server (`capabilities.skills` is
+ * false), so a profile granting one is refused instead of saved as if it
+ * worked. An empty list is what every profile holds, and is accepted.
  */
-function refuseMcpAndSkills(command: {
-  mcpServers?: readonly unknown[];
-  skills?: readonly unknown[];
-  approvals?: readonly ApprovalRule[];
-}): void {
-  if (command.mcpServers?.length)
-    throw new DomainError(
-      "MCP_UNAVAILABLE",
-      "mcpServers: this server does not run MCP servers (capabilities.mcp is off for stdio and remote servers). Remove them to save the profile.",
-    );
+function refuseSkills(command: { skills?: readonly unknown[] }): void {
   if (command.skills?.length)
     throw new DomainError(
       "MCP_UNAVAILABLE",
       "skills: this server has no skills library (capabilities.skills is off). Remove them to save the profile.",
     );
-  // An exact MCP rule must name a tool of its server's pinned snapshot, and
-  // no profile holds a server here, so none does; `mcp__<server>__*` may.
-  // This checks the command's own `approvals` only. Once profiles hold
-  // servers (#29 step 4), check the merged profile instead: its rules
-  // against its servers and their pinned snapshots, also when a patch
-  // changes only `mcpServers`.
-  const rules = command.approvals ?? [];
-  const unknown = mcpRulesWithoutTool(rules, [], []);
-  if (unknown.length > 0)
-    throw new DomainError(
-      "VALIDATION_FAILED",
-      unknown
-        .map(
-          (index) =>
-            `approvals.${index}.tool: ${rules[index]?.tool} names no tool of its MCP server's pinned snapshot. Exact names hold only within a snapshot; mcp__<server>__* covers every tool of a server.`,
-        )
-        .join("; "),
-    );
 }
 
+/**
+ * The engine's lock order: runtime profile rows first, then whatever else.
+ *
+ * - A transaction that locks several profiles takes them through this, by
+ *   ascending id: a save takes its profile with the default it replaces,
+ *   a new default the old one, `deleteSecret` every profile.
+ * - One that locks a single profile takes it before anything else: a save,
+ *   `startDiscovery` (FOR NO KEY UPDATE), `deleteProfile` (FOR UPDATE).
+ * - Only after its profile rows does a transaction lock secrets
+ *   (`checkGrants` and `assertSecretHeadersStored` share them,
+ *   `deleteSecret` deletes one), MCP discoveries and snapshots (pruning
+ *   deletes them; a profile's deletion cascades to them).
+ * - A row that references a profile takes it FOR KEY SHARE through its
+ *   foreign key, which only a deletion's FOR UPDATE conflicts with, so a
+ *   discovery's final write takes its profile so before its own row.
+ *
+ * No transaction waits for a profile row while it holds any other of these.
+ */
+export function lockProfiles(
+  tx: Tx,
+  where: SQL = sql`true`,
+): Promise<RuntimeProfileRow[]> {
+  return tx
+    .select()
+    .from(runtimeProfiles)
+    .where(where)
+    .orderBy(asc(runtimeProfiles.id))
+    .for("no key update");
+}
+
+/** Unsets the other default; the caller locked it (`lockProfiles`). */
 async function clearDefault(tx: Tx, except: string) {
   await tx
     .update(runtimeProfiles)
@@ -207,12 +209,23 @@ export async function createProfile(
   input: CreateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(createRuntimeProfileCommandSchema, input);
-  refuseMcpAndSkills(command);
+  refuseSkills(command);
   const sandbox = validateSpec(ctx, input.sandbox);
   const id = ctx.ids("runtimeProfile");
   const now = ctx.clock();
   const row = await ctx.db.transaction(async (tx) => {
+    // The default it replaces first: profiles before secrets.
+    if (command.isDefault)
+      await lockProfiles(tx, sql`${runtimeProfiles.isDefault}`);
     await checkGrants(ctx, tx, command.secrets ?? [], sandbox);
+    await checkMcpServers(ctx, tx, {
+      profileId: id,
+      sandbox,
+      secrets: command.secrets ?? [],
+      mcpServers: command.mcpServers ?? [],
+      approvals: command.approvals ?? [],
+      changed: { sandbox: true, secrets: true, servers: true, approvals: true },
+    });
     if (command.isDefault) await clearDefault(tx, id);
     const [inserted] = await tx
       .insert(runtimeProfiles)
@@ -225,6 +238,7 @@ export async function createProfile(
         budgets: command.budgets ?? profileBudgetsSchema.parse({}),
         approvals: command.approvals ?? [],
         secrets: command.secrets ?? [],
+        mcpServers: command.mcpServers ?? [],
         isDefault: command.isDefault ?? false,
         createdAt: now,
         updatedAt: now,
@@ -272,19 +286,28 @@ export async function updateProfile(
   input: UpdateRuntimeProfileCommand,
 ): Promise<{ profile: RuntimeProfile }> {
   const command = parseCommand(updateRuntimeProfileCommandSchema, input);
-  refuseMcpAndSkills(command);
-  const current = await profileRow(ctx.db, id);
-  const settings = profileSettings(current);
-  if (command.isDefault === false && current.isDefault)
-    throw new DomainError(
-      "CONFLICT",
-      "Make another profile the default instead of unsetting this one.",
-    );
-  const sandbox = command.sandbox
-    ? validateSpec(ctx, mergeSpec(settings.sandbox, command.sandbox))
-    : settings.sandbox;
-  const grants = command.secrets ?? settings.secrets;
+  refuseSkills(command);
   const row = await ctx.db.transaction(async (tx) => {
+    // Held to the end, with the default it replaces, in id order: saves of
+    // one profile, and discoveries pruning its snapshots, take their turns.
+    const locked = await lockProfiles(
+      tx,
+      command.isDefault
+        ? sql`${runtimeProfiles.id} = ${id} or ${runtimeProfiles.isDefault}`
+        : eq(runtimeProfiles.id, id),
+    );
+    const current = locked.find((entry) => entry.id === id);
+    if (!current) throw notFound("Runtime profile", id);
+    const settings = profileSettings(current);
+    if (command.isDefault === false && current.isDefault)
+      throw new DomainError(
+        "CONFLICT",
+        "Make another profile the default instead of unsetting this one.",
+      );
+    const sandbox = command.sandbox
+      ? validateSpec(ctx, mergeSpec(settings.sandbox, command.sandbox))
+      : settings.sandbox;
+    const grants = command.secrets ?? settings.secrets;
     if (command.secrets !== undefined || command.sandbox)
       await checkGrants(
         ctx,
@@ -293,6 +316,19 @@ export async function updateProfile(
         sandbox,
         grants.filter((name) => !settings.secrets.includes(name)),
       );
+    await checkMcpServers(ctx, tx, {
+      profileId: id,
+      sandbox,
+      secrets: grants,
+      mcpServers: command.mcpServers ?? settings.mcpServers,
+      approvals: command.approvals ?? settings.approvals,
+      changed: {
+        sandbox: command.sandbox !== undefined,
+        secrets: command.secrets !== undefined,
+        servers: command.mcpServers !== undefined,
+        approvals: command.approvals !== undefined,
+      },
+    });
     if (command.isDefault) await clearDefault(tx, id);
     const [updated] = await tx
       .update(runtimeProfiles)
@@ -306,6 +342,9 @@ export async function updateProfile(
           ? { approvals: command.approvals }
           : {}),
         ...(command.secrets !== undefined ? { secrets: command.secrets } : {}),
+        ...(command.mcpServers !== undefined
+          ? { mcpServers: command.mcpServers }
+          : {}),
         ...(command.isDefault !== undefined
           ? { isDefault: command.isDefault }
           : {}),

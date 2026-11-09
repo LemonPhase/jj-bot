@@ -10,6 +10,11 @@ import {
   type ConversationMessage,
   defaultAppearanceFor,
   type ExecutionSession,
+  type McpDiscovery,
+  type McpServer,
+  type McpTool,
+  type McpToolSnapshot,
+  mcpServersSchema,
   type ProfileBudgets,
   profileBudgetsSchema,
   type RuntimeProfile,
@@ -29,6 +34,8 @@ import type {
   ArtifactRow,
   BotRow,
   ConversationMessageRow,
+  McpDiscoveryRow,
+  McpToolSnapshotRow,
   RuntimeProfileRow,
   SessionRow,
   TaskEventRow,
@@ -258,6 +265,7 @@ export interface StoredProfile {
   approvals: ApprovalRule[];
   /** Granted sandbox secrets, by name. */
   secrets: string[];
+  mcpServers: McpServer[];
 }
 
 /** The profile's stored settings, with contract defaults for anything missing. */
@@ -270,6 +278,7 @@ export function profileSettings(row: RuntimeProfileRow): StoredProfile {
     secrets: Array.isArray(row.secrets)
       ? row.secrets.filter((name) => typeof name === "string")
       : [],
+    mcpServers: mcpServersSchema.parse(row.mcpServers ?? []),
   };
 }
 
@@ -287,13 +296,43 @@ export function toProfile(
     budgets: settings.budgets,
     approvals: settings.approvals,
     secrets: settings.secrets,
-    // Never stored: the profile service refuses any MCP server or skill
-    // (MCP_UNAVAILABLE), so every profile holds none.
-    mcpServers: [],
+    mcpServers: settings.mcpServers,
+    // Never stored: the profile service refuses any skill (MCP_UNAVAILABLE).
     skills: [],
     isDefault: row.isDefault,
     status,
     createdAt: iso(row.createdAt),
     updatedAt: iso(row.updatedAt),
+  };
+}
+
+export function toMcpSnapshot(row: McpToolSnapshotRow): McpToolSnapshot {
+  return {
+    id: row.id,
+    profileId: row.profileId,
+    server: row.server,
+    configHash: row.configHash,
+    serverInfo: row.serverInfo as McpToolSnapshot["serverInfo"],
+    tools: row.tools as unknown as McpTool[],
+    warnings: row.warnings,
+    discoveredAt: iso(row.discoveredAt),
+  };
+}
+
+export function toMcpDiscovery(
+  row: McpDiscoveryRow,
+  snapshot: McpToolSnapshotRow | undefined,
+): McpDiscovery {
+  return {
+    id: row.id,
+    profileId: row.profileId,
+    server: row.server,
+    status: row.status,
+    error: row.error,
+    stderrTail: row.stderrTail,
+    snapshot: snapshot ? toMcpSnapshot(snapshot) : null,
+    durationMs: row.durationMs,
+    createdAt: iso(row.createdAt),
+    finishedAt: isoOrNull(row.finishedAt),
   };
 }

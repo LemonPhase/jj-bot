@@ -287,7 +287,7 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.10.0", () => {
+  it("is version 1.11.0", () => {
     expect(CONTRACT_VERSION).toBe("1.11.0");
   });
 

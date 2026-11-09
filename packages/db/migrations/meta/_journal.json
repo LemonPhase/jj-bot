@@ -110,8 +110,15 @@
     {
       "idx": 15,
       "version": "7",
-      "when": 1794242516670,
-      "tag": "0015_approvals_spend",
+      "when": 1793754933748,
+      "tag": "0015_mcp_discovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794246746952,
+      "tag": "0016_approvals_spend",
       "breakpoints": true
     }
   ]
