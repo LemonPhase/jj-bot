@@ -48,17 +48,26 @@ export function enforceDeadlines(server: Server, options: DeadlineOptions) {
   server.requestTimeout = 0;
   server.on("request", (request: IncomingMessage, response: ServerResponse) => {
     const ms = deadlineOf(request, options);
+    const socket = request.socket;
     const timer = setTimeout(() => {
-      if (request.complete || request.socket.destroyed) return;
+      if (request.complete || socket.destroyed) return;
       timedOut(request, response, ms, options);
     }, ms);
     timer.unref();
-    const clear = () => clearTimeout(timer);
+    // The deadline ends with the request, however it ends. A kept-alive
+    // connection carries many requests: each takes its listener off it.
+    const clear = () => {
+      clearTimeout(timer);
+      socket.off("close", clear);
+    };
     request.once("end", clear);
+    // A request refused before its body is read ends here: its connection
+    // is closed with the body still coming, and `end` never comes.
+    socket.once("close", clear);
     // A response can finish before its request has all arrived (a refused
     // upload's body still coming): the deadline then still holds.
     response.once("close", () => {
-      if (request.complete || request.socket.destroyed) clear();
+      if (request.complete || socket.destroyed) clear();
     });
   });
 }
