@@ -44,6 +44,25 @@ export function deadlineOf(
   return Math.max(options.requestTimeoutMs, upload ?? 0);
 }
 
+/**
+ * The deadlines running on a connection, which end when it closes: a
+ * request refused before its body is read ends that way, its connection
+ * closed with the body still coming, and `end` never comes. One listener
+ * per connection, however many requests it carries or has pipelined.
+ */
+const running = new WeakMap<Socket, Set<() => void>>();
+
+function runningOn(socket: Socket): Set<() => void> {
+  const known = running.get(socket);
+  if (known) return known;
+  const clears = new Set<() => void>();
+  running.set(socket, clears);
+  socket.once("close", () => {
+    for (const clear of clears) clear();
+  });
+  return clears;
+}
+
 /** Replaces Node's requestTimeout with a deadline per request. */
 export function enforceDeadlines(server: Server, options: DeadlineOptions) {
   server.requestTimeout = 0;
@@ -55,16 +74,14 @@ export function enforceDeadlines(server: Server, options: DeadlineOptions) {
       timedOut(request, response, ms, options);
     }, ms);
     timer.unref();
-    // The deadline ends with the request, however it ends. A kept-alive
-    // connection carries many requests: each takes its listener off it.
+    // The deadline ends with the request, however it ends.
+    const clears = runningOn(socket);
     const clear = () => {
       clearTimeout(timer);
-      socket.off("close", clear);
+      clears.delete(clear);
     };
+    clears.add(clear);
     request.once("end", clear);
-    // A request refused before its body is read ends here: its connection
-    // is closed with the body still coming, and `end` never comes.
-    socket.once("close", clear);
     // A response can finish before its request has all arrived (a refused
     // upload's body still coming): the deadline then still holds.
     response.once("close", () => {

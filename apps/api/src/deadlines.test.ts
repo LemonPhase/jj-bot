@@ -250,6 +250,45 @@ describe("a deadline ends with its request", () => {
       socket.destroy();
     }
   });
+
+  it("puts one listener on a connection, however many requests wait on it", async () => {
+    const watched = watchTimers([REQUEST_MS]);
+    timers = watched;
+    const socket = connect(served.port, "127.0.0.1");
+    try {
+      let received = "";
+      socket.on("data", (chunk: Buffer) => {
+        received += chunk.toString("latin1");
+      });
+      const host = `Host: 127.0.0.1:${served.port}`;
+      socket.write(
+        [
+          "GET /api/stream HTTP/1.1",
+          host,
+          "Accept: text/event-stream",
+          "",
+          "",
+        ].join("\r\n"),
+      );
+      await until(() => received.includes("\r\n\r\n"), {
+        what: "the stream's head",
+      });
+      const server = served.connections.at(-1);
+      if (!server) throw new Error("no connection");
+      const one = server.listenerCount("close");
+      // Pipelined behind the stream: none of them can be answered yet.
+      socket.write(
+        ["GET /api/bootstrap HTTP/1.1", host, "", ""].join("\r\n").repeat(15),
+      );
+      await until(() => watched.pending === 16, {
+        what: "a deadline for each request",
+      });
+      // Before, each added its own, and Node warned of a leak past 10.
+      expect(server.listenerCount("close")).toBe(one);
+    } finally {
+      socket.destroy();
+    }
+  });
 });
 
 describe("a request still arriving at its deadline", () => {
