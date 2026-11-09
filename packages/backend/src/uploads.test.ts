@@ -10,7 +10,7 @@ import type { Sandbox } from "@jj/sandbox/contract";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
-import { DomainError } from "./errors";
+import { DomainError, isUniqueViolation } from "./errors";
 import type { EngineDriver } from "./ports";
 import { type Brain, said } from "./testing/fake-executor";
 import {
@@ -759,6 +759,22 @@ describe("paths that differ only in case", () => {
     );
     expect(again.code).toBe("CONFLICT");
     expect(again.message).toMatch(/already goes to/);
+  });
+
+  it("takes only the pending-path index's violation for that clash, from either driver", () => {
+    const index = "artifacts_pending_upload_path_unique";
+    const violation = { code: "23505", constraint: index };
+    expect(isUniqueViolation(violation, index)).toBe(true);
+    // Drizzle wraps the driver's error as its cause.
+    expect(
+      isUniqueViolation(new Error("Failed query", { cause: violation }), index),
+    ).toBe(true);
+    expect(
+      isUniqueViolation({ code: "23505", constraint: "artifacts_pkey" }, index),
+    ).toBe(false);
+    expect(isUniqueViolation({ code: "23503", constraint: index }, index)).toBe(
+      false,
+    );
   });
 
   it("refuses two uploads of one command that the database folds to one path", async () => {

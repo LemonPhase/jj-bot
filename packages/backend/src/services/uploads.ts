@@ -460,9 +460,9 @@ export async function attachUploadsTx(
         content_type, size_bytes, sha256, content, ${message.id}, 'pending', ${created}
       from ${stagedUploads} where id = ${file.row.id}`);
     } catch (error) {
-      // The pending-path index is the last word on a clash the checks above
-      // could not see (a command racing this one on another connection).
-      if (isUniqueViolation(error))
+      // The pending-path index is the last word: a clash the checks above
+      // did not see is still a CONFLICT, never a failed query.
+      if (isUniqueViolation(error, "artifacts_pending_upload_path_unique"))
         throw new DomainError(
           "CONFLICT",
           `An upload waiting to be placed already goes to ${file.path}; give this one another path, or upload it once that one is in the workspace.`,
