@@ -247,7 +247,9 @@ export async function sessionMcpTools(
         askFirst.add(tool.exposedName);
       const check = () => resolve(rc, hold, pinned, tool);
       checks.set(tool.exposedName, check);
-      // The check `refusal` made, for the `connect` that follows it.
+      // The latest check, made by `refusal` right before each call's
+      // `connect`: one read of the profile per call. A parallel call of the
+      // same tool may take the other's, made at the same moment.
       let checked: Promise<Resolution> | undefined;
       return {
         server: pinned.server,
@@ -260,7 +262,6 @@ export async function sessionMcpTools(
         },
         connect: async (signal): Promise<McpConnector> => {
           const resolution = await (checked ?? check());
-          checked = undefined;
           if ("refusal" in resolution)
             throw new McpCallNotSent(resolution.refusal);
           return rc.deps.mcp.acquire(
@@ -293,6 +294,9 @@ export async function sessionMcpTools(
     bindings,
     mcp: {
       askFirst,
+      // Asked by the review before a call is held, so no approval is asked
+      // for a call that would be refused; the call checks again when it
+      // runs, since the profile can change while it waits.
       refusal: async (tool) => {
         const check = checks.get(tool);
         if (!check) return undefined;

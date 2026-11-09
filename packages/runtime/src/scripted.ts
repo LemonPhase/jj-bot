@@ -23,6 +23,7 @@ import {
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { clampMaxTokensToContext } from "@earendil-works/pi-ai/api/simple-options";
+import { canonicalJson } from "@jj/contracts";
 
 /**
  * The scripted test model: a keyless, deterministic stand-in for a real model
@@ -358,20 +359,6 @@ export function scriptedToolCalls(brief: string): PlannedCall[] {
     }
     return { name: match[1] ?? "", args };
   });
-}
-
-/** JSON with object keys sorted, so stored arguments (jsonb reorders keys) compare equal. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (typeof value === "object" && value !== null)
-    return `{${Object.keys(value)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
-      )
-      .join(",")}}`;
-  return JSON.stringify(value) ?? "null";
 }
 
 /**
@@ -778,7 +765,8 @@ function workerTurn(conversation: Conversation): ScriptedTurn {
       !calls.some(
         ({ call }) =>
           call.name === planned.name &&
-          canonical(call.arguments) === canonical(planned.args),
+          // Stored arguments come back with their keys reordered (jsonb).
+          canonicalJson(call.arguments) === canonicalJson(planned.args),
       ),
   );
   if (mcp) return { calls: [mcp] };

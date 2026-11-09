@@ -161,8 +161,24 @@ beforeAll(async () => {
                 properties: { id: { type: "string" } },
               },
             },
+            {
+              name: "slow",
+              description: "Answers after ms milliseconds.",
+              inputSchema: {
+                type: "object",
+                properties: { ms: { type: "number" } },
+              },
+            },
           ],
         });
+      else if (
+        message.method === "tools/call" &&
+        message.params?.name === "slow"
+      )
+        setTimeout(
+          () => reply({ content: [{ type: "text", text: "slow done" }] }),
+          Number(message.params?.arguments?.ms ?? 1000),
+        );
       else if (message.method === "tools/call")
         reply({
           content: [
@@ -984,6 +1000,117 @@ describe("MCP calls", () => {
       "starting",
       "ready",
     ]);
+  }, 60_000);
+});
+
+describe("connection lifecycle", () => {
+  it("stops a server still starting when its sandbox is released, without waiting for its start timeout, and says so", async () => {
+    const root = await workspace();
+    let taskId = "";
+    const { engine, faux } = await start(root);
+    const { bot } = await mcpBot(engine, [docs({ startupTimeoutSec: 120 })]);
+    faux.setResponses([
+      async () => {
+        // In the task's workspace only: the server never answers initialize there.
+        await writeFile(join(taskDir(root, taskId), "fixture-silent"), "");
+        return call("mcp__docs__search", { query: "x" }, "search_1");
+      },
+    ]);
+    const { task } = await engine.tasks.create({
+      goal: "Search",
+      coordinatorBotId: bot.id,
+    });
+    taskId = task.id;
+    const dir = taskDir(root, task.id);
+    await until(
+      async () => (await lines(join(dir, "fixture-starts.log"))).length,
+      { what: "the server to start" },
+    );
+    const stoppedAt = Date.now();
+    await engine.tasks.stop(task.id);
+    const [pid] = await lines(join(dir, "fixture-starts.log"));
+    await until(
+      () => {
+        try {
+          process.kill(Number(pid), 0);
+          return false;
+        } catch {
+          return true;
+        }
+      },
+      { what: "the starting server to stop with its sandbox" },
+    );
+    expect(Date.now() - stoppedAt).toBeLessThan(15_000);
+    const failed = await until(
+      async () =>
+        mcpEvents(await engine.tasks.events(task.id)).find(
+          (event) => event.payload.state === "failed",
+        ),
+      { what: "the failed start" },
+    );
+    expect(failed.payload.error).toBe(
+      "MCP server docs was stopped as it started, since its sandbox was released; the call did not run.",
+    );
+  }, 60_000);
+
+  it("lets a remote call in flight finish when another task's call needs a new configuration", async () => {
+    const root = await workspace();
+    const { engine } = await start(root, { scripted: true });
+    const { bot, profile, servers } = await mcpBot(engine, [
+      remote({ askUnlessReadOnly: false }),
+    ]);
+    const { task: first } = await engine.tasks.create({
+      goal: 'Wait: call `mcp__remote__slow {"ms":2500}`.',
+      coordinatorBotId: bot.id,
+    });
+    await until(
+      () =>
+        received.some(
+          (entry) => entry.method === "tools/call" && entry.tool === "slow",
+        ),
+      { what: "the slow remote call in flight" },
+    );
+    // A new configuration, tested and pinned while the call runs.
+    const [remoteServer] = servers as [HttpInput];
+    const changed = { ...remoteServer, headers: { "X-Mode": "two" } };
+    const snapshot = snapshotOf(
+      await discover(engine, profile.id, { ...changed, snapshotId: null }),
+    );
+    await engine.profiles.update(profile.id, {
+      mcpServers: [{ ...changed, snapshotId: snapshot.id }],
+    });
+    const { task: second } = await engine.tasks.create({
+      goal: 'Look up: call `mcp__remote__lookup {"id":"7"}`.',
+      coordinatorBotId: bot.id,
+    });
+    for (const task of [first, second])
+      await untilTask(
+        engine,
+        task.id,
+        (view) => view.task.status === "completed",
+        "the task",
+      );
+    // The call in flight was answered on its own connection ...
+    const slow = finished(
+      await engine.tasks.events(first.id),
+      "mcp__remote__slow",
+    );
+    expect(slow[0]?.payload).toMatchObject({
+      ok: true,
+      output: "slow done",
+    });
+    // ... which ended once it was, while the new one served the other task.
+    await until(
+      async () =>
+        mcpEvents(await engine.tasks.events(first.id)).some(
+          (event) => event.payload.state === "exited",
+        ),
+      { what: "the old connection to end" },
+    );
+    expect(
+      finished(await engine.tasks.events(second.id), "mcp__remote__lookup")[0]
+        ?.payload,
+    ).toMatchObject({ ok: true });
   }, 60_000);
 });
 

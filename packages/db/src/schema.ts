@@ -1152,4 +1152,5 @@ export const tables = {
   retiredSecrets,
   mcpToolSnapshots,
   mcpDiscoveries,
+  sessionToolsets,
 };

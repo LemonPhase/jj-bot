@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import type { Tool } from "@earendil-works/pi-mcp";
 import type {
   McpHttpServer,
@@ -315,7 +316,7 @@ export class McpDiscoverer {
         ? {
             roots: [
               {
-                uri: `file://${input.sandbox.workspaceDir}`,
+                uri: pathToFileURL(input.sandbox.workspaceDir).href,
                 name: "workspace",
               },
             ],

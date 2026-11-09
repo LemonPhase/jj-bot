@@ -6,7 +6,8 @@
 // - unset: two tools, one whose description quotes DOCS_TOKEN;
 // - session: those, and `explode` and `slow`; with a file `fixture-drift`
 //   in its working directory, `search` is described differently and a new
-//   tool `extra` is listed;
+//   tool `extra` is listed, and with `fixture-silent` it never answers
+//   initialize;
 // - crash: writes DOCS_TOKEN to stderr and exits 3 at initialize;
 // - silent: never answers initialize;
 // - hostile: a fine tool, one with a catastrophic pattern, one 100 deep;
@@ -161,6 +162,7 @@ lines.on("line", (line) => {
   if (message.id === undefined) return;
   if (message.method === "initialize") {
     if (mode === "silent") return;
+    if (mode === "session" && fs.existsSync("fixture-silent")) return;
     if (mode === "crash") {
       process.stderr.write(`fatal: the docs API refused ${token}\n`, () =>
         process.exit(3),

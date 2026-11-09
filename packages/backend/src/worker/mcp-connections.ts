@@ -44,17 +44,32 @@ export interface McpTarget {
   report(event: McpServerReport): Promise<void>;
 }
 
+/** Why the worker ended a connection. */
+type EndReason = "config" | "idle" | "release" | "stop";
+
+const ENDED: Record<EndReason, string> = {
+  config: "its configuration changed",
+  idle: "it was idle",
+  release: "its sandbox was released",
+  stop: "the worker stopped",
+};
+
 interface Entry {
   key: string;
   /** `sandbox:<id>` for a stdio server, `worker` for a remote one. */
   holder: string;
   profileId: string;
   server: string;
-  sandbox?: Sandbox;
   budget: McpStartBudget;
   /** The connection while it is ready; cleared when it ends. */
   connector?: McpConnector;
   starting?: Promise<McpConnector>;
+  /** Stops the start under way when the entry is ended. */
+  startAbort?: AbortController;
+  /** Set once the worker ended the entry: no call reaches it any more. */
+  ended?: EndReason;
+  /** A remote connection of an old configuration, ended once its calls in flight are answered. */
+  draining?: boolean;
   /** Why the last start or connection failed, redacted: what a call refused by the budget is told. */
   lastError?: string;
   redact: Redactor;
@@ -73,7 +88,6 @@ function abortable<T>(
   signal: AbortSignal,
   onAbort: () => Error,
 ): Promise<T> {
-  if (signal.aborted) return Promise.reject(onAbort());
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(onAbort());
     signal.addEventListener("abort", abort, { once: true });
@@ -98,11 +112,12 @@ export class McpCallNotSent extends Error {
   }
 }
 
-/** A connection that counts its calls in flight, so an idle sweep never ends it under one. */
+/** A connection that counts its calls in flight, so none is ended under a call by an idle sweep or a drain. */
 class CountingConnector implements McpConnector {
   constructor(
     private readonly inner: McpConnector,
     private readonly entry: Entry,
+    private readonly answered: () => void,
   ) {}
 
   get state() {
@@ -120,6 +135,7 @@ class CountingConnector implements McpConnector {
     } finally {
       this.entry.inFlight -= 1;
       this.entry.lastUsedAt = Date.now();
+      this.answered();
     }
   }
 
@@ -134,6 +150,8 @@ class CountingConnector implements McpConnector {
 
 export class McpConnections {
   private readonly entries = new Map<string, Entry>();
+  /** Connections reported `ready`: only their end is reported as `exited`. */
+  private readonly announced = new WeakSet<McpConnector>();
   private stopped = false;
 
   constructor(private readonly ctx: EngineContext) {}
@@ -146,44 +164,43 @@ export class McpConnections {
   /**
    * The connection for `target`, ready: the running one, the one starting,
    * or a new start, which takes one from the key's budget. A configuration
-   * change first ends the connection of the old one. `signal` (the call's)
-   * stops waiting for a start, which goes on for the calls that share it.
-   * The connection returned counts its calls in flight, so an idle remote
-   * one is never ended under a call.
+   * change first ends the connection of the old one: a stdio server's is
+   * stopped before the new one starts; a remote one's takes no new call and
+   * ends once its calls in flight are answered. `signal` (the call's) stops
+   * waiting for a start, which goes on for the calls that share it.
    */
   async acquire(target: McpTarget, signal: AbortSignal): Promise<McpConnector> {
+    const name = target.server.name;
+    const notSent = (why: string) =>
+      new McpCallNotSent(`${why}; the call did not run.`);
     if (this.stopped)
-      throw new McpCallNotSent(
-        `The worker is stopping, so MCP server ${target.server.name} was not started; the call did not run.`,
+      throw notSent(
+        `The worker is stopping, so MCP server ${name} was not started`,
       );
+    if (signal.aborted)
+      throw notSent(`The run stopped before MCP server ${name} was reached`);
     const holder =
       target.server.transport === "stdio"
         ? `sandbox:${target.sandbox.id}`
         : "worker";
-    const key = [
-      holder,
-      target.profileId,
-      target.server.name,
-      target.configHash,
-    ].join("\0");
+    const key = [holder, target.profileId, name, target.configHash].join("\0");
+    const stopping: Promise<void>[] = [];
     for (const other of [...this.entries.values()])
       if (
         other.key !== key &&
         other.holder === holder &&
         other.profileId === target.profileId &&
-        other.server === target.server.name
+        other.server === name
       )
-        this.end(other, "config");
+        stopping.push(this.retire(other));
+    await Promise.all(stopping);
     let entry = this.entries.get(key);
     if (!entry) {
       entry = {
         key,
         holder,
         profileId: target.profileId,
-        server: target.server.name,
-        ...(target.server.transport === "stdio"
-          ? { sandbox: target.sandbox }
-          : {}),
+        server: name,
         budget: this.mcp().startBudget(),
         redact: target.redact,
         tasks: new Set(),
@@ -192,25 +209,28 @@ export class McpConnections {
       };
       this.entries.set(key, entry);
     }
-    entry.redact = target.redact;
-    entry.tasks.add(target.taskId);
-    entry.lastUsedAt = Date.now();
-    let connector = entry.connector;
+    const current = entry;
+    current.redact = target.redact;
+    current.tasks.add(target.taskId);
+    current.lastUsedAt = Date.now();
+    let connector = current.connector;
     if (connector?.state !== "ready") {
-      const current = entry;
-      current.starting ??= this.start(current, target).finally(() => {
-        current.starting = undefined;
-      });
-      connector = await abortable(
-        current.starting,
-        signal,
-        () =>
-          new McpCallNotSent(
-            `The run stopped while MCP server ${target.server.name} started; the call did not run.`,
-          ),
+      if (!current.starting) {
+        const starting = this.start(current, target).finally(() => {
+          if (current.starting === starting) current.starting = undefined;
+        });
+        // Whoever waits for it may be gone by the time it fails.
+        starting.catch(() => {});
+        current.starting = starting;
+      }
+      connector = await abortable(current.starting, signal, () =>
+        notSent(`The run stopped while MCP server ${name} started`),
       );
     }
-    return new CountingConnector(connector, entry);
+    return new CountingConnector(connector, current, () => {
+      if (current.draining && current.inFlight === 0)
+        void this.end(current, "config");
+    });
   }
 
   /** Ends the connections of stdio servers in this sandbox: it is being released. */
@@ -258,32 +278,45 @@ export class McpConnections {
   }
 
   /**
-   * Ends an entry's connection, ours to close, and forgets the entry. An end
-   * for idleness or a new configuration is reported as `exited` in the
-   * tasks that used it; a release or a stop is not (the sandbox or the
-   * worker goes with it).
+   * An old configuration's connection: a remote one with calls in flight
+   * takes no new call and ends once they are answered (no process of it
+   * can clash with the new one's); any other ends now.
    */
-  private async end(
-    entry: Entry,
-    why: "config" | "idle" | "release" | "stop",
-  ): Promise<void> {
+  private retire(entry: Entry): Promise<void> {
+    if (entry.holder === "worker" && entry.inFlight > 0 && entry.connector) {
+      if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+      entry.draining = true;
+      return Promise.resolve();
+    }
+    return this.end(entry, "config");
+  }
+
+  /**
+   * Ends an entry, ours to close: no call reaches it any more, a start under
+   * way is stopped, and its connection is closed. An end for idleness or a
+   * new configuration is reported as `exited` in the tasks that used it; a
+   * release or a stop is not (the sandbox or the worker goes with it).
+   */
+  private async end(entry: Entry, why: EndReason): Promise<void> {
     if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
+    entry.ended ??= why;
+    entry.startAbort?.abort();
     const connector = entry.connector;
     entry.connector = undefined;
-    // A start under way ends as soon as it is ready.
-    const starting = entry.starting?.then(
-      (late) => late.close(),
-      () => {},
-    );
     if (connector) {
-      if (why === "config" || why === "idle")
+      if ((why === "config" || why === "idle") && this.announced.has(connector))
         this.reportAll(entry, { state: "exited" });
       await connector.close().catch(() => {});
     }
-    await starting;
+    await entry.starting?.catch(() => {});
   }
 
-  /** Starts the entry's server: one start of its budget, then `initialize` and the drift listing. */
+  /**
+   * Starts the entry's server: one start of its budget, `initialize`, then
+   * the drift listing. Each outcome is an event for the calling run: `ready`,
+   * or `failed`, also when the entry was ended as it started (unless the
+   * worker stopped, which writes nothing).
+   */
   private async start(entry: Entry, target: McpTarget): Promise<McpConnector> {
     const { server } = target;
     const budget = entry.budget.take();
@@ -298,47 +331,53 @@ export class McpConnections {
     }
     await this.report(target, { state: "starting" });
     const startedAt = Date.now();
+    const abort = new AbortController();
+    entry.startAbort = abort;
+    const stoppedAsItStarted = () =>
+      new McpCallNotSent(
+        `MCP server ${server.name} was stopped as it started, since ${ENDED[entry.ended ?? "stop"]}; the call did not run.`,
+      );
     let connector: McpConnector | undefined;
     try {
       const secretHeaders =
         server.transport === "http"
           ? await secretHeaderValues(this.ctx, server)
           : undefined;
+      if (entry.ended) throw stoppedAsItStarted();
       connector = await this.mcp().connect({
         server,
         ...(server.transport === "stdio" ? { sandbox: target.sandbox } : {}),
         ...(secretHeaders ? { secretHeaders } : {}),
         redact: (text, cut) => entry.redact(text, cut),
       });
-      await connector.start();
-    } catch (error) {
+      await connector.start(abort.signal);
+      if (entry.ended) throw stoppedAsItStarted();
+    } catch (failure) {
+      entry.startAbort = undefined;
       await connector?.close().catch(() => {});
+      const error = entry.ended ? stoppedAsItStarted() : failure;
       const message = entry.redact(errorMessage(error));
-      const stderr = (error as { stderrTail?: unknown }).stderrTail;
-      entry.lastError = message;
-      await this.report(target, {
-        state: "failed",
-        durationMs: Date.now() - startedAt,
-        error: clip(
-          typeof stderr === "string"
-            ? message.replace(/ Its latest stderr:\n[\s\S]*$/, "")
-            : message,
-          ERROR_LIMIT,
-        ),
-        ...(typeof stderr === "string" && stderr.trim()
-          ? { stderrTail: clip(entry.redact(stderr), 2000) }
-          : {}),
-      });
+      const stderr = entry.ended
+        ? undefined
+        : (failure as { stderrTail?: unknown }).stderrTail;
+      if (!entry.ended) entry.lastError = message;
+      if (entry.ended !== "stop")
+        await this.report(target, {
+          state: "failed",
+          durationMs: Date.now() - startedAt,
+          error: clip(
+            typeof stderr === "string"
+              ? message.replace(/ Its latest stderr:\n[\s\S]*$/, "")
+              : message,
+            ERROR_LIMIT,
+          ),
+          ...(typeof stderr === "string" && stderr.trim()
+            ? { stderrTail: clip(entry.redact(stderr), 2000) }
+            : {}),
+        });
       throw error;
     }
     const ready = connector;
-    // Ended in the meantime (a release or a stop): never handed out.
-    if (this.stopped || this.entries.get(entry.key) !== entry) {
-      await ready.close().catch(() => {});
-      throw new McpCallNotSent(
-        `MCP server ${server.name} was stopped as it started; the call did not run.`,
-      );
-    }
     entry.connector = ready;
     ready.onClose((end) => this.ended(entry, ready, end));
     let drift: string[] = [];
@@ -348,13 +387,34 @@ export class McpConnections {
         tools: target.snapshotTools,
         redact: (text) => entry.redact(text),
         timeoutMs: MCP_DRIFT_LIST_MS,
+        signal: abort.signal,
       });
     } catch (error) {
-      this.ctx.logger.warn(
-        `Listing the tools of MCP server ${server.name} for drift failed`,
-        { error: entry.redact(errorMessage(error)) },
-      );
+      if (!entry.ended)
+        this.ctx.logger.warn(
+          `Listing the tools of MCP server ${server.name} for drift failed`,
+          { error: entry.redact(errorMessage(error)) },
+        );
+    } finally {
+      entry.startAbort = undefined;
     }
+    // Ended during the listing, by the worker or by the server: it never
+    // became ready.
+    if (entry.ended || ready.state !== "ready") {
+      const error = entry.ended
+        ? stoppedAsItStarted()
+        : new McpCallNotSent(
+            `${entry.lastError ?? `MCP server ${server.name} closed the connection as it started.`} The call did not run.`,
+          );
+      if (entry.ended !== "stop")
+        await this.report(target, {
+          state: "failed",
+          durationMs: Date.now() - startedAt,
+          error: clip(entry.redact(error.message), ERROR_LIMIT),
+        });
+      throw error;
+    }
+    this.announced.add(ready);
     await this.report(target, {
       state: "ready",
       durationMs: Date.now() - startedAt,
@@ -372,6 +432,8 @@ export class McpConnections {
     if (entry.connector === connector) entry.connector = undefined;
     if (end.reason === "requested" || this.stopped) return;
     if (end.error) entry.lastError = end.error;
+    // One that never became ready is reported by its start, as `failed`.
+    if (!this.announced.has(connector)) return;
     this.reportAll(entry, {
       state: "exited",
       ...(end.error ? { error: clip(end.error, ERROR_LIMIT) } : {}),
@@ -381,13 +443,32 @@ export class McpConnections {
     entry.tasks.clear();
   }
 
-  /** An event for the calling run; a run that can no longer write (fenced) loses it, and the start goes on. */
+  /**
+   * An event for the calling run. One that can no longer write (it ended,
+   * or lost its lease) leaves it to the task, unattributed: the connection
+   * outlives the run that started it. A stopping worker writes nothing.
+   */
   private async report(target: McpTarget, event: McpServerReport) {
-    await target.report(event).catch((error: unknown) =>
-      this.ctx.logger.debug?.("An mcp.server event was not recorded", {
-        error: errorMessage(error),
-      }),
-    );
+    await target.report(event).catch(async () => {
+      if (this.stopped) return;
+      await this.ctx.db
+        .transaction((tx) =>
+          emit(tx, this.ctx, target.taskId, {
+            type: "mcp.server",
+            payload: {
+              profileId: target.profileId,
+              server: target.server.name,
+              ...event,
+            },
+          }),
+        )
+        .catch((error: unknown) =>
+          this.ctx.logger.warn("Recording an mcp.server event failed", {
+            taskId: target.taskId,
+            error: errorMessage(error),
+          }),
+        );
+    });
   }
 
   /** An event in every task that used the entry, outside any run. */
