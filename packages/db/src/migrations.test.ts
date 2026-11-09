@@ -548,6 +548,44 @@ describe.each(targets)("migrations on $name", (target) => {
     },
     OPEN_TIMEOUT,
   );
+
+  it(
+    "0016 pins an empty MCP toolset for every session that already ran, so it never gains a tool",
+    async () => {
+      const database = await databaseBefore(target, "0016_session_toolsets");
+      try {
+        await database.execute(sql`
+          insert into bots (id, name) values ('bot_1', 'Ada');
+        `);
+        await database.execute(sql`
+          insert into tasks (id, title, goal, coordinator_bot_id)
+          values ('task_1', 'Task', 'Goal', 'bot_1');
+        `);
+        await database.execute(sql`
+          insert into sessions (id, task_id, bot_id, role, brief, goal_version, run_count)
+          values ('sess_ran', 'task_1', 'bot_1', 'coordinator', 'Brief', 1, 2),
+            ('sess_new', 'task_1', 'bot_1', 'worker', 'Brief', 1, 0);
+        `);
+
+        await database.upgrade();
+
+        const pinned = await database.execute(
+          sql`select session_id, mcp from session_toolsets order by session_id`,
+        );
+        // The one that never ran pins at its first run.
+        expect(pinned.rows).toEqual([{ session_id: "sess_ran", mcp: [] }]);
+        // A session's toolset goes with it.
+        await database.execute(sql`delete from sessions where id = 'sess_ran'`);
+        const left = await database.execute(
+          sql`select count(*)::int as count from session_toolsets`,
+        );
+        expect(left.rows).toEqual([{ count: 0 }]);
+      } finally {
+        await database.close();
+      }
+    },
+    OPEN_TIMEOUT,
+  );
 });
 
 describe.skipIf(!postgresUrl)("migration 0012 on PostgreSQL", () => {
