@@ -6,10 +6,12 @@
 // refused with the reason, never undeclared), and reaches its server through
 // the worker's connections with the configuration the profile holds now.
 import {
+  canonicalJson,
   type McpServer,
   type McpTool,
   mcpServerNameSchema,
   mcpToolSchema,
+  sha256Hex,
 } from "@jj/contracts";
 import {
   mcpToolSnapshots,
@@ -20,11 +22,13 @@ import type { Sandbox } from "@jj/sandbox/contract";
 import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { EngineContext } from "../context";
+import { errorMessage } from "../errors";
 import { emit } from "../events";
 import type { McpConnector, McpToolBinding } from "../ports";
 import { profileSettings, toMcpSnapshot } from "../records";
 import { mcpConfigHash } from "../services/mcp";
 import { profileFor } from "../services/profiles";
+import { secretHeaderValues } from "../services/secrets";
 import { McpCallNotSent } from "./mcp-connections";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import type { SandboxHold } from "./sandboxes";
@@ -171,6 +175,8 @@ type Resolution =
       server: McpServer;
       configHash: string;
       snapshotTools: readonly McpTool[];
+      secretHeaders?: Record<string, { prefix: string; value: string }>;
+      secretsDigest: string;
     };
 
 /** A pinned tool checked against the bot's profile as it is now. */
@@ -218,10 +224,25 @@ async function resolve(
     };
   const reason = unrunnable(ctx, server, hold.sandbox);
   if (reason) return { refusal: `${reason} ${name} cannot be called.` };
+  // A remote server's header values as they are stored now: the call goes
+  // out with these, through a connection made with them.
+  let secretHeaders:
+    | Record<string, { prefix: string; value: string }>
+    | undefined;
+  if (server.transport === "http")
+    try {
+      secretHeaders = await secretHeaderValues(ctx, server);
+    } catch (error) {
+      return { refusal: `${errorMessage(error)} ${name} cannot be called.` };
+    }
   return {
     server,
     configHash: mcpConfigHash(server, settings.sandbox),
     snapshotTools: snapshot?.tools ?? [],
+    ...(secretHeaders ? { secretHeaders } : {}),
+    secretsDigest: secretHeaders
+      ? sha256Hex(canonicalJson(secretHeaders) ?? "")
+      : "",
   };
 }
 

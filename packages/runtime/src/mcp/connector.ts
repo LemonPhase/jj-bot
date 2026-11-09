@@ -104,6 +104,12 @@ export interface McpConnector {
   close(): Promise<void>;
   /** Called once, when the connection ends for any reason. */
   onClose(listener: (end: McpConnectionEnd) => void): () => void;
+  /**
+   * Replaces this connection's secrets: the transport's own (a remote
+   * server's header values), then the server's redactor's. Its results pass
+   * through it, since a server can echo what it was sent.
+   */
+  redact(text: string, cut?: CutEdges): string;
 }
 
 export interface McpConnectionOptions {
@@ -187,7 +193,7 @@ class Slots {
  */
 export class McpConnection implements McpConnector {
   private readonly options: McpConnectionOptions;
-  private readonly redact: McpRedact;
+  private readonly scrub: McpRedact;
   private readonly slots: Slots;
   private client: McpClient | undefined;
   private stateValue: McpConnector["state"] = "idle";
@@ -201,7 +207,7 @@ export class McpConnection implements McpConnector {
     this.options = options;
     const secrets = options.transport.secrets ?? [];
     // The transport's own secrets first, whole, then the server's.
-    this.redact = (text, cut) =>
+    this.scrub = (text, cut) =>
       options.redact(
         secrets.length > 0 ? redactSecrets(text, secrets) : text,
         cut,
@@ -217,6 +223,10 @@ export class McpConnection implements McpConnector {
 
   get serverInfo() {
     return this.serverInfoValue;
+  }
+
+  redact(text: string, cut?: CutEdges): string {
+    return this.scrub(text, cut);
   }
 
   async start(signal?: AbortSignal): Promise<McpServerInfo> {
@@ -426,14 +436,14 @@ export class McpConnection implements McpConnector {
   }
 
   private text(text: string): string {
-    return this.redact(text);
+    return this.scrub(text);
   }
 
   /** The server's latest stderr, redacted, at most 2000 characters; undefined when empty. */
   private tail(): string | undefined {
     const raw = this.options.transport.stderrTail?.();
     if (!raw?.text.trim()) return undefined;
-    const redacted = this.redact(
+    const redacted = this.scrub(
       raw.text,
       raw.cut ? { start: true } : undefined,
     ).trimEnd();

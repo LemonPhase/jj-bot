@@ -388,6 +388,7 @@ describe("scripted test model", () => {
     ]);
     const calls: { name: string; args: Record<string, unknown> }[] = [];
     const connector = {
+      redact: (text: string) => text,
       callTool: async (name: string, args: Record<string, unknown>) => {
         calls.push({ name, args });
         return { content: [{ type: "text", text: `found ${args.query}` }] };

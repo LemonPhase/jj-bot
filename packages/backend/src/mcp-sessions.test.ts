@@ -407,14 +407,14 @@ const call = (name: string, args: Record<string, unknown>, id: string) =>
   });
 
 /** Every row a run writes, as text: none may hold a secret value. */
-async function expectNoSecretStored(taskId: string) {
+async function expectNoSecretStored(taskId: string, more: string[] = []) {
   const exec = db.database.db;
   const view = JSON.stringify(await exec.select().from(sessionEntries));
   const events = JSON.stringify(
     (await engines.at(-1)?.engine.tasks.events(taskId))?.events ?? [],
   );
   for (const stored of [view, events])
-    for (const secret of [TOKEN, HEADER_TOKEN])
+    for (const secret of [TOKEN, HEADER_TOKEN, ...more])
       for (let at = 0; at + 8 <= secret.length; at += 4)
         expect(stored).not.toContain(secret.slice(at, at + 8));
 }
@@ -1111,6 +1111,185 @@ describe("connection lifecycle", () => {
       finished(await engine.tasks.events(second.id), "mcp__remote__lookup")[0]
         ?.payload,
     ).toMatchObject({ ok: true });
+  }, 60_000);
+});
+
+describe("remote servers' secret headers", () => {
+  /** Runs a task to completion with the faux model's next responses. */
+  const complete = async (engine: Engine, botId: string, goal: string) => {
+    const { task } = await engine.tasks.create({
+      goal,
+      coordinatorBotId: botId,
+    });
+    await untilTask(
+      engine,
+      task.id,
+      (view) => view.task.status === "completed",
+      goal,
+    );
+    return task;
+  };
+
+  it("sends each call with the header value stored then: a replaced, or removed and stored again, secret never goes out through an old connection", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root);
+    const { bot, profile } = await mcpBot(engine, [
+      remote({ askUnlessReadOnly: false }),
+    ]);
+    faux.setResponses(
+      ["1", "2", "3"].flatMap((id) => [
+        call("mcp__remote__lookup", { id }, `lookup_${id}`),
+        callTool("complete_task", { result: `Looked ${id} up.` }),
+      ]),
+    );
+    await complete(engine, bot.id, "First");
+    const rotated = "header-token-rotated-0123456789abcdefLMN";
+    await engine.secrets.put("DOCS_KEY", { value: rotated });
+    await complete(engine, bot.id, "Second");
+    // Removing the secret disables the server; storing it again and
+    // enabling the server brings it back, with the new value only.
+    await engine.secrets.delete("DOCS_KEY");
+    const restored = "header-token-restored-0123456789abcdefOPQ";
+    await engine.secrets.put("DOCS_KEY", { value: restored });
+    const { profile: disabled } = await engine.profiles.get(profile.id);
+    expect(disabled.mcpServers[0]?.enabled).toBe(false);
+    await engine.profiles.update(profile.id, {
+      mcpServers: disabled.mcpServers.map((server) => ({
+        ...server,
+        enabled: true,
+      })),
+    });
+    await complete(engine, bot.id, "Third");
+    expect(
+      received
+        .filter((entry) => entry.method === "tools/call")
+        .map((entry) => entry.authorization),
+    ).toEqual([
+      `Bearer ${HEADER_TOKEN}`,
+      `Bearer ${rotated}`,
+      `Bearer ${restored}`,
+    ]);
+  }, 60_000);
+
+  it("redacts a header value newer than the run's redactor from the result, its event and the transcript", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root);
+    const { bot } = await mcpBot(engine, [
+      remote({ askUnlessReadOnly: false }),
+    ]);
+    const fresh = "header-token-midrun-0123456789abcdefUVW";
+    let seen = "";
+    faux.setResponses([
+      async () => {
+        // Stored after this run built its redactor, before its first remote call.
+        await engine.secrets.put("DOCS_KEY", { value: fresh });
+        return call("mcp__remote__lookup", { id: "9" }, "lookup_9");
+      },
+      (context) => {
+        seen = textOf(resultOf(context, "lookup_9"));
+        return callTool("complete_task", { result: "Done." });
+      },
+    ]);
+    const task = await complete(engine, bot.id, "Look it up");
+    expect(
+      received.find((entry) => entry.method === "tools/call")?.authorization,
+    ).toBe(`Bearer ${fresh}`);
+    expect(seen).toBe("Record 9, fetched with Bearer [redacted].");
+    const [lookup] = finished(
+      await engine.tasks.events(task.id),
+      "mcp__remote__lookup",
+    );
+    expect(lookup?.payload.output).toBe(
+      "Record 9, fetched with Bearer [redacted].",
+    );
+    await expectNoSecretStored(task.id, [fresh]);
+  }, 60_000);
+});
+
+describe("refusals and reports", () => {
+  it("refuses a call of a tool taken away before asking for its approval", async () => {
+    const root = await workspace();
+    let refused = "";
+    const { engine, faux } = await start(root);
+    const { bot, profile, servers } = await mcpBot(engine, [docs()], {
+      approvals: [{ tool: "mcp__docs__*" }],
+    });
+    faux.setResponses([
+      say("Which tool?"),
+      call("mcp__docs__leaky", {}, "leaky_1"),
+      (context) => {
+        refused = textOf(resultOf(context, "leaky_1"));
+        return callTool("complete_task", { result: "Refused." });
+      },
+    ]);
+    const { task } = await engine.tasks.create({
+      goal: "Use leaky",
+      coordinatorBotId: bot.id,
+    });
+    await waitingForUser(engine, task.id, "the first run");
+    const [docsServer] = servers as [McpServerInput];
+    await engine.profiles.update(profile.id, {
+      mcpServers: [{ ...docsServer, toolExposure: { leaky: "hidden" } }],
+    });
+    await engine.tasks.postMessage(task.id, { text: "Go." });
+    const view = await untilTask(
+      engine,
+      task.id,
+      (current) =>
+        current.task.status === "completed" || current.approvals.length > 0,
+      "the refused call",
+    );
+    expect(view.approvals).toEqual([]);
+    expect(refused).toBe(
+      "mcp__docs__leaky was hidden in this bot's profile after this session started, so it can no longer be called.",
+    );
+  }, 60_000);
+
+  it("never reports a shared connection's end in a task that has finished", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root, {
+      config: { mcpIdleMs: 1_500 },
+    });
+    const { bot } = await mcpBot(engine, [
+      remote({ askUnlessReadOnly: false }),
+    ]);
+    faux.setResponses([
+      // The open task waits for the user; the other finishes.
+      call("mcp__remote__lookup", { id: "1" }, "lookup_open"),
+      say("Waiting."),
+      call("mcp__remote__lookup", { id: "2" }, "lookup_done"),
+      callTool("complete_task", { result: "Done." }),
+    ]);
+    const { task: open } = await engine.tasks.create({
+      goal: "Keep it open",
+      coordinatorBotId: bot.id,
+    });
+    await waitingForUser(engine, open.id, "the open task");
+    const { task: done } = await engine.tasks.create({
+      goal: "Finish",
+      coordinatorBotId: bot.id,
+    });
+    await untilTask(
+      engine,
+      done.id,
+      (view) => view.task.status === "completed",
+      "the finished task",
+    );
+    // Idle, the connection ends: the open task hears of it ...
+    await until(
+      async () =>
+        mcpEvents(await engine.tasks.events(open.id)).some(
+          (event) => event.payload.state === "exited",
+        ),
+      { what: "the idle end", timeoutMs: 20_000 },
+    );
+    await sleep(300);
+    // ... and the finished one does not.
+    expect(
+      mcpEvents(await engine.tasks.events(done.id)).map(
+        (event) => event.payload.state,
+      ),
+    ).not.toContain("exited");
   }, 60_000);
 });
 

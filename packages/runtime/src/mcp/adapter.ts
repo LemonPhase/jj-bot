@@ -210,6 +210,20 @@ export function mcpResultContent(
   return content.length > 0 ? content : [placeholder("(no output)")];
 }
 
+/** The run's output policy with the connection's own redaction first. */
+function withConnection(
+  policy: OutputPolicy,
+  connector: Pick<McpConnector, "redact">,
+): OutputPolicy {
+  return {
+    ...policy,
+    redact: (text, cut) => {
+      const own = connector.redact(text, cut);
+      return policy.redact ? policy.redact(own, cut) : own;
+    },
+  };
+}
+
 /**
  * The bindings as pi tools, sorted by exposed name (UTF-16 code units), so a
  * session's MCP declarations follow its built-in tools in the same order on
@@ -221,7 +235,9 @@ export function mcpResultContent(
  * first). Its arguments reach the server as validated, unchanged. Its result
  * is `mcpResultContent`, then redacted and capped (`finalizeResult` with the
  * run's policy: redaction before the cap, spill past it); `isError` makes
- * it a tool error. A call cut short by the run's stop or deadline, its
+ * it a tool error. The connection's own redaction runs first, on results
+ * and errors alike: its secrets (the header values it sends, the values the
+ * engine gave it) may be newer than the run's redactor. A call cut short by the run's stop or deadline, its
  * timeout or the server's exit is cancelled (`notifications/cancelled`) and
  * reported with `interrupted: "unknown"`; it is never run again.
  */
@@ -244,14 +260,18 @@ export function createMcpTools(
   return sorted.map((binding) => {
     const { server, tool } = binding;
     const label = `mcp: ${server}/${tool.name}`;
-    const failed = (text: string, interrupted?: "yes" | "unknown") =>
+    const failed = (
+      text: string,
+      interrupted?: "yes" | "unknown",
+      outputPolicy: OutputPolicy = policy,
+    ) =>
       finalizeResult(
         {
           content: [{ type: "text", text }],
           details: undefined,
           isError: true,
         },
-        policy,
+        outputPolicy,
         label,
         interrupted ? { interrupted } : {},
       );
@@ -268,8 +288,10 @@ export function createMcpTools(
         if (refusal !== undefined) return failed(refusal);
         const runSignal = signal ?? new AbortController().signal;
         let result: CallToolResult;
+        let outputPolicy = policy;
         try {
           const connector = await binding.connect(runSignal);
+          outputPolicy = withConnection(policy, connector);
           result = await connector.callTool(
             tool.name,
             params as Record<string, unknown>,
@@ -289,6 +311,7 @@ export function createMcpTools(
           return failed(
             error instanceof Error ? error.message : String(error),
             interrupted,
+            outputPolicy,
           );
         }
         return finalizeResult(
@@ -297,7 +320,7 @@ export function createMcpTools(
             details: undefined,
             ...(result.isError === true ? { isError: true } : {}),
           },
-          policy,
+          outputPolicy,
           label,
         );
       },

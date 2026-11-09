@@ -7,14 +7,20 @@
 // sandbox is released, its configuration changes, a remote one has been
 // idle for `mcpIdleMs`, or the worker stops. Each change of state is an
 // `mcp.server` event in the tasks that use it.
-import type { McpServer, McpServerEvent, McpTool } from "@jj/contracts";
+import {
+  isFinishedStatus,
+  type McpServer,
+  type McpServerEvent,
+  type McpTool,
+} from "@jj/contracts";
+import { tasks as tasksTable } from "@jj/db";
 import type { Sandbox } from "@jj/sandbox/contract";
+import { inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { emit } from "../events";
 import type { McpConnectionEnd, McpConnector, McpStartBudget } from "../ports";
-import type { Redactor } from "../redact";
-import { secretHeaderValues } from "../services/secrets";
+import type { CutEdges, Redactor } from "../redact";
 
 /** How long the drift listing may take once a server is ready. */
 export const MCP_DRIFT_LIST_MS = 5_000;
@@ -33,6 +39,14 @@ export interface McpTarget {
   profileId: string;
   /** `mcpConfigHash` of `server` in the profile's sandbox. */
   configHash: string;
+  /** A remote server's `secretHeaders` with the values stored now, read for this call. */
+  secretHeaders?: Readonly<Record<string, { prefix: string; value: string }>>;
+  /**
+   * SHA-256 of those values (empty for stdio), part of the connection's key:
+   * a header secret that changed or was removed and stored again never
+   * reaches the server through a connection made with the old value.
+   */
+  secretsDigest: string;
   /** The task's sandbox, where a stdio server runs. */
   sandbox: Sandbox;
   taskId: string;
@@ -89,6 +103,11 @@ function abortable<T>(
   onAbort: () => Error,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    // An abort event never fires again for a signal aborted already.
+    if (signal.aborted) {
+      reject(onAbort());
+      return;
+    }
     const abort = () => reject(onAbort());
     signal.addEventListener("abort", abort, { once: true });
     promise.then(
@@ -146,6 +165,10 @@ class CountingConnector implements McpConnector {
   onClose(listener: (end: McpConnectionEnd) => void) {
     return this.inner.onClose(listener);
   }
+
+  redact(text: string, cut?: CutEdges) {
+    return this.inner.redact(text, cut);
+  }
 }
 
 export class McpConnections {
@@ -183,7 +206,13 @@ export class McpConnections {
       target.server.transport === "stdio"
         ? `sandbox:${target.sandbox.id}`
         : "worker";
-    const key = [holder, target.profileId, name, target.configHash].join("\0");
+    const key = [
+      holder,
+      target.profileId,
+      name,
+      target.configHash,
+      target.secretsDigest,
+    ].join("\0");
     const stopping: Promise<void>[] = [];
     for (const other of [...this.entries.values()])
       if (
@@ -242,8 +271,12 @@ export class McpConnections {
     );
   }
 
-  /** Ends remote connections idle for `mcpIdleMs`, and forgets entries long unused. */
-  sweep(now = Date.now()): void {
+  /**
+   * Forgets the finished tasks a connection would report to, ends remote
+   * connections idle for `mcpIdleMs`, and forgets entries long unused.
+   */
+  async sweep(now = Date.now()): Promise<void> {
+    await this.forgetFinishedTasks();
     for (const entry of [...this.entries.values()]) {
       if (entry.inFlight > 0 || entry.starting) continue;
       const idle = now - entry.lastUsedAt;
@@ -269,6 +302,26 @@ export class McpConnections {
     await Promise.all(
       [...this.entries.values()].map((entry) => this.end(entry, "stop")),
     );
+  }
+
+  /** Tasks that finished (or are gone) no longer hear of the connections they used. */
+  private async forgetFinishedTasks(): Promise<void> {
+    const ids = [
+      ...new Set(
+        [...this.entries.values()].flatMap((entry) => [...entry.tasks]),
+      ),
+    ];
+    if (ids.length === 0) return;
+    const rows = await this.ctx.db
+      .select({ id: tasksTable.id, status: tasksTable.status })
+      .from(tasksTable)
+      .where(inArray(tasksTable.id, ids));
+    const live = new Set(
+      rows.filter((row) => !isFinishedStatus(row.status)).map((row) => row.id),
+    );
+    for (const entry of this.entries.values())
+      for (const taskId of [...entry.tasks])
+        if (!live.has(taskId)) entry.tasks.delete(taskId);
   }
 
   private mcp() {
@@ -339,16 +392,21 @@ export class McpConnections {
       );
     let connector: McpConnector | undefined;
     try {
-      const secretHeaders =
-        server.transport === "http"
-          ? await secretHeaderValues(this.ctx, server)
-          : undefined;
+      const { secretHeaders } = target;
+      // Its own redactor: every secret stored as it starts, and the values
+      // it sends, which may be newer than the calling run's redactor.
+      const own = await this.ctx.redactor(
+        Object.entries(secretHeaders ?? {}).map(([header, { value }]) => ({
+          name: `the ${header} header of MCP server ${server.name}`,
+          value,
+        })),
+      );
       if (entry.ended) throw stoppedAsItStarted();
       connector = await this.mcp().connect({
         server,
         ...(server.transport === "stdio" ? { sandbox: target.sandbox } : {}),
         ...(secretHeaders ? { secretHeaders } : {}),
-        redact: (text, cut) => entry.redact(text, cut),
+        redact: (text, cut) => entry.redact(own(text, cut), cut),
       });
       await connector.start(abort.signal);
       if (entry.ended) throw stoppedAsItStarted();

@@ -381,6 +381,12 @@ export interface McpConnector {
   close(): Promise<void>;
   /** Called once, when it ends for any reason. */
   onClose(listener: (end: McpConnectionEnd) => void): () => void;
+  /**
+   * Replaces its secrets (a remote server's header values, then the
+   * redactor it was made with); the runtime applies it to every result and
+   * error of its calls, before the run's redactor.
+   */
+  redact(text: string, cut?: CutEdges): string;
 }
 
 /** A session connection to one server, made with the configuration the profile holds now. */
