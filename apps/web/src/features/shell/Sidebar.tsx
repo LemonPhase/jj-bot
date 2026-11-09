@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { lazy, Suspense, useId } from "react";
 import { useApi } from "../../api/ApiContext";
 import { liveBadge } from "../../api/liveApi";
 import {
@@ -15,12 +15,19 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotList } from "../bots/BotList";
 import { useModels } from "../bots/useModels";
-import { ScheduleList } from "../schedules/ScheduleList";
 import { TaskList } from "../tasks/TaskList";
 import { TemplateList } from "../templates/TemplateList";
 import { modeBadgeFor } from "./modeBadge";
 import { botHref, type Route, SETTINGS_HREF, type Section } from "./router";
 import { useShell } from "./ShellContext";
+
+// Shown with the Tasks list only, after the schedules load: it loads on
+// demand, out of the initial bundle.
+const ScheduleList = lazy(() =>
+  import("../schedules/ScheduleList").then((module) => ({
+    default: module.ScheduleList,
+  })),
+);
 
 /** What the mode badge says: the API in use and whether a model can run. */
 export type ShellBadge = { kind: ModeBadgeKind; title: string };
@@ -132,7 +139,9 @@ export function Sidebar({
           <>
             <TaskList labelledBy={listLabelId} />
             <TemplateList />
-            <ScheduleList />
+            <Suspense fallback={null}>
+              <ScheduleList />
+            </Suspense>
           </>
         )}
       </div>
