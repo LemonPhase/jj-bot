@@ -694,6 +694,7 @@ describe("demo API", () => {
       snapshot: null,
     });
     expect(discovery.error).toMatch(/^Demo data: no MCP server runs/);
+    expect(discovery.configHash).toMatch(/^[a-f0-9]{64}$/);
     expect(await api.getMcpDiscovery(discovery.id)).toEqual(discovery);
     await rejects(api.getMcpDiscovery("mcp-discovery-99"), "NOT_FOUND");
     await rejects(api.getMcpSnapshot("mcps-1"), "NOT_FOUND");

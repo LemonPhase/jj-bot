@@ -17,6 +17,7 @@ import {
   CONTRACT_VERSION,
   type ConversationMessage,
   type ConversationView,
+  canonicalJson,
   createBotCommandSchema,
   createRuntimeProfileCommandSchema,
   createTaskCommandSchema,
@@ -38,6 +39,7 @@ import {
   type SandboxSpec,
   sandboxSpecSchema,
   sendBotMessageCommandSchema,
+  sha256Hex,
   startMcpDiscoveryCommandSchema,
   startTemplateCommandSchema,
   stopTaskCommandSchema,
@@ -1292,6 +1294,11 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         id: `mcp-discovery-${++discoveryCounter}`,
         profileId,
         server: server.name,
+        // A hash of what it was asked to test, as the record carries one.
+        configHash: sha256Hex(
+          canonicalJson({ server, sandbox: sandbox ?? profile.sandbox }) ??
+            server.name,
+        ),
         status: "failed",
         error:
           "Demo data: no MCP server runs in demo mode. Connect JJ Bot to a server to test it.",

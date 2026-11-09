@@ -545,9 +545,10 @@ export const mcpDiscoverySchema = z.object({
   server: mcpServerNameSchema,
   /**
    * SHA-256 of what the test runs: the configuration and, for stdio, the
-   * sandbox (the draft's, else the profile's). Its snapshot carries the
-   * same hash, so a client can tell, while it runs, whether a test is of the
-   * configuration it is editing.
+   * sandbox (the draft's, else the profile's), set when it is queued. Its
+   * snapshot carries the same hash, so a client can match a test, while it
+   * runs, to the snapshot it will give and to other tests and snapshots of
+   * the same configuration.
    */
   configHash: sha256Schema,
   status: mcpDiscoveryStatusSchema,
