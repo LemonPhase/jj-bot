@@ -140,6 +140,26 @@ function TaskCardLink({
 }
 
 /**
+ * What happens after the answer: a held call's task goes on either way; a
+ * spend approval's work goes on up to the cap, or stops at the threshold
+ * (only the bot's, for its daily cap).
+ */
+function answeredText(
+  approval: PendingApproval,
+  answer: "approved" | "denied",
+): string {
+  if (approval.kind !== "spend")
+    return `${answer === "approved" ? "Approved" : "Denied"}: the task goes on.`;
+  if (approval.scope === "task")
+    return answer === "approved"
+      ? "Approved: the task goes on up to its cap."
+      : "Denied: the task stops at the threshold.";
+  return answer === "approved"
+    ? "Approved: the bot goes on up to its daily cap."
+    : "Denied: the bot's work in this task stops at the threshold.";
+}
+
+/**
  * A call waiting for the user's approval, under the task's card: what it
  * runs, with Approve and Deny. Approve is offered here only when the summary
  * is the whole call; otherwise "Review in the task" opens the task, whose
@@ -180,7 +200,10 @@ function ChatApproval({
         {approval.kind === "spend" ? (
           // The summary is all of it: the cap and the threshold.
           <span>
-            {approval.summary}: no model call starts until you answer.
+            {approval.summary}:{" "}
+            {approval.scope === "task"
+              ? "no model call starts until you answer."
+              : "none of the bot's model calls in this task starts until you answer."}
           </span>
         ) : (
           <span>
@@ -195,7 +218,7 @@ function ChatApproval({
       </p>
       {answer ? (
         <p className="chat-approval__answer" role="status">
-          {answer === "approved" ? "Approved" : "Denied"}: the task goes on.
+          {answeredText(approval, answer)}
         </p>
       ) : (
         <div className="chat-approval__actions">

@@ -248,6 +248,16 @@ describe("a spend approval's card", () => {
         "To raise Unknown bot's daily cap, edit its runtime profile.",
       ),
     ).toBeTruthy();
+    // Only that bot's sessions wait: the card says so, and so does a denial.
+    expect(
+      screen.getByText(
+        "None of Unknown bot's model calls in this task starts until you answer. Calls already running finish.",
+      ),
+    ).toBeTruthy();
+    expect(
+      approvalState(spend({ scope: "bot", status: "denied", decidedAt: at }))
+        .text,
+    ).toBe("denied · this bot stopped");
   });
 });
 
@@ -304,7 +314,58 @@ describe("spend approvals in the task's status", () => {
         decision: "approve",
       }),
     );
+    expect(
+      await within(list).findByText(
+        "Approved: the task goes on up to its cap.",
+      ),
+    ).toBeTruthy();
   });
+
+  it.each([
+    [
+      spend(),
+      "Denied: the task stops at the threshold.",
+      "Spend past $4.00 of the task's $5.00 cap: no model call starts until you answer.",
+    ],
+    [
+      spend({ scope: "bot", spentUsd: 16.2, capUsd: 20, thresholdUsd: 16 }),
+      "Denied: the bot's work in this task stops at the threshold.",
+      "Spend past $16.00 of the bot's $20.00 daily cap: none of the bot's model calls in this task starts until you answer.",
+    ],
+  ])(
+    "says what a denial from the chat's task card stops (%#)",
+    async (approval, denied, pending) => {
+      const base = createDemoApi({ autoplay: false });
+      const task = view().task;
+      const decideApproval = vi.fn(async () => ({
+        ...approval,
+        status: "denied" as const,
+        decidedAt: at,
+      }));
+      renderReady(<InlineTaskCard taskId={task.id} />, {
+        decideApproval,
+        bootstrap: async () => ({
+          ...(await base.bootstrap()),
+          tasks: [
+            {
+              ...task,
+              activeSessionCount: 1,
+              sessionCount: 1,
+              usage: emptyUsage(),
+              pendingApprovals: [pendingApprovalOf(approval)],
+            },
+          ],
+        }),
+      });
+      const list = await screen.findByRole("list", {
+        name: "Calls in Count waiting for your approval",
+      });
+      expect(list.textContent).toContain(pending);
+      fireEvent.click(within(list).getByRole("button", { name: /^Deny:/ }));
+      expect(await within(list).findByText(denied)).toBeTruthy();
+      expect(list.textContent).not.toContain("the task goes on");
+    },
+  );
 });
 
 function renderReady(ui: ReactNode, overrides: Partial<JJApi> = {}) {

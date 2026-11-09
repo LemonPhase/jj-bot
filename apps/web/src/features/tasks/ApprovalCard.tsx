@@ -271,9 +271,11 @@ function SpendApprovalCard({
           {pending ? " Continue up to the cap?" : ""}
         </p>
         <p className="approval-card__rule">
-          {pending
-            ? "No model call starts until you answer. Calls already running finish."
-            : "You were asked because asking past the threshold is on for this cap."}
+          {!pending
+            ? "You were asked because asking past the threshold is on for this cap."
+            : current.scope === "task"
+              ? "No model call starts until you answer. Calls already running finish."
+              : `None of ${name}'s model calls in this task starts until you answer. Calls already running finish.`}
         </p>
         <p className="approval-card__state" role="status">
           <StatusSquare tone={state.tone} />

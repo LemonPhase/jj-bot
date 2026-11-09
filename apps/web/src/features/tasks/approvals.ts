@@ -71,7 +71,14 @@ export function spendApprovalState(approval: SpendApproval): ApprovalState {
     case "approved":
       return { text: "approved", tone: "completed" };
     case "denied":
-      return { text: "denied · task stopped", tone: "idle" };
+      // A bot's daily cap holds only that bot's sessions in the task.
+      return {
+        text:
+          approval.scope === "task"
+            ? "denied · task stopped"
+            : "denied · this bot stopped",
+        tone: "idle",
+      };
     case "expired":
       return {
         text: approval.reason?.includes("turned off")
