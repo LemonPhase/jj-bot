@@ -26,6 +26,7 @@ import {
   SandboxPathError,
   SandboxReleasedError,
   SandboxRequestError,
+  SandboxWorkspaceInUseError,
   SPAWN_ENTRY_LIMIT_BYTES,
   SPAWN_HOLD_BYTES,
   SPAWN_REQUEST_LIMIT_BYTES,
@@ -656,6 +657,59 @@ export function describeSandboxConformance(
             0,
           );
         }
+      },
+      testTimeout,
+    );
+
+    it(
+      "removes a task workspace on request, never one in use nor another key or mode",
+      async (context) => {
+        const remove = driver.removeWorkspace?.bind(driver);
+        if (!remove) {
+          context.skip("the driver declares no removeWorkspace");
+          return;
+        }
+        const key = uniqueKey("conformance-remove");
+        const other = uniqueKey("conformance-keep");
+        const held = await acquire({ workspace: "task" }, key);
+        await held.fs.write("state.txt", "old");
+        const kept = await acquire({ workspace: "task" }, other);
+        await kept.fs.write("state.txt", "kept");
+        const bot = await acquire({ workspace: "bot" }, key);
+        await bot.fs.write("state.txt", "bot");
+
+        await expect(
+          remove({ mode: "task", workspaceKey: key }),
+        ).rejects.toBeInstanceOf(SandboxWorkspaceInUseError);
+        expect((await held.fs.read("state.txt")).toString("utf8")).toBe("old");
+        await expect(
+          remove({ mode: "task", workspaceKey: "../escape" }),
+        ).rejects.toBeInstanceOf(SandboxRequestError);
+        await expect(
+          remove({ mode: "bot" as "task", workspaceKey: key }),
+        ).rejects.toBeInstanceOf(SandboxRequestError);
+
+        for (const sandbox of [held, kept, bot]) await release(sandbox);
+        expect(await remove({ mode: "task", workspaceKey: key })).toEqual({
+          removed: true,
+        });
+        expect(await remove({ mode: "task", workspaceKey: key })).toEqual({
+          removed: false,
+        });
+        const fresh = await acquire({ workspace: "task" }, key);
+        expect(await fresh.fs.stat("state.txt")).toBeUndefined();
+        const otherAgain = await acquire({ workspace: "task" }, other);
+        expect((await otherAgain.fs.read("state.txt")).toString("utf8")).toBe(
+          "kept",
+        );
+        const botAgain = await acquire({ workspace: "bot" }, key);
+        expect((await botAgain.fs.read("state.txt")).toString("utf8")).toBe(
+          "bot",
+        );
+        for (const sandbox of [fresh, otherAgain, botAgain])
+          await release(sandbox);
+        await remove({ mode: "task", workspaceKey: key });
+        await remove({ mode: "task", workspaceKey: other });
       },
       testTimeout,
     );

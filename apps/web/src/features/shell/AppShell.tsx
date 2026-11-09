@@ -24,6 +24,7 @@ import {
   sectionOf,
 } from "./router";
 import {
+  type ScheduleDialogRequest,
   type ShellActions,
   ShellContext,
   type TemplateDialogRequest,
@@ -41,10 +42,13 @@ import "./shell.css";
 type OpenDialog =
   | { kind: "none" }
   | { kind: "task"; botIds: string[] }
-  | { kind: "template"; request: TemplateDialogRequest };
+  | { kind: "template"; request: TemplateDialogRequest }
+  | { kind: "schedule"; request: ScheduleDialogRequest };
 
 /** The template dialogs, loaded when one first opens. */
 const TemplateDialog = lazy(() => import("../templates/TemplateDialog"));
+/** The schedule dialogs, loaded when one first opens. */
+const ScheduleDialog = lazy(() => import("../schedules/ScheduleDialog"));
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -150,6 +154,10 @@ export function AppShell() {
         setNavOpen(false);
         setDialog({ kind: "template", request });
       },
+      openScheduleDialog: (request) => {
+        setNavOpen(false);
+        setDialog({ kind: "schedule", request });
+      },
     }),
     [selectedBotId],
   );
@@ -212,6 +220,13 @@ export function AppShell() {
         <DialogBoundary onClose={closeDialog}>
           <Suspense fallback={null}>
             <TemplateDialog request={dialog.request} onClose={closeDialog} />
+          </Suspense>
+        </DialogBoundary>
+      )}
+      {dialog.kind === "schedule" && (
+        <DialogBoundary onClose={closeDialog}>
+          <Suspense fallback={null}>
+            <ScheduleDialog request={dialog.request} onClose={closeDialog} />
           </Suspense>
         </DialogBoundary>
       )}

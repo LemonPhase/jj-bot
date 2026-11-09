@@ -120,8 +120,12 @@ function refusedKind(character: string): string {
 const codePoint = (character: string) =>
   `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`;
 
-/** Refines a text to one line of plain text, naming the first refused character. */
-const oneLine =
+/**
+ * Refines a text to one line of plain text, naming the first refused
+ * character, for texts that appear unquoted in model-facing text (bot names
+ * and roles, schedule names).
+ */
+export const refineOneLine =
   (noun: string) => (text: string, context: z.RefinementCtx<string>) => {
     const refused = NOT_ONE_LINE.exec(text)?.[0];
     if (refused !== undefined)
@@ -137,13 +141,13 @@ const botNameSchema = z
   .trim()
   .min(1)
   .max(60)
-  .superRefine(oneLine("A bot name"));
+  .superRefine(refineOneLine("A bot name"));
 /** One line of plain text, at most 80 characters once trimmed. */
 const botRoleSchema = z
   .string()
   .trim()
   .max(80)
-  .superRefine(oneLine("A bot role"));
+  .superRefine(refineOneLine("A bot role"));
 const botInstructionsSchema = z.string().trim().max(COMMAND_TEXT_LIMIT);
 
 /** Derived by the server: `working` while the bot has a queued or running session. */

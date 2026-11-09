@@ -38,8 +38,11 @@ const description = (element: HTMLElement) =>
     .join(" ")
     .trim();
 
-/** The demo API without seeded tasks, so every demo bot can be archived. */
-const demo = () => createDemoApi({ autoplay: false, tasks: [] });
+/**
+ * The demo API without seeded tasks, so every demo bot can be archived, nor
+ * schedules, so its template can be deleted.
+ */
+const demo = () => createDemoApi({ autoplay: false, tasks: [], schedules: [] });
 
 afterEach(() => {
   window.location.hash = "";

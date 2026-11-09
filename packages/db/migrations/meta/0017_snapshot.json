@@ -1,5 +1,5 @@
 {
-  "id": "922a888f-19a3-45ab-a42e-4a10292287eb",
+  "id": "22d00766-d781-4dd3-a2f4-a6f4a31052ae",
   "prevId": "32d5503e-c3f1-4e8d-bf59-2defdd65c330",
   "version": "7",
   "dialect": "postgresql",
@@ -1870,6 +1870,298 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.schedule_fires": {
+      "name": "schedule_fires",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scheduled_for": {
+          "name": "scheduled_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "missed_count": {
+          "name": "missed_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "schedule_fires_schedule_id_schedules_id_fk": {
+          "name": "schedule_fires_schedule_id_schedules_id_fk",
+          "tableFrom": "schedule_fires",
+          "tableTo": "schedules",
+          "columnsFrom": ["schedule_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "schedule_fires_schedule_due": {
+          "name": "schedule_fires_schedule_due",
+          "nullsNotDistinct": false,
+          "columns": ["schedule_id", "scheduled_for"]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "schedule_fires_outcome_check": {
+          "name": "schedule_fires_outcome_check",
+          "value": "\"schedule_fires\".\"outcome\" in ('started', 'skipped', 'missed', 'refused')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.schedules": {
+      "name": "schedules",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "template_id": {
+          "name": "template_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "trigger": {
+          "name": "trigger",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "instructions": {
+          "name": "instructions",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "overlap": {
+          "name": "overlap",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'skip'"
+        },
+        "keep_workspaces": {
+          "name": "keep_workspaces",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 10
+        },
+        "chat_updates": {
+          "name": "chat_updates",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'attention'"
+        },
+        "next_fire_at": {
+          "name": "next_fire_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paused_reason": {
+          "name": "paused_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "schedules_due_idx": {
+          "name": "schedules_due_idx",
+          "columns": [
+            {
+              "expression": "enabled",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_fire_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "schedules_template_idx": {
+          "name": "schedules_template_idx",
+          "columns": [
+            {
+              "expression": "template_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "schedules_owner_created_idx": {
+          "name": "schedules_owner_created_idx",
+          "columns": [
+            {
+              "expression": "owner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "schedules_template_id_task_templates_id_fk": {
+          "name": "schedules_template_id_task_templates_id_fk",
+          "tableFrom": "schedules",
+          "tableTo": "task_templates",
+          "columnsFrom": ["template_id"],
+          "columnsTo": ["id"],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "schedules_overlap_check": {
+          "name": "schedules_overlap_check",
+          "value": "\"schedules\".\"overlap\" in ('skip')"
+        },
+        "schedules_chat_updates_check": {
+          "name": "schedules_chat_updates_check",
+          "value": "\"schedules\".\"chat_updates\" in ('all', 'attention')"
+        },
+        "schedules_paused_reason_check": {
+          "name": "schedules_paused_reason_check",
+          "value": "\"schedules\".\"paused_reason\" is null or \"schedules\".\"paused_reason\" in ('template_unusable', 'interval_too_short', 'no_next_fire')"
+        },
+        "schedules_keep_workspaces_check": {
+          "name": "schedules_keep_workspaces_check",
+          "value": "\"schedules\".\"keep_workspaces\" between 0 and 50"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.secrets": {
       "name": "secrets",
       "schema": "",
@@ -2144,55 +2436,6 @@
           "value": "\"session_inbox\".\"kind\" in ('brief', 'result', 'steering', 'message')"
         }
       },
-      "isRLSEnabled": false
-    },
-    "public.session_toolsets": {
-      "name": "session_toolsets",
-      "schema": "",
-      "columns": {
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'local'"
-        },
-        "mcp": {
-          "name": "mcp",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pinned_at": {
-          "name": "pinned_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "session_toolsets_session_id_sessions_id_fk": {
-          "name": "session_toolsets_session_id_sessions_id_fk",
-          "tableFrom": "session_toolsets",
-          "tableTo": "sessions",
-          "columnsFrom": ["session_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.sessions": {
@@ -3149,6 +3392,37 @@
           "primaryKey": false,
           "notNull": false
         },
+        "schedule_id": {
+          "name": "schedule_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chat_updates": {
+          "name": "chat_updates",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'all'"
+        },
+        "workspace_driver": {
+          "name": "workspace_driver",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_removing_at": {
+          "name": "workspace_removing_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "workspace_removed_at": {
+          "name": "workspace_removed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "event_seq": {
           "name": "event_seq",
           "type": "integer",
@@ -3280,6 +3554,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "tasks_schedule_idx": {
+          "name": "tasks_schedule_idx",
+          "columns": [
+            {
+              "expression": "schedule_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -3309,6 +3604,10 @@
         "tasks_status_check": {
           "name": "tasks_status_check",
           "value": "\"tasks\".\"status\" in ('queued', 'running', 'waiting', 'completed', 'failed', 'cancelled')"
+        },
+        "tasks_chat_updates_check": {
+          "name": "tasks_chat_updates_check",
+          "value": "\"tasks\".\"chat_updates\" in ('all', 'attention')"
         }
       },
       "isRLSEnabled": false

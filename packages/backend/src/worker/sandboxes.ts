@@ -9,7 +9,7 @@ import { isFinishedStatus, type TaskStatus } from "@jj/contracts";
 import { tasks } from "@jj/db";
 import type { Sandbox, SandboxSpec } from "@jj/sandbox/contract";
 import type { Context } from "@opentelemetry/api";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { endSpan, SPANS, startSpan } from "../observability/tracing";
@@ -93,6 +93,36 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+/**
+ * Records that the task holds a `task` workspace of `driverId`, which a
+ * schedule's `keepWorkspaces` may later remove through that driver. A write
+ * that fails is logged and leaves the task untrimmed, never the run failed.
+ */
+async function recordTaskWorkspace(
+  ctx: EngineContext,
+  taskId: string,
+  driverId: string,
+): Promise<void> {
+  try {
+    await ctx.db
+      .update(tasks)
+      .set({ workspaceDriver: driverId })
+      .where(
+        and(
+          eq(tasks.id, taskId),
+          or(
+            isNull(tasks.workspaceDriver),
+            ne(tasks.workspaceDriver, driverId),
+          ),
+        ),
+      );
+  } catch (error) {
+    ctx.logger?.warn(`Recording the workspace of task ${taskId} failed`, {
+      error: errorMessage(error),
+    });
+  }
 }
 
 export class TaskSandboxes {
@@ -219,8 +249,10 @@ export class TaskSandboxes {
                 }),
             );
           })
-          .then((sandbox) => {
+          .then(async (sandbox) => {
             created.sandbox = sandbox;
+            if (spec.workspace === "task")
+              await recordTaskWorkspace(this.ctx, taskId, driver.id);
             return sandbox;
           }),
       };

@@ -4,6 +4,7 @@ import {
   EVENT_PAYLOAD_CAP_BYTES,
   MAX_SPEND_CAP_USD,
   MAX_UPLOAD_FILES,
+  SCHEDULE_MIN_INTERVAL_BOUNDS,
   TOOL_OUTPUT_PREVIEW_LIMIT,
   UPLOAD_COMMAND_MAX_BYTES,
 } from "@jj/contracts";
@@ -165,6 +166,20 @@ export interface EngineConfig {
   streamPollMs: number;
   /** How long a driver probe result is reused. */
   probeTtlMs: number;
+  /** How often the worker runs a scheduler pass (and once when it starts). */
+  schedulerIntervalMs: number;
+  /**
+   * How late a schedule's due time may still start a task
+   * (`JJ_SCHEDULE_GRACE_MINUTES`, default 60); an older one is recorded
+   * missed.
+   */
+  scheduleGraceMinutes: number;
+  /**
+   * The least time between two runs of a schedule, on its wall clock
+   * (`JJ_SCHEDULE_MIN_INTERVAL_MINUTES`, default 60, 15–1440), checked at
+   * save and at every fire.
+   */
+  scheduleMinIntervalMinutes: number;
   /** What the server takes as uploads; null when it serves none (`JJ_UPLOADS=off`). */
   uploads: UploadSettings | null;
   /**
@@ -236,6 +251,9 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
+    schedulerIntervalMs: 30_000,
+    scheduleGraceMinutes: 60,
+    scheduleMinIntervalMinutes: 60,
     eventRetentionDays: DEFAULT_EVENT_RETENTION_DAYS,
     eventPayloadCapBytes: DEFAULT_EVENT_PAYLOAD_CAP_BYTES,
     compactionIntervalMs: 60 * 60_000,
@@ -280,6 +298,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "ephemeralIdleMs",
     "mcpIdleMs",
     "maxHeldSandboxes",
+    "schedulerIntervalMs",
+    "scheduleGraceMinutes",
     "compactionIntervalMs",
     "compactionMaxTasks",
     "compactionMaxMs",
@@ -291,6 +311,15 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`${key} must be a positive integer.`);
   }
+  const { min, max } = SCHEDULE_MIN_INTERVAL_BOUNDS;
+  if (
+    !Number.isSafeInteger(config.scheduleMinIntervalMinutes) ||
+    config.scheduleMinIntervalMinutes < min ||
+    config.scheduleMinIntervalMinutes > max
+  )
+    throw new RangeError(
+      `JJ_SCHEDULE_MIN_INTERVAL_MINUTES must be a whole number of minutes from ${min} to ${max}.`,
+    );
   config.maxConcurrentDiscoveries = Math.min(
     config.maxConcurrentDiscoveries,
     Math.max(1, config.concurrency - 1),
@@ -414,6 +443,8 @@ export function configFromEnv(
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
+    scheduleGraceMinutes: int("JJ_SCHEDULE_GRACE_MINUTES"),
+    scheduleMinIntervalMinutes: int("JJ_SCHEDULE_MIN_INTERVAL_MINUTES"),
     uploads: uploadsFromEnv(env, int),
     eventRetentionDays: env.JJ_EVENT_RETENTION_DAYS?.trim()
       ? eventRetentionDaysFromEnv(env)

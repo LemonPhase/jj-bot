@@ -27,6 +27,8 @@ import {
   describeTemplateProblem,
   emptyUsage,
   isFinishedStatus,
+  MAX_ENABLED_SCHEDULES,
+  MAX_SCHEDULES,
   MAX_TASK_TEMPLATES,
   type McpDiscovery,
   type McpServer,
@@ -37,6 +39,11 @@ import {
   profileBudgetsSchema,
   type RuntimeProfile,
   type SandboxSpec,
+  SCHEDULE_FIRES_KEPT,
+  SCHEDULE_FIRES_SHOWN,
+  type Schedule,
+  type ScheduleFire,
+  type StoredTrigger,
   sandboxSpecSchema,
   sendBotMessageCommandSchema,
   sha256Hex,
@@ -68,6 +75,15 @@ import {
   z,
 } from "@jj/contracts";
 import {
+  createScheduleCommandSchema,
+  firesBetween,
+  minimumGapMinutes,
+  nextFires,
+  sameTrigger,
+  triggerProblem,
+  updateScheduleCommandSchema,
+} from "@jj/contracts/schedule-rules";
+import {
   type ApiBadge,
   ApiError,
   type HintOptions,
@@ -80,6 +96,7 @@ import {
   DEMO_CONVERSATIONS,
   DEMO_DRIVERS,
   DEMO_MODELS,
+  DEMO_SCHEDULES,
   DEMO_TASKS,
   DEMO_TEMPLATES,
   DEMO_UPLOAD_LIMITS,
@@ -122,6 +139,8 @@ export interface DemoApiOptions {
   reason?: string;
   /** The seeded tasks. Defaults to `DEMO_TASKS`; tests pass fixtures. */
   tasks?: readonly DemoTaskSeed[];
+  /** The seeded schedules. Defaults to `DEMO_SCHEDULES`. */
+  schedules?: typeof DEMO_SCHEDULES;
 }
 
 export const demoBadge = (reason?: string): ApiBadge => ({
@@ -449,6 +468,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     title?: string;
     spendCapUsd?: number | null;
     templateId?: string | null;
+    scheduleId?: string | null;
   }): TaskState => {
     const createdAt = now();
     const task: Task = {
@@ -469,6 +489,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           ? input.spendCapUsd
           : budgetsOf(input.coordinatorBotId).maxUsdPerTask,
       templateId: input.templateId ?? null,
+      scheduleId: input.scheduleId ?? null,
       createdAt,
       updatedAt: createdAt,
       finishedAt: null,
@@ -501,7 +522,11 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   seedClock = null;
   for (const state of tasks.values()) schedule(state);
 
-  const createTask = (command: unknown, templateId?: string): Task => {
+  const createTask = (
+    command: unknown,
+    templateId?: string,
+    scheduleId?: string,
+  ): Task => {
     const parsed = validate(createTaskCommandSchema, command);
     // As services/tasks.ts `createTask`.
     if (parsed.verificationPlan)
@@ -527,6 +552,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       ...parsed,
       id: `task-${++taskCounter}`,
       templateId: templateId ?? null,
+      scheduleId: scheduleId ?? null,
     });
     try {
       uploads.attach(state.host, parsed.uploads);
@@ -1038,6 +1064,280 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     if (!template) throw notFound("task template", templateId);
     return template;
   };
+  // ── Schedules (as services/schedules.ts and worker/scheduler.ts) ──────────
+  // The demo's scheduler passes on its own clock: every 30 s while the demo
+  // plays, and before each read of the schedules.
+  const MIN_INTERVAL_MINUTES = 60;
+  const GRACE_MINUTES = 60;
+  type StoredSchedule = Omit<Schedule, "lastFire">;
+  const schedules = new Map<string, StoredSchedule>();
+  const fires = new Map<string, ScheduleFire[]>();
+  let scheduleCounter = 0;
+  let fireCounter = 0;
+  let lastPassAt: string | null = null;
+  const templateCap = (template: StoredTemplate) =>
+    template.spendCapUsd !== undefined
+      ? template.spendCapUsd
+      : budgetsOf(template.coordinatorBotId).maxUsdPerTask;
+  const deriveSchedule = (schedule: StoredSchedule): Schedule =>
+    clone({ ...schedule, lastFire: fires.get(schedule.id)?.[0] ?? null });
+  const getScheduleRecord = (scheduleId: string) => {
+    const schedule = schedules.get(scheduleId);
+    if (!schedule) throw notFound("schedule", scheduleId);
+    return schedule;
+  };
+  const nextFireFrom = (trigger: StoredTrigger, from: Date) =>
+    nextFires(trigger, from, 1)[0]?.toISOString() ?? null;
+  /**
+   * The save checks of services/schedules.ts: with `full`, the trigger and
+   * the template; always, the limits. Returns the next fire, or a pause
+   * when an enabled schedule has none.
+   */
+  const checkScheduleSave = (
+    draft: Pick<StoredSchedule, "templateId" | "trigger" | "enabled">,
+    existingId?: string,
+    full = true,
+  ): { nextFireAt: string | null; pausedReason?: "no_next_fire" } => {
+    if (full) checkTriggerAndTemplate(draft);
+    if (!existingId && schedules.size >= MAX_SCHEDULES)
+      throw new ApiError(
+        "CONFLICT",
+        `This server keeps at most ${MAX_SCHEDULES} schedules; delete one before saving another.`,
+        { limit: MAX_SCHEDULES },
+        409,
+      );
+    const enabled = [...schedules.values()].filter(
+      (schedule) => schedule.enabled && schedule.id !== existingId,
+    ).length;
+    if (draft.enabled && enabled >= MAX_ENABLED_SCHEDULES)
+      throw new ApiError(
+        "CONFLICT",
+        `At most ${MAX_ENABLED_SCHEDULES} schedules can be enabled at once; disable one first.`,
+        { limit: MAX_ENABLED_SCHEDULES },
+        409,
+      );
+    if (!draft.enabled) return { nextFireAt: null };
+    let next: string | null;
+    try {
+      next = nextFireFrom(draft.trigger, new Date(now()));
+    } catch {
+      next = null;
+    }
+    return next
+      ? { nextFireAt: next }
+      : { nextFireAt: null, pausedReason: "no_next_fire" };
+  };
+  const checkTriggerAndTemplate = (
+    draft: Pick<StoredSchedule, "templateId" | "trigger">,
+  ) => {
+    const problem = triggerProblem(
+      draft.trigger,
+      new Date(now()),
+      MIN_INTERVAL_MINUTES,
+    );
+    if (problem)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `trigger: ${problem}`,
+        {
+          field: "trigger",
+        },
+        400,
+      );
+    const template = templates.get(draft.templateId);
+    if (!template)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `templateId: unknown task template ${draft.templateId}.`,
+        { field: "templateId" },
+        400,
+      );
+    if (templateCap(template) === null)
+      throw new ApiError(
+        "VALIDATION_FAILED",
+        `templateId: "${template.title}" starts tasks with no spend cap, and a scheduled task needs one. Give the template a cap, or its coordinator's runtime profile a task cap.`,
+        { field: "templateId" },
+        400,
+      );
+  };
+  const recordFire = (
+    schedule: StoredSchedule,
+    scheduledFor: Date,
+    fire: Omit<
+      ScheduleFire,
+      | "id"
+      | "scheduleId"
+      | "scheduledFor"
+      | "recordedAt"
+      | "missedCount"
+      | "code"
+    > &
+      Partial<Pick<ScheduleFire, "missedCount" | "code">>,
+  ) => {
+    const list = fires.get(schedule.id) ?? [];
+    list.unshift({
+      id: `fire-${++fireCounter}`,
+      scheduleId: schedule.id,
+      scheduledFor: scheduledFor.toISOString(),
+      recordedAt: now(),
+      missedCount: 0,
+      code: null,
+      ...fire,
+    });
+    list.sort((a, b) => b.scheduledFor.localeCompare(a.scheduledFor));
+    fires.set(schedule.id, list.slice(0, SCHEDULE_FIRES_KEPT));
+  };
+  /** One pass, as worker/scheduler.ts makes it (spend caps aside: the demo spends nothing). */
+  const schedulerPass = () => {
+    const at = new Date(now());
+    lastPassAt = at.toISOString();
+    for (const schedule of [...schedules.values()]) {
+      if (!schedule.enabled || !schedule.nextFireAt) continue;
+      const first = new Date(schedule.nextFireAt);
+      if (first > at) continue;
+      const trigger = schedule.trigger;
+      const due = [first, ...firesBetween(trigger, first, at, 100_000)];
+      const latest = due.at(-1) as Date;
+      const late = at.getTime() - latest.getTime() > GRACE_MINUTES * 60_000;
+      const missed = late ? due : due.slice(0, -1);
+      if (missed.length > 0)
+        recordFire(schedule, first, {
+          outcome: "missed",
+          reason: `The scheduler did not run within ${GRACE_MINUTES} minutes of ${missed.length === 1 ? "this time" : `these ${missed.length} times`}: the server or its worker was not running.`,
+          missedCount: missed.length,
+          taskId: null,
+        });
+      let pause = false;
+      if (!late) {
+        const gap = minimumGapMinutes(trigger, latest);
+        const open = [...tasks.values()]
+          .map((state) => state.view.task)
+          .filter(
+            (task) =>
+              task.scheduleId === schedule.id &&
+              (!isFinishedStatus(task.status) ||
+                (task.cancelRequestedAt !== null &&
+                  task.status !== "cancelled")),
+          )
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        const template = templates.get(schedule.templateId);
+        if (gap !== null && gap < MIN_INTERVAL_MINUTES)
+          recordFire(schedule, latest, {
+            outcome: "refused",
+            code: "VALIDATION_FAILED",
+            reason: `The schedule runs ${gap} minutes apart at times, under this server's minimum of ${MIN_INTERVAL_MINUTES} minutes between runs; change its times.`,
+            taskId: null,
+          });
+        else if (open)
+          recordFire(schedule, latest, {
+            outcome: "skipped",
+            reason: open.cancelRequestedAt
+              ? "The previous run is stopping."
+              : (tasks.get(open.id)?.view.approvals ?? []).some(
+                    (approval) => approval.status === "pending",
+                  )
+                ? "The previous run is waiting for your approval."
+                : open.status === "waiting"
+                  ? "The previous run is waiting for you."
+                  : "The previous run has not finished.",
+            taskId: open.id,
+          });
+        else if (!template || templateCap(template) === null) {
+          pause = true;
+          recordFire(schedule, latest, {
+            outcome: "refused",
+            code: template ? "VALIDATION_FAILED" : "TEMPLATE_UNUSABLE",
+            reason: template
+              ? `"${template.title}" would start a task with no spend cap, and a scheduled task needs one. Give the template or its coordinator's runtime profile a task cap, then enable the schedule again.`
+              : "The schedule's template no longer exists.",
+            taskId: null,
+          });
+        } else
+          try {
+            const derived = deriveTemplate(template);
+            if (derived.problems.length > 0)
+              throw new ApiError(
+                "TEMPLATE_UNUSABLE",
+                `"${derived.title}" cannot start: ${derived.problems
+                  .map(describeTemplateProblem)
+                  .join(" ")}`,
+                { problems: derived.problems },
+                409,
+              );
+            const task = createTask(
+              templateTaskCommand(
+                derived,
+                schedule.instructions
+                  ? { instructions: schedule.instructions }
+                  : {},
+              ),
+              template.id,
+              schedule.id,
+            );
+            recordFire(schedule, latest, {
+              outcome: "started",
+              reason: null,
+              taskId: task.id,
+            });
+          } catch (error) {
+            const refused =
+              error instanceof ApiError
+                ? error
+                : new ApiError("INTERNAL", String(error));
+            pause = refused.code !== "SPEND_CAP_REACHED";
+            recordFire(schedule, latest, {
+              outcome: "refused",
+              code:
+                refused.code === "NETWORK_ERROR" ||
+                refused.code === "INVALID_RESPONSE" ||
+                refused.code === "UNRECOGNIZED_ERROR" ||
+                refused.code === "ABORTED"
+                  ? "INTERNAL"
+                  : refused.code,
+              reason: refused.message,
+              ...(refused.details !== undefined
+                ? { details: refused.details }
+                : {}),
+              taskId: null,
+            });
+          }
+      }
+      schedules.set(schedule.id, {
+        ...schedule,
+        ...(pause
+          ? {
+              enabled: false,
+              pausedReason: "template_unusable",
+              nextFireAt: null,
+            }
+          : { nextFireAt: nextFireFrom(trigger, at) }),
+      });
+      notify({ type: "schedules.changed" });
+    }
+  };
+  for (const seed of options.schedules ?? DEMO_SCHEDULES) {
+    const createdAt = ago(seed.minutesAgo);
+    schedules.set(seed.id, {
+      id: seed.id,
+      name: seed.name,
+      templateId: seed.templateId,
+      trigger: { ...seed.trigger },
+      instructions: seed.instructions,
+      enabled: true,
+      overlap: "skip",
+      keepWorkspaces: 10,
+      chatUpdates: "attention",
+      nextFireAt: nextFireFrom(seed.trigger, new Date(now())),
+      pausedReason: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  if (autoplay) {
+    const timer = setInterval(schedulerPass, 30_000);
+    (timer as { unref?: () => void }).unref?.();
+  }
+
   const assertActiveBots = (botIds: string[]) => {
     const missing = botIds.filter((botId) => {
       const record = bots.get(botId);
@@ -1473,6 +1773,25 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     },
     deleteTemplate: async (templateId) => {
       getTemplateRecord(templateId);
+      const using = [...schedules.values()].filter(
+        (schedule) => schedule.templateId === templateId,
+      );
+      if (using.length > 0)
+        throw new ApiError(
+          "TEMPLATE_IN_USE",
+          `This template is started by ${using.length === 1 ? "the schedule" : "the schedules"} ${using
+            .map((schedule) => `"${schedule.name}"`)
+            .join(
+              ", ",
+            )}; delete ${using.length === 1 ? "it" : "them"} or point ${using.length === 1 ? "it" : "them"} at another template first.`,
+          {
+            schedules: using.map((schedule) => ({
+              id: schedule.id,
+              name: schedule.name,
+            })),
+          },
+          409,
+        );
       templates.delete(templateId);
       notify({ type: "templates.changed" });
     },
@@ -1501,6 +1820,111 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         );
       }
       return createTask(templateTaskCommand(template, parsed), templateId);
+    },
+
+    listSchedules: async () => {
+      schedulerPass();
+      return {
+        schedules: [...schedules.values()]
+          .sort(
+            (a, b) =>
+              a.createdAt.localeCompare(b.createdAt) ||
+              a.id.localeCompare(b.id),
+          )
+          .map(deriveSchedule),
+        scheduler: {
+          lastPassAt,
+          minIntervalMinutes: MIN_INTERVAL_MINUTES,
+          graceMinutes: GRACE_MINUTES,
+        },
+      };
+    },
+    getSchedule: async (scheduleId) => {
+      schedulerPass();
+      const schedule = deriveSchedule(getScheduleRecord(scheduleId));
+      return {
+        schedule,
+        fires: clone(
+          (fires.get(scheduleId) ?? []).slice(0, SCHEDULE_FIRES_SHOWN),
+        ),
+      };
+    },
+    createSchedule: async (command) => {
+      const parsed = validate(createScheduleCommandSchema, command);
+      const draft = {
+        name: parsed.name,
+        templateId: parsed.templateId,
+        trigger: parsed.trigger,
+        instructions: parsed.instructions ?? "",
+        enabled: parsed.enabled ?? true,
+        keepWorkspaces: parsed.keepWorkspaces ?? 10,
+        chatUpdates: parsed.chatUpdates ?? "attention",
+      };
+      const { nextFireAt } = checkScheduleSave(draft);
+      const createdAt = now();
+      const schedule: StoredSchedule = {
+        id: `sched-${++scheduleCounter}`,
+        ...draft,
+        overlap: "skip",
+        nextFireAt,
+        pausedReason: null,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      schedules.set(schedule.id, schedule);
+      notify({ type: "schedules.changed" });
+      return deriveSchedule(schedule);
+    },
+    updateSchedule: async (scheduleId, command) => {
+      const current = getScheduleRecord(scheduleId);
+      const parsed = validate(updateScheduleCommandSchema, command);
+      const draft: StoredSchedule = {
+        ...current,
+        ...(parsed.name !== undefined ? { name: parsed.name } : {}),
+        ...(parsed.templateId !== undefined
+          ? { templateId: parsed.templateId }
+          : {}),
+        ...(parsed.trigger !== undefined ? { trigger: parsed.trigger } : {}),
+        ...(parsed.instructions !== undefined
+          ? { instructions: parsed.instructions }
+          : {}),
+        ...(parsed.enabled !== undefined ? { enabled: parsed.enabled } : {}),
+        ...(parsed.keepWorkspaces !== undefined
+          ? { keepWorkspaces: parsed.keepWorkspaces }
+          : {}),
+        ...(parsed.chatUpdates !== undefined
+          ? { chatUpdates: parsed.chatUpdates }
+          : {}),
+      };
+      // As the server: only a changed trigger or template, or turning it
+      // on, is checked as a save, so a schedule can always be turned off.
+      const full =
+        (parsed.trigger !== undefined &&
+          !sameTrigger(parsed.trigger, current.trigger)) ||
+        (parsed.templateId !== undefined &&
+          parsed.templateId !== current.templateId) ||
+        (parsed.enabled === true && !current.enabled);
+      const placed = checkScheduleSave(draft, scheduleId, full);
+      const schedule: StoredSchedule = {
+        ...draft,
+        nextFireAt: placed.nextFireAt,
+        ...(placed.pausedReason
+          ? { enabled: false, pausedReason: placed.pausedReason }
+          : {
+              pausedReason:
+                parsed.enabled === true ? null : current.pausedReason,
+            }),
+        updatedAt: now(),
+      };
+      schedules.set(scheduleId, schedule);
+      notify({ type: "schedules.changed" });
+      return deriveSchedule(schedule);
+    },
+    deleteSchedule: async (scheduleId) => {
+      getScheduleRecord(scheduleId);
+      schedules.delete(scheduleId);
+      fires.delete(scheduleId);
+      notify({ type: "schedules.changed" });
     },
 
     listTasks: async () =>

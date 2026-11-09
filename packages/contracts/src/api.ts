@@ -33,6 +33,11 @@ export const capabilitiesSchema = z.object({
   /** The skills library exists and granted skills reach sessions. While false, a grant is refused with MCP_UNAVAILABLE. */
   skills: z.boolean().default(false),
   /**
+   * Schedules are served (`/api/schedules`) and a worker's scheduler starts
+   * them. While false, the schedule routes answer 404.
+   */
+  schedules: z.boolean().default(false),
+  /**
    * Files can be uploaded into tasks, within these limits. Null: uploads
    * are not served, and the upload routes answer 404. Parsed as null from
    * servers before uploads.
@@ -82,6 +87,8 @@ export const API_ERROR_CODES = [
   "MCP_SNAPSHOT_MISMATCH",
   /** A task template cannot start now: `details.problems` (`templateUnusableDetailsSchema`) says why. */
   "TEMPLATE_UNUSABLE",
+  /** A task template a schedule starts cannot be deleted: `details.schedules` (`templateInUseDetailsSchema`) names them. */
+  "TEMPLATE_IN_USE",
   /**
    * 413: an upload over the server's limits: a file, a command's files, a
    * task's uploads in all, or the server's staging space.
@@ -118,6 +125,8 @@ export const workspaceHintSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("secrets.changed") }),
   /** A task template was saved, changed or deleted: refetch the templates. */
   z.object({ type: z.literal("templates.changed") }),
+  /** A schedule was saved, changed, deleted, fired or paused: refetch the schedules. */
+  z.object({ type: z.literal("schedules.changed") }),
 ]);
 
 export type Capabilities = z.infer<typeof capabilitiesSchema>;

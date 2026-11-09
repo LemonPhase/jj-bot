@@ -9,6 +9,7 @@ import {
   PROFILE_SPEND_CAP,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
+  scheduleSchema,
   type TaskEvent,
   type TaskView,
   taskEventSchema,
@@ -1082,5 +1083,151 @@ describe("demo task templates (as services/templates.ts)", () => {
       );
     expect(error).toMatchObject({ code: "VALIDATION_FAILED", status: 422 });
     expect(await api.listTasks()).toEqual([]);
+  });
+});
+
+describe("demo schedules (as services/schedules.ts and worker/scheduler.ts)", () => {
+  /** The demo on a clock the test moves. */
+  const clocked = (start: string) => {
+    let current = new Date(start);
+    const api = demo({ now: () => new Date(current), tasks: [] });
+    return {
+      api,
+      set(at: string) {
+        current = new Date(at);
+      },
+    };
+  };
+
+  it("seeds a schedule, and saves, edits and deletes others with the server's checks", async () => {
+    const { api } = clocked("2026-11-09T08:00:00.000Z");
+    const hints: WorkspaceHint[] = [];
+    api.subscribeHints((hint) => hints.push(hint));
+    const { schedules: seeded, scheduler } = await api.listSchedules();
+    expect(scheduleSchema.parse(seeded[0])).toMatchObject({
+      name: "Monday contract review",
+      templateId: "tmpl-demo-1",
+      nextFireAt: "2026-11-09T09:00:00.000Z",
+    });
+    expect(scheduler).toEqual({
+      lastPassAt: "2026-11-09T08:00:00.000Z",
+      minIntervalMinutes: 60,
+      graceMinutes: 60,
+    });
+    const created = await api.createSchedule({
+      name: "Digest",
+      templateId: "tmpl-demo-1",
+      trigger: { kind: "cron", cron: "0 18 * * *", timeZone: "utc" },
+      enabled: false,
+    });
+    expect(created).toMatchObject({
+      trigger: { timeZone: "UTC" },
+      enabled: false,
+      nextFireAt: null,
+    });
+    const on = await api.updateSchedule(created.id, { enabled: true });
+    expect(on.nextFireAt).toBe("2026-11-09T18:00:00.000Z");
+    expect(
+      hints.filter((hint) => hint.type === "schedules.changed"),
+    ).toHaveLength(2);
+    await rejects(
+      api.updateSchedule(created.id, {
+        trigger: { kind: "cron", cron: "*/30 * * * *", timeZone: "UTC" },
+      }),
+      "VALIDATION_FAILED",
+    );
+    const uncapped = await api.createTemplate({
+      title: "Uncapped",
+      goal: "x",
+      coordinatorBotId: "bot-moss",
+      spendCapUsd: null,
+    });
+    await rejects(
+      api.createSchedule({
+        name: "No cap",
+        templateId: uncapped.id,
+        trigger: { kind: "cron", cron: "0 9 * * *", timeZone: "UTC" },
+      }),
+      "VALIDATION_FAILED",
+    );
+    await rejects(api.deleteTemplate("tmpl-demo-1"), "TEMPLATE_IN_USE");
+    await api.deleteSchedule(created.id);
+    await rejects(api.getSchedule(created.id), "NOT_FOUND");
+  });
+
+  it("turns off a schedule whose times no longer pass, with its trigger and template repeated unchanged", async () => {
+    // As one saved before the server's minimum was raised.
+    const api = demo({
+      now: () => new Date("2026-11-09T08:00:00.000Z"),
+      tasks: [],
+      schedules: [
+        {
+          id: "sched-often",
+          name: "Half-hourly",
+          templateId: "tmpl-demo-1",
+          trigger: { kind: "cron", cron: "*/30 * * * *", timeZone: "UTC" },
+          instructions: "",
+          minutesAgo: 60,
+        },
+      ],
+    });
+    const off = await api.updateSchedule("sched-often", {
+      name: "Half-hourly, off",
+      templateId: "tmpl-demo-1",
+      trigger: { kind: "cron", cron: "*/30  * * * *", timeZone: "utc" },
+      instructions: "",
+      enabled: false,
+      keepWorkspaces: 10,
+      chatUpdates: "attention",
+    });
+    expect(off).toMatchObject({
+      name: "Half-hourly, off",
+      enabled: false,
+      nextFireAt: null,
+    });
+    await rejects(
+      api.updateSchedule("sched-often", { enabled: true }),
+      "VALIDATION_FAILED",
+    );
+    await rejects(
+      api.updateSchedule("sched-often", {
+        trigger: { kind: "cron", cron: "*/20 * * * *", timeZone: "UTC" },
+      }),
+      "VALIDATION_FAILED",
+    );
+  });
+
+  it("starts the template at its time on the demo clock, skips while that task runs, and records a downtime missed", async () => {
+    const { api, set } = clocked("2026-11-09T08:00:00.000Z");
+    set("2026-11-09T09:00:10.000Z");
+    const { fires, schedule } = await api.getSchedule("sched-demo-1");
+    expect(fires.map((entry) => entry.outcome)).toEqual(["started"]);
+    const taskId = fires[0]?.taskId as string;
+    expect((await api.getTask(taskId)).task).toMatchObject({
+      templateId: "tmpl-demo-1",
+      scheduleId: "sched-demo-1",
+    });
+    expect(schedule.nextFireAt).toBe("2026-11-16T09:00:00.000Z");
+    // The task has not finished a week later: that run is skipped.
+    set("2026-11-16T09:00:10.000Z");
+    expect(
+      (await api.getSchedule("sched-demo-1")).fires.map((entry) => [
+        entry.outcome,
+        entry.taskId,
+      ]),
+    ).toEqual([
+      ["skipped", taskId],
+      ["started", taskId],
+    ]);
+    await api.stopTask(taskId);
+    // Down for two Mondays, back within the grace of the second.
+    set("2026-11-30T09:20:00.000Z");
+    const later = (await api.getSchedule("sched-demo-1")).fires;
+    expect(
+      later.slice(0, 2).map((entry) => [entry.outcome, entry.missedCount]),
+    ).toEqual([
+      ["started", 0],
+      ["missed", 1],
+    ]);
   });
 });

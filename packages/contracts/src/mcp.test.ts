@@ -418,8 +418,8 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.12.0, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.12.0");
+  it("is contract 1.13.0, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.13.0");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
@@ -428,7 +428,7 @@ describe("MCP servers on a runtime profile", () => {
       CONTRACT_VERSION,
     );
     expect(changelog).toMatch(
-      /^## 1\.12\.0 — .* — MCP servers in sessions; a discovery's configuration hash$/m,
+      /^## 1\.13\.0 — .* — MCP servers in sessions; a discovery's configuration hash$/m,
     );
   });
 

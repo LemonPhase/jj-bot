@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { API_ERROR_CODES, capabilitiesSchema } from "./api";
+import { CONTRACT_VERSION } from "./common";
 import { applyTaskEvent, type TaskEvent, type TaskView } from "./events";
 import { artifactSchema, createTaskCommandSchema } from "./tasks";
 import {
@@ -26,6 +27,8 @@ describe("contract 1.11.0", () => {
       "utf8",
     );
     expect(changelog).toMatch(/^## 1\.11\.0 — .* — Uploads$/m);
+    const [major, minor] = CONTRACT_VERSION.split(".").map(Number);
+    expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThanOrEqual(1011);
     expect(API_ERROR_CODES).toContain("UPLOAD_TOO_LARGE");
   });
 });

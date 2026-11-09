@@ -81,6 +81,7 @@ export const COMPACTION: Readonly<
   "approval.requested": { action: "latest", record: "approval" },
   "approval.updated": { action: "latest", record: "approval" },
   "mcp.server": { action: "keep" },
+  "workspace.removed": { action: "keep" },
   "cancellation.requested": { action: "keep" },
   "cancellation.completed": { action: "keep" },
 };
