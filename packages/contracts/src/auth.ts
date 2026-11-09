@@ -2,7 +2,7 @@ import { z } from "zod";
 import { idSchema, timestampSchema } from "./common";
 
 /**
- * Signing in (1.14.0). One owner: the API takes the bearer token, which
+ * Signing in (1.15.0). One owner: the API takes the bearer token, which
  * scripts and `/metrics` keep sending, or a cookie session that a sign-in
  * issues (`POST /api/auth/login`). A session is an `HttpOnly` cookie the
  * client never reads; what clients see of it is `authSessionSchema`.

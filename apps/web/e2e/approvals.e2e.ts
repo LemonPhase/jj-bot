@@ -165,5 +165,123 @@ test("a held call too long to show in chat is reviewed and approved in the task"
   await card.getByRole("button", { name: "Approve" }).click();
   await expect(card.getByText("ran · exit 0")).toBeVisible();
   const after = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
-  expect(after.approvals[0]?.outcome).toMatchObject({ ok: true, exitCode: 0 });
+  expect(after.approvals[0]).toMatchObject({
+    kind: "tool",
+    outcome: { ok: true, exitCode: 0 },
+  });
+});
+
+// Spend past 80% of a task's cap that asks first: a bot on the scripted
+// model at its fictional price runs the commands its goal quotes, one model
+// call each, so its spend crosses the threshold well before the cap.
+const notesGoal = `Write the notes: ${Array.from({ length: 30 }, (_, index) => `run \`echo ${index + 1}\``).join(", ")}.`;
+
+async function spendingTask(
+  request: Parameters<typeof getJson>[0],
+  name: string,
+) {
+  const bot = await request.post("/api/bots", {
+    data: { name, model: "scripted/team-priced" },
+  });
+  expect(bot.status()).toBe(201);
+  const { bot: created } = (await bot.json()) as { bot: Bot };
+  const response = await request.post("/api/tasks", {
+    data: {
+      goal: notesGoal,
+      title: `${name}'s notes`,
+      coordinatorBotId: created.id,
+      spendCapUsd: 0.05,
+      approveSpendPastThreshold: true,
+    },
+  });
+  expect(response.status()).toBe(201);
+  const { task } = (await response.json()) as { task: Task };
+  return task;
+}
+
+test("spend past 80% of the task's cap waits for the user, then runs on to the cap once approved", async ({
+  page,
+  request,
+}) => {
+  const task = await spendingTask(request, "Penny");
+  await page.goto(`/#/tasks/${task.id}`);
+  const main = page.getByRole("main", { name: "Task: Penny's notes" });
+  const card = main.getByRole("article", {
+    name: "Approval: spend past 80% of the task's cap",
+  });
+  await expect(card.getByText("waiting · no model calls")).toBeVisible();
+  await expect(card).toContainText(
+    /Spent \$0\.0\d+ of \$0\.05, past the 80% threshold\. Continue up to the cap\?/,
+  );
+  await expect(main.getByText("1 approval waiting")).toBeVisible();
+  // The API agrees: one pending approval, and no model call since it was asked.
+  const held = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+  const asked = held.events.find(
+    (event) => event.type === "approval.requested",
+  );
+  expect(held.approvals).toMatchObject([
+    { kind: "spend", status: "pending", capUsd: 0.05 },
+  ]);
+  expect(
+    held.events.filter(
+      (event) =>
+        event.type === "model.started" &&
+        event.sequence > (asked?.sequence ?? 0),
+    ),
+  ).toEqual([]);
+
+  await card.getByRole("button", { name: "Approve" }).click();
+  await expect(card.getByText("approved", { exact: true })).toBeVisible();
+  await expect(
+    main
+      .getByRole("log", { name: "Messages in Penny's notes" })
+      .getByText(/^Stopped: The task reached its spend cap/),
+  ).toBeVisible();
+  const after = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+  expect(after.approvals).toHaveLength(1);
+  expect(after.usage.total.costUsd).toBeGreaterThanOrEqual(0.05);
+});
+
+test("a denied spend approval stops the task at the threshold, and a message asks again", async ({
+  page,
+  request,
+}) => {
+  const task = await spendingTask(request, "Prue");
+  await page.goto(`/#/tasks/${task.id}`);
+  const main = page.getByRole("main", { name: "Task: Prue's notes" });
+  const log = main.getByRole("log", { name: "Messages in Prue's notes" });
+  const cards = log.getByRole("article", {
+    name: "Approval: spend past 80% of the task's cap",
+  });
+  await expect(
+    cards.first().getByText("waiting · no model calls"),
+  ).toBeVisible();
+  const before = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+
+  await cards.first().getByRole("button", { name: "Deny" }).click();
+  await expect(cards.first().getByText("denied · task stopped")).toBeVisible();
+  await expect(
+    log.getByText(
+      /^Stopped: spend past 80% of the task's \$0\.05 cap was not approved\./,
+    ),
+  ).toBeVisible();
+  const denied = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+  expect(denied.usage.total.costUsd).toBe(before.usage.total.costUsd);
+  expect(denied.events.some((event) => event.type === "spend.capped")).toBe(
+    false,
+  );
+
+  // A message continues the task and asks again, before any model call.
+  await main
+    .getByRole("textbox", { name: "Message the task group" })
+    .fill("Please go on.");
+  await main
+    .getByRole("textbox", { name: "Message the task group" })
+    .press("Enter");
+  await expect(cards).toHaveCount(2);
+  await expect(
+    cards.nth(1).getByText("waiting · no model calls"),
+  ).toBeVisible();
+  const again = await getJson<TaskView>(request, `/api/tasks/${task.id}`);
+  expect(again.usage.total.costUsd).toBe(before.usage.total.costUsd);
 });

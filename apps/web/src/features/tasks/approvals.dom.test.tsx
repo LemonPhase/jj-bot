@@ -5,6 +5,7 @@ import {
   emptyUsage,
   pendingApprovalOf,
   type TaskView,
+  type ToolApproval,
 } from "@jj/contracts";
 import {
   fireEvent,
@@ -34,7 +35,8 @@ import { taskTimeline } from "./taskModel";
 const at = (second: number) =>
   `2026-11-03T12:00:${String(second).padStart(2, "0")}.000Z`;
 
-const approval = (patch: Partial<Approval> = {}): Approval => ({
+const approval = (patch: Partial<ToolApproval> = {}): ToolApproval => ({
+  kind: "tool",
   id: "ap-1",
   taskId: "task-1",
   sessionId: "s-1",
@@ -70,6 +72,7 @@ const view = (patch: Partial<TaskView> = {}): TaskView => ({
     cancelReason: null,
     cancelRequestedAt: null,
     spendCapUsd: null,
+    approveSpendPastThreshold: false,
     templateId: null,
     scheduleId: null,
     verificationPlan: null,
@@ -93,7 +96,7 @@ const view = (patch: Partial<TaskView> = {}): TaskView => ({
 
 describe("approval state", () => {
   it("never says a call ran before its outcome is stored", () => {
-    const cases: [Partial<Approval>, string][] = [
+    const cases: [Partial<ToolApproval>, string][] = [
       [{}, "waiting for your approval · not run"],
       [{ status: "approved", decidedAt: at(6) }, "approved · waiting to run"],
       [

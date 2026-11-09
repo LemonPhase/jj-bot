@@ -1,4 +1,4 @@
-// `/api/auth/*` (contract 1.14.0): the sign-in state, signing in and out,
+// `/api/auth/*` (contract 1.15.0): the sign-in state, signing in and out,
 // the signed-in devices, and rotating the generated token. Every answer is
 // `Cache-Control: no-store`.
 import { DomainError } from "@jj/backend";

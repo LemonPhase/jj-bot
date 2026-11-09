@@ -326,10 +326,10 @@ function TimelineItem({
   view: TaskView;
   savedCopy: string | undefined;
 }) {
-  if (!savedCopy) return <TimelineContent {...props} />;
+  if (!savedCopy) return <TimelineContent {...props} view={view} />;
   return (
     <div className="task-chat__large">
-      <TimelineContent {...props} />
+      <TimelineContent {...props} view={view} />
       <SavedCopy view={view} artifactId={savedCopy} />
     </div>
   );
@@ -339,12 +339,14 @@ function TimelineContent({
   entry,
   mention,
   getBot,
+  view,
   taskId,
   files,
 }: {
   entry: TimelineEntry;
   mention: (text: string) => MentionSegment[];
   getBot: (botId: string) => Bot | undefined;
+  view: TaskView;
   taskId: string;
   /** The files a user announcement attached. */
   files?: readonly Artifact[];
@@ -356,6 +358,7 @@ function TimelineContent({
       <ApprovalCard
         approval={entry.approval}
         bot={getBot(entry.approval.botId)}
+        view={view}
       />
     );
   const { message, goalVersion } = entry;

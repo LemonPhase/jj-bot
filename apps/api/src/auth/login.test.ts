@@ -1,4 +1,4 @@
-// Signing in (contract 1.14.0): the guards on /api and /metrics, the cookie
+// Signing in (contract 1.15.0): the guards on /api and /metrics, the cookie
 // and its flags, Origin on cookie writes, sign-in with the token, a password
 // or a one-time code, expiry on an injected clock, the rate limits and the
 // password lock, the device list, signing out and token rotation, which end

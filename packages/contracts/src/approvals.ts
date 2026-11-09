@@ -5,7 +5,7 @@ import {
   type CanonicalProblem,
   canonicalForm,
 } from "./canonical";
-import { idSchema, timestampSchema } from "./common";
+import { idSchema, spendCapUsdSchema, timestampSchema } from "./common";
 import {
   MCP_TOOL_PREFIX,
   type McpServer,
@@ -13,11 +13,15 @@ import {
   mcpServerOf,
   toolSelectorMatches,
 } from "./mcp";
+import { formatUsd } from "./money";
 import { type ApprovalRule, approvalRuleSchema } from "./profiles";
 
 /**
  * Approvals: a call whose profile rule says it needs the user's approval
- * waits for it, without running, while its session waits too.
+ * waits for it, without running, while its session waits too
+ * (`kind: "tool"`); and, when a cap's option asks for it, spend past
+ * SPEND_SOFT_THRESHOLD of the cap waits for the user's go-ahead
+ * (`kind: "spend"`, see `spendApprovalSchema`). For a tool call:
  *
  * - `pending`: waiting for the user. The call has not run.
  * - `approved`: the user approved it. It runs once when its session resumes
@@ -58,7 +62,12 @@ export const approvalOutcomeSchema = z.object({
   refused: z.string().max(APPROVAL_REASON_LIMIT).optional(),
 });
 
-export const approvalSchema = z.object({
+/**
+ * A tool call held by a rule of its bot's profile. Records stored before
+ * spend approvals have no `kind` and parse as this.
+ */
+export const toolApprovalSchema = z.object({
+  kind: z.literal("tool").default("tool"),
   id: idSchema,
   taskId: idSchema,
   sessionId: idSchema,
@@ -90,13 +99,85 @@ export const approvalSchema = z.object({
 });
 
 /**
- * A pending approval as task summaries carry it. `shownInFull` is true when
- * `summary` is the whole call (a bash command on one line within the summary
- * limit), so a client may offer Approve from the summary alone; otherwise the
- * whole call is on the task's approval card, and only it should offer Approve.
+ * Which cap a spend approval is about: the task's own (`task.spendCapUsd`)
+ * or a bot's rolling 24 hours (its own profile's `maxUsdPerBotPerDay`).
  */
-export const pendingApprovalSchema = approvalSchema
+export const SPEND_APPROVAL_SCOPES = ["task", "bot"] as const;
+export const spendApprovalScopeSchema = z.enum(SPEND_APPROVAL_SCOPES);
+
+/**
+ * Why a spend approval expired: its cap changed (`cap_changed`) or was
+ * removed (`cap_removed`), asking past the threshold was turned off
+ * (`asking_turned_off`), or spend reached the cap while it waited
+ * (`cap_reached`).
+ */
+export const SPEND_EXPIRY_CAUSES = [
+  "cap_changed",
+  "cap_removed",
+  "asking_turned_off",
+  "cap_reached",
+] as const;
+export const spendExpiryCauseSchema = z.enum(SPEND_EXPIRY_CAUSES);
+
+/**
+ * Spend past SPEND_SOFT_THRESHOLD of a cap, held for the user's go-ahead
+ * because the cap's option (`approveSpendPastThreshold`: the task's for its
+ * own cap, the bot's profile's for the bot's) is on. One per cap value:
+ * while it is pending, no model call it covers starts, in any session of
+ * the task (task scope) or of the bot in the task (bot scope).
+ *
+ * - `approved`: the sessions run on up to the cap. It covers its cap value
+ *   for good on task scope, and for 24 hours after `decidedAt` on bot scope.
+ * - `denied`: the sessions stop as at a cap; a message that continues the
+ *   task asks again.
+ * - `expired`: the cap changed or was removed, the option was turned off,
+ *   or spend reached the cap, before the user answered (`expiredBecause`);
+ *   the sessions check again.
+ * - `cancelled`: the task was stopped, or finished, before the user answered.
+ *
+ * It holds no call and no content: `sessionId`, `runId` and `botId` name the
+ * session whose model call first found the spend past the threshold.
+ */
+export const spendApprovalSchema = z.object({
+  kind: z.literal("spend"),
+  id: idSchema,
+  taskId: idSchema,
+  sessionId: idSchema,
+  runId: idSchema,
+  /** The bot of that session; on bot scope, the bot whose cap it is. */
+  botId: idSchema,
+  scope: spendApprovalScopeSchema,
+  /** The spend the cap counts, when the threshold was found crossed. */
+  spentUsd: z.number().nonnegative(),
+  capUsd: spendCapUsdSchema,
+  /** SPEND_SOFT_THRESHOLD of `capUsd`. */
+  thresholdUsd: z.number().nonnegative(),
+  status: approvalStatusSchema,
+  /** Denied: the user's reason, if they gave one. Expired or cancelled: why. */
+  reason: z.string().nullable(),
+  /** Expired: why, as a value (`reason` says it in words). Null in every other status. */
+  expiredBecause: spendExpiryCauseSchema.nullable(),
+  createdAt: timestampSchema,
+  decidedAt: timestampSchema.nullable(),
+});
+
+/** Every approval: a held tool call or held spend, by `kind` (`tool` when missing). */
+export const approvalSchema = z.discriminatedUnion("kind", [
+  toolApprovalSchema,
+  spendApprovalSchema,
+]);
+
+/**
+ * A pending approval as task summaries carry it. For a tool call,
+ * `shownInFull` is true when `summary` is the whole call (a bash command on
+ * one line within the summary limit), so a client may offer Approve from the
+ * summary alone; otherwise the whole call is on the task's approval card, and
+ * only it should offer Approve. A spend approval is always shown in full:
+ * its `summary` ("Spend past $4.00 of the task's $5.00 cap") is all of it.
+ */
+export const pendingToolApprovalSchema = toolApprovalSchema
   .pick({
+    kind: true,
     id: true,
     sessionId: true,
     botId: true,
@@ -105,6 +186,25 @@ export const pendingApprovalSchema = approvalSchema
     createdAt: true,
   })
   .extend({ shownInFull: z.boolean().default(false) });
+
+export const pendingSpendApprovalSchema = spendApprovalSchema
+  .pick({
+    kind: true,
+    id: true,
+    sessionId: true,
+    botId: true,
+    scope: true,
+    spentUsd: true,
+    capUsd: true,
+    thresholdUsd: true,
+    createdAt: true,
+  })
+  .extend({ summary: z.string().max(300), shownInFull: z.literal(true) });
+
+export const pendingApprovalSchema = z.discriminatedUnion("kind", [
+  pendingToolApprovalSchema,
+  pendingSpendApprovalSchema,
+]);
 
 /**
  * `POST /api/tasks/:taskId/approvals/:approvalId`. Only the user decides: no
@@ -320,7 +420,7 @@ export function visibleText(text: string): string {
  * run and with nothing in it a reader cannot see.
  */
 export function shownInFull(
-  approval: Pick<Approval, "tool" | "args" | "summary">,
+  approval: Pick<ToolApproval, "tool" | "args" | "summary">,
 ): boolean {
   return (
     approval.tool === "bash" &&
@@ -330,15 +430,47 @@ export function shownInFull(
   );
 }
 
+/**
+ * A spend approval on one line: "Spend past $4.00 of the task's $5.00 cap",
+ * "Spend past $16.00 of the bot's $20.00 daily cap".
+ */
+export function spendApprovalSummary(
+  approval: Pick<SpendApproval, "scope" | "thresholdUsd" | "capUsd">,
+): string {
+  const cap = formatUsd(approval.capUsd);
+  return `Spend past ${formatUsd(approval.thresholdUsd)} of ${
+    approval.scope === "task"
+      ? `the task's ${cap} cap`
+      : `the bot's ${cap} daily cap`
+  }`;
+}
+
 /** The approval as task summaries carry it while it is pending. */
 export function pendingApprovalOf(approval: Approval): PendingApproval {
-  const { id, sessionId, botId, tool, summary, createdAt } = approval;
+  const { id, sessionId, botId, createdAt } = approval;
+  if (approval.kind === "spend") {
+    const { scope, spentUsd, capUsd, thresholdUsd } = approval;
+    return {
+      kind: "spend",
+      id,
+      sessionId,
+      botId,
+      scope,
+      spentUsd,
+      capUsd,
+      thresholdUsd,
+      summary: spendApprovalSummary(approval),
+      createdAt,
+      shownInFull: true,
+    };
+  }
   return {
+    kind: "tool",
     id,
     sessionId,
     botId,
-    tool,
-    summary,
+    tool: approval.tool,
+    summary: approval.summary,
     createdAt,
     shownInFull: shownInFull(approval),
   };
@@ -346,6 +478,12 @@ export function pendingApprovalOf(approval: Approval): PendingApproval {
 
 export type ApprovalStatus = z.infer<typeof approvalStatusSchema>;
 export type ApprovalOutcome = z.infer<typeof approvalOutcomeSchema>;
+export type ToolApproval = z.infer<typeof toolApprovalSchema>;
+export type SpendApproval = z.infer<typeof spendApprovalSchema>;
+export type SpendApprovalScope = z.infer<typeof spendApprovalScopeSchema>;
+export type SpendExpiryCause = z.infer<typeof spendExpiryCauseSchema>;
 export type Approval = z.infer<typeof approvalSchema>;
+export type PendingToolApproval = z.infer<typeof pendingToolApprovalSchema>;
+export type PendingSpendApproval = z.infer<typeof pendingSpendApprovalSchema>;
 export type PendingApproval = z.infer<typeof pendingApprovalSchema>;
 export type DecideApprovalCommand = z.input<typeof decideApprovalCommandSchema>;

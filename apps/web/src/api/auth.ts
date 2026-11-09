@@ -1,5 +1,5 @@
 /**
- * Signing in to the JJ Bot API (contract 1.14.0). The web app signs in once
+ * Signing in to the JJ Bot API (contract 1.15.0). The web app signs in once
  * per browser: with the access token, a password, or the one-time code of a
  * login link (`#/login?code=`), and the server answers with an `HttpOnly`
  * session cookie that every later request, stream and download carries by

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   type TaskEvent,
   type TaskView,
+  type ToolApproval,
   taskEventSchema,
   taskViewSchema,
   type VerificationPlan,
@@ -340,7 +341,9 @@ describe("the event payload cap", () => {
       coordinatorBotId: bot.id,
     });
     const pendingOf = (v: TaskView) =>
-      v.approvals.find((approval) => approval.status === "pending");
+      v.approvals.find((approval) => approval.status === "pending") as
+        | ToolApproval
+        | undefined;
     const waiting = await untilTask(
       engine,
       task.id,
@@ -355,11 +358,10 @@ describe("the event payload cap", () => {
     );
     if (!requested) throw new Error("No approval.requested.");
     expect(payloadBytes(requested.payload)).toBeLessThan(256 * 1024);
-    expect(requested.payload.approval.args.path).toBe("big.txt");
-    expect(clippedText(requested.payload.approval.args.content as string)).toBe(
-      true,
-    );
-    expect(requested.payload.approval.summary).toBe("big.txt");
+    const held = requested.payload.approval as ToolApproval;
+    expect(held.args.path).toBe("big.txt");
+    expect(clippedText(held.args.content as string)).toBe(true);
+    expect(held.summary).toBe("big.txt");
     const full = await savedCopy(engine, requested);
     expect(full).toMatchObject({ approval: { args: { content } } });
 
@@ -376,10 +378,19 @@ describe("the event payload cap", () => {
         event.type === "approval.updated",
     );
     expect(updated?.payload.approval.status).toBe("cancelled");
-    expect(clippedText(updated?.payload.approval.args.content as string)).toBe(
-      true,
-    );
-    expect((await engine.tasks.get(task.id)).approvals[0]?.args).toEqual({
+    expect(
+      clippedText(
+        (updated?.payload.approval as ToolApproval | undefined)?.args
+          .content as string,
+      ),
+    ).toBe(true);
+    expect(
+      (
+        (await engine.tasks.get(task.id)).approvals[0] as
+          | ToolApproval
+          | undefined
+      )?.args,
+    ).toEqual({
       path: "big.txt",
       content,
     });

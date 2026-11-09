@@ -138,8 +138,15 @@
     {
       "idx": 19,
       "version": "7",
-      "when": 1794263195928,
-      "tag": "0019_auth_sessions",
+      "when": 1794262851094,
+      "tag": "0019_approvals_spend",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794265573746,
+      "tag": "0020_auth_sessions",
       "breakpoints": true
     }
   ]

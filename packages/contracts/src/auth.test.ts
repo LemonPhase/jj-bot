@@ -19,16 +19,16 @@ const session = {
   current: true,
 };
 
-describe("contract version 1.14.0 (sign-in)", () => {
-  it("is 1.14.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.14.0");
+describe("contract version 1.15.0 (sign-in)", () => {
+  it("is 1.15.0, and the changelog's newest entry records it", () => {
+    expect(CONTRACT_VERSION).toBe("1.15.0");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
     const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
     expect(newest).toBe(CONTRACT_VERSION);
-    expect(changelog).toMatch(/^## 1\.14\.0 — .* — Sign-in$/m);
+    expect(changelog).toMatch(/^## 1\.15\.0 — .* — Sign-in$/m);
   });
 
   it("adds no error code: sign-in refusals use UNAUTHORIZED and RATE_LIMITED", () => {

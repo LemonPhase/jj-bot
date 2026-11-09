@@ -237,7 +237,8 @@ export interface LoopSpec {
   deadline?: Date;
   /**
    * Asked before every model call (the compactor asks it for its own calls).
-   * A refused call is never sent and the loop ends with `budget`/`spend`.
+   * A refused call is never sent and the loop ends with `budget`/`spend`; a
+   * held one is never sent either, and the loop ends `held`.
    */
   gate?: ModelCallGate;
   signal: AbortSignal;
@@ -914,6 +915,8 @@ export async function runLoop(spec: LoopSpec): Promise<RunOutcome> {
       ? assistantText(completed.at(-1) as AssistantMessage)
       : "";
   if (spec.signal.aborted) return { kind: "aborted" };
+  // A held model call was never made and wrote nothing: the run waits.
+  if (spec.gate?.held) return { kind: "held" };
   if (spec.gate?.refusal !== undefined)
     return {
       kind: "budget",

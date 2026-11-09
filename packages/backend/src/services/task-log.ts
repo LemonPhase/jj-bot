@@ -10,6 +10,7 @@
 import {
   formatUploadSize,
   latestAttemptChecks,
+  spendApprovalSummary,
   type UploadState,
   type VerificationCheck,
   type VerificationPlan,
@@ -45,7 +46,7 @@ import {
   sql,
 } from "drizzle-orm";
 import { planOf } from "../records";
-import { pendingApprovals } from "./approvals";
+import { asToolRow, pendingApprovals, toApproval } from "./approvals";
 import { criterionRule, latestChecks, summaryLine } from "./verification";
 
 /** What a task log entry is: a user message, a brief, a report or a message. */
@@ -472,12 +473,26 @@ async function sessionReports(
     .from(sessions)
     .where(eq(sessions.taskId, taskId))
     .orderBy(asc(sessions.createdAt), asc(sessions.id));
-  const held = new Map(
-    (await pendingApprovals(exec, [taskId])).map((row) => [
-      row.sessionId,
-      `${row.tool}: ${row.summary}`,
-    ]),
-  );
+  const pending = await pendingApprovals(exec, [taskId]);
+  const held = new Map<string, string>();
+  for (const row of pending) {
+    const tool = asToolRow(row);
+    if (tool) held.set(tool.sessionId, `${tool.tool}: ${tool.summary}`);
+  }
+  // A session waiting for approval with no call of its own waits for a
+  // spend approval that covers it: the task's cap, or its bot's.
+  for (const session of rows) {
+    if (session.waitingFor !== "approval" || held.has(session.id)) continue;
+    const spend = pending
+      .map(toApproval)
+      .find(
+        (approval) =>
+          approval.kind === "spend" &&
+          (approval.scope === "task" || approval.botId === session.botId),
+      );
+    if (spend?.kind === "spend")
+      held.set(session.id, `spend: ${spendApprovalSummary(spend)}`);
+  }
   const botOf = new Map(rows.map((row) => [row.id, row.botId]));
   const names = await botNames(
     exec,

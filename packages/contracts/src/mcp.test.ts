@@ -8,7 +8,6 @@ import {
   approvalSubjectProblem,
   CODING_TOOLS,
   COLLABORATION_TOOLS,
-  CONTRACT_VERSION,
   canonicalForm,
   canonicalJson,
   createRuntimeProfileCommandSchema,
@@ -418,9 +417,7 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("came with contract 1.13.0, which the changelog records", () => {
-    const [major, minor] = CONTRACT_VERSION.split(".").map(Number);
-    expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThanOrEqual(1013);
+  it("came with 1.13.0, which the changelog records", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
