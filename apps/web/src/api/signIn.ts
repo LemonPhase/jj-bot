@@ -78,8 +78,9 @@ export type SignIn =
 
 /**
  * Signs this browser in with a login link's code, or once with a token an
- * earlier version kept in localStorage (deleted once the server has
- * answered, or at once when the browser is signed in already).
+ * earlier version kept in localStorage: on its own, or when the code fails.
+ * The token is deleted once the server has answered it, or at once when the
+ * browser is signed in already.
  */
 export async function signInOnce(
   auth: AuthApi,
@@ -112,22 +113,21 @@ export async function signInOnce(
       return error instanceof Error ? error.message : String(error);
     }
   };
-  if (code) {
-    const failed = await attempt({ code });
-    if (!failed) {
-      forget();
-      return { signedIn: true };
-    }
-    return {
-      signedIn: false,
-      state,
-      error: `${failed} A login link works once, for 15 minutes: sign in with the token, or print a new link with \`npm run auth:login-link\`.`,
-    };
+  const codeFailed = code ? await attempt({ code }) : null;
+  if (code && !codeFailed) {
+    forget();
+    return { signedIn: true };
   }
   if (token) {
     const failed = await attempt({ token });
     forget();
     if (!failed) return { signedIn: true };
   }
-  return { signedIn: false, state };
+  return codeFailed
+    ? {
+        signedIn: false,
+        state,
+        error: `${codeFailed} A login link works once, for 15 minutes: sign in with the token, or print a new link with \`npm run auth:login-link\`.`,
+      }
+    : { signedIn: false, state };
 }

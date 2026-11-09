@@ -9,9 +9,14 @@
 // - The password: after 20 failed password checks from anywhere, password
 //   sign-ins are locked for 15 minutes, then 30, doubling up to 4 hours, until
 //   one succeeds or a day passes without a failure. Token and code sign-ins
-//   never lock.
-// - Bearer requests: after 30 wrong tokens from a client in a minute, its
-//   bearer requests answer 429 until the oldest leaves the window.
+//   never lock. At most 2 password checks run at once, server-wide; more
+//   answer 429 at once, so a burst of guesses neither fills the threadpool
+//   nor gets more checks than the limits allow. A failure is counted before
+//   its check runs, and taken back when the check succeeds, so parallel
+//   attempts see each other's.
+// - Bearer requests: the right token is always let in. After 30 wrong tokens
+//   from a client in a minute, its wrong ones answer 429 until the oldest
+//   leaves the window.
 
 const MINUTE = 60_000;
 
@@ -24,6 +29,8 @@ export const PASSWORD_LOCK_MAX_MS = 4 * 60 * MINUTE;
 export const PASSWORD_LOCK_RESET_MS = 24 * 60 * MINUTE;
 export const BEARER_WINDOW_MS = MINUTE;
 export const BEARER_FAILURES_PER_CLIENT = 30;
+/** Password checks (scrypt) running at once at most, server-wide. */
+export const MAX_PASSWORD_CHECKS = 2;
 /** Clients tracked per window at most; the oldest are forgotten first. */
 const MAX_CLIENTS = 10_000;
 
@@ -91,6 +98,7 @@ export class AuthLimits {
   private lastPasswordFailure = Number.NEGATIVE_INFINITY;
   private lockedUntil = 0;
   private locks = 0;
+  private passwordChecks = 0;
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -126,12 +134,31 @@ export class AuthLimits {
     return { lockedForMs, started: true };
   }
 
-  /** A sign-in that succeeded: the client starts afresh, and a password unlocks. */
+  /**
+   * A sign-in that succeeded: the client starts afresh (which also takes back
+   * the failure counted before its check), and a password unlocks.
+   */
   loginSucceeded(client: string, password: boolean): void {
     this.logins.clear(client);
     if (!password) return;
     this.passwordFailures = 0;
     this.locks = 0;
+    this.lockedUntil = 0;
+  }
+
+  /**
+   * Takes one of the MAX_PASSWORD_CHECKS slots for a password check (scrypt,
+   * on the libuv threadpool, which file reads share), or answers false when
+   * they are all taken: parallel guesses cannot fill the threadpool.
+   */
+  beginPasswordCheck(): boolean {
+    if (this.passwordChecks >= MAX_PASSWORD_CHECKS) return false;
+    this.passwordChecks += 1;
+    return true;
+  }
+
+  endPasswordCheck(): void {
+    this.passwordChecks = Math.max(0, this.passwordChecks - 1);
   }
 
   /** Milliseconds before this client's next bearer request, or 0. */

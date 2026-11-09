@@ -61,7 +61,9 @@ services:
       API_PUBLIC_URL: ${API_PUBLIC_URL:-http://127.0.0.1:${JJ_PORT:-3001}}
       # The sign-in rate limits count each client apart: X-Forwarded-For is
       # read from peers on this container's own networks (the `https`
-      # profile's Caddy), and from no one else.
+      # profile's Caddy), and from no one else. Those networks also hold the
+      # bridge gateway every connection to the published port arrives from:
+      # safe while that port is on loopback, as below.
       JJ_TRUSTED_PROXIES: ${JJ_TRUSTED_PROXIES:-loopback,local-subnets}
       # The isolating docker driver only, so the default profile is docker.
       # Never enable `local` here: its commands would run in this container,
@@ -128,7 +130,10 @@ services:
       retries: 3
     ports:
       # Loopback only. The token is required either way; publish wider only
-      # behind HTTPS, so the token never crosses a network in the clear.
+      # behind HTTPS, so the token never crosses a network in the clear, and
+      # never without Caddy: JJ_TRUSTED_PROXIES trusts X-Forwarded-For from
+      # the bridge gateway, so a client reaching this port could pick the
+      # address its sign-ins are rate-limited as.
       - "127.0.0.1:${JJ_PORT:-3001}:3001"
     volumes:
       # Root-equivalent on the host. The app uses it to run sandboxes and never

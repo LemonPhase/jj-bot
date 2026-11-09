@@ -55,7 +55,13 @@ export type Principal =
 export type CheckResult =
   | { ok: true }
   | { ok: false; status: 401 }
-  | { ok: false; status: 429; retryAfterMs: number };
+  | {
+      ok: false;
+      status: 429;
+      retryAfterMs: number;
+      /** Every password-check slot was taken, not a limit of this client's. */
+      busy?: boolean;
+    };
 
 /** The one message every failed sign-in answers, whatever failed. */
 export const SIGN_IN_FAILED =
@@ -192,24 +198,40 @@ export class AuthService {
   ): Promise<CheckResult> {
     const password = "password" in credential;
     const waitMs = this.limits.loginWaitMs(client);
-    const lockMs = password ? this.limits.passwordLockMs() : 0;
-    // A throttled or locked password is not even checked.
-    if (password && (waitMs > 0 || lockMs > 0))
-      return { ok: false, status: 429, retryAfterMs: Math.max(waitMs, lockMs) };
-    let accepted: boolean;
-    if ("token" in credential)
-      accepted = (await this.tokenMatches(credential.token)) !== undefined;
-    else if ("code" in credential)
-      accepted = await this.store.consumeLoginCode(credential.code);
-    else
-      accepted = this.options.password
-        ? await verifyPassword(this.options.password.hash, credential.password)
-        : false;
+    if (password) {
+      // A throttled or locked password is not even checked, and no more
+      // than MAX_PASSWORD_CHECKS run at once.
+      const lockMs = this.limits.passwordLockMs();
+      if (waitMs > 0 || lockMs > 0)
+        return {
+          ok: false,
+          status: 429,
+          retryAfterMs: Math.max(waitMs, lockMs),
+        };
+      if (!this.limits.beginPasswordCheck())
+        return { ok: false, status: 429, retryAfterMs: 1000, busy: true };
+    }
+    // Counted before the check, which awaits: attempts running in parallel
+    // see each other's failures. A success takes it back.
+    const lock = this.limits.loginFailed(client, password);
+    let accepted = false;
+    try {
+      if ("token" in credential)
+        accepted = (await this.tokenMatches(credential.token)) !== undefined;
+      else if ("code" in credential)
+        accepted = await this.store.consumeLoginCode(credential.code);
+      else if (this.options.password)
+        accepted = await verifyPassword(
+          this.options.password.hash,
+          credential.password,
+        );
+    } finally {
+      if (password) this.limits.endPasswordCheck();
+    }
     if (accepted) {
       this.limits.loginSucceeded(client, password);
       return { ok: true };
     }
-    const lock = this.limits.loginFailed(client, password);
     if (lock?.started)
       this.options.logger.warn(
         `Password sign-in is locked for ${Math.round(lock.lockedForMs / 60_000)} minutes after repeated failures; the access token and login links still sign in.`,

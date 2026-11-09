@@ -168,6 +168,37 @@ describe("signing in on load", () => {
     });
   });
 
+  it("falls back on a kept token when the code fails, and deletes it", async () => {
+    const refusesCodes = async (command: unknown) => {
+      if (typeof command === "object" && command && "code" in command)
+        throw refused;
+    };
+    const kept = storage({ [LEGACY_TOKEN_KEY]: "old-token" });
+    const ok = fakeAuth(signedOut, refusesCodes);
+    expect(await signInOnce(ok.auth, signedOut, "used", kept)).toEqual({
+      signedIn: true,
+    });
+    expect(ok.logins).toEqual([{ code: "used" }, { token: "old-token" }]);
+    expect(kept.values.has(LEGACY_TOKEN_KEY)).toBe(false);
+
+    // Both refused: the code's reason, and the token is gone all the same.
+    const stale = storage({ [LEGACY_TOKEN_KEY]: "rotated-away" });
+    const neither = fakeAuth(signedOut, async () => {
+      throw refused;
+    });
+    expect(
+      await signInOnce(neither.auth, signedOut, "used", stale),
+    ).toMatchObject({
+      signedIn: false,
+      error: expect.stringContaining("A login link works once"),
+    });
+    expect(neither.logins).toEqual([
+      { code: "used" },
+      { token: "rotated-away" },
+    ]);
+    expect(stale.values.has(LEGACY_TOKEN_KEY)).toBe(false);
+  });
+
   it("exchanges a token kept in localStorage once, then deletes it, whatever the answer", async () => {
     const kept = storage({ [LEGACY_TOKEN_KEY]: "old-token" });
     const ok = fakeAuth(signedOut);

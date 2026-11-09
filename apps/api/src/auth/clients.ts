@@ -23,9 +23,17 @@ export class TrustedProxiesError extends Error {
   override readonly name = "TrustedProxiesError";
 }
 
-/** `::ffff:192.0.2.1` as `192.0.2.1`; anything else as it is, lowercased. */
+/**
+ * `::ffff:192.0.2.1` as `192.0.2.1`, and an address a proxy wrote with its
+ * port (`192.0.2.1:5678`, `[2001:db8::1]:5678`) without it; anything else as
+ * it is, lowercased.
+ */
 export function normalizeAddress(address: string): string {
-  const value = address.trim().toLowerCase();
+  let value = address.trim().toLowerCase();
+  const withPort =
+    /^(\d+\.\d+\.\d+\.\d+):\d+$/.exec(value) ??
+    /^\[([0-9a-f:.]+)\](?::\d+)?$/.exec(value);
+  if (withPort) value = withPort[1] as string;
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(value);
   return mapped ? (mapped[1] as string) : value;
 }
@@ -42,7 +50,8 @@ function addSubnet(list: BlockList, address: string, prefix: number) {
  * the keywords `loopback` (127.0.0.0/8 and ::1) and `local-subnets` (the
  * subnets of this machine's own interfaces, read now: in a container, its
  * networks, where a proxy container such as the compose `https` profile's
- * Caddy sits). `none` trusts nobody.
+ * Caddy sits, but also the bridge gateway published ports arrive from, and
+ * IPv6 link-local). `none` trusts nobody.
  */
 export function parseTrustedProxies(
   setting: string = DEFAULT_TRUSTED_PROXIES,

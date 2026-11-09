@@ -559,7 +559,7 @@ describe("rate limits", () => {
     await signIn(guarded, { password: PASSWORD }, { client: "10.9.9.7" });
   }, 60_000);
 
-  it("answers 429 to a client after 30 wrong bearer tokens in a minute", async () => {
+  it("answers 429 to a client's wrong bearer tokens after 30 in a minute, never to the right one", async () => {
     const guarded = app();
     for (let attempt = 0; attempt < 30; attempt += 1)
       expect(
@@ -570,21 +570,15 @@ describe("rate limits", () => {
           })
         ).status,
       ).toBe(401);
-    const limited = await call(guarded, "GET", "/api/bootstrap", {
-      bearer: TOKEN,
-      client: "203.0.113.50",
-    });
-    expect(limited.status).toBe(429);
-    expect((await errorOf(limited)).code).toBe("RATE_LIMITED");
-    expect(
-      (
-        await call(guarded, "GET", "/api/bootstrap", {
-          bearer: TOKEN,
-          client: "203.0.113.51",
-        })
-      ).status,
-    ).toBe(200);
-    clock.now += 60_001;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const limited = await call(guarded, "GET", "/api/bootstrap", {
+        bearer: `more-${attempt}`,
+        client: "203.0.113.50",
+      });
+      expect(limited.status).toBe(429);
+      expect((await errorOf(limited)).code).toBe("RATE_LIMITED");
+    }
+    // The owner's script behind the same address (a NAT, a proxy) still gets in.
     expect(
       (
         await call(guarded, "GET", "/api/bootstrap", {
@@ -593,6 +587,15 @@ describe("rate limits", () => {
         })
       ).status,
     ).toBe(200);
+    clock.now += 60_001;
+    expect(
+      (
+        await call(guarded, "GET", "/api/bootstrap", {
+          bearer: "after-the-minute",
+          client: "203.0.113.50",
+        })
+      ).status,
+    ).toBe(401);
   });
 
   it("counts X-Forwarded-For only from a trusted proxy", async () => {
@@ -608,6 +611,11 @@ describe("rate limits", () => {
     for (let attempt = 0; attempt < 5; attempt += 1)
       await fail("127.0.0.1", `198.51.100.1, 198.51.100.${attempt + 10}`);
     expect((await fail("127.0.0.1", "198.51.100.99")).status).toBe(401);
+    // A proxy that writes the client's port counts the client, not itself.
+    for (let attempt = 0; attempt < 5; attempt += 1)
+      await fail("127.0.0.1", `198.51.100.150:${40_000 + attempt}`);
+    expect((await fail("127.0.0.1", "198.51.100.150:41000")).status).toBe(429);
+    expect((await fail("127.0.0.1", "198.51.100.151:41000")).status).toBe(401);
     // A client sending the header itself is still counted as itself.
     for (let attempt = 0; attempt < 5; attempt += 1)
       await fail("203.0.113.77", `198.51.100.${attempt + 30}`);

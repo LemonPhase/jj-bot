@@ -310,11 +310,12 @@ jobs:
           echo "bots after the restore: $bots"
           test "$bots" = 3
 
+      # Login codes are redacted: a log here is public.
       - name: Show the stack's state and logs
         if: ${{ failure() }}
         run: |
           docker compose ps -a
-          docker compose logs --no-color --timestamps
+          docker compose logs --no-color --timestamps | sed -E 's/(code=)[A-Za-z0-9_-]+/\1<redacted>/g'
 
       # Sandboxes and their volumes belong to the driver, not to compose; the
       # namespace is the project name. Containers go first, so no volume is in use.
@@ -393,20 +394,22 @@ jobs:
 
       # The boot line is a login link on the https address, its code in the
       # fragment; the app answers with HSTS and the security headers through
-      # Caddy, and a login link signs in to a __Host- Secure cookie.
+      # Caddy, and a login link signs in to a __Host- Secure cookie. Codes and
+      # the cookie are checked quietly, never printed.
       - name: Check the login link, the headers and the cookie over HTTPS
         run: |
           ca=(--cacert "$RUNNER_TEMP/test-ca.crt")
-          docker compose logs --no-color app | grep -E 'Open JJ Bot: https://jj\.test/#/login\?code=[A-Za-z0-9_-]{43}'
+          docker compose logs --no-color app | grep -qE 'Open JJ Bot: https://jj\.test/#/login\?code=[A-Za-z0-9_-]{43}'
           curl -fsS "${ca[@]}" -D page.headers -o /dev/null https://jj.test/
           grep -i '^strict-transport-security: max-age=31536000' page.headers
           grep -i "^content-security-policy: .*frame-ancestors 'none'" page.headers
           grep -i '^x-frame-options: DENY' page.headers
           link=$(docker compose exec -T app jj-auth login-link)
           code=${link##*code=}
+          echo "::add-mask::$code"
           test "$link" = "https://jj.test/#/login?code=$code"
           curl -fsS "${ca[@]}" -D login.headers -o /dev/null -H 'Content-Type: application/json' -H 'Origin: https://jj.test' --data "{\"code\":\"$code\"}" https://jj.test/api/auth/login
-          grep -iE '^set-cookie: __Host-jj_session=[A-Za-z0-9_-]{43}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict; Secure' login.headers
+          grep -qiE '^set-cookie: __Host-jj_session=[A-Za-z0-9_-]{43}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict; Secure' login.headers
           status=$(curl -sS "${ca[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'Origin: https://jj.test' --data "{\"code\":\"$code\"}" https://jj.test/api/auth/login)
           test "$status" = 401
 
@@ -426,11 +429,12 @@ jobs:
             exit 1
           fi
 
+      # Login codes are redacted: a log here is public.
       - name: Show the stack's state and logs
         if: ${{ failure() }}
         run: |
           docker compose ps -a
-          docker compose logs --no-color --timestamps
+          docker compose logs --no-color --timestamps | sed -E 's/(code=)[A-Za-z0-9_-]+/\1<redacted>/g'
 
       - name: Stop the stack and remove its volumes
         if: ${{ always() }}

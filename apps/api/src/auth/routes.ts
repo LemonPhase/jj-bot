@@ -38,7 +38,9 @@ function refused(c: Context, result: Exclude<CheckResult, { ok: true }>) {
     return rateLimited(
       c,
       result.retryAfterMs,
-      `Too many failed sign-ins: try again in ${minutes(result.retryAfterMs)}.`,
+      result.busy
+        ? "Too many sign-ins at once: try again in a moment, or use the access token."
+        : `Too many failed sign-ins: try again in ${minutes(result.retryAfterMs)}.`,
     );
   return errorResponse(c, 401, "UNAUTHORIZED", SIGN_IN_FAILED);
 }
