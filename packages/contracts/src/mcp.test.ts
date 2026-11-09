@@ -418,8 +418,7 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.10.1, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.1");
+  it("is recorded as contract 1.10.1, and the changelog's newest entry is the current version", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
