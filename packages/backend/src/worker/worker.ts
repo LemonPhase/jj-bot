@@ -23,6 +23,7 @@ import type { EngineContext } from "../context";
 import { errorMessage } from "../errors";
 import { withLogFields } from "../observability/logger";
 import type { ChatResponder, RunExecutor } from "../ports";
+import { sweepStagedUploads } from "../services/uploads";
 import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
@@ -62,6 +63,8 @@ const DISCOVERY_KINDS = kindsOf("discovery");
 
 /** How often a polling worker records its heartbeat row (`worker_heartbeats`). */
 export const WORKER_HEARTBEAT_MS = 5_000;
+/** How often the worker deletes staged uploads past their time. */
+const STAGED_SWEEP_MS = 60_000;
 /** Heartbeat rows older than this belong to workers long gone and are deleted at start. */
 const STALE_HEARTBEAT_MS = 24 * 60 * 60 * 1000;
 
@@ -595,6 +598,7 @@ export function createWorker(
       );
       // Ends remote MCP connections idle past `mcpIdleMs`.
       every(Math.min(ctx.config.mcpIdleMs, 30_000), () => mcp.sweep());
+      every(STAGED_SWEEP_MS, () => sweepStagedUploads(ctx));
       await pump();
     },
     stop: () => shutDown("shutdown"),

@@ -46,7 +46,7 @@ const template = {
 };
 
 describe("contract version 1.9.0 (task templates)", () => {
-  it("is recorded in the changelog, whose newest entry is the current version", () => {
+  it("came with 1.9.0, which the changelog records", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
@@ -200,7 +200,7 @@ describe("template commands", () => {
   });
 
   it("starts with optional instructions of 1–4000 characters, a title and a cap", () => {
-    expect(startTemplateCommandSchema.parse({})).toEqual({});
+    expect(startTemplateCommandSchema.parse({})).toEqual({ uploads: [] });
     expect(
       startTemplateCommandSchema.parse({ instructions: "  Focus on Q3.  " })
         .instructions,

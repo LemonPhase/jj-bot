@@ -29,6 +29,7 @@ import {
   secretsViewSchema,
   sendBotMessageCommandSchema,
   sendBotMessageResultSchema,
+  stagedUploadResultSchema,
   startMcpDiscoveryCommandSchema,
   startTemplateCommandSchema,
   stopTaskCommandSchema,
@@ -44,6 +45,8 @@ import {
   updateRuntimeProfileCommandSchema,
   updateTaskCommandSchema,
   updateTaskTemplateCommandSchema,
+  uploadToTaskCommandSchema,
+  uploadToTaskResultSchema,
   usageReportSchema,
   type WorkspaceHint,
   workspaceHintSchema,
@@ -54,6 +57,7 @@ import {
   ApiError,
   type HintOptions,
   type JJApi,
+  type StageUploadOptions,
   type StreamState,
   type Unsubscribe,
 } from "./client";
@@ -159,6 +163,22 @@ function command<Schema extends z.ZodType>(
   );
 }
 
+/** What `upload` uses of a browser's XMLHttpRequest (none outside a browser). */
+interface UploadXhr {
+  open(method: string, url: string): void;
+  setRequestHeader(name: string, value: string): void;
+  send(body: Blob): void;
+  abort(): void;
+  readonly status: number;
+  readonly responseText: string;
+  readonly upload: {
+    onprogress: ((event: { loaded: number; total: number }) => void) | null;
+  };
+  onload: (() => void) | null;
+  onerror: (() => void) | null;
+  onabort: (() => void) | null;
+}
+
 export function createHttp({
   baseUrl = "",
   token,
@@ -260,7 +280,100 @@ export function createHttp({
     return response.blob();
   }
 
-  return { request, download, doFetch, authorization, baseUrl };
+  /**
+   * `POST /api/uploads`: the file's bytes as `application/octet-stream`, the
+   * only body that is not JSON. Sent with XMLHttpRequest where there is one,
+   * since only it reports upload progress; fetch otherwise (and in tests).
+   */
+  async function upload(
+    file: Blob,
+    name: string,
+    options: StageUploadOptions = {},
+  ) {
+    const path = `/uploads?name=${encodeURIComponent(name.normalize("NFC"))}`;
+    const what = "POST /api/uploads";
+    const answer = (status: number, text: string) => {
+      const data = parseJson(text);
+      if (status < 200 || status >= 300)
+        throw responseError({ status } as Response, data, what);
+      const parsed = stagedUploadResultSchema.safeParse(data);
+      if (!parsed.success)
+        throw new ApiError(
+          "INVALID_RESPONSE",
+          `${what} answered with an unexpected shape: ${z.prettifyError(parsed.error)}`,
+          parsed.error.issues,
+          status,
+        );
+      options.onProgress?.(file.size, file.size);
+      return parsed.data.upload;
+    };
+    const aborted = () => new ApiError("ABORTED", "The upload was cancelled.");
+    if (options.signal?.aborted) throw aborted();
+    const Xhr = (globalThis as { XMLHttpRequest?: new () => UploadXhr })
+      .XMLHttpRequest;
+    if (fetchImpl || !Xhr) {
+      let response: Response;
+      try {
+        response = await doFetch(`${baseUrl}/api${path}`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/octet-stream",
+            ...authorization,
+          },
+          body: file,
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+      } catch (reason) {
+        if (options.signal?.aborted) throw aborted();
+        throw new ApiError(
+          "NETWORK_ERROR",
+          `Can't reach the JJ Bot API: ${errorText(reason)}`,
+        );
+      }
+      return answer(response.status, await response.text().catch(() => ""));
+    }
+    return new Promise<z.output<typeof stagedUploadResultSchema>["upload"]>(
+      (resolve, reject) => {
+        const xhr = new Xhr();
+        xhr.open("POST", `${baseUrl}/api${path}`);
+        xhr.setRequestHeader("Accept", "application/json");
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+        for (const [header, value] of Object.entries(authorization))
+          xhr.setRequestHeader(header, value);
+        xhr.upload.onprogress = (event: { loaded: number; total: number }) =>
+          options.onProgress?.(event.loaded, event.total || file.size);
+        const onAbort = () => xhr.abort();
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        const done = () =>
+          options.signal?.removeEventListener("abort", onAbort);
+        xhr.onload = () => {
+          done();
+          try {
+            resolve(answer(xhr.status, xhr.responseText));
+          } catch (error) {
+            reject(error);
+          }
+        };
+        xhr.onerror = () => {
+          done();
+          reject(
+            new ApiError(
+              "NETWORK_ERROR",
+              "Can't reach the JJ Bot API: the upload failed.",
+            ),
+          );
+        };
+        xhr.onabort = () => {
+          done();
+          reject(aborted());
+        };
+        xhr.send(file);
+      },
+    );
+  }
+
+  return { request, download, upload, doFetch, authorization, baseUrl };
 }
 
 /** The mode chip for a connected backend (decision: frontend brief). */
@@ -595,6 +708,17 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
         retryMs,
         ...streamOptions,
       }),
+    stageUpload: (file, name, uploadOptions) =>
+      http.upload(file, name, uploadOptions),
+    deleteUpload: (uploadId) =>
+      request("DELETE", `/uploads/${id(uploadId)}`, null),
+    uploadToTask: async (taskId, cmd) =>
+      request(
+        "POST",
+        `/tasks/${id(taskId)}/uploads`,
+        uploadToTaskResultSchema,
+        command(uploadToTaskCommandSchema, cmd),
+      ),
     artifactUrl: (taskId, artifactId) =>
       `${http.baseUrl}/api/tasks/${id(taskId)}/artifacts/${id(artifactId)}/content`,
     // A link cannot carry the bearer token, so with one the UI fetches instead.

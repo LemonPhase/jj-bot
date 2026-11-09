@@ -97,6 +97,12 @@ describe("bootstrap", () => {
       // This engine has no MCP client, and skills are not served yet.
       mcp: { stdio: false, remote: false },
       skills: false,
+      // Uploads are served, within the default limits.
+      uploads: {
+        maxFileBytes: 16 * 1024 * 1024,
+        maxFiles: 20,
+        maxTaskBytes: 128 * 1024 * 1024,
+      },
       drivers: [
         { id: "local", available: true, isolated: false },
         { id: "docker", available: false, isolated: true },

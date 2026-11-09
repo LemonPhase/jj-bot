@@ -550,9 +550,9 @@ describe.each(targets)("migrations on $name", (target) => {
   );
 
   it(
-    "0016 pins an empty MCP toolset for every session that already ran, so it never gains a tool",
+    "0017 pins an empty MCP toolset for every session that already ran, so it never gains a tool",
     async () => {
-      const database = await databaseBefore(target, "0016_session_toolsets");
+      const database = await databaseBefore(target, "0017_session_toolsets");
       try {
         await database.execute(sql`
           insert into bots (id, name) values ('bot_1', 'Ada');

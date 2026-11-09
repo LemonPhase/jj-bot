@@ -3,6 +3,7 @@ import { botSchema } from "./bots";
 import { idSchema, modelRefSchema } from "./common";
 import { runtimeProfileSchema } from "./profiles";
 import { taskSummarySchema } from "./tasks";
+import { uploadLimitsSchema } from "./uploads";
 
 /** What this server can really do. Never report a capability that is not real. */
 export const capabilitiesSchema = z.object({
@@ -31,6 +32,12 @@ export const capabilitiesSchema = z.object({
     .default({ stdio: false, remote: false }),
   /** The skills library exists and granted skills reach sessions. While false, a grant is refused with MCP_UNAVAILABLE. */
   skills: z.boolean().default(false),
+  /**
+   * Files can be uploaded into tasks, within these limits. Null: uploads
+   * are not served, and the upload routes answer 404. Parsed as null from
+   * servers before uploads.
+   */
+  uploads: uploadLimitsSchema.nullable().default(null),
   drivers: z.array(
     z.object({ id: idSchema, available: z.boolean(), isolated: z.boolean() }),
   ),
@@ -75,6 +82,11 @@ export const API_ERROR_CODES = [
   "MCP_SNAPSHOT_MISMATCH",
   /** A task template cannot start now: `details.problems` (`templateUnusableDetailsSchema`) says why. */
   "TEMPLATE_UNUSABLE",
+  /**
+   * 413: an upload over the server's limits: a file, a command's files, a
+   * task's uploads in all, or the server's staging space.
+   */
+  "UPLOAD_TOO_LARGE",
   "UNAUTHORIZED",
   "INTERNAL",
 ] as const;

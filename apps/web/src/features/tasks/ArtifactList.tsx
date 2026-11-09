@@ -37,7 +37,9 @@ export function ArtifactRows({
         const session = view.sessions.find((s) => s.id === artifact.sessionId);
         const producer = session
           ? `${botName(getBot(session.botId))} · ${ordinals.get(session.id) ?? "s-?"}`
-          : "task";
+          : artifact.upload
+            ? "Uploaded by you"
+            : "task";
         return (
           <li key={artifact.id} className="artifact">
             <span className="artifact__text">

@@ -1,7 +1,7 @@
 /**
  * Stroke icons from SPEC §3 (24-unit viewBox, round caps and joins, stroked
- * in currentColor). `close`, `chevron-down`, `settings`, `arrow-left` and
- * `menu` are not in the design; they follow the same drawing rules.
+ * in currentColor). `close`, `chevron-down`, `settings`, `arrow-left`, `menu`
+ * and `paperclip` are not in the design; they follow the same drawing rules.
  */
 const ICONS = {
   plus: { d: "M12 5v14M5 12h14", width: 2 },
@@ -21,6 +21,11 @@ const ICONS = {
   "arrow-left": { d: "M19 12H5M11 6l-6 6 6 6", width: 2 },
   /** Three bars: opens the navigation drawer on phone widths. */
   menu: { d: "M4 7h16M4 12h16M4 17h16", width: 1.8 },
+  /** A paperclip: attaches files to a task. */
+  paperclip: {
+    d: "M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.3 3.3 0 0 1 4.7 4.7l-8.2 8.2a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4",
+    width: 1.8,
+  },
   /** Sliders: the Settings entry in the sidebar footer. */
   settings: {
     d: "M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4",

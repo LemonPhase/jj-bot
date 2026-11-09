@@ -5,7 +5,7 @@
 import type { Engine, Logger } from "@jj/backend";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { originGuard, requireJson } from "./guard";
+import { isUploadWrite, originGuard, requireJson } from "./guard";
 import { securityHeaders } from "./headers";
 import { healthRoutes } from "./health";
 import { bearerAuth, errorResponse, onError } from "./http";
@@ -117,19 +117,19 @@ export function createApp({
   api.onError(handleError);
   for (const guard of guards) api.use("*", guard);
   api.use("*", requireJson());
-  api.use(
-    "*",
-    bodyLimit({
-      maxSize: maxBytes,
-      onError: (c) =>
-        errorResponse(
-          c,
-          413,
-          "VALIDATION_FAILED",
-          `The request body is larger than ${maxBytes} bytes.`,
-        ),
-    }),
-  );
+  const jsonLimit = bodyLimit({
+    maxSize: maxBytes,
+    onError: (c) =>
+      errorResponse(
+        c,
+        413,
+        "VALIDATION_FAILED",
+        `The request body is larger than ${maxBytes} bytes.`,
+      ),
+  });
+  // An upload's body is bounded by the upload limits instead, checked
+  // against its Content-Length before it is read (routes.ts).
+  api.use("*", (c, next) => (isUploadWrite(c) ? next() : jsonLimit(c, next)));
   api.route(
     "/",
     apiRoutes({
