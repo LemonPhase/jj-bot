@@ -171,7 +171,8 @@ async function crossings(
  * option is on, most specific first: an approval covers it (approved, on
  * bot scope within 24 hours of the answer), a pending one holds the call, a
  * denial in this stretch of the task's work refuses it, and with none the
- * call records the cap's pending approval and is held. Locks the task.
+ * call records the cap's pending approval and is held. Locks the task
+ * once a threshold is crossed.
  */
 export async function spendApprovalVerdict(
   tx: Tx,
@@ -183,11 +184,19 @@ export async function spendApprovalVerdict(
     attribution: Attribution;
   },
 ): Promise<SpendVerdict> {
-  const [task] = await tx
-    .select()
-    .from(tasksTable)
-    .where(eq(tasksTable.id, input.taskId))
-    .for("update");
+  const read = (lock: boolean) => {
+    const query = tx
+      .select()
+      .from(tasksTable)
+      .where(eq(tasksTable.id, input.taskId));
+    return lock ? query.for("update") : query;
+  };
+  // Below every threshold (always, with the option off) nothing is locked;
+  // past one, the task is locked and the spend read again under the lock.
+  const [peek] = await read(false);
+  if (!peek || (await crossings(tx, ctx, peek, input.session)).length === 0)
+    return { kind: "go" };
+  const [task] = await read(true);
   if (!task) return { kind: "go" };
   const found = await crossings(tx, ctx, task, input.session);
   if (found.length === 0) return { kind: "go" };
