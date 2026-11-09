@@ -160,6 +160,7 @@ export async function subscribeHints(
       case "profiles.changed":
       case "secrets.changed":
       case "templates.changed":
+      case "schedules.changed":
         handler(value);
     }
   });

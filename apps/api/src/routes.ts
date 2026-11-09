@@ -217,6 +217,21 @@ export function apiRoutes({
       201,
     ),
   );
+  // Schedules (1.12.0)
+  api.get("/schedules", async (c) => c.json(await engine.schedules.list()));
+  api.post("/schedules", async (c) =>
+    c.json(await engine.schedules.create(await command(c)), 201),
+  );
+  api.get("/schedules/:id", async (c) =>
+    c.json(await engine.schedules.get(idParam(c, "id"))),
+  );
+  api.patch("/schedules/:id", async (c) =>
+    c.json(await engine.schedules.update(idParam(c, "id"), await command(c))),
+  );
+  api.delete("/schedules/:id", async (c) => {
+    await engine.schedules.delete(idParam(c, "id"));
+    return c.body(null, 204);
+  });
 
   // Uploads (1.11.0). `POST /uploads` is the one write whose body is raw
   // bytes (guard.ts); its Content-Length is required and checked against

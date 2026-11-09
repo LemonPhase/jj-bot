@@ -78,6 +78,21 @@ export const JOB_KINDS = [
   "maintenance.compact",
   "mcp.discover",
 ] as const;
+/** What the scheduler did about one due time of a schedule (`scheduleFireSchema`). */
+export const SCHEDULE_FIRE_OUTCOMES = [
+  "started",
+  "skipped",
+  "missed",
+  "refused",
+] as const;
+/** Which task updates a task's coordinator tells its chat: `all`, or `attention` (not completions). */
+export const CHAT_UPDATE_MODES = ["all", "attention"] as const;
+export const SCHEDULE_OVERLAPS = ["skip"] as const;
+export const SCHEDULE_PAUSED_REASONS = [
+  "template_unusable",
+  "interval_too_short",
+  "no_next_fire",
+] as const;
 /** What a stored secret is: a model provider's key, or a sandbox secret granted by name. */
 export const SECRET_KINDS = ["provider", "sandbox"] as const;
 export const JOB_STATUSES = [
@@ -114,6 +129,10 @@ export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
 export type JobStatus = (typeof JOB_STATUSES)[number];
 export type SecretKind = (typeof SECRET_KINDS)[number];
+export type ScheduleFireOutcome = (typeof SCHEDULE_FIRE_OUTCOMES)[number];
+export type ChatUpdateMode = (typeof CHAT_UPDATE_MODES)[number];
+export type ScheduleOverlap = (typeof SCHEDULE_OVERLAPS)[number];
+export type SchedulePausedReason = (typeof SCHEDULE_PAUSED_REASONS)[number];
 export type McpDiscoveryStatus = (typeof MCP_DISCOVERY_STATUSES)[number];
 
 /** Claims of a job before an expired lease is no longer reclaimed (see `claim`). */
@@ -263,6 +282,38 @@ export const tasks = pgTable(
      * foreign key): deleting the template leaves it set.
      */
     templateId: text("template_id"),
+    /**
+     * The schedule that started the task (attribution, not a foreign key):
+     * deleting the schedule leaves it set.
+     */
+    scheduleId: text("schedule_id"),
+    /**
+     * Which task updates the coordinator's chat is told: `all`, or
+     * `attention` (not completions), copied from the schedule at start.
+     */
+    chatUpdates: text("chat_updates")
+      .$type<ChatUpdateMode>()
+      .notNull()
+      .default("all"),
+    /**
+     * The driver of the task's `task` workspace, set when a sandbox with one
+     * is acquired for it; null for a task that never had one (an ephemeral
+     * workspace, or no command run). A schedule removes workspaces only
+     * through this driver.
+     */
+    workspaceDriver: text("workspace_driver"),
+    /**
+     * Set while a removal of that workspace is under way (the task is locked
+     * when it is set and when it is cleared); a continuation meanwhile is
+     * refused, since the files may or may not still be there.
+     */
+    workspaceRemovingAt: optionalTime("workspace_removing_at"),
+    /**
+     * When the driver removed the task's `task` workspace (a schedule's
+     * `keep_workspaces`), recorded once it has. Cleared when the task
+     * continues on a fresh workspace.
+     */
+    workspaceRemovedAt: optionalTime("workspace_removed_at"),
     /** Last allocated `task_events.sequence`; see `appendEvent`. */
     eventSeq: integer("event_seq").notNull().default(0),
     /** Last allocated `task_messages.sequence`; see `nextMessageSequence`. */
@@ -292,7 +343,9 @@ export const tasks = pgTable(
       .on(t.finishedAt)
       .where(sql`${t.status} in ('completed', 'failed', 'cancelled')`),
     index("tasks_template_idx").on(t.templateId),
+    index("tasks_schedule_idx").on(t.scheduleId, t.createdAt),
     check("tasks_status_check", oneOf(t.status, TASK_STATUSES)),
+    check("tasks_chat_updates_check", oneOf(t.chatUpdates, CHAT_UPDATE_MODES)),
   ],
 );
 
@@ -329,6 +382,91 @@ export const taskTemplates = pgTable(
     check(
       "task_templates_cap_check",
       sql`not (${t.spendCapInherit} and ${t.spendCapUsd} is not null)`,
+    ),
+  ],
+);
+
+/**
+ * A task template started on a cron schedule (`scheduleSchema`). The
+ * scheduler locks due rows (`enabled`, `next_fire_at` passed) with
+ * `FOR UPDATE SKIP LOCKED`; a template a schedule uses cannot be deleted.
+ */
+export const schedules = pgTable(
+  "schedules",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    name: text("name").notNull(),
+    templateId: text("template_id")
+      .notNull()
+      .references(() => taskTemplates.id),
+    /** The contract's `scheduleTriggerSchema`: `{ kind: "cron", cron, timeZone }`. */
+    trigger: jsonb("trigger").$type<JsonObject>().notNull(),
+    instructions: text("instructions").notNull().default(""),
+    enabled: boolean("enabled").notNull().default(true),
+    overlap: text("overlap").$type<ScheduleOverlap>().notNull().default("skip"),
+    keepWorkspaces: integer("keep_workspaces").notNull().default(10),
+    chatUpdates: text("chat_updates")
+      .$type<ChatUpdateMode>()
+      .notNull()
+      .default("attention"),
+    /** The next due time; null while disabled or with no fire in the lookahead. */
+    nextFireAt: optionalTime("next_fire_at"),
+    pausedReason: text("paused_reason").$type<SchedulePausedReason>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    index("schedules_due_idx").on(t.enabled, t.nextFireAt),
+    index("schedules_template_idx").on(t.templateId),
+    index("schedules_owner_created_idx").on(t.ownerId, t.createdAt),
+    check("schedules_overlap_check", oneOf(t.overlap, SCHEDULE_OVERLAPS)),
+    check(
+      "schedules_chat_updates_check",
+      oneOf(t.chatUpdates, CHAT_UPDATE_MODES),
+    ),
+    check(
+      "schedules_paused_reason_check",
+      sql`${t.pausedReason} is null or ${oneOf(t.pausedReason, SCHEDULE_PAUSED_REASONS)}`,
+    ),
+    check(
+      "schedules_keep_workspaces_check",
+      sql`${t.keepWorkspaces} between 0 and 50`,
+    ),
+  ],
+);
+
+/**
+ * What the scheduler did about one due time of a schedule. Unique on the
+ * schedule and the due time, and written in the transaction that starts its
+ * task, so no due time starts two. The newest 200 per schedule are kept.
+ */
+export const scheduleFires = pgTable(
+  "schedule_fires",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    scheduleId: text("schedule_id")
+      .notNull()
+      .references(() => schedules.id, { onDelete: "cascade" }),
+    /** The due time; for a `missed` row covering several, the first of them. */
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull(),
+    outcome: text("outcome").$type<ScheduleFireOutcome>().notNull(),
+    reason: text("reason"),
+    /** A refusal's API error code and details. */
+    code: text("code"),
+    details: jsonb("details").$type<JsonObject>(),
+    missedCount: integer("missed_count").notNull().default(0),
+    /** The task started, or the unfinished one a skip waited on (attribution, not a foreign key). */
+    taskId: text("task_id"),
+  },
+  (t) => [
+    // Also covers the schedule foreign key and the newest-first reads.
+    unique("schedule_fires_schedule_due").on(t.scheduleId, t.scheduledFor),
+    check(
+      "schedule_fires_outcome_check",
+      oneOf(t.outcome, SCHEDULE_FIRE_OUTCOMES),
     ),
   ],
 );
@@ -948,6 +1086,10 @@ export type TaskRow = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type TaskTemplateRow = typeof taskTemplates.$inferSelect;
 export type NewTaskTemplate = typeof taskTemplates.$inferInsert;
+export type ScheduleRow = typeof schedules.$inferSelect;
+export type NewSchedule = typeof schedules.$inferInsert;
+export type ScheduleFireRow = typeof scheduleFires.$inferSelect;
+export type NewScheduleFire = typeof scheduleFires.$inferInsert;
 export type TaskParticipantRow = typeof taskParticipants.$inferSelect;
 export type NewTaskParticipant = typeof taskParticipants.$inferInsert;
 export type TaskGoalVersionRow = typeof taskGoalVersions.$inferSelect;
@@ -1160,6 +1302,8 @@ export const tables = {
   botMemory,
   tasks,
   taskTemplates,
+  schedules,
+  scheduleFires,
   conversationMessages,
   chatTaskUpdates,
   taskParticipants,

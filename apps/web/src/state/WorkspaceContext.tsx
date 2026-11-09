@@ -4,15 +4,19 @@ import {
   type ConversationMessage,
   type ConversationView,
   type CreateBotCommand,
+  type CreateScheduleCommand,
   type CreateTaskTemplateCommand,
   emptyUsage,
   type RuntimeProfile,
+  type Schedule,
+  type ScheduleList,
   type StartTemplateCommand,
   type Task,
   type TaskSummary,
   type TaskTemplate,
   type TaskView,
   type UpdateBotCommand,
+  type UpdateScheduleCommand,
   type UpdateTaskTemplateCommand,
   type UploadEntry,
   type VerificationPlan,
@@ -93,6 +97,12 @@ interface WorkspaceValue {
    * (one older than templates).
    */
   templates: TaskTemplate[] | null;
+  /**
+   * The schedules, oldest first, with the scheduler's last pass and
+   * settings; null until loaded, and on a server that reports
+   * `capabilities.schedules` false.
+   */
+  schedules: ScheduleList | null;
   /** The open bot's conversation (the last one seen for others). */
   conversations: Record<string, ConversationView>;
   /**
@@ -152,6 +162,16 @@ interface WorkspaceValue {
     templateId: string,
     command: StartTemplateCommand,
   ) => Promise<Task>;
+  /** Saves a new schedule. */
+  createSchedule: (command: CreateScheduleCommand) => Promise<Schedule>;
+  updateSchedule: (
+    scheduleId: string,
+    command: UpdateScheduleCommand,
+  ) => Promise<Schedule>;
+  /** Its tasks keep running. */
+  deleteSchedule: (scheduleId: string) => Promise<void>;
+  /** Refetches the schedules and the scheduler's last pass. */
+  refreshSchedules: () => Promise<void>;
 
   /** Loads a bot's memory; a failure lands in `memoryErrors`, not `error`. */
   loadMemory: (botId: string) => Promise<void>;
@@ -224,6 +244,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [tasks, setTasks] = useState<TaskSummary[]>([]);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[] | null>(null);
+  const [schedules, setSchedules] = useState<ScheduleList | null>(null);
+  const schedulesRef = useRef<{ now: () => Promise<void> } | null>(null);
   const [conversations, setConversations] = useState<
     Record<string, ConversationView>
   >({});
@@ -342,6 +364,19 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       },
     });
     void templatesRefetch.now();
+    // Offered only while the server reports them; a fire, an edit or a
+    // template's change (its title, its problems) refetches the list.
+    const schedulesRefetch = createRefetcher(api.listSchedules, setSchedules, {
+      delayMs,
+      onError: (reason) => {
+        if (toApiError(reason).code === "NOT_FOUND") setSchedules(null);
+      },
+    });
+    const schedulesOn = api.capabilities.schedules;
+    schedulesRef.current = schedulesOn
+      ? { now: () => schedulesRefetch.now() }
+      : null;
+    if (schedulesOn) void schedulesRefetch.now();
     const botsRefetch = createRefetcher(api.listBots, setBots, {
       delayMs,
       onError: ignore,
@@ -371,7 +406,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           hint.type === "secrets.changed"
         )
           templatesRefetch.schedule();
-        else if (hintNeedsTaskList(hint, streamed())) tasksRefetch.schedule();
+        else if (hint.type === "schedules.changed") {
+          if (schedulesOn) schedulesRefetch.schedule();
+        } else if (hintNeedsTaskList(hint, streamed())) tasksRefetch.schedule();
       },
       {
         onResync: () => {
@@ -379,6 +416,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           profilesRefetch.schedule();
           tasksRefetch.schedule();
           templatesRefetch.schedule();
+          if (schedulesOn) schedulesRefetch.schedule();
         },
       },
     );
@@ -387,6 +425,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       profilesRefetch.cancel();
       tasksRefetch.cancel();
       templatesRefetch.cancel();
+      schedulesRefetch.cancel();
+      schedulesRef.current = null;
       unsubscribe();
     };
   }, [api, applyTaskList]);
@@ -526,6 +566,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     },
     [selectTask],
   );
+  /** A saved schedule replaces its entry (or joins the list) until the next refetch. */
+  const putSchedule = useCallback(
+    (schedule: Schedule) =>
+      setSchedules((current) =>
+        current
+          ? {
+              ...current,
+              schedules: current.schedules.some(
+                (entry) => entry.id === schedule.id,
+              )
+                ? current.schedules.map((entry) =>
+                    entry.id === schedule.id ? schedule : entry,
+                  )
+                : [...current.schedules, schedule],
+            }
+          : current,
+      ),
+    [],
+  );
   const putTemplate = useCallback(
     (template: TaskTemplate) =>
       setTemplates((current) => {
@@ -548,6 +607,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       tasks,
       profiles,
       templates,
+      schedules,
       conversations,
       taskViews,
       taskStreamState,
@@ -662,6 +722,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             current,
         );
       },
+      createSchedule: async (command) => {
+        const schedule = await api.createSchedule(command);
+        putSchedule(schedule);
+        return schedule;
+      },
+      updateSchedule: async (scheduleId, command) => {
+        const schedule = await api.updateSchedule(scheduleId, command);
+        putSchedule(schedule);
+        return schedule;
+      },
+      deleteSchedule: async (scheduleId) => {
+        await api.deleteSchedule(scheduleId);
+        setSchedules((current) =>
+          current
+            ? {
+                ...current,
+                schedules: current.schedules.filter(
+                  (schedule) => schedule.id !== scheduleId,
+                ),
+              }
+            : current,
+        );
+      },
+      refreshSchedules: async () => {
+        await schedulesRef.current?.now();
+      },
       startTemplate: async (templateId, command) => {
         const task = await api.startTemplate(templateId, command);
         openCreated(task);
@@ -739,6 +825,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       selectBot,
       openCreated,
       putTemplate,
+      putSchedule,
+      schedules,
       refreshProfiles,
       refreshBots,
       report,

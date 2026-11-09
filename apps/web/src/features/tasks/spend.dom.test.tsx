@@ -63,6 +63,7 @@ function viewWith(
       verificationPlan: null,
       spendCapUsd,
       templateId: null,
+      scheduleId: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: null,
