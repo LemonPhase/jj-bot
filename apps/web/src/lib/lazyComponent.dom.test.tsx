@@ -1,16 +1,29 @@
 // @vitest-environment jsdom
 import "../test/dom";
-import { act, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { Suspense } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { LoadBoundary, lazyComponent, whenIdle } from "./lazyComponent";
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+import { describe, expect, it, vi } from "vitest";
+import { LoadBoundary, lazyComponent } from "./lazyComponent";
+import { restoreStylesheets, watchStylesheets } from "./stylesheets";
 
 const Part = ({ name }: { name: string }) => <p>Hello {name}</p>;
+
+watchStylesheets();
+
+/** A stylesheet link in the page, as Vite adds one for a lazy chunk. */
+function stylesheet(href: string) {
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.append(link);
+  return link;
+}
+
+/** The page's stylesheet links for `href`. */
+const links = (href: string) =>
+  [
+    ...document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'),
+  ].filter((link) => link.href === href);
 
 describe("lazyComponent", () => {
   it("loads its chunk once, however often it is asked", async () => {
@@ -19,48 +32,6 @@ describe("lazyComponent", () => {
     await Promise.all([part.load(), part.load()]);
     await part.load();
     expect(importPart).toHaveBeenCalledTimes(1);
-  });
-
-  it("forgets a failed load, so a later one (the render after a preload) tries again", async () => {
-    const importPart = vi
-      .fn<() => Promise<typeof Part>>()
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue(Part);
-    const part = lazyComponent("Part", importPart);
-    await expect(part.load()).rejects.toThrow("Failed to fetch");
-    render(
-      <Suspense fallback={<p>Loading part…</p>}>
-        <part.Component name="Kite" />
-      </Suspense>,
-    );
-    expect(screen.getByText("Loading part…")).toBeTruthy();
-    expect(await screen.findByText("Hello Kite")).toBeTruthy();
-    expect(importPart).toHaveBeenCalledTimes(2);
-  });
-
-  it("tries once more when a preload it waits on fails", async () => {
-    let fail: (error: Error) => void = () => {};
-    const importPart = vi
-      .fn<() => Promise<typeof Part>>()
-      .mockImplementationOnce(
-        () =>
-          new Promise((_resolve, reject) => {
-            fail = reject;
-          }),
-      )
-      .mockResolvedValue(Part);
-    const part = lazyComponent("Part", importPart);
-    const preload = part.load().catch(() => {});
-    // Asked for while the preload is in flight, then the preload fails.
-    render(
-      <Suspense fallback={<p>Loading part…</p>}>
-        <part.Component name="Moss" />
-      </Suspense>,
-    );
-    act(() => fail(new TypeError("net::ERR_NETWORK_CHANGED")));
-    await preload;
-    expect(await screen.findByText("Hello Moss")).toBeTruthy();
-    expect(importPart).toHaveBeenCalledTimes(2);
   });
 
   it("renders at once, without its fallback, once its chunk is in", async () => {
@@ -75,12 +46,13 @@ describe("lazyComponent", () => {
     expect(screen.queryByText("Loading part…")).toBeNull();
   });
 
-  it("shows its boundary's message when the chunk does not arrive twice", async () => {
+  it("keeps a failed load: its boundary says so, and no later load tries again", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const importPart = vi.fn(async (): Promise<typeof Part> => {
       throw new TypeError("Failed to fetch dynamically imported module");
     });
     const part = lazyComponent<{ name: string }>("Part", importPart);
+    await expect(part.load()).rejects.toThrow("Failed to fetch");
     render(
       <LoadBoundary failed={(error) => <p role="alert">{error.message}</p>}>
         <Suspense fallback={null}>
@@ -91,37 +63,45 @@ describe("lazyComponent", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Failed to fetch dynamically imported module",
     );
-    expect(importPart).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe("whenIdle", () => {
-  it("waits for the browser to be idle, and can be cancelled", () => {
-    const requestIdleCallback = vi.fn(() => 7);
-    const cancelIdleCallback = vi.fn();
-    vi.stubGlobal("requestIdleCallback", requestIdleCallback);
-    vi.stubGlobal("cancelIdleCallback", cancelIdleCallback);
-    const task = vi.fn();
-    const cancel = whenIdle(task);
-    expect(requestIdleCallback).toHaveBeenCalledWith(task, { timeout: 2000 });
-    expect(task).not.toHaveBeenCalled();
-    cancel();
-    expect(cancelIdleCallback).toHaveBeenCalledWith(7);
+    await expect(part.load()).rejects.toThrow("Failed to fetch");
+    expect(importPart).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to a short timer where the browser cannot tell (Safari)", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("requestIdleCallback", undefined);
-    const task = vi.fn();
-    whenIdle(task);
-    vi.advanceTimersByTime(199);
-    expect(task).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(task).toHaveBeenCalledTimes(1);
+  it("asks again for a stylesheet that failed before it loads, and waits for it", async () => {
+    const href = "http://localhost/assets/tasks-a.css";
+    stylesheet(href).dispatchEvent(new Event("error"));
+    const importPart = vi.fn(async () => Part);
+    const part = lazyComponent("Part", importPart);
+    const loading = part.load();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The failed link is replaced, and the chunk waits for the new one.
+    const [retry, ...others] = links(href);
+    expect(others).toEqual([]);
+    expect(importPart).not.toHaveBeenCalled();
+    retry?.dispatchEvent(new Event("load"));
+    await loading;
+    expect(importPart).toHaveBeenCalledTimes(1);
+    // Restored, it is not asked for again.
+    await restoreStylesheets();
+    expect(links(href)).toEqual([retry]);
+  });
 
-    const cancelled = vi.fn();
-    whenIdle(cancelled)();
-    vi.advanceTimersByTime(1000);
-    expect(cancelled).not.toHaveBeenCalled();
+  it("fails a load whose failed stylesheet fails again, so the part never shows unstyled", async () => {
+    const href = "http://localhost/assets/schedules-b.css";
+    stylesheet(href).dispatchEvent(new Event("error"));
+    const importPart = vi.fn(async () => Part);
+    const part = lazyComponent("Part", importPart);
+    const loading = part.load();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    links(href)[0]?.dispatchEvent(new Event("error"));
+    await expect(loading).rejects.toThrow(
+      `Unable to load the stylesheet ${href}`,
+    );
+    expect(importPart).not.toHaveBeenCalled();
+    // Another part asks again for it later.
+    const later = restoreStylesheets();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    links(href)[0]?.dispatchEvent(new Event("load"));
+    await later;
   });
 });

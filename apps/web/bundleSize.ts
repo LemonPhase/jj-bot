@@ -62,6 +62,10 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
     what: "the upload fields of the New task dialog and the task chat",
   },
   "src/features/tasks/ChecksEditor.tsx": { what: "the checks editor" },
+  "src/features/tasks/checkDrafts.ts": { what: "the checks editor's drafts" },
+  "src/features/studio/studioDraft.ts": {
+    what: "Bot Studio's drafts, shared with the profile panel",
+  },
   "src/features/tasks/SpendControl.tsx": { what: "the spend cap controls" },
   "src/features/bots/BotInspector.tsx": { what: "the bot's profile panel" },
   "src/features/bots/ChatApprovals.tsx": {

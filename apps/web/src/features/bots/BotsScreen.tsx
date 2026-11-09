@@ -20,7 +20,7 @@ import {
   Spinner,
   StatusTag,
 } from "../../components/ui";
-import { LoadBoundary, lazyComponent, whenIdle } from "../../lib/lazyComponent";
+import { LoadBoundary, lazyComponent } from "../../lib/lazyComponent";
 import { moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { botHref } from "../shell/router";
@@ -33,8 +33,9 @@ import "./bots.css";
 
 /**
  * The bot's profile panel, a chunk of its own: it opens on demand, so the
- * first screen does not wait for it. It loads once the browser is idle after
- * a bot's chat shows, or at boot when it was left open (`preloadBotsScreen`).
+ * first screen does not wait for it. The browser prefetches it once the page
+ * has loaded (`prefetchChunks` in vite.config.ts), and it loads at boot when
+ * it was left open (`preloadBotsScreen`).
  */
 const inspector = lazyComponent("BotInspector", () =>
   import("./BotInspector").then((module) => module.BotInspector),
@@ -147,15 +148,6 @@ function BotScreen({ bot }: { bot: Bot }) {
   useEffect(() => {
     if (takeBotFocus(bot.id)) headingRef.current?.focus();
   }, [bot.id]);
-
-  // The profile panel opens at once when asked for.
-  useEffect(
-    () =>
-      whenIdle(() => {
-        inspector.load().catch(() => {});
-      }),
-    [],
-  );
 
   const openInspector = (target: InspectorFocus) => {
     setInspectorOpen(true);

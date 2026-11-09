@@ -4,6 +4,7 @@ import { defineConfig, type ProxyOptions } from "vite";
 import { chunkModules } from "./bundleSize.ts";
 import { apiTarget } from "./devEnv.ts";
 import { closeClientWithUpstream } from "./devProxy.ts";
+import { prefetchChunks } from "./prefetch.ts";
 
 /**
  * `/api` and `/health` go to the API on loopback (`API_PORT` from the
@@ -39,8 +40,10 @@ const apiProxy = (target: string): ProxyOptions => ({
 export default defineConfig(({ mode }) => {
   const target = apiTarget(mode);
   return {
-    // chunkModules lists each chunk's modules for `npm run size`.
-    plugins: [react(), chunkModules()],
+    // chunkModules lists each chunk's modules for `npm run size`;
+    // prefetchChunks has the browser fetch the first screen's on-demand
+    // parts in the background (prefetch.ts).
+    plugins: [react(), chunkModules(), prefetchChunks()],
     build: {
       // The largest chunk is the 3D office, Three.js itself (about 620 kB),
       // which loads only when someone opens that view. What every visit

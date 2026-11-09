@@ -72,10 +72,11 @@ const heading = (name: string) =>
   screen.findByRole("heading", { level: 1, name });
 
 // Loaded modules stay loaded for the whole file, so each test holds parts of
-// its own: the Bots screen's (the profile panel and the New task dialog,
-// whose idle preloads start together), then the sidebar's Tasks section.
+// its own: the Bots screen's (the profile panel and the New task dialog),
+// then the sidebar's Tasks section. Their background download is a prefetch
+// the build adds to index.html (prefetch.test.ts), never an import here.
 describe("the first screen's on-demand parts", () => {
-  it("load the profile panel at boot when it was left open and the New task dialog once idle, named while they load", async () => {
+  it("load the profile panel at boot when it was left open and the New task dialog when asked for, named while they load", async () => {
     // At boot: the profile panel, only when it was left open.
     preloadScreen(parseRoute("#/bots/bot-kite"));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -94,14 +95,17 @@ describe("the first screen's on-demand parts", () => {
       "Loading profile…",
     );
 
-    // Once the workspace is idle: the New task dialog, not asked for yet.
-    await vi.waitFor(() => expect(chunks.newTask.started).toBe(1));
+    // Nothing imports the New task dialog until it is asked for: a failed
+    // background import would cost the click (Chromium keeps it).
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(chunks.newTask.started).toBe(0);
     expect(chunks.inspector.started).toBe(1);
 
     // Asked for before its chunk arrives, the dialog opens with its name.
     const chat = screen.getByRole("main", { name: "Chat with Kite" });
     fireEvent.click(within(chat).getByRole("button", { name: "New task" }));
     const loading = screen.getByRole("dialog", { name: "New task" });
+    await vi.waitFor(() => expect(chunks.newTask.started).toBe(1));
     expect(within(loading).getByRole("status").textContent).toBe("Loading…");
     act(() => chunks.newTask.arrive());
     expect(await screen.findByText("New task form")).toBeTruthy();

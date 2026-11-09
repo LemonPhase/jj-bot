@@ -131,9 +131,9 @@ export function Sidebar({
           <BotList labelledBy={listLabelId} />
         ) : (
           <LoadBoundary
-            failed={() => (
+            failed={(error) => (
               <EmptyState
-                message="The task list did not load."
+                message={`The task list did not load: ${error.message}`}
                 action={
                   <Button size="sm" onClick={() => window.location.reload()}>
                     Reload

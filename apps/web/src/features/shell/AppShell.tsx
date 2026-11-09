@@ -1,5 +1,4 @@
 import {
-  lazy,
   type ReactNode,
   Suspense,
   useEffect,
@@ -9,7 +8,7 @@ import {
   useState,
 } from "react";
 import { Button, Dialog, ErrorBanner, Spinner } from "../../components/ui";
-import { LoadBoundary, lazyComponent, whenIdle } from "../../lib/lazyComponent";
+import { LoadBoundary, lazyComponent } from "../../lib/lazyComponent";
 import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
@@ -46,15 +45,20 @@ type OpenDialog =
 
 /**
  * The New task dialog, offered on every screen: a chunk of its own, which
- * loads once the browser is idle after the workspace, so it opens at once.
+ * the browser prefetches once the page has loaded (`prefetchChunks` in
+ * vite.config.ts) and the first click imports.
  */
 const newTaskDialog = lazyComponent("NewTaskDialog", () =>
   import("../tasks/NewTaskDialog").then((module) => module.NewTaskDialog),
 );
 /** The template dialogs, loaded when one first opens. */
-const TemplateDialog = lazy(() => import("../templates/TemplateDialog"));
+const TemplateDialog = lazyComponent("TemplateDialog", () =>
+  import("../templates/TemplateDialog").then((module) => module.default),
+).Component;
 /** The schedule dialogs, loaded when one first opens. */
-const ScheduleDialog = lazy(() => import("../schedules/ScheduleDialog"));
+const ScheduleDialog = lazyComponent("ScheduleDialog", () =>
+  import("../schedules/ScheduleDialog").then((module) => module.default),
+).Component;
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -119,13 +123,6 @@ export function AppShell() {
     if (window.location.hash !== routeHref(target))
       navigate(target, { replace: true });
   }, [loading, route, listedKey]);
-
-  useEffect(() => {
-    if (loading) return;
-    return whenIdle(() => {
-      newTaskDialog.load().catch(() => {});
-    });
-  }, [loading]);
 
   // Growing past phone width puts the sidebar back in place, and the drawer
   // stays shut if the screen narrows again.
