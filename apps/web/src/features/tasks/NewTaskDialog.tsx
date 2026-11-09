@@ -11,11 +11,12 @@ import {
 } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
+import { type CheckDraft, planFromDrafts } from "./checkDrafts";
 import { formatCap } from "./format";
 import { readCapInput, SpendQuestion } from "./spendInput";
 import { rosterOf, TeamPicker } from "./TeamPicker";
 import { UploadField, useDiscardOnUnmount, useUploadDrafts } from "./uploads";
-import { type CheckDraft, planFromDrafts } from "./verification";
+import "./tasks.css";
 
 export interface NewTaskDialogProps {
   /** Preselected bots; the first coordinates. */

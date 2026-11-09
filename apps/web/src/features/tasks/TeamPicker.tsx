@@ -1,6 +1,7 @@
 import type { Bot } from "@jj/contracts";
 import { useId } from "react";
 import { Avatar, Chip, SectionLabel, Select } from "../../components/ui";
+import "./tasks.css";
 
 export interface TeamPickerProps {
   bots: readonly Bot[];

@@ -441,7 +441,8 @@ describe("bot inspector", () => {
     renderApp();
     await heading("Kite");
     click(screen.getByRole("button", { name: "Profile" }));
-    click(screen.getByRole("button", { name: "Archive bot" }));
+    // The panel is a chunk of its own: it may still be loading.
+    click(await screen.findByRole("button", { name: "Archive bot" }));
     const dialog = await screen.findByRole("dialog", { name: "Archive Kite?" });
     click(within(dialog).getByRole("button", { name: "Archive" }));
     const next = await heading("Juno");

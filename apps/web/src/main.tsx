@@ -7,9 +7,13 @@ import { StartFailed } from "./features/shell/AppShell";
 import { parseRoute } from "./features/shell/router";
 import { preloadScreen } from "./features/shell/screens";
 import { registerServiceWorker } from "./lib/serviceWorker";
+import { watchStylesheets } from "./lib/stylesheets";
 import { WorkspaceProvider } from "./state/WorkspaceContext";
 import "./styles/index.css";
 
+// Before any lazy chunk loads: a stylesheet that fails is asked for again
+// before the next chunk renders, never skipped.
+watchStylesheets();
 // A deep link's or reload's screen starts downloading now, while the API is
 // probed and the workspace loads, instead of once they are done.
 preloadScreen(parseRoute(window.location.hash));

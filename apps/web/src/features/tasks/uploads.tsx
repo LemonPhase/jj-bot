@@ -21,6 +21,7 @@ import {
 import { useApi } from "../../api/ApiContext";
 import { isApiError } from "../../api/client";
 import { Button, Icon, IconButton } from "../../components/ui";
+import "./tasks.css";
 
 /** One file the user picked: being sent, staged on the server, or refused. */
 export interface UploadDraft {
