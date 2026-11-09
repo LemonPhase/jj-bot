@@ -51,6 +51,7 @@ const task: Task = {
   verificationPlan: plan,
   spendCapUsd: null,
   templateId: null,
+  scheduleId: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: at,

@@ -1,0 +1,144 @@
+/* ── Schedules section of the Tasks sidebar ────────────────────────────── */
+.schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-5);
+  border-top: 1px solid var(--line-subtle);
+}
+
+.schedule-list__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-right: 4px;
+}
+
+.schedule-list__head .shell-list__label {
+  padding-bottom: 0;
+}
+
+.schedule-list__stale {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  background: var(--bg-hover);
+  font-size: var(--fs-small);
+  color: var(--status-failed-ink);
+}
+
+.schedule-list__mark {
+  display: inline-block;
+  margin-right: 6px;
+  font-weight: var(--fw-semibold);
+}
+
+.schedule-list__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schedule-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+}
+
+.schedule-row:hover,
+.schedule-row:focus-within {
+  background: var(--bg-hover);
+}
+
+.schedule-row__title {
+  font-size: var(--fs-list-title);
+  font-weight: var(--fw-medium);
+  color: var(--ink);
+}
+
+.schedule-row__meta,
+.schedule-row__outcome {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.schedule-row__word {
+  font-weight: var(--fw-semibold);
+  color: var(--ink-2);
+}
+
+.schedule-row__outcome--fail .schedule-row__word {
+  color: var(--status-failed-ink);
+}
+
+.schedule-row__outcome a {
+  color: inherit;
+}
+
+.schedule-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+/* ── Schedule editor ───────────────────────────────────────────────────── */
+.schedule-editor__when,
+.schedule-editor__chat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-3);
+}
+
+.schedule-editor__trigger,
+.schedule-editor__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sp-4);
+  align-self: stretch;
+}
+
+.schedule-editor__cron input {
+  font-family: var(--font-mono);
+}
+
+.schedule-editor__runs {
+  align-self: stretch;
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.schedule-editor__runs-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-sm);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-part);
+  color: var(--ink-muted);
+}
+
+.schedule-editor__runs ol {
+  margin: var(--sp-2) 0 0;
+  padding-left: 1.4em;
+}
+
+.schedule-editor__note {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--status-failed-ink);
+}
+
+@media (max-width: 560px) {
+  .schedule-editor__trigger,
+  .schedule-editor__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

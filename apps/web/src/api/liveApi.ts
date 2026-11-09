@@ -25,6 +25,9 @@ import {
   putSecretCommandSchema,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
+  scheduleDetailSchema,
+  scheduleListSchema,
+  scheduleResultSchema,
   secretInfoSchema,
   secretsViewSchema,
   sendBotMessageCommandSchema,
@@ -713,6 +716,30 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
           command(startTemplateCommandSchema, cmd),
         )
       ).task,
+    listSchedules: () => request("GET", "/schedules", scheduleListSchema),
+    getSchedule: (scheduleId) =>
+      request("GET", `/schedules/${id(scheduleId)}`, scheduleDetailSchema),
+    createSchedule: async (cmd) =>
+      (
+        await request(
+          "POST",
+          "/schedules",
+          scheduleResultSchema,
+          // The server parses it, with the trigger checks this bundle leaves out.
+          cmd,
+        )
+      ).schedule,
+    updateSchedule: async (scheduleId, cmd) =>
+      (
+        await request(
+          "PATCH",
+          `/schedules/${id(scheduleId)}`,
+          scheduleResultSchema,
+          cmd,
+        )
+      ).schedule,
+    deleteSchedule: (scheduleId) =>
+      request("DELETE", `/schedules/${id(scheduleId)}`, null),
     subscribeTask: (taskId, onView, streamOptions) =>
       followTask(taskId, getTask, openTaskEvents, onView, {
         retryMs,

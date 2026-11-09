@@ -9,6 +9,7 @@ import {
   type ApprovalStatus,
   approvals,
   type ChatTaskUpdateRow,
+  type ChatUpdateMode,
   chatTaskUpdates,
   type Executor,
   enqueue,
@@ -44,6 +45,14 @@ export function clipVerbatim(text: string, max: number): string {
 }
 
 /**
+ * Whether a task's chat is told an event: every one with `all`; with
+ * `attention` (a scheduled task's default) only what needs the user (a
+ * question, an approval, a cap, which wait for the user) or a failure.
+ */
+export const toldFor = (mode: ChatUpdateMode, event: TaskUpdateEvent) =>
+  mode === "all" || event !== "completed";
+
+/**
  * Records an update for the task's coordinator and wakes its chat. Call it in
  * the transaction that changes the task's status, after the task's events,
  * or that records an approval request (`approvalId`).
@@ -57,7 +66,7 @@ export async function recordTaskUpdate(
   options: { approvalId?: string } = {},
 ): Promise<void> {
   const [row] = await tx
-    .select({ eventSeq: tasks.eventSeq })
+    .select({ eventSeq: tasks.eventSeq, chatUpdates: tasks.chatUpdates })
     .from(tasks)
     .where(eq(tasks.id, task.id));
   // A later event overtakes the task's updates that were not told yet.
@@ -70,6 +79,8 @@ export async function recordTaskUpdate(
         isNull(chatTaskUpdates.answeredAt),
       ),
     );
+  // A scheduled task set to `attention` tells only what needs the user.
+  if (!toldFor(row?.chatUpdates ?? "all", event)) return;
   await tx.insert(chatTaskUpdates).values({
     id: ctx.ids("taskUpdate"),
     botId: task.coordinatorBotId,
