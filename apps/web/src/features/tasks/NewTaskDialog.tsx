@@ -12,7 +12,7 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
 import { formatCap } from "./format";
-import { readCapInput, SpendQuestion } from "./SpendControl";
+import { readCapInput, SpendQuestion } from "./spendInput";
 import { rosterOf, TeamPicker } from "./TeamPicker";
 import { UploadField, useDiscardOnUnmount, useUploadDrafts } from "./uploads";
 import { type CheckDraft, planFromDrafts } from "./verification";

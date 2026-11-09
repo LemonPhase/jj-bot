@@ -25,13 +25,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import type { Plugin } from "vite";
 
-/**
- * Bytes the initial JavaScript may weigh, raw and gzipped. The raw budget
- * rose from 525 kB to 528 kB with spend approvals (#106): the approval
- * union the shell parses and the new-task dialog's spend question load with
- * the first screen.
- */
-export const INITIAL_JS_BUDGET = { raw: 528_000, gzip: 162_000 } as const;
+/** Bytes the initial JavaScript may weigh, raw and gzipped. */
+export const INITIAL_JS_BUDGET = { raw: 525_000, gzip: 162_000 } as const;
 
 /** A module that must load on demand. */
 export interface LazyModule {

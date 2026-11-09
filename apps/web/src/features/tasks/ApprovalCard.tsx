@@ -21,7 +21,8 @@ import {
 } from "../../components/ui";
 import { formatMessageTime } from "../../lib/format";
 import { approvalCall, approvalProblem, approvalState } from "./approvals";
-import { SpendCapDialog, THRESHOLD_PERCENT } from "./SpendControl";
+import { SpendCapDialog } from "./SpendControl";
+import { THRESHOLD_PERCENT } from "./spendInput";
 import { botName } from "./taskModel";
 
 /**
