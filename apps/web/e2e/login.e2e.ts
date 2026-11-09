@@ -51,6 +51,7 @@ test("a login link signs in once, and no credential is left in a URL, Referer, h
   const seen = recordRequests(page);
   const link = await bootLink(instance.run);
   const code = link.split("code=")[1] as string;
+  // A fresh load of the link signs in.
   await page.goto(link);
   await signedIn(page);
   // The code left the address bar; the app is where the link pointed.
@@ -91,6 +92,21 @@ test("a login link signs in once, and no credential is left in a URL, Referer, h
   await expect(loginHeading(second)).toBeVisible();
   await expect(second.getByText(/A login link works once/)).toBeVisible();
   await other.close();
+});
+
+test("a login link opened in a tab already on the login screen signs in, then opens where the user was going", async ({
+  page,
+  instance,
+}) => {
+  await page.goto("/#/settings");
+  await expect(loginHeading(page)).toBeVisible();
+  // Only the hash changes: the page does not load again.
+  const link = await bootLink(instance.run);
+  await page.goto(link);
+  await expect(
+    page.getByRole("heading", { name: "Settings", level: 1 }),
+  ).toBeVisible();
+  expect(page.url()).toMatch(/#\/settings$/);
 });
 
 test.describe("at phone width", () => {

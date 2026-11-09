@@ -99,4 +99,14 @@ function show(startup: Startup) {
   );
 }
 
+// A login link opened in this tab changes only the hash: sign in with its
+// code now (which also takes it out of the address bar), then go back to
+// where the user was.
+window.addEventListener("hashchange", (event) => {
+  if (!window.location.hash.startsWith(`${LOGIN_HASH}?`)) return;
+  const previous = new URL(event.oldURL).hash;
+  if (!isLoginHash(previous)) returnTo = previous;
+  start();
+});
+
 start();
