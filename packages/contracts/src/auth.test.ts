@@ -58,9 +58,10 @@ describe("sign-in shapes", () => {
       { code: "c", extra: true },
       { token: "x".repeat(1025) },
     ])
-      expect(loginCommandSchema.safeParse(command).success, command).toBe(
-        false,
-      );
+      expect(
+        loginCommandSchema.safeParse(command).success,
+        JSON.stringify(command),
+      ).toBe(false);
   });
 
   it("rotates with the current token or the password, never a code", () => {
