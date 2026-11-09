@@ -104,21 +104,28 @@ type ApprovalPatch = Partial<
   >
 >;
 
-/** Updates the approval and emits `approval.updated` with the whole record. */
+/**
+ * Updates the approval and emits `approval.updated` with the whole record.
+ * Undefined, with nothing changed, when its status moved since `current`.
+ */
 export async function updateApproval(
   tx: Tx,
   ctx: EngineContext,
   current: ApprovalRow,
   patch: ApprovalPatch,
   attribution: Attribution = attributionOf(current),
-): Promise<ApprovalRow> {
+): Promise<ApprovalRow | undefined> {
+  // Only while its status is still the one `current` was read with: an
+  // answer, expiry or cancellation that won meanwhile is never overwritten,
+  // and nothing is emitted for the loser.
   const [row] = await tx
     .update(approvals)
     .set(patch)
-    .where(eq(approvals.id, current.id))
+    .where(
+      and(eq(approvals.id, current.id), eq(approvals.status, current.status)),
+    )
     .returning();
-  if (!row)
-    throw new Error(`Approval ${current.id} vanished during an update.`);
+  if (!row) return undefined;
   await emit(tx, ctx, row.taskId, {
     type: "approval.updated",
     payload: { approval: toApproval(row), previousStatus: current.status },
@@ -302,13 +309,14 @@ export async function claimApproval(
     .for("update");
   if (!current || current.status !== "approved" || current.startedAt)
     return false;
-  await updateApproval(
+  const claimed = await updateApproval(
     tx,
     ctx,
     current,
     { startedRunId: runId, startedAt: ctx.clock() },
     { ...attributionOf(current), runId },
   );
+  if (!claimed) return false;
   return true;
 }
 
@@ -450,6 +458,8 @@ export async function decideApproval(
       reason: command.decision === "deny" ? (command.reason ?? null) : null,
       decidedAt: ctx.clock(),
     });
+    // The row is locked above, so its status cannot have moved.
+    if (!row) throw new Error(`Approval ${current.id} changed under its lock.`);
     if (row.kind === "spend") await wakeSpendHeld(tx, row.taskId);
     else await wake(tx, row);
     return { approval: toApproval(row) };
@@ -493,7 +503,7 @@ export async function expireApprovals(
           : `the task's goal or plan changed (now goal version ${goalVersion}) before it ran.`,
       decidedAt: current.decidedAt ?? ctx.clock(),
     });
-    await wake(tx, row);
+    if (row) await wake(tx, row);
   }
 }
 

@@ -360,16 +360,23 @@ export async function recheckSpendApprovals(
     // Tasks in id order, as transactions that lock several take them.
     .orderBy(asc(approvals.taskId), asc(approvals.createdAt));
   const woken = new Set<string>();
-  for (const row of rows) {
+  for (const listed of rows) {
+    // The task first, as every task write takes it, then the row again: an
+    // answer that committed since the list was read wins, and is left alone.
+    const [task] = await tx
+      .select()
+      .from(tasksTable)
+      .where(eq(tasksTable.id, listed.taskId))
+      .for("update");
+    const [row] = await tx
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, listed.id))
+      .for("update");
+    if (!task || row?.status !== "pending") continue;
     const spend = spendOf(row);
     let reason: string | undefined;
     if (spend.scope === "task") {
-      const [task] = await tx
-        .select()
-        .from(tasksTable)
-        .where(eq(tasksTable.id, row.taskId))
-        .for("update");
-      if (!task) continue;
       if (task.spendCapUsd === null)
         reason = "the task's spend cap was removed before the user answered.";
       else if (task.spendCapUsd !== spend.capUsd)
@@ -386,12 +393,12 @@ export async function recheckSpendApprovals(
         reason = `asking before spending past ${percent} of ${bot.name}'s cap was turned off before the user answered.`;
     }
     if (!reason) continue;
-    await updateApproval(tx, ctx, row, {
+    const expired = await updateApproval(tx, ctx, row, {
       status: "expired",
       reason,
       decidedAt: ctx.clock(),
     });
-    woken.add(row.taskId);
+    if (expired) woken.add(row.taskId);
   }
   for (const taskId of woken) await wakeSpendHeld(tx, taskId);
 }

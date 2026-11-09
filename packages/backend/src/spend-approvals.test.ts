@@ -7,10 +7,12 @@
 // where a test seeds a bot's or task's earlier spend to place it exactly.
 import type { SpendApproval, TaskEvent, TaskView } from "@jj/contracts";
 import { taskSummarySchema, taskViewSchema } from "@jj/contracts";
-import { usage } from "@jj/db";
+import { approvals, usage } from "@jj/db";
 import { ModelRegistry, PiSessionExecutor } from "@jj/runtime";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DomainError } from "./errors";
+import { updateApproval } from "./services/approvals";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -633,5 +635,50 @@ describe("spend approvals past the soft threshold", () => {
       status: "expired",
       reason: expect.stringContaining("daily spend cap changed to $2.00"),
     });
+  });
+});
+
+describe("answers that race", () => {
+  it("never changes an approval another answer resolved first, and emits nothing for it", async () => {
+    const { engine } = await setup();
+    const ada = await pricedBot(engine, "Ada");
+    const { task } = await engine.tasks.create({
+      goal: LONG_WORK,
+      coordinatorBotId: ada.id,
+      spendCapUsd: 0.05,
+      approveSpendPastThreshold: true,
+    });
+    const held = await untilTask(engine, task.id, allHeld, "the hold");
+    const approval = pendingSpend(held) as SpendApproval;
+    // A writer that read the approval while it was pending, such as a cap
+    // change's recheck, and writes after the user's Approve committed.
+    const [stale] = await db.database.db
+      .select()
+      .from(approvals)
+      .where(eq(approvals.id, approval.id));
+    await engine.tasks.decideApproval(task.id, approval.id, {
+      decision: "approve",
+    });
+    const written = await db.database.db.transaction((tx) =>
+      updateApproval(
+        tx,
+        engine.context,
+        stale as typeof approvals.$inferSelect,
+        {
+          status: "expired",
+          reason: "the task's spend cap changed before the user answered.",
+        },
+      ),
+    );
+    expect(written).toBeUndefined();
+    const after = await engine.tasks.get(task.id);
+    expect(
+      spendApprovals(after).find((candidate) => candidate.id === approval.id),
+    ).toMatchObject({ status: "approved" });
+    expect(
+      ofType(after, "approval.updated").filter(
+        (event) => event.payload.approval.status === "expired",
+      ),
+    ).toEqual([]);
   });
 });
