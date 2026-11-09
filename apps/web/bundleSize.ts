@@ -4,7 +4,8 @@
  * fetch before the app runs: its module script, every chunk that script
  * imports statically (Vite also lists them as modulepreloads) and its
  * stylesheets. Every other chunk loads on demand: the Tasks, Studio and
- * Settings screens, the Three.js office and the demo data. Sizes are in kB
+ * Settings screens, the dialogs and panels the first screen opens, the
+ * Three.js office and the demo data. Sizes are in kB
  * (1000 bytes), raw and compressed with Node's zlib gzip and brotli defaults
  * (Vite's build log computes its gzip column slightly differently).
  *
@@ -46,14 +47,32 @@ const TASKS_SCREEN = "src/features/tasks/TasksScreen.tsx";
  * Code that only some visits use, which must load on demand and never be in
  * the initial load: module ids as `moduleName` spells them (a path under
  * `apps/web`, or an npm package's name). The Bots screen, the one the app
- * opens on, is in the entry. The 3D office and Three.js load only once its
- * view opens, so not with the Tasks screen either.
+ * opens on, is in the entry, but not what it opens on demand: the New task
+ * dialog, the profile panel and the calls waiting for approval. The 3D office
+ * and Three.js load only once its view opens, so not with the Tasks screen
+ * either.
  */
 export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
   "src/api/demoApi.ts": { what: "the demo data, used only without a backend" },
   [TASKS_SCREEN]: { what: "the Tasks screen" },
   "src/features/studio/StudioScreen.tsx": { what: "Bot Studio" },
   "src/features/settings/SettingsScreen.tsx": { what: "the Settings screen" },
+  "src/features/tasks/NewTaskDialog.tsx": { what: "the New task dialog" },
+  "src/features/tasks/uploads.tsx": {
+    what: "the upload fields of the New task dialog and the task chat",
+  },
+  "src/features/tasks/ChecksEditor.tsx": { what: "the checks editor" },
+  "src/features/tasks/SpendControl.tsx": { what: "the spend cap controls" },
+  "src/features/bots/BotInspector.tsx": { what: "the bot's profile panel" },
+  "src/features/bots/ChatApprovals.tsx": {
+    what: "the calls waiting for approval under a chat's task card",
+  },
+  "src/features/tasks/TaskList.tsx": {
+    what: "the sidebar's Tasks list, shown with the Tasks section",
+  },
+  "src/features/templates/TemplateList.tsx": {
+    what: "the Templates section, shown with the Tasks list",
+  },
   "src/features/templates/TemplateDialog.tsx": {
     what: "the task template dialogs",
   },

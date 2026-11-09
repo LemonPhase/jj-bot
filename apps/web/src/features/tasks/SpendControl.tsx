@@ -18,6 +18,7 @@ import {
   unpricedNote,
   usageDetail,
 } from "./format";
+import "./tasks.css";
 
 /** What a cap input holds: empty is no cap; otherwise an amount the contract accepts. */
 export function readCapInput(

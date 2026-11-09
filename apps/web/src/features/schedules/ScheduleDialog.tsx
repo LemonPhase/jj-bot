@@ -32,6 +32,7 @@ import {
   uncappedTemplate,
 } from "./scheduleModel";
 import { previewTrigger, sameTrigger } from "./scheduleTimes";
+import "../tasks/tasks.css";
 import "./schedules.css";
 
 const reasonOf = (reason: unknown, fallback: string) =>

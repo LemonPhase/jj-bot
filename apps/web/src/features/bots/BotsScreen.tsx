@@ -1,23 +1,52 @@
 import type { Bot } from "@jj/contracts";
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  type ReactNode,
+  Suspense,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import {
   Avatar,
   Button,
   buttonClass,
   EmptyState,
+  ErrorBanner,
   Icon,
   IconButton,
+  Panel,
+  SectionLabel,
+  Spinner,
   StatusTag,
 } from "../../components/ui";
+import { LoadBoundary, lazyComponent, whenIdle } from "../../lib/lazyComponent";
 import { moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { botHref } from "../shell/router";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { useShell } from "../shell/ShellContext";
 import { BotConversation } from "./BotConversation";
-import { BotInspector, type InspectorFocus } from "./BotInspector";
+import type { BotInspectorProps, InspectorFocus } from "./BotInspector";
 import { takeBotFocus } from "./focusRequest";
 import "./bots.css";
+
+/**
+ * The bot's profile panel, a chunk of its own: it opens on demand, so the
+ * first screen does not wait for it. It loads once the browser is idle after
+ * a bot's chat shows, or at boot when it was left open (`preloadBotsScreen`).
+ */
+const inspector = lazyComponent("BotInspector", () =>
+  import("./BotInspector").then((module) => module.BotInspector),
+);
+
+/**
+ * Starts downloading what the Bots screen shows at once besides the chat: the
+ * profile panel, when it was left open. Called at boot (`preloadScreen`).
+ */
+export function preloadBotsScreen(): void {
+  if (readInspectorOpen()) inspector.load().catch(() => {});
+}
 
 /** `#/bots/:botId`: the selected bot's direct chat, or an empty state. */
 export function BotsScreen({ botId }: { botId: string | null }) {
@@ -78,15 +107,17 @@ function NoBots({ onNew }: { onNew: () => void }) {
 
 const INSPECTOR_KEY = "jj.bots.inspector";
 
+function readInspectorOpen(): boolean {
+  try {
+    return window.localStorage.getItem(INSPECTOR_KEY) === "open";
+  } catch {
+    return false;
+  }
+}
+
 /** Whether the profile panel is open; remembered per browser, a convenience only. */
 function useInspectorOpen(): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(() => {
-    try {
-      return window.localStorage.getItem(INSPECTOR_KEY) === "open";
-    } catch {
-      return false;
-    }
-  });
+  const [open, setOpen] = useState(readInspectorOpen);
   const update = (next: boolean) => {
     setOpen(next);
     try {
@@ -116,6 +147,15 @@ function BotScreen({ bot }: { bot: Bot }) {
   useEffect(() => {
     if (takeBotFocus(bot.id)) headingRef.current?.focus();
   }, [bot.id]);
+
+  // The profile panel opens at once when asked for.
+  useEffect(
+    () =>
+      whenIdle(() => {
+        inspector.load().catch(() => {});
+      }),
+    [],
+  );
 
   const openInspector = (target: InspectorFocus) => {
     setInspectorOpen(true);
@@ -168,7 +208,7 @@ function BotScreen({ bot }: { bot: Bot }) {
         <BotConversation bot={bot} onOpenInspector={openInspector} />
       </main>
       {inspectorOpen && (
-        <BotInspector
+        <LazyInspector
           id={inspectorId}
           bot={bot}
           focus={focus}
@@ -177,5 +217,48 @@ function BotScreen({ bot }: { bot: Bot }) {
         />
       )}
     </div>
+  );
+}
+
+/** The profile panel, or its frame saying it is loading or did not load. */
+function LazyInspector(props: BotInspectorProps) {
+  const frame = (body: ReactNode) => (
+    <Panel
+      id={props.id}
+      label={`${props.bot.name}'s profile`}
+      className="bot-inspector"
+    >
+      <div className="bot-inspector__head">
+        <SectionLabel as="h2">Profile</SectionLabel>
+        <IconButton
+          label="Close profile"
+          icon={<Icon name="close" size={16} />}
+          onClick={props.onClose}
+        />
+      </div>
+      {body}
+    </Panel>
+  );
+  return (
+    <LoadBoundary
+      failed={(error) =>
+        frame(
+          <>
+            <ErrorBanner word="Couldn't load">
+              {`the profile: ${error.message}`}
+            </ErrorBanner>
+            <div className="inspector-actions">
+              <Button onClick={() => window.location.reload()}>Reload</Button>
+            </div>
+          </>,
+        )
+      }
+    >
+      <Suspense
+        fallback={frame(<Spinner label="Loading profile…" showLabel />)}
+      >
+        <inspector.Component {...props} />
+      </Suspense>
+    </LoadBoundary>
   );
 }
