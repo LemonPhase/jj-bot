@@ -163,17 +163,11 @@ async function startRun(
       };
     }
 
-    // A session holding a call for approval does not run until the user answers.
-    if (await parkIfHeld(tx, ctx, session, stale)) {
-      await complete(tx, job.lease);
-      return { kind: "skip", taskFinished: false };
-    }
-
     // Only briefs, results, steering and an approval's answer start a run. A
     // plain message waiting in the inbox rides along with a run that happens
     // anyway; it never makes a coalesced wake launch one (notification semantics).
-    // A session still waiting for approval here holds nothing any more (a
-    // spend approval it waited for was answered or expired): it resumes.
+    // A session waiting for approval that nothing holds any more (a spend
+    // approval it waited for was answered or expired) resumes.
     const hasInput =
       (await hasContinuingInput(tx, sessionId)) ||
       (await hasDecision(tx, sessionId)) ||
@@ -184,6 +178,12 @@ async function startRun(
       job.attempts > 1 ||
       job.payload.reason === "recovery" ||
       (session.status === "queued" && session.runCount > 0 && !hasInput);
+
+    // A session holding a call for approval does not run until the user answers.
+    if (await parkIfHeld(tx, ctx, session, stale, recovering)) {
+      await complete(tx, job.lease);
+      return { kind: "skip", taskFinished: false };
+    }
     const reason: RunReason = recovering
       ? "recovery"
       : session.runCount === 0

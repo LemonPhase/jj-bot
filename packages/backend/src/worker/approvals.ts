@@ -137,15 +137,23 @@ export async function parkHeld(
  * call, or a spend approval that covers it) does not run. It waits for the
  * answer (again, after a crash that left its run open), and its inbox waits
  * with it. True when it was parked.
+ *
+ * A recovery is not parked by a spend approval: parked, it would lose its
+ * reason, and the wake after the answer would find a turn that had ended
+ * with nothing left to do. It runs as a recovery instead: a turn that had
+ * ended finishes (its report is sent) without a model call, and a call it
+ * does need waits at the gate like any other.
  */
 export async function parkIfHeld(
   tx: Tx,
   ctx: EngineContext,
   session: SessionRow,
   stale: RunRow | undefined,
+  recovering: boolean,
 ): Promise<boolean> {
   const holding = await holdingApproval(tx, session);
-  if (!holding) return false;
+  if (!holding || (recovering && holding.kind === "spend")) return false;
+  // Only a recovery has a stale run, so here it is held by its own call.
   if (stale)
     await closeStaleRun(
       tx,
@@ -153,9 +161,7 @@ export async function parkIfHeld(
       session,
       stale,
       "failed",
-      holding.kind === "spend"
-        ? "Interrupted by a worker restart; the session waits for the user's approval to spend past the threshold."
-        : "Interrupted by a worker restart; the session waits for the user's approval of its held call.",
+      "Interrupted by a worker restart; the session waits for the user's approval of its held call.",
     );
   if (session.status !== "waiting" || session.waitingFor !== "approval")
     await updateSession(tx, ctx, session, {
