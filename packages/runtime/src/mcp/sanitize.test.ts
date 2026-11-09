@@ -28,40 +28,50 @@ function nested(depth: number): Record<string, unknown> {
 
 interface Timed<T> {
   value: T;
+  /** Processor time, in milliseconds. */
   ms: number;
 }
 
 /**
- * `run` and the work it is held against, timed in turns: the fastest of
- * three runs of each, after a warm-up run of each. A loaded machine slows
- * both alike, so a test compares the two rather than holding either to a
- * fixed number of milliseconds, which failed on a busy machine. Work that
- * grows with a hostile input (a regular expression's backtracking, references
- * that expand, a walk over every tool) costs many times its comparison, on
- * every run.
+ * The processor time this process spends in `run`: unlike wall time, it does
+ * not grow while other processes have the machine.
+ */
+function processorTime<T>(run: () => T): Timed<T> {
+  const start = process.cpuUsage();
+  const value = run();
+  const spent = process.cpuUsage(start);
+  return { value, ms: (spent.user + spent.system) / 1000 };
+}
+
+/**
+ * `run` and the work it is held against, timed in turns: the least processor
+ * time of five runs of each, after a warm-up run of each. A loaded machine
+ * leaves processor time alone where it stretches wall time, which failed a
+ * fixed limit in milliseconds on a busy machine; the comparison takes care
+ * of a slower machine. Work that grows with a hostile input (a regular
+ * expression's backtracking, references that expand, a walk over every tool)
+ * costs many times its comparison, on every run.
  */
 function timedAgainst<T, C>(
   run: () => T,
   comparison: () => C,
 ): [Timed<T>, Timed<C>] {
-  const timed = [
+  const timed: [Timed<T>, Timed<C>] = [
     { value: run(), ms: Number.POSITIVE_INFINITY },
     { value: comparison(), ms: Number.POSITIVE_INFINITY },
-  ] as [Timed<T>, Timed<C>];
-  for (let attempt = 0; attempt < 3; attempt++) {
-    let start = performance.now();
-    timed[0].value = run();
-    timed[0].ms = Math.min(timed[0].ms, performance.now() - start);
-    start = performance.now();
-    timed[1].value = comparison();
-    timed[1].ms = Math.min(timed[1].ms, performance.now() - start);
+  ];
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const first = processorTime(run);
+    timed[0] = { value: first.value, ms: Math.min(timed[0].ms, first.ms) };
+    const second = processorTime(comparison);
+    timed[1] = { value: second.value, ms: Math.min(timed[1].ms, second.ms) };
   }
   return timed;
 }
 
 /**
- * Fast: at most `times` the comparison, plus 5 ms for timer and scheduler
- * noise on tiny timings, and under a second on any machine.
+ * Fast: at most `times` the comparison, plus 5 ms for a garbage collection
+ * or timer granularity on tiny timings, and under a second on any machine.
  */
 function expectWithin(
   timed: { ms: number },
