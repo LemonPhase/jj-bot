@@ -634,8 +634,9 @@ export class McpConnection implements McpConnector {
  * spent, calls fail at once with the last error until the window passes.
  */
 export class McpStartBudget {
-  private readonly maxStarts: number;
-  private readonly windowMs: number;
+  /** Starts allowed within `windowMs`. */
+  readonly maxStarts: number;
+  readonly windowMs: number;
   private readonly now: () => number;
   private starts: number[] = [];
 

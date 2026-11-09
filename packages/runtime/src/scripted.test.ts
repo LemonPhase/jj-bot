@@ -10,6 +10,8 @@ import { CODING_TOOLS } from "@jj/contracts";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PiSessionExecutor } from "./executor";
+import type { McpToolBinding } from "./mcp/adapter";
+import type { McpConnector } from "./mcp/connector";
 import { ModelRegistry } from "./models";
 import {
   SCRIPTED_MODEL_REF,
@@ -18,6 +20,7 @@ import {
   scriptedNotesFile,
   scriptedQuestion,
   scriptedSummary,
+  scriptedToolCalls,
   scriptedTurn,
 } from "./scripted";
 import { budgets, localSandbox, recordingHooks } from "./test-support";
@@ -86,6 +89,7 @@ function harness() {
     bot: string,
     inputs: string[],
     collab: CollabTool[],
+    mcpTools?: McpToolBinding[],
   ): Promise<RunOutcome> {
     const recorded = recordingHooks();
     const transcript = transcripts.get(bot) ?? [];
@@ -100,6 +104,7 @@ function harness() {
       sandboxLimits: workspace.limits,
       codingTools: [...CODING_TOOLS],
       collaborationTools: collab,
+      ...(mcpTools ? { mcpTools } : {}),
       budgets: budgets(),
       signal: new AbortController().signal,
       hooks: recorded.hooks,
@@ -369,6 +374,53 @@ describe("scripted test model", () => {
     expect(
       events.filter((event) => event.type === "tool.finished"),
     ).toHaveLength(4);
+  });
+
+  it("makes the MCP calls a brief quotes after call, once each, when the tool is declared", async () => {
+    expect(
+      scriptedToolCalls(
+        'Call `mcp__docs__search {"query":"intro"}`, then call `mcp__docs__list`, call `mcp__x__y {not json}` and call `bash ls`.',
+      ),
+    ).toEqual([
+      { name: "mcp__docs__search", args: { query: "intro" } },
+      { name: "mcp__docs__list", args: {} },
+      { name: "mcp__x__y", args: {} },
+    ]);
+    const calls: { name: string; args: Record<string, unknown> }[] = [];
+    const connector = {
+      callTool: async (name: string, args: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return { content: [{ type: "text", text: `found ${args.query}` }] };
+      },
+    } as unknown as McpConnector;
+    const binding: McpToolBinding = {
+      server: "docs",
+      tool: {
+        name: "search",
+        exposedName: "mcp__docs__search",
+        description: "Searches.",
+        inputSchema: { type: "object" },
+        hash: "0".repeat(64),
+      },
+      timeoutMs: 5_000,
+      connect: async () => connector,
+    };
+    const { run, events } = harness();
+    const brief =
+      'Part 1 of 1: call `mcp__docs__search {"query":"intro"}` and call `mcp__docs__missing {}`, then write notes-bob.md.';
+    const outcome = await run("Bob", [brief], [], [binding]);
+    // Only the declared tool is called, once, after the notes.
+    expect(calls).toEqual([{ name: "search", args: { query: "intro" } }]);
+    expect(
+      events.flatMap((event) =>
+        event.type === "tool.finished" ? [event.tool] : [],
+      ),
+    ).toEqual(["write", "mcp__docs__search", "bash"]);
+    expect(outcome.kind === "ended" && outcome.finalText).toContain(
+      "MCP results:\n- mcp__docs__search: found intro",
+    );
+    await run("Bob", ["Thanks."], [], [binding]);
+    expect(calls).toHaveLength(1);
   });
 
   it("credits results by the engine header only, in any order", async () => {

@@ -5,12 +5,19 @@ import type {
   McpStdioServer,
   McpTool,
 } from "@jj/contracts";
+import { visibleText } from "@jj/contracts";
 import type { Sandbox } from "@jj/sandbox";
 import type { CutEdges } from "../tools";
-import { McpConnection, type McpServerInfo } from "./connector";
+import {
+  McpConnection,
+  type McpConnector,
+  type McpServerInfo,
+  McpStartBudget,
+} from "./connector";
 import { McpServerError } from "./errors";
 import {
   createRemoteTransport,
+  MCP_REMOTE_DISABLED,
   type McpEnv,
   type RemoteGuardOptions,
   remoteMcpEnabled,
@@ -19,11 +26,15 @@ import { sanitizeTools } from "./sanitize";
 import { SandboxStdioTransport } from "./stdio";
 
 /**
- * Discovery: what the engine's `mcp.discover` job runs. It starts one
- * server from a configuration (a stdio one in the sandbox it is given, a
- * remote one through the guard), calls `initialize` and `tools/list` and
- * nothing else (never `tools/call`), and closes the connection whatever
- * happens. What it returns is redacted and sanitized, ready for a snapshot.
+ * The engine's MCP port. Discovery is what its `mcp.discover` job runs: it
+ * starts one server from a configuration (a stdio one in the sandbox it is
+ * given, a remote one through the guard), calls `initialize` and
+ * `tools/list` and nothing else (never `tools/call`), and closes the
+ * connection whatever happens. What it returns is redacted and sanitized,
+ * ready for a snapshot. For sessions it makes the connections the engine
+ * starts, shares and ends itself (`connect`), the restart budget each of
+ * them has (`startBudget`), and the drift a running server shows against
+ * its snapshot (`drift`).
  */
 
 /** Time `tools/list` has after `initialize`, in all of its pages. */
@@ -65,7 +76,36 @@ export interface McpDiscovererOptions {
   listTimeoutMs?: number;
   /** A stdio server's grace between its stdin's end and a kill, on close; default the transport's. */
   closeGraceMs?: number;
+  /** Each session connection's restart budget; default MCP_MAX_STARTS in MCP_START_WINDOW_MS. */
+  budget?: { maxStarts?: number; windowMs?: number; now?: () => number };
 }
+
+/** A session's connection to one server, as `McpDiscoverer.connect` makes it. */
+export interface McpConnectInput {
+  /** The configuration as the profile holds it now, parsed with `mcpServerSchema`. */
+  server: McpServer;
+  /** A stdio server's task sandbox (its driver declares `spawn`); its workspace is offered as the only root. */
+  sandbox?: Sandbox;
+  /** A remote server's `secretHeaders` with their stored values, by header name. */
+  secretHeaders?: Readonly<Record<string, { prefix: string; value: string }>>;
+  /** Replaces the server's secrets in every message and stderr tail the connection reports. */
+  redact: (text: string, cut?: CutEdges) => string;
+}
+
+export interface McpDriftInput {
+  /** The server's name in the profile. */
+  server: string;
+  /** The tools of the snapshot the connection's configuration pins, as stored. */
+  tools: readonly McpTool[];
+  redact: (text: string) => string;
+  /** Bounds the listing. */
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+/** Most drift entries one `mcp.server` event carries (the contract's cap), and the longest one. */
+const MAX_DRIFT = 50;
+const DRIFT_LIMIT = 200;
 
 const POSIX_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -159,6 +199,12 @@ const clip = (text: string, max: number) =>
 
 const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
 
+/** How long a server may take to start: `startupTimeoutSec` for stdio, `timeoutSec` for a remote one. */
+const startupMs = (server: McpServer) =>
+  (server.transport === "stdio"
+    ? server.startupTimeoutSec
+    : server.timeoutSec) * 1000;
+
 /**
  * Runs discoveries. `remote` says whether remote servers may be called
  * (`JJ_MCP_REMOTE`), read once; an invalid value throws here.
@@ -174,10 +220,7 @@ export class McpDiscoverer {
 
   async discover(input: McpDiscoverInput): Promise<McpDiscoverResult> {
     const { server } = input;
-    const startupTimeoutMs =
-      (server.transport === "stdio"
-        ? server.startupTimeoutSec
-        : server.timeoutSec) * 1000;
+    const startupTimeoutMs = startupMs(server);
     const listTimeoutMs = this.options.listTimeoutMs ?? MCP_DISCOVERY_LIST_MS;
     const redact = (text: string) => input.redact(text);
     const connection = new McpConnection({
@@ -245,7 +288,93 @@ export class McpDiscoverer {
     }
   }
 
-  private async stdio(server: McpStdioServer, input: McpDiscoverInput) {
+  /**
+   * A connection for sessions, not started: the engine starts it (within
+   * `startupTimeoutSec` for stdio, `timeoutSec` for a remote server), shares
+   * it, takes a start from its budget before each start, and closes it. A
+   * stdio server runs in the task's sandbox, its working directory made
+   * first, and is offered the workspace as its only root; a remote one is
+   * called through the guard with its secret headers.
+   */
+  async connect(input: McpConnectInput): Promise<McpConnection> {
+    const { server } = input;
+    if (server.transport === "http" && !this.remote)
+      throw new McpServerError(
+        "refused",
+        `MCP server ${server.name}: ${MCP_REMOTE_DISABLED}`,
+      );
+    return new McpConnection({
+      server: server.name,
+      transport:
+        server.transport === "stdio"
+          ? await this.stdio(server, input)
+          : this.http(server, input),
+      startupTimeoutMs: startupMs(server),
+      redact: input.redact,
+      ...(server.transport === "stdio" && input.sandbox
+        ? {
+            roots: [
+              {
+                uri: `file://${input.sandbox.workspaceDir}`,
+                name: "workspace",
+              },
+            ],
+          }
+        : {}),
+    });
+  }
+
+  /** The restart policy of one connection key: at most MCP_MAX_STARTS starts in MCP_START_WINDOW_MS. */
+  startBudget(): McpStartBudget {
+    return new McpStartBudget(this.options.budget);
+  }
+
+  /**
+   * How the tools a running server lists differ from its snapshot's: each
+   * listed tool redacted and sanitized as discovery does, then compared by
+   * name and hash, as "<tool>: changed", "<tool>: no longer listed" or
+   * "<tool>: new", sorted, at most 50 of at most 200 characters each.
+   * Reported, never declared: sessions keep the snapshot's definitions.
+   */
+  async drift(
+    connector: McpConnector,
+    input: McpDriftInput,
+  ): Promise<string[]> {
+    const listed = await connector.listTools({
+      timeoutMs: input.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const visible = redactListing(listed.tools, input.redact);
+    const live = new Map(
+      sanitizeTools(input.server, visible.tools).tools.map((tool) => [
+        tool.name,
+        tool,
+      ]),
+    );
+    const pinned = new Map(input.tools.map((tool) => [tool.name, tool]));
+    const entries: string[] = [];
+    for (const [name, tool] of pinned) {
+      const now = live.get(name);
+      if (!now) entries.push(`${name}: no longer listed`);
+      else if (now.hash !== tool.hash) entries.push(`${name}: changed`);
+    }
+    for (const name of live.keys())
+      if (!pinned.has(name)) entries.push(`${name}: new`);
+    const shown = entries
+      .sort()
+      .map((entry) => clip(visibleText(input.redact(entry)), DRIFT_LIMIT));
+    return shown.length > MAX_DRIFT
+      ? [
+          ...shown.slice(0, MAX_DRIFT - 1),
+          `${shown.length - MAX_DRIFT + 1} more tools differ.`,
+        ]
+      : shown;
+  }
+
+  private async stdio(
+    server: McpStdioServer,
+    input: Pick<McpDiscoverInput, "sandbox">,
+  ) {
     const { sandbox } = input;
     if (!sandbox?.spawn)
       throw new McpServerError(
@@ -268,7 +397,10 @@ export class McpDiscoverer {
     });
   }
 
-  private http(server: McpHttpServer, input: McpDiscoverInput) {
+  private http(
+    server: McpHttpServer,
+    input: Pick<McpDiscoverInput, "secretHeaders">,
+  ) {
     return createRemoteTransport({
       ...this.options.guard,
       env: this.options.env ?? process.env,

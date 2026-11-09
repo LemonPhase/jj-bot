@@ -34,10 +34,12 @@ export interface McpToolBinding {
   connect(signal: AbortSignal): Promise<McpConnector>;
   /**
    * Why this tool may no longer be called (taken away from the profile
-   * after the session pinned it), or undefined. A refused call gets the
-   * reason as its error; the tool stays declared.
+   * after the session pinned it), or undefined; asked before each call, so
+   * it may read the profile as it is then. A refused call gets the reason
+   * as its error, and its server is never contacted; the tool stays
+   * declared.
    */
-  refusal?(): string | undefined;
+  refusal?(): string | undefined | Promise<string | undefined>;
 }
 
 /** A copy of a JSON value with object keys sorted at every depth, so stored key order never changes its bytes. */
@@ -262,7 +264,7 @@ export function createMcpTools(
       // Its effects are outside the transcript: never replayed.
       replay: "never",
       async execute(_toolCallId, params, signal) {
-        const refusal = binding.refusal?.();
+        const refusal = await binding.refusal?.();
         if (refusal !== undefined) return failed(refusal);
         const runSignal = signal ?? new AbortController().signal;
         let result: CallToolResult;
