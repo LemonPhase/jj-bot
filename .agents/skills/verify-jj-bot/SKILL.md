@@ -101,9 +101,9 @@ It closes the run's browser session, checks that the recorded pid still carries 
 
 ## Helpers
 
-| Script                                                                     | Use                                                   |
-| -------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Script                                                                              | Use                                                   |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `scripts/launch.sh [--no-build] [--driver local\|docker] [--secret-store] [--auth]` | Start an isolated instance; prints `$RUN` when ready  |
-| `scripts/doctor.sh <run>`                                                  | Read-only health check; exit 0 when worth driving     |
-| `scripts/pw.sh <run> open [hash] \| <playwright-cli command>`              | Drive the run's browser session from its evidence dir |
-| `scripts/stop.sh <run>`                                                    | Tear down; keep evidence                              |
+| `scripts/doctor.sh <run>`                                                           | Read-only health check; exit 0 when worth driving     |
+| `scripts/pw.sh <run> open [hash] \| <playwright-cli command>`                       | Drive the run's browser session from its evidence dir |
+| `scripts/stop.sh <run>`                                                             | Tear down; keep evidence                              |

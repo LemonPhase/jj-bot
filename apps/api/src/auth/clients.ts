@@ -65,7 +65,9 @@ export function parseTrustedProxies(
         for (const info of infos ?? []) {
           if (!info.cidr) continue;
           const [address, prefix] = info.cidr.split("/");
-          addSubnet(list, normalizeAddress(address as string), Number(prefix));
+          const ip = normalizeAddress(address as string);
+          // An address this machine names oddly (a zone id) is not a proxy's.
+          if (isIP(ip) !== 0) addSubnet(list, ip, Number(prefix));
         }
       continue;
     }
