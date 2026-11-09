@@ -1,4 +1,4 @@
-import type { Page, Response } from "@playwright/test";
+import type { Page, Response, Route } from "@playwright/test";
 import { createBot } from "./app";
 import { expect, test } from "./fixtures";
 
@@ -35,6 +35,28 @@ function cached(page: Page) {
     }
     return entries;
   });
+}
+
+/**
+ * A proxy in front of the server answers every request the service worker
+ * makes for `url` with `fault`, until it is fixed (`unrouteAll`); requests the
+ * page makes itself pass. Returns how many the worker made. Every request, not
+ * only the first: Chromium keeps no failed module fetch in its module map
+ * (whatwg/html#10327), so a screen's `import()` fetches its chunk again when
+ * the modulepreload Vite starts just before it has already failed.
+ */
+async function proxyFault(
+  page: Page,
+  url: RegExp,
+  fault: (route: Route) => Promise<void>,
+) {
+  let requests = 0;
+  await page.context().route(url, async (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    requests += 1;
+    await fault(route);
+  });
+  return () => requests;
 }
 
 /** The width and height a PNG's IHDR states. */
@@ -251,8 +273,8 @@ test("a new deploy shows on the next load: the page comes from the network first
   await page.context().unrouteAll();
 });
 
-// A bad answer, once, must never stick: the worker keeps only what is
-// really the app's file.
+// A bad answer must never stick: the worker keeps only what is really the
+// app's file, so the app works again as soon as the server does.
 
 test("an asset answered once with a web page is not kept: the next load works", async ({
   page,
@@ -300,7 +322,7 @@ test("an asset answered once with a web page is not kept: the next load works", 
   expect(kept ?? "text/javascript").toContain("javascript");
 });
 
-test("a chunk redirected once to a login page is not kept: the screen loads after a reload", async ({
+test("a chunk redirected to a login page is not kept: the screen loads after a reload", async ({
   page,
   request,
 }) => {
@@ -310,19 +332,20 @@ test("a chunk redirected once to a login page is not kept: the screen loads afte
     page.getByRole("heading", { level: 1, name: "Nova" }),
   ).toBeVisible();
   await controlled(page);
-  // A proxy sends the Settings chunk to its login page, once.
-  let redirected = false;
-  await page
-    .context()
-    .route(/\/assets\/SettingsScreen-[\w-]+\.js$/, async (route) => {
-      if (redirected) return route.continue();
-      redirected = true;
-      await route.fulfill({ status: 302, headers: { location: "/login" } });
-    });
+  // A proxy sends the Settings chunk to its login page.
+  const redirected = await proxyFault(
+    page,
+    /\/assets\/SettingsScreen-[\w-]+\.js$/,
+    (route) => route.fulfill({ status: 302, headers: { location: "/login" } }),
+  );
   await page.goto("/#/settings");
+  await expect
+    .poll(redirected, {
+      message: "the worker's fetch of the Settings chunk reached the proxy",
+    })
+    .toBeGreaterThan(0);
   // This time the screen cannot load, and says so.
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
-  expect(redirected).toBe(true);
   await page.context().unrouteAll();
 
   await page.reload();
@@ -341,22 +364,24 @@ test("a chunk labelled JavaScript whose body is a web page is not kept", async (
     page.getByRole("heading", { level: 1, name: "Nova" }),
   ).toBeVisible();
   await controlled(page);
-  // A proxy answers the Settings chunk once with its login page, mislabelled.
-  let answered = false;
-  await page
-    .context()
-    .route(/\/assets\/SettingsScreen-[\w-]+\.js$/, async (route) => {
-      if (answered) return route.continue();
-      answered = true;
-      await route.fulfill({
+  // A proxy answers the Settings chunk with its login page, mislabelled.
+  const answered = await proxyFault(
+    page,
+    /\/assets\/SettingsScreen-[\w-]+\.js$/,
+    (route) =>
+      route.fulfill({
         status: 200,
         contentType: "application/javascript",
         body: "﻿\n  <!doctype html><title>Sign in</title>",
-      });
-    });
+      }),
+  );
   await page.goto("/#/settings");
+  await expect
+    .poll(answered, {
+      message: "the worker's fetch of the Settings chunk reached the proxy",
+    })
+    .toBeGreaterThan(0);
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
-  expect(answered).toBe(true);
   await page.context().unrouteAll();
 
   await page.reload();
