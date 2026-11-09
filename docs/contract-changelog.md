@@ -31,6 +31,25 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.11.0 — 2026-11-09 — MCP servers in sessions; a discovery's configuration hash
+
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), step 4b) · **Compatibility:** additive (a new response field; a client before 1.11.0 ignores it)
+
+- `mcpDiscoverySchema.configHash` (SHA-256, required): the hash of what the test runs, the one its
+  snapshot will carry, present from the moment the test is queued. A client editing a server
+  compares it with the configuration it holds, so it can tell while a test runs whether that test
+  is of its configuration. Testing a server while a test of another `configHash` is queued or
+  running is refused with 409 `CONFLICT`, which names the running test; testing the same
+  `configHash` again still answers with the running test.
+- `capabilitiesSchema.mcp`: the docstring states when each kind is true, now that servers reach
+  sessions. `stdio` is true when the server has an MCP client and an available driver declares
+  `spawn`; `remote` when it has an MCP client and `JJ_MCP_REMOTE` is not `off`. No schema change.
+
+**Action required (frontend):** none to keep working. The profile editor (step 6) matches a running
+test to its draft by `configHash`, and says so when a test of another configuration is running.
+**Action required (backend):** none beyond this change: discoveries return the stored hash, and
+bootstrap reports `capabilities.mcp` per kind from the MCP client, the drivers and `JJ_MCP_REMOTE`.
+
 ## 1.10.1 — 2026-11-04 — Disabled MCP servers and draft sandboxes in discoveries
 
 **Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), agreed in the comments "Contract refinement for step 4a (#136): 1.9.1" and "… 1.9.2, discovery takes a draft sandbox", shipped together as 1.10.1) · **Compatibility:** additive (no wire change for existing clients; commands that were refused can now be accepted)

@@ -141,7 +141,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.10.1",
+      contractVersion: "1.11.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -149,9 +149,9 @@ describe("bootstrap, models and drivers", () => {
         streaming: true,
         verification: true,
         secretStore: false,
-        // Profiles store MCP servers and the worker tests them, but no
-        // stored server reaches a session on this build, so none is claimed.
-        mcp: { stdio: false, remote: false },
+        // The local driver spawns stdio servers in the task's sandbox, and
+        // JJ_MCP_REMOTE is not off: both kinds reach sessions.
+        mcp: { stdio: true, remote: true },
         skills: false,
         drivers: [{ id: "local", available: true, isolated: false }],
       },

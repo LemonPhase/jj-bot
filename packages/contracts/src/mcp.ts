@@ -543,6 +543,13 @@ export const mcpDiscoverySchema = z.object({
   id: idSchema,
   profileId: idSchema,
   server: mcpServerNameSchema,
+  /**
+   * SHA-256 of what the test runs: the configuration and, for stdio, the
+   * sandbox (the draft's, else the profile's). Its snapshot carries the
+   * same hash, so a client can tell, while it runs, whether a test is of the
+   * configuration it is editing.
+   */
+  configHash: sha256Schema,
   status: mcpDiscoveryStatusSchema,
   /** Why it failed, redacted. */
   error: z.string().max(2000).nullable(),
@@ -562,7 +569,9 @@ export const mcpDiscoverySchema = z.object({
  * settings (its `sandbox`, whole), is what the test runs on and what the
  * snapshot's `configHash` is computed from; without it, the profile's own.
  * A profile save that changes its sandbox can then pin the snapshot found
- * with the same settings.
+ * with the same settings. A server has at most one test queued or running:
+ * testing the same `configHash` again answers with that test, and testing
+ * another while it runs is refused with 409 `CONFLICT` naming it.
  */
 export const startMcpDiscoveryCommandSchema = z.object({
   server: mcpServerSchema,

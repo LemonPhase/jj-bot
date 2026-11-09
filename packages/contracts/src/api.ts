@@ -20,9 +20,11 @@ export const capabilitiesSchema = z.object({
   secretStore: z.boolean().default(false),
   /**
    * Per kind, whether sessions can use MCP servers of that kind: `stdio`
-   * ones run in a task's sandbox (where its driver can spawn processes),
-   * `remote` (http) ones are called by the worker. While false, servers of
-   * that kind may still be stored and discovered, but they reach no session.
+   * ones run in a task's sandbox, so it is true when this server has an MCP
+   * client and an available driver declares `spawn`; `remote` (http) ones
+   * are called by the worker, so it is true when this server has an MCP
+   * client and `JJ_MCP_REMOTE` is not `off`. While false, servers of that
+   * kind may still be stored and discovered, but they reach no session.
    */
   mcp: z
     .object({ stdio: z.boolean(), remote: z.boolean() })

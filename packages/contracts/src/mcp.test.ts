@@ -418,8 +418,8 @@ describe("MCP servers on a runtime profile", () => {
     });
   });
 
-  it("is contract 1.10.1, which the changelog's newest entry records", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.1");
+  it("is contract 1.11.0, which the changelog's newest entry records", () => {
+    expect(CONTRACT_VERSION).toBe("1.11.0");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
@@ -428,7 +428,7 @@ describe("MCP servers on a runtime profile", () => {
       CONTRACT_VERSION,
     );
     expect(changelog).toMatch(
-      /^## 1\.10\.1 — .* — Disabled MCP servers and draft sandboxes in discoveries$/m,
+      /^## 1\.11\.0 — .* — MCP servers in sessions; a discovery's configuration hash$/m,
     );
   });
 
@@ -654,6 +654,7 @@ describe("MCP snapshots and discoveries", () => {
       id: "disc_1",
       profileId: "p1",
       server: "docs",
+      configHash: docs.configHash,
       status: "succeeded",
       error: null,
       stderrTail: null,
@@ -677,6 +678,12 @@ describe("MCP snapshots and discoveries", () => {
       ).toBe(true);
     expect(
       mcpDiscoverySchema.safeParse({ ...discovery, status: "done" }).success,
+    ).toBe(false);
+    // The hash of what the test runs is there from the start, for a client to match.
+    const { configHash: _hash, ...unhashed } = discovery;
+    expect(mcpDiscoverySchema.safeParse(unhashed).success).toBe(false);
+    expect(
+      mcpDiscoverySchema.safeParse({ ...discovery, configHash: "abc" }).success,
     ).toBe(false);
     expect(
       startMcpDiscoveryCommandSchema.parse({ server: http }).server,
