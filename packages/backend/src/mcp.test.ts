@@ -178,8 +178,8 @@ afterAll(async () => {
 const allowLoopback = (address: string) =>
   address === "127.0.0.1" || isPublicAddress(address);
 
-/** The local driver, whose sandboxes start `ms` late whatever the signal says. */
-function slowLocal(root: string, ms: number): EngineDriver {
+/** The local driver, whose sandboxes start once `hold` settles, whatever the signal says. */
+function heldLocal(root: string, hold: () => Promise<void>): EngineDriver {
   const inner = new LocalSandboxDriver({ root, killGraceMs: 200 });
   return {
     id: inner.id,
@@ -187,7 +187,7 @@ function slowLocal(root: string, ms: number): EngineDriver {
     validateSpec: (spec) => inner.validateSpec(spec),
     probe: () => inner.probe(),
     async acquire(request) {
-      await sleep(ms);
+      await hold();
       const { signal: _ignored, ...rest } = request;
       return inner.acquire(rest);
     },
@@ -196,10 +196,29 @@ function slowLocal(root: string, ms: number): EngineDriver {
 
 /** A chat responder that takes a while, so steady chat keeps the worker's slots busy. */
 class SlowChat extends FakeChatResponder {
+  /** When each reply started and finished (`performance.now()`). */
+  readonly started: number[] = [];
+  readonly finished: number[] = [];
+
   override async reply(input: ChatReplyInput): Promise<ChatReply> {
+    this.started.push(performance.now());
     await sleep(150);
-    return super.reply(input);
+    const reply = await super.reply(input);
+    this.finished.push(performance.now());
+    return reply;
   }
+}
+
+/**
+ * Chat replies waiting in the queue: at least two means one waits for a
+ * slot whichever bot replies now (a bot's next reply waits for its last).
+ */
+async function chatRepliesQueued() {
+  const queued = await db.database.db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(sql`${jobs.kind} = 'chat.reply' and ${jobs.status} = 'queued'`);
+  return queued.length;
 }
 
 /** Three bots chatting without pause until `stop()`. */
@@ -237,15 +256,20 @@ async function setup(
     mcp?: false;
     config?: EngineConfigInput;
     slowAcquireMs?: number;
+    /** Awaited before each sandbox starts. */
+    holdAcquire?: () => Promise<void>;
     chat?: FakeChatResponder;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "jj-mcp-engine-"));
   roots.push(root);
+  const { slowAcquireMs, holdAcquire } = options;
   const local = recordingDriver(
-    options.slowAcquireMs
-      ? slowLocal(root, options.slowAcquireMs)
-      : new LocalSandboxDriver({ root, killGraceMs: 200 }),
+    slowAcquireMs
+      ? heldLocal(root, () => sleep(slowAcquireMs))
+      : holdAcquire
+        ? heldLocal(root, holdAcquire)
+        : new LocalSandboxDriver({ root, killGraceMs: 200 }),
     { spawn: options.spawn ?? true },
   );
   current = await testEngine(db.database, {
@@ -684,17 +708,45 @@ describe("MCP discovery", () => {
       `runs a discovery under steady chat load, with ${concurrency} slot${concurrency === 1 ? "" : "s"}`,
       async () => {
         const chat = new SlowChat();
+        let startedAt = Number.POSITIVE_INFINITY;
         const { engine, profile } = await setup({
           chat,
           config: { concurrency, discoveryMaxWaitMs: 1_000 },
+          // With a slot of its own, the discovery holds it until a chat reply
+          // starts beside it: it cannot finish unless the chat goes on. (A
+          // count of replies over its lifetime failed when it finished
+          // before the next reply.)
+          holdAcquire: async () => {
+            startedAt = performance.now();
+            if (concurrency > 1)
+              await until(() => chat.started.some((at) => at > startedAt), {
+                what: "a chat reply beside the discovery",
+                timeoutMs: 20_000,
+              });
+          },
         });
         const load = await chatLoad(engine, chat);
         try {
-          const replies = chat.inputs.length;
+          // Steady: chat replies wait for a slot as the discovery is queued.
+          await until(async () => (await chatRepliesQueued()) >= 2, {
+            what: "chat replies waiting for a slot",
+          });
+          const queuedAt = performance.now();
           const discovery = await discover(engine, profile.id, mcpFixture());
-          expect(discovery.status).toBe("succeeded");
-          // The chat kept going meanwhile.
-          expect(chat.inputs.length).toBeGreaterThan(replies);
+          // Never starved: it ran, and succeeded.
+          expect(discovery).toMatchObject({ status: "succeeded", error: null });
+          // The chat kept going meanwhile: with one slot, a reply finished
+          // while the discovery waited for the slot; with two, one started
+          // beside it.
+          const replies =
+            concurrency > 1
+              ? chat.started.filter((at) => at > startedAt)
+              : chat.finished.filter((at) => at > queuedAt && at < startedAt);
+          expect(replies.length).toBeGreaterThan(0);
+          // With one slot the discovery yields to waiting chat for
+          // `discoveryMaxWaitMs`, then takes the slot.
+          if (concurrency === 1)
+            expect(startedAt - queuedAt).toBeGreaterThanOrEqual(1_000);
         } finally {
           await load.stop();
         }
