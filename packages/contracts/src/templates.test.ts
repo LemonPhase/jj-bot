@@ -4,7 +4,6 @@ import {
   API_ERROR_CODES,
   apiErrorCodeSchema,
   COMMAND_TEXT_LIMIT,
-  CONTRACT_VERSION,
   createTaskTemplateCommandSchema,
   describeTemplateProblem,
   MAX_TASK_TEMPLATES,
@@ -47,14 +46,12 @@ const template = {
 };
 
 describe("contract version 1.9.0 (task templates)", () => {
-  it("is recorded in the changelog, at or before the current version", () => {
+  it("came with 1.9.0, which the changelog records", () => {
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
     expect(changelog).toMatch(/^## 1\.9\.0 — .* — Task templates$/m);
-    const [major, minor] = CONTRACT_VERSION.split(".").map(Number);
-    expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThanOrEqual(1009);
   });
 
   it("adds TEMPLATE_UNUSABLE and the templates.changed hint", () => {
@@ -203,7 +200,7 @@ describe("template commands", () => {
   });
 
   it("starts with optional instructions of 1–4000 characters, a title and a cap", () => {
-    expect(startTemplateCommandSchema.parse({})).toEqual({});
+    expect(startTemplateCommandSchema.parse({})).toEqual({ uploads: [] });
     expect(
       startTemplateCommandSchema.parse({ instructions: "  Focus on Q3.  " })
         .instructions,

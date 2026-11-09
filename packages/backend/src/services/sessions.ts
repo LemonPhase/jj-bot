@@ -85,7 +85,7 @@ export async function updateTask(
     .where(eq(tasks.id, current.id))
     .returning();
   if (!row) throw new Error(`Task ${current.id} vanished during an update.`);
-  await emit(tx, row.id, {
+  await emit(tx, ctx, row.id, {
     type: "task.updated",
     payload: {
       task: toTask(row, await participantIds(tx, row.id)),
@@ -135,7 +135,7 @@ export async function insertSession(
     })
     .returning();
   if (!row) throw new Error("The session insert returned no row.");
-  await emit(tx, row.taskId, {
+  await emit(tx, ctx, row.taskId, {
     type: "session.created",
     payload: { session: toSession(row) },
     botId: row.botId,
@@ -191,7 +191,7 @@ export async function updateSession(
     .where(eq(sessions.id, current.id))
     .returning();
   if (!row) throw new Error(`Session ${current.id} vanished during an update.`);
-  await emit(tx, row.taskId, {
+  await emit(tx, ctx, row.taskId, {
     type: "session.updated",
     payload: { session: toSession(row), previousStatus: current.status },
     botId: row.botId,

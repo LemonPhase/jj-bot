@@ -16,11 +16,15 @@ export const ID_PREFIXES = {
   taskMessage: "msg",
   taskEvent: "evt",
   artifact: "art",
+  /** A staged upload; its artifact keeps the id once attached. */
+  stagedUpload: "upl",
   usage: "use",
   approval: "appr",
   check: "chk",
   job: "job",
   retiredSecret: "rsec",
+  mcpSnapshot: "mcps",
+  mcpDiscovery: "mcpd",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

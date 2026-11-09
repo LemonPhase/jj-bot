@@ -42,6 +42,7 @@ import {
   updateTask,
 } from "./sessions";
 import { assertWithinCaps, taskCapFor } from "./spend";
+import { attachUploadsTx, uploadSettings } from "./uploads";
 
 /** A title from the goal's first line when the creator gives none. */
 export function deriveTitle(goal: string): string {
@@ -126,7 +127,7 @@ export async function createTaskTx(
     author: input.createdByBotId ?? "user",
     createdAt: now,
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "task.created",
     payload: { task: toTask(task, participants) },
     botId: input.createdByBotId ?? null,
@@ -198,7 +199,9 @@ export async function assertTaskBots(
 
 /**
  * `POST /api/tasks`, and the start of a task template (`templateId`), which
- * makes the same task from the template's fields.
+ * makes the same task from the template's fields. Its uploads are attached
+ * in the same transaction, so the coordinator's first run places them
+ * before its first model call.
  */
 export async function createTask(
   ctx: EngineContext,
@@ -207,9 +210,18 @@ export async function createTask(
 ): Promise<{ task: Task }> {
   const command = parseCommand(createTaskCommandSchema, input);
   await assertTaskBots(ctx.db, ctx, command.participantBotIds);
-  const { task } = await ctx.db.transaction((tx) =>
-    createTaskTx(tx, ctx, { ...command, templateId: options.templateId }),
-  );
+  const { uploads, ...fields } = command;
+  if (uploads.length > 0) uploadSettings(ctx);
+  // Built before the transaction: reading the stored secrets queries the database.
+  const redact = uploads.length > 0 ? await ctx.redactor() : undefined;
+  const { task } = await ctx.db.transaction(async (tx) => {
+    const created = await createTaskTx(tx, ctx, {
+      ...fields,
+      templateId: options.templateId,
+    });
+    if (redact) await attachUploadsTx(tx, ctx, created.task, uploads, redact);
+    return created;
+  });
   return { task: toTask(task, command.participantBotIds) };
 }
 
@@ -272,7 +284,7 @@ export async function requestStopTx(
     cancelRequestedAt: ctx.clock(),
     cancelReason: reason,
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "cancellation.requested",
     payload: { reason },
   });
@@ -358,11 +370,11 @@ export async function settleCancellation(
   }
   await cancelWhere(tx, { taskId: task.id });
   const cancelled = await updateTask(tx, ctx, task, { status: "cancelled" });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "cancellation.completed",
     payload: { stopped, neverStarted },
   });
-  await emit(tx, task.id, {
+  await emit(tx, ctx, task.id, {
     type: "task.finished",
     payload: { status: "cancelled", result: null, error: null },
   });

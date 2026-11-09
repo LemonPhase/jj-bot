@@ -61,6 +61,10 @@ export const artifactColumns = {
   contentType: artifacts.contentType,
   sizeBytes: artifacts.sizeBytes,
   sha256: artifacts.sha256,
+  uploadMessageId: artifacts.uploadMessageId,
+  uploadState: artifacts.uploadState,
+  placedAt: artifacts.placedAt,
+  uploadError: artifacts.uploadError,
   createdAt: artifacts.createdAt,
 };
 
@@ -142,6 +146,7 @@ export async function taskView(
         firstSequence,
         hasEarlier: firstSequence > 1,
         cursor: task.eventSeq,
+        compactedThrough: task.eventsCompactedThrough,
       };
     },
     { isolationLevel: "repeatable read" },
@@ -159,23 +164,35 @@ export async function eventPage(
     Math.max(1, Math.floor(options.limit ?? TASK_VIEW_EVENT_LIMIT)),
     TASK_VIEW_EVENT_LIMIT,
   );
-  const [task] = await ctx.db
-    .select({ id: tasks.id })
-    .from(tasks)
-    .where(eq(tasks.id, taskId));
-  if (!task) throw notFound("Task", taskId);
-  const rows = await ctx.db
-    .select()
-    .from(taskEvents)
-    .where(and(eq(taskEvents.taskId, taskId), gt(taskEvents.sequence, after)))
-    .orderBy(asc(taskEvents.sequence))
-    .limit(limit + 1);
-  const page = rows.slice(0, limit);
-  return {
-    events: page.map(toTaskEvent),
-    cursor: page.at(-1)?.sequence ?? after,
-    hasMore: rows.length > limit,
-  };
+  // One snapshot, so the page and its compactedThrough describe the same moment.
+  return ctx.db.transaction(
+    async (tx) => {
+      const [task] = await tx
+        .select({
+          id: tasks.id,
+          compactedThrough: tasks.eventsCompactedThrough,
+        })
+        .from(tasks)
+        .where(eq(tasks.id, taskId));
+      if (!task) throw notFound("Task", taskId);
+      const rows = await tx
+        .select()
+        .from(taskEvents)
+        .where(
+          and(eq(taskEvents.taskId, taskId), gt(taskEvents.sequence, after)),
+        )
+        .orderBy(asc(taskEvents.sequence))
+        .limit(limit + 1);
+      const page = rows.slice(0, limit);
+      return {
+        events: page.map(toTaskEvent),
+        cursor: page.at(-1)?.sequence ?? after,
+        hasMore: rows.length > limit,
+        compactedThrough: task.compactedThrough,
+      };
+    },
+    { isolationLevel: "repeatable read" },
+  );
 }
 
 /**

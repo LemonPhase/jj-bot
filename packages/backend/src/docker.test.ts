@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
+import { McpDiscoverer } from "@jj/runtime";
 import { DOCKER_BASE_IMAGE, DockerSandboxDriver } from "@jj/sandbox";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
@@ -11,16 +12,20 @@ import { type Brain, said } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
+  recordingDriver,
   type TestDatabase,
   type TestEngine,
   testEngine,
+  until,
   untilTask,
 } from "./testing/harness";
+import { mcpFixture } from "./testing/mcp-fixture";
 import {
   createTeam,
   delegatingCoordinator,
   lastResult,
 } from "./testing/scenarios";
+import { placementScenario } from "./testing/uploads";
 
 // The docker variant of the shared-workspace scenario. Skips without a
 // reachable daemon. Image: JJ_SANDBOX_TEST_IMAGE, else jj-sandbox:base-1 when
@@ -316,4 +321,108 @@ describe.skipIf(!health.ok)("docker driver", () => {
       { outcome: "passed", exitCode: 0, output: "inside\n" },
     ]);
   }, 120_000);
+
+  it("places uploads in the task container before the first model call, replacing a symlink and failing a directory in the way", async () => {
+    const docker = new DockerSandboxDriver({
+      namespace: `jj-engine-${runId}-u`,
+      labels,
+      killGraceMs: 300,
+    });
+    await current?.dispose();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([{ driver: docker, label: "Docker" }]),
+    });
+    const { engine, executor } = current;
+    await engine.profiles.create({
+      name: "Docker uploads",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      isDefault: true,
+    });
+    await placementScenario(engine, executor);
+  }, 120_000);
+
+  it("discovers a stdio MCP server in an ephemeral container it removes, also when the server fails", async () => {
+    await current?.dispose();
+    const token = `docs-docker-${randomBytes(12).toString("hex")}`;
+    const namespace = `jj-mcp-${runId}`;
+    const docker = recordingDriver(
+      new DockerSandboxDriver({ namespace, labels, killGraceMs: 300 }),
+    );
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([
+        { driver: docker.driver, label: "Docker" },
+      ]),
+      secretStore: new SecretStore({
+        db: db.database.db,
+        keyring: createKeyring(randomBytes(32)),
+      }),
+      mcp: new McpDiscoverer({ env: {}, closeGraceMs: 300 }),
+    });
+    const { engine } = current;
+    await engine.secrets.put("DOCS_SECRET", { value: token });
+    const { profile } = await engine.profiles.create({
+      name: "Docker MCP",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      secrets: ["DOCS_SECRET"],
+    });
+    const discover = async (mode?: "crash") => {
+      const { discovery } = await engine.mcp.startDiscovery(profile.id, {
+        server: mcpFixture({ command: "node", ...(mode ? { mode } : {}) }),
+      });
+      return until(
+        async () => {
+          const { discovery: now } = await engine.mcp.discovery(discovery.id);
+          return now.status === "succeeded" || now.status === "failed"
+            ? now
+            : undefined;
+        },
+        { what: "the docker discovery", timeoutMs: 90_000 },
+      );
+    };
+
+    const found = await discover();
+    expect(found.error).toBeNull();
+    expect(found.snapshot?.tools.map((tool) => tool.description)).toEqual([
+      "Calls the docs API with [redacted].",
+      `Searches the docs (a token of ${token.length} characters).`,
+    ]);
+    const crashed = await discover("crash");
+    expect(crashed).toMatchObject({
+      status: "failed",
+      stderrTail: "fatal: the docs API refused [redacted]",
+    });
+    // Two containers of their own, ephemeral, each released and removed.
+    expect(docker.acquired).toMatchObject([
+      { spec: { workspace: "ephemeral" }, released: true },
+      { spec: { workspace: "ephemeral" }, released: true },
+    ]);
+    const { stdout } = await run("docker", [
+      "ps",
+      "-aq",
+      "--filter",
+      `label=jj.test-run=${runId}`,
+      "--filter",
+      `name=${namespace}`,
+    ]);
+    expect(stdout.trim()).toBe("");
+    const volumes = await run("docker", [
+      "volume",
+      "ls",
+      "-q",
+      "--filter",
+      `name=${namespace}-ephemeral`,
+    ]);
+    expect(volumes.stdout.trim()).toBe("");
+    expect(JSON.stringify([found, crashed])).not.toContain(token);
+  }, 180_000);
 });

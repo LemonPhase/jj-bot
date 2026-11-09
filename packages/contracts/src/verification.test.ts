@@ -420,6 +420,7 @@ describe("applyTaskEvent and verification checks", () => {
     firstSequence: 1,
     hasEarlier: false,
     cursor: 0,
+    compactedThrough: 0,
   };
   let sequence = 0;
   const checked = (item: VerificationCheck): ParsedTaskEvent => ({

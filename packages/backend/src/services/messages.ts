@@ -72,7 +72,7 @@ export async function postMessage(
     })
     .returning();
   if (!row) throw new Error("The message insert returned no row.");
-  await emit(tx, input.taskId, {
+  await emit(tx, ctx, input.taskId, {
     type: "message.posted",
     payload: { message: toMessage(row) },
     botId: input.authorBotId ?? null,
@@ -259,7 +259,7 @@ export async function continueTask(
       attribution,
     );
     if (removedAt) notice = workspaceRemovedNotice(removedAt);
-    await emit(tx, task.id, {
+    await emit(tx, ctx, task.id, {
       type: "task.reopened",
       payload: { previous },
       ...attribution,
@@ -374,7 +374,7 @@ export async function postTaskMessage(
         goalVersion: version,
         verificationPlan: nextPlan,
       });
-      await emit(tx, taskId, {
+      await emit(tx, ctx, taskId, {
         type: "task.goal_changed",
         payload: {
           goal: nextGoal,
@@ -409,7 +409,7 @@ export async function postTaskMessage(
       { kind: "steering", text, sourceMessageId: row.id },
       { wake: true, ctx },
     );
-    await emit(tx, taskId, {
+    await emit(tx, ctx, taskId, {
       type: "steering.received",
       payload: {
         messageId: row.id,

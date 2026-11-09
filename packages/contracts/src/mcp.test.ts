@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   approvalRuleMatches,
@@ -403,12 +404,51 @@ describe("MCP servers on a runtime profile", () => {
       patch({ mcpServers: [stdio], secrets: ["DOCS_TOKEN"] }).success,
     ).toBe(true);
     expect(patch({ mcpServers: [stdio], secrets: [] }).success).toBe(false);
+    // A disabled server (its secret removed) runs nowhere: not checked.
+    expect(
+      patch({ mcpServers: [{ ...stdio, enabled: false }], secrets: [] })
+        .success,
+    ).toBe(true);
     expect(patch({ mcpServers: [stdio] }).success).toBe(true);
     expect(patch({ secrets: [] }).success).toBe(true);
     expect(patch({ mcpServers: [], skills: [] })).toMatchObject({
       success: true,
       data: { mcpServers: [], skills: [] },
     });
+  });
+
+  it("came with 1.10.1, which the changelog records", () => {
+    const changelog = readFileSync(
+      new URL("../../../docs/contract-changelog.md", import.meta.url),
+      "utf8",
+    );
+    expect(changelog).toMatch(
+      /^## 1\.10\.1 — .* — Disabled MCP servers and draft sandboxes in discoveries$/m,
+    );
+  });
+
+  it("takes an optional draft sandbox in a discovery, in the profile's shape", () => {
+    const server = { name: "docs", transport: "stdio", command: "docs-mcp" };
+    expect(startMcpDiscoveryCommandSchema.parse({ server }).sandbox).toBe(
+      undefined,
+    );
+    expect(
+      startMcpDiscoveryCommandSchema.parse({
+        server,
+        sandbox: { driver: "docker", env: { REGION: "eu" } },
+      }).sandbox,
+    ).toMatchObject({
+      driver: "docker",
+      env: { REGION: "eu" },
+      network: { mode: "none" },
+      workspace: "task",
+    });
+    expect(
+      startMcpDiscoveryCommandSchema.safeParse({
+        server,
+        sandbox: { env: { REGION: "eu" } },
+      }).success,
+    ).toBe(false);
   });
 
   it("lists the ungranted secrets for the server's merged check", () => {
@@ -422,6 +462,14 @@ describe("MCP servers on a runtime profile", () => {
       },
     ]);
     expect(ungrantedMcpSecrets(servers, ["DOCS_TOKEN"])).toEqual([]);
+    // Enabled servers only: a disabled one is checked once it is enabled.
+    const disabled = mcpServersSchema.parse([{ ...stdio, enabled: false }]);
+    expect(ungrantedMcpSecrets(disabled, [])).toEqual([]);
+    expect(
+      command({ mcpServers: [{ ...stdio, enabled: false }], secrets: [] })
+        .success,
+    ).toBe(true);
+    expect(command({ mcpServers: [stdio], secrets: [] }).success).toBe(false);
   });
 
   it("parses profiles from servers before MCP as having none, and stays lenient on read", () => {

@@ -3,6 +3,7 @@ import { botSchema } from "./bots";
 import { idSchema, modelRefSchema } from "./common";
 import { runtimeProfileSchema } from "./profiles";
 import { taskSummarySchema } from "./tasks";
+import { uploadLimitsSchema } from "./uploads";
 
 /** What this server can really do. Never report a capability that is not real. */
 export const capabilitiesSchema = z.object({
@@ -19,9 +20,10 @@ export const capabilitiesSchema = z.object({
   /** Keys and sandbox secrets can be stored encrypted: the server has `JJ_SECRET_KEY`. */
   secretStore: z.boolean().default(false),
   /**
-   * MCP servers run: `stdio` ones in a task's sandbox (where its driver can
-   * spawn processes), `remote` (http) ones called by the worker. While
-   * false, a profile asking for that kind is refused with MCP_UNAVAILABLE.
+   * Per kind, whether sessions can use MCP servers of that kind: `stdio`
+   * ones run in a task's sandbox (where its driver can spawn processes),
+   * `remote` (http) ones are called by the worker. While false, servers of
+   * that kind may still be stored and discovered, but they reach no session.
    */
   mcp: z
     .object({ stdio: z.boolean(), remote: z.boolean() })
@@ -33,6 +35,12 @@ export const capabilitiesSchema = z.object({
    * them. While false, the schedule routes answer 404.
    */
   schedules: z.boolean().default(false),
+  /**
+   * Files can be uploaded into tasks, within these limits. Null: uploads
+   * are not served, and the upload routes answer 404. Parsed as null from
+   * servers before uploads.
+   */
+  uploads: uploadLimitsSchema.nullable().default(null),
   drivers: z.array(
     z.object({ id: idSchema, available: z.boolean(), isolated: z.boolean() }),
   ),
@@ -45,6 +53,12 @@ export const bootstrapSchema = z.object({
   contractVersion: z.string().min(1),
   capabilities: capabilitiesSchema,
   defaultModel: modelRefSchema.nullable(),
+  /**
+   * `JJ_EVENT_RETENTION_DAYS`: a finished task's events are compacted this
+   * many days after it finished; 0 means never. Absent from servers before
+   * event retention.
+   */
+  eventRetentionDays: z.number().int().min(0).max(3650).optional(),
   bots: z.array(botSchema),
   tasks: z.array(taskSummarySchema),
   profiles: z.array(runtimeProfileSchema),
@@ -73,6 +87,11 @@ export const API_ERROR_CODES = [
   "TEMPLATE_UNUSABLE",
   /** A task template a schedule starts cannot be deleted: `details.schedules` (`templateInUseDetailsSchema`) names them. */
   "TEMPLATE_IN_USE",
+  /**
+   * 413: an upload over the server's limits: a file, a command's files, a
+   * task's uploads in all, or the server's staging space.
+   */
+  "UPLOAD_TOO_LARGE",
   "UNAUTHORIZED",
   "INTERNAL",
 ] as const;

@@ -18,6 +18,7 @@ import {
   pgliteListener,
   postgresListener,
 } from "./bus";
+import { PGLITE_TYPE_OPTIONS } from "./bytea";
 import { assertSchemaKnown, migrationsFolder } from "./migrations";
 import {
   guardDatabase,
@@ -162,7 +163,7 @@ export async function inspectDatabase<T>(
     throw new Error(`No PGlite database at ${directory}.`);
   const unlock = await lockDataDirectory(directory);
   try {
-    const client = await PGlite.create(directory);
+    const client = await PGlite.create(directory, PGLITE_TYPE_OPTIONS);
     try {
       await client.exec("set default_transaction_read_only = on");
       return await read(drizzlePglite(client, { schema: tables }));
@@ -195,7 +196,7 @@ async function openPglite(
     : async () => {};
   let raw: PGlite | undefined;
   try {
-    raw = await PGlite.create(dataDir);
+    raw = await PGlite.create(dataDir, PGLITE_TYPE_OPTIONS);
     const client = guardNestedCalls(raw);
     const db = guardDatabase(drizzlePglite(client, { schema: tables }));
     await assertSchemaKnown(db);

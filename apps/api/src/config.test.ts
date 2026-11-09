@@ -197,6 +197,30 @@ describe("loadServerConfig", () => {
     ).toEqual(["jj.example.com", "proxy:8443"]);
   });
 
+  it("reads the event retention and payload cap, and refuses values outside their range", () => {
+    expect(loadServerConfig({}).engine).toMatchObject({
+      eventRetentionDays: undefined,
+      eventPayloadCapBytes: undefined,
+    });
+    for (const days of ["0", "1", "30", "3650"])
+      expect(
+        loadServerConfig({ JJ_EVENT_RETENTION_DAYS: days }).engine
+          .eventRetentionDays,
+      ).toBe(Number(days));
+    for (const days of ["-1", "3651", "1.5", "a month"])
+      expect(() => loadServerConfig({ JJ_EVENT_RETENTION_DAYS: days })).toThrow(
+        /eventRetentionDays|JJ_EVENT_RETENTION_DAYS/,
+      );
+    expect(
+      loadServerConfig({ JJ_EVENT_PAYLOAD_CAP_BYTES: "131072" }).engine
+        .eventPayloadCapBytes,
+    ).toBe(131072);
+    for (const bytes of ["131071", "1048577", "256k"])
+      expect(() =>
+        loadServerConfig({ JJ_EVENT_PAYLOAD_CAP_BYTES: bytes }),
+      ).toThrow(/JJ_EVENT_PAYLOAD_CAP_BYTES/);
+  });
+
   describe("refuses to expose the API without a token or over plain http", () => {
     const refused = (env: Record<string, string>, message: RegExp) => {
       let error: unknown;
@@ -364,6 +388,15 @@ describe("loadServerConfig", () => {
       loadServerConfig({ JJ_DOCKER_EGRESS_SUBNET_POOL: " 172.29.0.0/20 " })
         .dockerEgressSubnetPool,
     ).toBe("172.29.0.0/20");
+  });
+
+  it("reads JJ_MCP_REMOTE, on unless set off, refusing anything else", () => {
+    expect(loadServerConfig({}).mcpRemote).toBe(true);
+    expect(loadServerConfig({ JJ_MCP_REMOTE: "on" }).mcpRemote).toBe(true);
+    expect(loadServerConfig({ JJ_MCP_REMOTE: " OFF " }).mcpRemote).toBe(false);
+    expect(() => loadServerConfig({ JJ_MCP_REMOTE: "no" })).toThrow(
+      ConfigError,
+    );
   });
 });
 

@@ -1,9 +1,12 @@
 // The 1.0 route table (docs/contract-changelog.md), one engine method per
 // route. Bodies go to the engine unparsed; it validates each command.
+
+import type { HttpBindings } from "@hono/node-server";
 import type { Engine, Logger } from "@jj/backend";
 import { type Context, Hono } from "hono";
 import {
   attachmentDisposition,
+  contentLength,
   idParam,
   jsonBody,
   pageQuery,
@@ -92,6 +95,19 @@ export function apiRoutes({
     await engine.profiles.delete(idParam(c, "id"));
     return c.body(null, 204);
   });
+  // MCP servers: discovery runs in the worker; clients poll its record.
+  api.post("/runtime-profiles/:id/mcp-discoveries", async (c) =>
+    c.json(
+      await engine.mcp.startDiscovery(idParam(c, "id"), await command(c)),
+      202,
+    ),
+  );
+  api.get("/mcp-discoveries/:id", async (c) =>
+    c.json(await engine.mcp.discovery(idParam(c, "id"))),
+  );
+  api.get("/mcp-snapshots/:id", async (c) =>
+    c.json(await engine.mcp.snapshot(idParam(c, "id"))),
+  );
   api.get("/sandbox-drivers", async (c) => c.json(await engine.drivers()));
   api.get("/models", async (c) => c.json(await engine.models()));
   api.put("/models/providers/:providerId/key", async (c) =>
@@ -201,7 +217,7 @@ export function apiRoutes({
       201,
     ),
   );
-  // Schedules (1.11.0)
+  // Schedules (1.12.0)
   api.get("/schedules", async (c) => c.json(await engine.schedules.list()));
   api.post("/schedules", async (c) =>
     c.json(await engine.schedules.create(await command(c)), 201),
@@ -216,6 +232,40 @@ export function apiRoutes({
     await engine.schedules.delete(idParam(c, "id"));
     return c.body(null, 204);
   });
+
+  // Uploads (1.11.0). `POST /uploads` is the one write whose body is raw
+  // bytes (guard.ts); its Content-Length is required and checked against
+  // the limits before any of the body is read.
+  api.post("/uploads", async (c) => {
+    // Off answers 404 whatever else the request holds.
+    engine.uploads.assertServed();
+    const sizeBytes = contentLength(c);
+    const node = c.env as Partial<HttpBindings> | undefined;
+    return c.json(
+      await engine.uploads.stage({
+        name: c.req.query("name"),
+        sizeBytes,
+        body: c.req.raw.body as AsyncIterable<Uint8Array> | null,
+        // server.ts leaves `Expect: 100-continue` on an upload to this route,
+        // so a body is invited only once every check passed.
+        beforeRead: () => {
+          if (
+            node?.incoming?.headers.expect?.toLowerCase() === "100-continue" &&
+            !node.outgoing?.headersSent
+          )
+            node.outgoing?.writeContinue();
+        },
+      }),
+      201,
+    );
+  });
+  api.delete("/uploads/:id", async (c) => {
+    await engine.uploads.delete(idParam(c, "id"));
+    return c.body(null, 204);
+  });
+  api.post("/tasks/:id/uploads", async (c) =>
+    c.json(await engine.tasks.upload(idParam(c, "id"), await command(c)), 201),
+  );
 
   api.get("/tasks/:id/artifacts/:artifactId/content", async (c) => {
     const { artifact, content } = await engine.tasks.artifactContent(

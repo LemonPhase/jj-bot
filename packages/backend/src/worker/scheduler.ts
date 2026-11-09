@@ -554,7 +554,7 @@ async function trimWorkspaces(
         )
         .where(eq(tasks.id, row.id));
       if (removed)
-        await emit(tx, row.id, {
+        await emit(tx, ctx, row.id, {
           type: "workspace.removed",
           payload: {
             scheduleId: row.scheduleId as string,

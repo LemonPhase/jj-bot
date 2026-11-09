@@ -68,9 +68,16 @@ export const APPROVAL_STATUSES = [
   "cancelled",
 ] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
+/** Where an uploaded file stands in the workspace; set exactly on uploaded artifacts. */
+export const UPLOAD_STATES = ["pending", "placed", "failed"] as const;
 export const CHECK_METHODS = ["command", "file", "result"] as const;
 export const CHECK_OUTCOMES = ["passed", "failed", "inconclusive"] as const;
-export const JOB_KINDS = ["session.run", "chat.reply"] as const;
+export const JOB_KINDS = [
+  "session.run",
+  "chat.reply",
+  "maintenance.compact",
+  "mcp.discover",
+] as const;
 /** What the scheduler did about one due time of a schedule (`scheduleFireSchema`). */
 export const SCHEDULE_FIRE_OUTCOMES = [
   "started",
@@ -95,6 +102,13 @@ export const JOB_STATUSES = [
   "failed",
   "cancelled",
 ] as const;
+/** Where one test of an MCP server configuration is (`mcp_discoveries.status`). */
+export const MCP_DISCOVERY_STATUSES = [
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+] as const;
 
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
@@ -109,6 +123,7 @@ export type ConversationRole = (typeof CONVERSATION_ROLES)[number];
 export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+export type UploadState = (typeof UPLOAD_STATES)[number];
 export type CheckMethod = (typeof CHECK_METHODS)[number];
 export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
@@ -118,6 +133,7 @@ export type ScheduleFireOutcome = (typeof SCHEDULE_FIRE_OUTCOMES)[number];
 export type ChatUpdateMode = (typeof CHAT_UPDATE_MODES)[number];
 export type ScheduleOverlap = (typeof SCHEDULE_OVERLAPS)[number];
 export type SchedulePausedReason = (typeof SCHEDULE_PAUSED_REASONS)[number];
+export type McpDiscoveryStatus = (typeof MCP_DISCOVERY_STATUSES)[number];
 
 /** Claims of a job before an expired lease is no longer reclaimed (see `claim`). */
 export const DEFAULT_MAX_ATTEMPTS = 3;
@@ -164,6 +180,11 @@ export const runtimeProfiles = pgTable(
     approvals: jsonb("approvals").$type<JsonObject[]>().notNull().default([]),
     /** Names of the sandbox secrets this profile grants (`secrets.name`, kind `sandbox`). */
     secrets: jsonb("secrets").$type<string[]>().notNull().default([]),
+    /** MCP servers (`mcpServersSchema`), none by default. */
+    mcpServers: jsonb("mcp_servers")
+      .$type<JsonObject[]>()
+      .notNull()
+      .default([]),
     isDefault: boolean("is_default").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -297,6 +318,15 @@ export const tasks = pgTable(
     eventSeq: integer("event_seq").notNull().default(0),
     /** Last allocated `task_messages.sequence`; see `nextMessageSequence`. */
     messageSeq: integer("message_seq").notNull().default(0),
+    /**
+     * Events at or below this sequence were compacted (the view's
+     * `compactedThrough`); 0 for none. A pass sets it to `event_seq` and
+     * appends `task.compacted` right after, so a task with nothing new since
+     * has `event_seq = events_compacted_through + 1`.
+     */
+    eventsCompactedThrough: integer("events_compacted_through")
+      .notNull()
+      .default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     finishedAt: optionalTime("finished_at"),
@@ -308,6 +338,10 @@ export const tasks = pgTable(
     uniqueIndex("tasks_created_from_message_unique")
       .on(t.createdByBotId, t.createdFromMessageId)
       .where(sql`${t.createdFromMessageId} is not null`),
+    // The compaction pass's candidates: finished tasks, oldest finish first.
+    index("tasks_finished_idx")
+      .on(t.finishedAt)
+      .where(sql`${t.status} in ('completed', 'failed', 'cancelled')`),
     index("tasks_template_idx").on(t.templateId),
     index("tasks_schedule_idx").on(t.scheduleId, t.createdAt),
     check("tasks_status_check", oneOf(t.status, TASK_STATUSES)),
@@ -726,12 +760,18 @@ export const taskEvents = pgTable(
       .references(() => tasks.id, { onDelete: "cascade" }),
     sequence: integer("sequence").notNull(),
     type: text("type").notNull(),
-    // Attribution, not foreign keys: the log is append-only and leaves with its task.
+    // Attribution, not foreign keys: the log is appended to (only compaction
+    // deletes or rewrites, once its task finished) and leaves with its task.
     botId: text("bot_id"),
     sessionId: text("session_id"),
     runId: text("run_id"),
     causedBy: text("caused_by"),
     payload: jsonb("payload").$type<JsonObject>().notNull().default({}),
+    /**
+     * The `output` artifact holding the full payload when it was over the
+     * payload cap; `payload` is then the clipped copy. An attribution id.
+     */
+    payloadArtifactId: text("payload_artifact_id"),
     // clock_timestamp(), not now(): the row is written after the task row lock
     // is taken, so occurred_at never runs backwards against sequence.
     occurredAt: timestamp("occurred_at", { withTimezone: true })
@@ -759,12 +799,58 @@ export const artifacts = pgTable(
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     sha256: text("sha256").notNull(),
     content: bytea("content").notNull(),
+    /**
+     * For a file the user uploaded: the task message that announced it.
+     * Null for every other artifact. Attribution, not a foreign key.
+     */
+    uploadMessageId: text("upload_message_id"),
+    /** Set exactly when `upload_message_id` is: pending until a run places it, once. */
+    uploadState: text("upload_state").$type<UploadState>(),
+    placedAt: optionalTime("placed_at"),
+    /** Why a failed upload could not be placed. */
+    uploadError: text("upload_error"),
     createdAt: createdAt(),
   },
   (t) => [
     index("artifacts_task_path_idx").on(t.taskId, t.path),
+    // Placement looks for a task's pending uploads at every turn boundary.
+    index("artifacts_pending_uploads_idx")
+      .on(t.taskId, t.createdAt)
+      .where(sql`${t.uploadState} = 'pending'`),
+    // At most one pending upload per path of a task, ignoring case.
+    uniqueIndex("artifacts_pending_upload_path_unique")
+      .on(t.taskId, sql`lower(${t.path})`)
+      .where(sql`${t.uploadState} = 'pending'`),
     check("artifacts_kind_check", oneOf(t.kind, ARTIFACT_KINDS)),
+    check(
+      "artifacts_upload_state_check",
+      sql`(${t.uploadMessageId} is null and ${t.uploadState} is null) or (${t.uploadMessageId} is not null and ${t.uploadState} in ('pending', 'placed', 'failed') and ${t.kind} = 'file')`,
+    ),
   ],
+);
+
+/**
+ * Bytes the user uploaded (`POST /api/uploads`) that no command has attached
+ * yet. Attaching one copies it into `artifacts`, under the same id, and
+ * deletes it; one not attached by `expires_at` is deleted by the worker's
+ * sweep and at boot.
+ */
+export const stagedUploads = pgTable(
+  "staged_uploads",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    /** The file name, NFC, one path segment (`uploadNameProblem`). */
+    name: text("name").notNull(),
+    /** Derived by the server from the name and the bytes. */
+    contentType: text("content_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text("sha256").notNull(),
+    content: bytea("content").notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("staged_uploads_expires_idx").on(t.expiresAt)],
 );
 
 /**
@@ -958,6 +1044,15 @@ export const jobs = pgTable(
     uniqueIndex("jobs_chat_reply_running")
       .on(t.botId)
       .where(sql`${t.kind} = 'chat.reply' and ${t.status} = 'running'`),
+    // One compaction pass queued and one running, instance-wide.
+    uniqueIndex("jobs_maintenance_compact_queued")
+      .on(t.kind)
+      .where(sql`${t.kind} = 'maintenance.compact' and ${t.status} = 'queued'`),
+    uniqueIndex("jobs_maintenance_compact_running")
+      .on(t.kind)
+      .where(
+        sql`${t.kind} = 'maintenance.compact' and ${t.status} = 'running'`,
+      ),
     check(
       "jobs_session_run_session_check",
       sql`${t.kind} <> 'session.run' or ${t.sessionId} is not null`,
@@ -1015,6 +1110,7 @@ export type TaskEventRow = typeof taskEvents.$inferSelect;
 export type NewTaskEvent = typeof taskEvents.$inferInsert;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
+export type StagedUploadRow = typeof stagedUploads.$inferSelect;
 export type UsageRow = typeof usage.$inferSelect;
 export type NewUsage = typeof usage.$inferInsert;
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -1112,6 +1208,93 @@ export const retiredSecrets = pgTable(
 
 export type RetiredSecretRow = typeof retiredSecrets.$inferSelect;
 
+/**
+ * The reviewed tool list of one MCP server of one profile, for one
+ * configuration (`mcpToolSnapshotSchema`): written once by a discovery,
+ * never updated. A profile's server pins one by id. Deleted with its
+ * profile, or once neither the profile pins it nor a kept discovery holds it.
+ */
+export const mcpToolSnapshots = pgTable(
+  "mcp_tool_snapshots",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => runtimeProfiles.id, { onDelete: "cascade" }),
+    /** The server's name in the profile. */
+    server: text("server").notNull(),
+    /** SHA-256 of the configuration the tools were discovered with. */
+    configHash: text("config_hash").notNull(),
+    serverInfo: jsonb("server_info").$type<JsonObject>().notNull(),
+    /** Sanitized and redacted tools (`mcpToolSchema`), sorted by name. */
+    tools: jsonb("tools").$type<JsonObject[]>().notNull(),
+    warnings: jsonb("warnings").$type<string[]>().notNull().default([]),
+    discoveredAt: timestamp("discovered_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index("mcp_tool_snapshots_profile_idx").on(t.profileId, t.server)],
+);
+
+export type McpToolSnapshotRow = typeof mcpToolSnapshots.$inferSelect;
+export type NewMcpToolSnapshot = typeof mcpToolSnapshots.$inferInsert;
+
+/**
+ * One test of an MCP server configuration (`mcpDiscoverySchema`), run by an
+ * `mcp.discover` job: `config` is the configuration tested, saved in the
+ * profile or not (secrets by name only). `error` and `stderr_tail` are
+ * redacted. Deleted with its profile; a profile keeps its newest ones.
+ */
+export const mcpDiscoveries = pgTable(
+  "mcp_discoveries",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => runtimeProfiles.id, { onDelete: "cascade" }),
+    server: text("server").notNull(),
+    /** The configuration tested (`mcpServerSchema`). */
+    config: jsonb("config").$type<JsonObject>().notNull(),
+    /** A draft of the profile's sandbox the test runs on (`sandboxSpecSchema`); null: the profile's own. */
+    sandbox: jsonb("sandbox").$type<JsonObject>(),
+    configHash: text("config_hash").notNull(),
+    status: text("status")
+      .$type<McpDiscoveryStatus>()
+      .notNull()
+      .default("queued"),
+    error: text("error"),
+    stderrTail: text("stderr_tail"),
+    snapshotId: text("snapshot_id").references(() => mcpToolSnapshots.id, {
+      onDelete: "set null",
+    }),
+    durationMs: integer("duration_ms"),
+    createdAt: createdAt(),
+    startedAt: optionalTime("started_at"),
+    finishedAt: optionalTime("finished_at"),
+  },
+  (t) => [
+    index("mcp_discoveries_profile_idx").on(t.profileId, t.createdAt),
+    // A server of a profile has at most one test queued or running.
+    uniqueIndex("mcp_discoveries_one_active")
+      .on(t.profileId, t.server)
+      .where(sql`${t.status} in ('queued', 'running')`),
+    check(
+      "mcp_discoveries_status_check",
+      oneOf(t.status, MCP_DISCOVERY_STATUSES),
+    ),
+    // Only a succeeded discovery ever holds a snapshot.
+    check(
+      "mcp_discoveries_snapshot_check",
+      sql`${t.snapshotId} is null or ${t.status} = 'succeeded'`,
+    ),
+  ],
+);
+
+export type McpDiscoveryRow = typeof mcpDiscoveries.$inferSelect;
+export type NewMcpDiscovery = typeof mcpDiscoveries.$inferInsert;
+
 /** Every table, for `drizzle(client, { schema: tables })` and the `Db` type. */
 export const tables = {
   runtimeProfiles,
@@ -1132,6 +1315,7 @@ export const tables = {
   taskMessages,
   taskEvents,
   artifacts,
+  stagedUploads,
   verificationChecks,
   usage,
   approvals,
@@ -1140,4 +1324,6 @@ export const tables = {
   workerHeartbeats,
   secrets,
   retiredSecrets,
+  mcpToolSnapshots,
+  mcpDiscoveries,
 };

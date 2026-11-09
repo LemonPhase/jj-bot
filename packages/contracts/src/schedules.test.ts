@@ -39,16 +39,16 @@ const cron = (expression: string, timeZone = "UTC"): StoredTrigger => ({
 });
 const iso = (dates: Date[]) => dates.map((date) => date.toISOString());
 
-describe("contract version 1.11.0 (schedules)", () => {
-  it("is 1.11.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.11.0");
+describe("contract version 1.12.0 (schedules)", () => {
+  it("is 1.12.0, and the changelog's newest entry records it", () => {
+    expect(CONTRACT_VERSION).toBe("1.12.0");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
     const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
     expect(newest).toBe(CONTRACT_VERSION);
-    expect(changelog).toMatch(/^## 1\.11\.0 — .* — Schedules$/m);
+    expect(changelog).toMatch(/^## 1\.12\.0 — .* — Schedules$/m);
   });
 
   it("adds TEMPLATE_IN_USE, the schedules.changed hint and capabilities.schedules (false by default)", () => {

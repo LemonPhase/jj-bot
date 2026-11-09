@@ -10,6 +10,7 @@ import {
   spendCapUsdSchema,
   timestampSchema,
 } from "./common";
+import { artifactUploadSchema, uploadEntryListSchema } from "./uploads";
 import {
   verificationPlanSchema,
   verificationSummarySchema,
@@ -220,8 +221,9 @@ export const taskMessageSchema = z.object({
 });
 
 /**
- * A file a session produced, or tool output spilled because it exceeded the
- * event preview. Content: `GET /api/tasks/:taskId/artifacts/:artifactId/content`.
+ * A file a session produced, a file the user uploaded, or tool output
+ * spilled because it exceeded the event preview. Content:
+ * `GET /api/tasks/:taskId/artifacts/:artifactId/content`.
  */
 export const artifactSchema = z.object({
   id: idSchema,
@@ -235,6 +237,13 @@ export const artifactSchema = z.object({
   contentType: z.string().min(1),
   sizeBytes: z.number().int().nonnegative(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  /**
+   * Set for a file the user uploaded (kind `file`, no session or run): the
+   * announcement that attached it and where it stands in the workspace
+   * (`artifact.updated` reports each change). Null for every other
+   * artifact, and parsed as null from records stored before uploads.
+   */
+  upload: artifactUploadSchema.nullable().default(null),
   createdAt: timestampSchema,
 });
 
@@ -286,6 +295,12 @@ export const createTaskCommandObjectSchema = z.object({
   verificationPlan: verificationPlanSchema.nullable().optional(),
   /** Omitted: the coordinator's profile's `budgets.maxUsdPerTask`. Null: no cap. */
   spendCapUsd: spendCapUsdSchema.nullable().optional(),
+  /**
+   * Staged uploads to attach (`uploadEntryListSchema`), placed in the
+   * workspace before the coordinator's first model call. Refused with 404
+   * while `capabilities.uploads` is null.
+   */
+  uploads: uploadEntryListSchema.default(() => []),
 });
 
 /** The command with its coordinator added to the participants when missing, first. */
@@ -342,6 +357,15 @@ export const postTaskMessageCommandSchema =
           "Changing the verification plan requires the goal version you observed.",
       });
   });
+
+/**
+ * `POST /api/tasks/:taskId/uploads` → 201: the attached uploads' artifacts,
+ * in the order given, and the announcement posted to the task log.
+ */
+export const uploadToTaskResultSchema = z.object({
+  artifacts: z.array(artifactSchema),
+  message: taskMessageSchema,
+});
 
 /** `POST /api/tasks/:taskId/stop`. An empty or blank reason counts as none. */
 export const stopTaskCommandSchema = z.object({
@@ -498,6 +522,7 @@ export type SessionRole = ExecutionSession["role"];
 export type MessageIntent = (typeof MESSAGE_INTENTS)[number];
 export type TaskMessage = z.infer<typeof taskMessageSchema>;
 export type Artifact = z.infer<typeof artifactSchema>;
+export type UploadToTaskResult = z.infer<typeof uploadToTaskResultSchema>;
 export type Usage = z.infer<typeof usageSchema>;
 export type CreateTaskCommand = z.input<typeof createTaskCommandSchema>;
 export type PostTaskMessageCommand = z.input<

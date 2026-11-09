@@ -67,6 +67,7 @@ import {
   runningRun,
 } from "./runs";
 import { type SandboxHold, SandboxUnavailableError } from "./sandboxes";
+import { placeUploads } from "./uploads";
 
 /** Executor calls one job may make while new input keeps arriving. */
 const MAX_CONTINUATIONS = 20;
@@ -260,7 +261,7 @@ async function startRun(
       },
       attribution,
     );
-    await emit(tx, task.id, {
+    await emit(tx, ctx, task.id, {
       type: "run.started",
       payload: { reason },
       ...attribution,
@@ -356,6 +357,7 @@ async function prepare(
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
   );
   const call = async (inputs: string[]): Promise<RunOutcome> => {
+    const hooks = runHooks(rc);
     // Rebuilt every call: a new goal version brings its own plan.
     const plan = planOf(rc.task.verificationPlan);
     // The prompt below gives the model the task's goal as it is now.
@@ -394,7 +396,14 @@ async function prepare(
       },
       signal: rc.control.controller.signal,
       hooks: {
-        ...runHooks(rc),
+        ...hooks,
+        // Uploads reach the workspace before the boundary takes the inbox,
+        // so the notice that they are there comes with it. A draining run
+        // takes nothing more, so it places nothing either.
+        drainInbox: async (turnEnded) => {
+          if (!rc.control.draining) await placeUploads(rc, hold.sandbox);
+          return hooks.drainInbox(turnEnded);
+        },
         reviewToolCall: (pending) => reviewCall(rc, pending),
         claimApprovedCall: (toolCallId) => claimCall(rc, toolCallId),
       },
@@ -501,6 +510,15 @@ async function executeRun(
       return;
     }
     const { call, deadline } = prepared;
+    const held = hold;
+    // Pending uploads go into the workspace before every take of the inbox:
+    // before the run's first model call, and at each boundary after it.
+    // A draining run is handed back without another model call, so it
+    // places nothing: the next run does, before its own.
+    const take = async (continuingOnly: boolean) => {
+      if (!rc.control.draining) await placeUploads(rc, held.sandbox);
+      return takeInbox(rc, continuingOnly);
+    };
     // Each executor call takes the inbox, in order; input that arrives as a
     // call ends continues the run, even when it lands just before the
     // write-back. Where the turn has ended (a continuation, or a recovery
@@ -532,7 +550,7 @@ async function executeRun(
         const continuingOnly = calls > 1 || ended !== undefined;
         if (await stopBeforeTaking(continuingOnly)) outcome = stopped;
         else {
-          inputs = await takeInbox(rc, continuingOnly);
+          inputs = await take(continuingOnly);
           outcome =
             ended === "engine" && inputs.length === 0
               ? { kind: "idle" }
@@ -544,7 +562,7 @@ async function executeRun(
             outcome = stopped;
             break;
           }
-          inputs = await takeInbox(rc, true);
+          inputs = await take(true);
           if (inputs.length === 0) break;
           calls += 1;
           outcome = await call(inputs);

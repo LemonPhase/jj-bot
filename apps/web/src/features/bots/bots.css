@@ -336,7 +336,7 @@
   }
 }
 
-/* Phones: 16px gutters, and the About links as 44px targets. */
+/* Phones: 16px gutters, and the About and profile task links as 44px targets. */
 @media (max-width: 759px) {
   .bot-chat {
     padding: 0 16px;
@@ -347,8 +347,14 @@
   }
 
   .bot-about__links .text-link,
-  .chat-task-card {
+  .chat-task-card,
+  .inspector-task {
     min-height: 44px;
+  }
+
+  /* "memory" alone is narrower than 44px. */
+  .bot-about__links .text-link {
+    min-width: 44px;
   }
 
   .bot-inspector {

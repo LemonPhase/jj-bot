@@ -18,6 +18,7 @@ import { migrate as migrateNodePg } from "drizzle-orm/node-postgres/migrator";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
 import { migrate as migratePglite } from "drizzle-orm/pglite/migrator";
 import { Client } from "pg";
+import { PGLITE_TYPE_OPTIONS } from "./bytea";
 import { migrationsFolder, shippedMigrations } from "./migrations";
 
 /**
@@ -90,7 +91,7 @@ export async function seedAt(
   const script = `begin;\n${rows}\ncommit;`;
   try {
     if (location.mode === "pglite") {
-      const client = await PGlite.create(location.path);
+      const client = await PGlite.create(location.path, PGLITE_TYPE_OPTIONS);
       try {
         await migratePglite(drizzlePglite(client), {
           migrationsFolder: folder,

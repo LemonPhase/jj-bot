@@ -12,6 +12,7 @@ import {
   type TaskEventType,
   type TaskMessage,
   type TaskView,
+  taskEventPageSchema,
   taskViewSchema,
   type Usage,
 } from "./index";
@@ -192,6 +193,7 @@ const artifact = {
   contentType: "text/plain",
   sizeBytes: 90_000,
   sha256: "b".repeat(64),
+  upload: null,
   createdAt: time(20),
 };
 
@@ -323,7 +325,10 @@ const withoutPreviews = (view: TaskView): TaskView => ({
 
 /** Builds a snapshot the way the server serves it: wire JSON, parsed by the contract. */
 const snapshot = (
-  fields: Omit<TaskView, "events" | "firstSequence" | "hasEarlier" | "cursor">,
+  fields: Omit<
+    TaskView,
+    "events" | "firstSequence" | "hasEarlier" | "cursor" | "compactedThrough"
+  >,
   cursor: number,
 ): TaskView =>
   taskViewSchema.parse(
@@ -340,6 +345,7 @@ const snapshot = (
           firstSequence: 1,
           hasEarlier: false,
           cursor,
+          compactedThrough: 0,
         }),
       ),
     ),
@@ -454,6 +460,102 @@ describe("applyTaskEvent", () => {
     expect(view.firstSequence).toBe(view.cursor - TASK_VIEW_EVENT_LIMIT + 1);
     expect(view.hasEarlier).toBe(true);
     expect(taskViewSchema.safeParse(view).success).toBe(true);
+  });
+
+  it("folds a compacted log from any cursor into the latest view", () => {
+    // Compaction as the contract states it: activity deleted, superseded
+    // snapshots deleted, previews stripped, then the marker.
+    const record = (event: ParsedTaskEvent) =>
+      event.type === "task.updated"
+        ? "task"
+        : event.type === "session.created" || event.type === "session.updated"
+          ? `session:${(event.payload as { session: { id: string } }).session.id}`
+          : undefined;
+    const latest = new Map<string, number>();
+    for (const event of log) {
+      const key = record(event);
+      if (key) latest.set(key, event.sequence);
+    }
+    const kept = log.flatMap((event): ParsedTaskEvent[] => {
+      if (["model.started", "tool.started", "run.started"].includes(event.type))
+        return [];
+      const key = record(event);
+      if (key && latest.get(key) !== event.sequence) return [];
+      if (event.type === "tool.finished") {
+        const { output: _output, ...payload } = event.payload;
+        return [{ ...event, payload } as ParsedTaskEvent];
+      }
+      if (event.type === "model.finished") {
+        const { text: _text, ...payload } = event.payload;
+        return [{ ...event, payload } as ParsedTaskEvent];
+      }
+      return [event];
+    });
+    expect(kept.length).toBeLessThan(log.length);
+    const marker = parseTaskEvent({
+      id: "e33",
+      taskId: "t1",
+      sequence: 33,
+      type: "task.compacted",
+      occurredAt: time(33),
+      botId: null,
+      sessionId: null,
+      runId: null,
+      causedBy: null,
+      payload: { through: 32, removed: log.length - kept.length, stripped: 3 },
+    });
+    const initial = snapshot(
+      {
+        task: taskQueued,
+        sessions: [],
+        messages: [],
+        artifacts: [],
+        approvals: [],
+        verificationChecks: [],
+        usage: { total: emptyUsage(), bySession: {} },
+      },
+      1,
+    );
+    // Records compared by id: a session first seen in its latest snapshot
+    // folds in after one created later.
+    const records = ({
+      events: _events,
+      firstSequence: _first,
+      hasEarlier: _earlier,
+      sessions,
+      ...rest
+    }: TaskView) => ({
+      ...rest,
+      sessions: [...sessions].sort((a, b) => a.id.localeCompare(b.id)),
+    });
+    const target = { ...records(viewAt32), cursor: 33, compactedThrough: 32 };
+    for (let n = 1; n <= 32; n += 1) {
+      const atN = fold(initial, log.slice(1, n));
+      const resumed = fold(atN, [
+        ...kept.filter((event) => event.sequence > n),
+        marker,
+      ]);
+      expect(records(resumed), `resumed after ${n}`).toEqual(target);
+    }
+  });
+
+  it("parses views and pages from servers before compaction as never compacted", () => {
+    const wire = JSON.parse(JSON.stringify(viewAt14));
+    delete wire.compactedThrough;
+    expect(taskViewSchema.parse(wire).compactedThrough).toBe(0);
+    expect(
+      taskEventPageSchema.parse({ events: [], cursor: 0, hasMore: false })
+        .compactedThrough,
+    ).toBe(0);
+    // A spilled event keeps its saved copy's id through parsing.
+    const spilled = parseTaskEvent({
+      ...JSON.parse(JSON.stringify(log[0])),
+      payloadArtifactId: "a9",
+    });
+    expect(spilled.payloadArtifactId).toBe("a9");
+    expect(applyTaskEvent(viewAt14, { ...spilled, sequence: 15 }).cursor).toBe(
+      15,
+    );
   });
 
   it("drops unknown event types from a snapshot instead of failing it", () => {

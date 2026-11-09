@@ -15,6 +15,8 @@ import {
   type CreateTaskCommand,
   type CreateTaskTemplateCommand,
   type DecideApprovalCommand,
+  type McpDiscovery,
+  type McpToolSnapshot,
   type ModelsView,
   type PostTaskMessageCommand,
   type PutSecretCommand,
@@ -27,6 +29,8 @@ import {
   type SecretsView,
   type SendBotMessageCommand,
   type SendBotMessageResult,
+  type StagedUpload,
+  type StartMcpDiscoveryCommand,
   type StartTemplateCommand,
   type StopTaskCommand,
   type Task,
@@ -41,11 +45,14 @@ import {
   type UpdateScheduleCommand,
   type UpdateTaskCommand,
   type UpdateTaskTemplateCommand,
+  type UploadToTaskCommand,
+  type UploadToTaskResult,
   type UsageReport,
   type WorkspaceHint,
 } from "@jj/contracts";
 import { type Database, type IdKind, queueDepth } from "@jj/db";
 import { type Tracer, trace } from "@opentelemetry/api";
+import { withCommitHooks } from "./commit-hooks";
 import { type EngineConfigInput, resolveConfig } from "./config";
 import { defaultIds, type EngineContext, type Logger } from "./context";
 import { errorMessage } from "./errors";
@@ -55,6 +62,7 @@ import { createMetrics, type EngineMetrics } from "./observability/metrics";
 import type {
   ChatResponder,
   DriverRegistry,
+  McpDiscoverer,
   ModelCatalog,
   RunExecutor,
 } from "./ports";
@@ -69,8 +77,10 @@ import { decideApproval } from "./services/approvals";
 import { artifactContent } from "./services/artifacts";
 import * as botService from "./services/bots";
 import { conversationView, sendBotMessage } from "./services/chat";
+import * as mcpService from "./services/mcp";
 import { postTaskMessage } from "./services/messages";
 import * as profileService from "./services/profiles";
+import { type CompactionPass, compactionPass } from "./services/retention";
 import * as scheduleService from "./services/schedules";
 import * as secretService from "./services/secrets";
 import {
@@ -80,6 +90,15 @@ import {
 } from "./services/stream";
 import { createTask, stopTask, updateTaskSettings } from "./services/tasks";
 import * as templateService from "./services/templates";
+import {
+  deleteStagedUpload,
+  type StageUploadInput,
+  stageUpload,
+  sweepStagedUploads,
+  uploadLimits,
+  uploadSettings,
+  uploadToTask,
+} from "./services/uploads";
 import { usageReport } from "./services/usage";
 import { VERIFICATION_ENFORCED } from "./services/verification";
 import { eventPage, taskSummaries, taskView } from "./services/views";
@@ -87,11 +106,17 @@ import { createWorker, type Worker } from "./worker/worker";
 
 export interface EngineOptions {
   /** The opened store (`openDatabase`). */
-  db: Pick<Database, "db" | "bus">;
+  db: Pick<Database, "db" | "bus"> & Partial<Pick<Database, "mode">>;
   drivers: DriverRegistry;
   executor: RunExecutor;
   chat: ChatResponder;
   models: ModelCatalog;
+  /**
+   * Tests MCP server configurations (the runtime's `McpDiscoverer`).
+   * Omitted: this server runs no MCP server, and a profile asking for one is
+   * refused with MCP_UNAVAILABLE.
+   */
+  mcp?: McpDiscoverer;
   config?: EngineConfigInput;
   clock?: () => Date;
   ids?: (kind: IdKind) => string;
@@ -152,6 +177,17 @@ export interface Engine {
     /** PROFILE_IN_USE while a bot references it. */
     delete(profileId: string): Promise<void>;
   };
+  mcp: {
+    /** `POST /api/runtime-profiles/:id/mcp-discoveries` (202): queues a test of a server configuration. */
+    startDiscovery(
+      profileId: string,
+      command: StartMcpDiscoveryCommand,
+    ): Promise<{ discovery: McpDiscovery }>;
+    /** `GET /api/mcp-discoveries/:id`. */
+    discovery(discoveryId: string): Promise<{ discovery: McpDiscovery }>;
+    /** `GET /api/mcp-snapshots/:id`. */
+    snapshot(snapshotId: string): Promise<{ snapshot: McpToolSnapshot }>;
+  };
   /** `GET /api/sandbox-drivers`. */
   drivers(): Promise<{ drivers: SandboxDriverInfo[] }>;
   /** `GET /api/models`. */
@@ -208,6 +244,28 @@ export interface Engine {
       taskId: string,
       artifactId: string,
     ): Promise<{ artifact: Artifact; content: Uint8Array }>;
+    /** `POST /api/tasks/:id/uploads`: attaches staged uploads; wakes nothing. */
+    upload(
+      taskId: string,
+      command: UploadToTaskCommand,
+    ): Promise<UploadToTaskResult>;
+  };
+  /** Staged uploads; every method answers NOT_FOUND while uploads are off. */
+  uploads: {
+    /** NOT_FOUND while uploads are off, before anything about a request is read. */
+    assertServed(): void;
+    /** `POST /api/uploads`: every limit is checked before the body is read. */
+    stage(input: StageUploadInput): Promise<{ upload: StagedUpload }>;
+    /** `DELETE /api/uploads/:id`. */
+    delete(uploadId: string): Promise<void>;
+  };
+  maintenance: {
+    /**
+     * Runs one compaction pass now, as the worker's hourly one does.
+     * `finishedBefore` replaces the retention cutoff, so tasks that finished
+     * since can be compacted too (for tests and maintenance by hand).
+     */
+    compactEvents(options?: { finishedBefore?: Date }): Promise<CompactionPass>;
   };
   /** Task templates: saved task setups the user starts again. */
   templates: {
@@ -272,11 +330,14 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
   let built = 0;
   let applied = 0;
   const ctx: EngineContext = {
-    db: options.db.db,
+    // Its transactions run their afterCommit hooks once they commit.
+    db: withCommitHooks(options.db.db),
     bus: options.db.bus,
+    ...(options.db.mode ? { dbMode: options.db.mode } : {}),
     config: resolveConfig(options.config),
     drivers: options.drivers,
     models: options.models,
+    ...(options.mcp ? { mcp: options.mcp } : {}),
     clock: options.clock ?? (() => new Date()),
     ids: options.ids ?? defaultIds,
     logger,
@@ -307,6 +368,9 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       `${name} is shorter than ${MIN_BARE_SECRET_LENGTH} characters, so it is not redacted from task history: a value that short is too likely to be an ordinary word. Use a longer value.`,
     );
   await store.purgeRetired(retiredBefore(ctx.clock()));
+  const swept = await sweepStagedUploads(ctx);
+  if (swept > 0)
+    ctx.logger.info(`Deleted ${swept} staged upload(s) past their time`);
   await store.rotate(ctx.logger);
   await store.refresh();
   warnUnreadable(store, ctx.logger);
@@ -349,11 +413,14 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           streaming: true,
           verification: VERIFICATION_ENFORCED,
           secretStore: store.available,
-          // No MCP server or skill reaches a session on this build; profiles asking for one are refused.
+          // Profiles store MCP servers and discovery tests them, but no
+          // server reaches a session on this build, so bots cannot use one.
+          // Skills are refused.
           mcp: { stdio: false, remote: false },
           skills: false,
           // Every worker runs the scheduler; `lastPassAt` says whether one does.
           schedules: true,
+          uploads: uploadLimits(ctx),
           drivers: drivers.map((info) => ({
             id: info.id,
             available: info.available,
@@ -361,6 +428,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           })),
         },
         defaultModel: ctx.models.defaultModel(),
+        eventRetentionDays: ctx.config.eventRetentionDays,
         bots: bots.bots,
         tasks,
         profiles: profiles.profiles,
@@ -385,6 +453,12 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       update: (profileId, command) =>
         profileService.updateProfile(ctx, profileId, command),
       delete: (profileId) => profileService.deleteProfile(ctx, profileId),
+    },
+    mcp: {
+      startDiscovery: (profileId, command) =>
+        mcpService.startDiscovery(ctx, profileId, command),
+      discovery: (discoveryId) => mcpService.getDiscovery(ctx, discoveryId),
+      snapshot: (snapshotId) => mcpService.getSnapshot(ctx, snapshotId),
     },
     drivers: async () => ({ drivers: await ctx.drivers.list() }),
     models: () => secretService.modelsView(ctx),
@@ -414,6 +488,17 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
       subscribe: (taskId, options) => subscribeTask(ctx, taskId, options),
       artifactContent: (taskId, artifactId) =>
         artifactContent(ctx, taskId, artifactId),
+      upload: (taskId, command) => uploadToTask(ctx, taskId, command),
+    },
+    uploads: {
+      assertServed: () => {
+        uploadSettings(ctx);
+      },
+      stage: (input) => stageUpload(ctx, input),
+      delete: (uploadId) => deleteStagedUpload(ctx, uploadId),
+    },
+    maintenance: {
+      compactEvents: (options) => compactionPass(ctx, options),
     },
     templates: {
       list: () => templateService.listTemplates(ctx),

@@ -213,7 +213,9 @@ export interface SandboxDirEntry {
  * `SandboxPathError`. The check is best effort against concurrent changes: a
  * command inside the sandbox that swaps a directory for a symlink while a call
  * runs can redirect that call. `remove` and `move` act on a symlink itself,
- * never its target, so an outward link can still be deleted or renamed.
+ * never its target, so an outward link can still be deleted or renamed, and
+ * a move onto a symlink replaces the link. A move onto a directory fails
+ * with code `EISDIR`.
  *
  * An isolating driver resolves paths inside the sandbox, never on the host:
  * an absolute link such as `/etc` means the sandbox's `/etc`.

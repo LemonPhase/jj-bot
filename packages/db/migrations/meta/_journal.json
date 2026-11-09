@@ -103,8 +103,29 @@
     {
       "idx": 14,
       "version": "7",
-      "when": 1793754829181,
-      "tag": "0014_schedules",
+      "when": 1793744389846,
+      "tag": "0014_event_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793754933748,
+      "tag": "0015_mcp_discovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794244355837,
+      "tag": "0016_uploads",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794251454491,
+      "tag": "0017_schedules",
       "breakpoints": true
     }
   ]

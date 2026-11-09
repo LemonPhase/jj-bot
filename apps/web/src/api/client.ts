@@ -25,6 +25,8 @@ import type {
   CreateTaskCommand,
   CreateTaskTemplateCommand,
   DecideApprovalCommand,
+  McpDiscovery,
+  McpToolSnapshot,
   ModelsView,
   PostTaskMessageCommand,
   PutSecretCommand,
@@ -36,6 +38,8 @@ import type {
   SecretInfo,
   SecretsView,
   SendBotMessageCommand,
+  StagedUpload,
+  StartMcpDiscoveryCommand,
   StartTemplateCommand,
   StopTaskCommand,
   Task,
@@ -49,6 +53,8 @@ import type {
   UpdateScheduleCommand,
   UpdateTaskCommand,
   UpdateTaskTemplateCommand,
+  UploadToTaskCommand,
+  UploadToTaskResult,
   UsageReport,
   WorkspaceHint,
 } from "@jj/contracts";
@@ -72,7 +78,8 @@ export interface ApiBadge {
 export type ClientErrorCode =
   | "NETWORK_ERROR"
   | "INVALID_RESPONSE"
-  | "UNRECOGNIZED_ERROR";
+  | "UNRECOGNIZED_ERROR"
+  | "ABORTED";
 
 /**
  * Every failed call rejects with this. Server failures carry the contract
@@ -110,6 +117,13 @@ export interface StreamOptions {
    * (`isTerminalTaskError`), when it stops in the `closed` state.
    */
   onError?: (error: ApiError) => void;
+}
+
+export interface StageUploadOptions {
+  /** Bytes sent so far, of the file's size. */
+  onProgress?: (sent: number, total: number) => void;
+  /** Aborting it cancels the upload: it rejects with `ABORTED`. */
+  signal?: AbortSignal;
 }
 
 export interface HintOptions extends StreamOptions {
@@ -169,6 +183,19 @@ export interface JJApi {
   ): Promise<RuntimeProfile>;
   /** Rejects with `PROFILE_IN_USE` while a bot references the profile. */
   deleteProfile(profileId: string): Promise<void>;
+  /**
+   * `POST /api/runtime-profiles/:id/mcp-discoveries`: tests an MCP server
+   * configuration, saved or not, with the profile's sandbox and grants.
+   * Resolves with the queued discovery; poll `getMcpDiscovery` for its end.
+   */
+  startMcpDiscovery(
+    profileId: string,
+    command: StartMcpDiscoveryCommand,
+  ): Promise<McpDiscovery>;
+  /** `GET /api/mcp-discoveries/:id`: with its snapshot once it succeeded. */
+  getMcpDiscovery(discoveryId: string): Promise<McpDiscovery>;
+  /** `GET /api/mcp-snapshots/:id`: a reviewed tool list a server can pin. */
+  getMcpSnapshot(snapshotId: string): Promise<McpToolSnapshot>;
   listDrivers(): Promise<SandboxDriverInfo[]>;
   getModels(): Promise<ModelsView>;
   /**
@@ -236,6 +263,28 @@ export interface JJApi {
    * configured), which a plain link cannot send: fetch the content instead.
    */
   fetchArtifact?(taskId: string, artifactId: string): Promise<Blob>;
+
+  // Uploads: offered only while `capabilities.uploads` is set.
+  /**
+   * `POST /api/uploads?name=`: stages the file's bytes under `name` (NFC),
+   * for a command to attach. Rejects with `UPLOAD_TOO_LARGE`,
+   * `RATE_LIMITED` or `VALIDATION_FAILED`.
+   */
+  stageUpload(
+    file: Blob,
+    name: string,
+    options?: StageUploadOptions,
+  ): Promise<StagedUpload>;
+  /** `DELETE /api/uploads/:id`: removes a staged upload no command attached. */
+  deleteUpload(uploadId: string): Promise<void>;
+  /**
+   * `POST /api/tasks/:id/uploads`: attaches staged uploads to the task. Wakes
+   * nothing: the files are placed by the task's next run.
+   */
+  uploadToTask(
+    taskId: string,
+    command: UploadToTaskCommand,
+  ): Promise<UploadToTaskResult>;
 
   // Task templates
   /** `GET /api/task-templates`, oldest first. Rejects with `NOT_FOUND` on a server without templates. */

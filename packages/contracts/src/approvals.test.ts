@@ -287,6 +287,7 @@ describe("approvals in task views", () => {
     firstSequence: 1,
     hasEarlier: false,
     cursor: 0,
+    compactedThrough: 0,
   };
 
   it("folds a request and its updates onto the view", () => {
