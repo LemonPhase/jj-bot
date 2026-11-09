@@ -1834,7 +1834,8 @@ async function allEvents(
 /**
  * Reads the task stream after `after` until `until` matches; checks the
  * framing and that sequences arrive gap-free. With `reconnect`, a stream that
- * ends or fails (a server restart) is reopened with `Last-Event-ID`.
+ * ends or fails (a server restart, or a proxy answering 502 to 504 while the
+ * server is down) is reopened with `Last-Event-ID`.
  */
 async function follow(
   base: string,
@@ -1865,6 +1866,13 @@ async function follow(
         },
         signal: controller.signal,
       });
+      // Behind a reverse proxy (the compose `https` profile's Caddy), a
+      // server that is restarting answers 502 to 504 rather than refusing
+      // the connection: not back yet, like a connection refused.
+      if (options.reconnect && [502, 503, 504].includes(response.status)) {
+        await response.body?.cancel();
+        throw new StreamEnded();
+      }
       check(response.status === 200, `stream answered ${response.status}`);
       check(
         response.headers.get("Content-Type")?.includes("text/event-stream"),
