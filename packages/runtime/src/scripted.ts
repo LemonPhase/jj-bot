@@ -849,7 +849,7 @@ function taskAnswer(text: string): string {
 function updateAnswer(text: string): string {
   const lines = text.split("\n");
   const happened =
-    /a task you coordinate (completed|failed|is waiting for the user|has a call waiting for the user's approval)/.exec(
+    /a task you coordinate (completed|failed|is waiting for the user|has a call waiting for the user's approval|passed 80% of a spend cap)/.exec(
       lines[0] ?? "",
     )?.[1] ?? "changed";
   const task = /^Task: (\S+) ("(?:[^"\\]|\\.)*")$/.exec(lines[1] ?? "");
@@ -865,7 +865,7 @@ function updateAnswer(text: string): string {
   const body = clip((lines[header + 1] ?? "").trim(), 300);
   if (happened === "is waiting for the user")
     return `"${title}" needs your input: ${body}`;
-  if (happened.startsWith("has a call"))
+  if (happened.startsWith("has a call") || happened.startsWith("passed 80%"))
     return `"${title}" needs your approval: ${body}${/[.!?]$/.test(body) ? "" : "."} Approve or deny it on the card below.`;
   return `Update on "${title}": it ${happened}. ${body}`.trim();
 }
