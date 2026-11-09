@@ -30,11 +30,15 @@ export interface LazyComponent<P extends object> {
  * reload. Trying again would not help, and could hurt: Chromium keeps a
  * failed dynamic import for the page's life, and Vite's preload helper never
  * asks again for a stylesheet it has tried, so a second try would render the
- * part without its CSS. For the same reason a load first asks again for any
- * stylesheet that failed before (`restoreStylesheets`): another part may
- * share it. A background download that must not cost the click its chance is
- * a prefetch instead (`prefetchChunks` in apps/web/prefetch.ts), which never
- * runs the chunk.
+ * part without its CSS. For the same reason a load first asks again for the
+ * stylesheets of its chunk that failed before (`restoreStylesheets`):
+ * another part may share them. A background download that must not cost the
+ * click its chance is a prefetch instead (`prefetchChunks` in
+ * apps/web/prefetch.ts), which never runs the chunk.
+ *
+ * `name` is the file name of the module `importComponent` imports, without
+ * its extension: the build lists each lazy chunk's stylesheets under it
+ * (apps/web/chunkStylesheets.ts).
  */
 export function lazyComponent<P extends object>(
   name: string,
@@ -43,7 +47,7 @@ export function lazyComponent<P extends object>(
   let loading: Promise<ComponentType<P>> | undefined;
   let loaded: ComponentType<P> | undefined;
   const load = () => {
-    loading ??= restoreStylesheets()
+    loading ??= restoreStylesheets(name)
       .then(importComponent)
       .then((component) => {
         loaded = component;
@@ -59,6 +63,35 @@ export function lazyComponent<P extends object>(
   }
   Loaded.displayName = name;
   return { Component: Loaded, load };
+}
+
+/**
+ * How long a part asked for may take to load before it opens with its
+ * placeholder. From the prefetch cache a chunk loads in tens of milliseconds.
+ */
+export const OPEN_WAIT_MS = 150;
+
+/**
+ * Calls `open` once `part` has loaded, or after `wait` ms, whichever comes
+ * first, so a part already in the cache opens at once: opened before its
+ * chunk is in, it would show its placeholder for as long as React holds a
+ * Suspense fallback (about 300 ms). A slow load opens with the placeholder,
+ * and a failed one opens with its boundary's error.
+ */
+export function openWhenLoaded(
+  part: Pick<LazyComponent<never>, "load">,
+  open: () => void,
+  wait: number = OPEN_WAIT_MS,
+): void {
+  let opened = false;
+  const once = () => {
+    if (opened) return;
+    opened = true;
+    window.clearTimeout(timer);
+    open();
+  };
+  const timer = window.setTimeout(once, wait);
+  part.load().then(once, once);
 }
 
 /**

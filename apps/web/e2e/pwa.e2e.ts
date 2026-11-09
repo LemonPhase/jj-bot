@@ -450,3 +450,48 @@ test("offline, the app says the API is unreachable and never shows the demo data
   await expect(page.getByText("Demo data")).toHaveCount(0);
   await page.context().setOffline(false);
 });
+
+test("offline, a screen that cannot load leaves the stored parts working", async ({
+  page,
+  request,
+}) => {
+  const bot = await createBot(request, "Nova");
+  await page.goto(`/#/bots/${bot.id}`);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Nova" }),
+  ).toBeVisible();
+  await controlled(page);
+  // The worker stores the shell with the parts it prefetches.
+  await expect
+    .poll(async () =>
+      (await cached(page))
+        .map((item) => item.request)
+        .filter((path) =>
+          /^\/assets\/(NewTaskDialog|BotInspector)-/.test(path),
+        ),
+    )
+    .toHaveLength(2);
+
+  await page.context().setOffline(true);
+  // The Tasks screen was never loaded, so offline it cannot be, and says so.
+  await page.goto("/#/tasks");
+  await expect(
+    page.getByRole("button", { name: "Reload" }).first(),
+  ).toBeVisible();
+
+  // Back on the bot, the stored parts still open, styled.
+  await page.goto(`/#/bots/${bot.id}`);
+  const chat = page.getByRole("main", { name: "Chat with Nova" });
+  await chat.getByRole("button", { name: "New task" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task" });
+  await expect(dialog.getByRole("textbox", { name: "Goal" })).toBeVisible();
+  await expect(dialog.locator("form")).toHaveCSS("display", "flex");
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await chat.getByRole("button", { name: "Profile" }).click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "Nova's profile" })
+      .getByRole("textbox", { name: "Role" }),
+  ).toBeVisible();
+  await page.context().setOffline(false);
+});

@@ -8,7 +8,11 @@ import {
   useState,
 } from "react";
 import { Button, Dialog, ErrorBanner, Spinner } from "../../components/ui";
-import { LoadBoundary, lazyComponent } from "../../lib/lazyComponent";
+import {
+  LoadBoundary,
+  lazyComponent,
+  openWhenLoaded,
+} from "../../lib/lazyComponent";
 import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
@@ -151,14 +155,15 @@ export function AppShell() {
         // From the drawer: the dialog takes its place, and gives focus back
         // to the menu button when it closes.
         setNavOpen(false);
-        setDialog({
-          kind: "task",
-          botIds: botIds?.length
-            ? botIds
-            : selectedBotId
-              ? [selectedBotId]
-              : [],
-        });
+        const initialBotIds = botIds?.length
+          ? botIds
+          : selectedBotId
+            ? [selectedBotId]
+            : [];
+        // Prefetched, the dialog opens once loaded, without its placeholder.
+        openWhenLoaded(newTaskDialog, () =>
+          setDialog({ kind: "task", botIds: initialBotIds }),
+        );
       },
       openTemplateDialog: (request) => {
         setNavOpen(false);

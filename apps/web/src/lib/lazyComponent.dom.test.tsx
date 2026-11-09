@@ -3,7 +3,12 @@ import "../test/dom";
 import { render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { LoadBoundary, lazyComponent } from "./lazyComponent";
+import {
+  LoadBoundary,
+  lazyComponent,
+  OPEN_WAIT_MS,
+  openWhenLoaded,
+} from "./lazyComponent";
 import { restoreStylesheets, watchStylesheets } from "./stylesheets";
 
 const Part = ({ name }: { name: string }) => <p>Hello {name}</p>;
@@ -103,5 +108,97 @@ describe("lazyComponent", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     links(href)[0]?.dispatchEvent(new Event("load"));
     await later;
+  });
+
+  it("asks again only for the failed stylesheets its own chunk loads with, when the page lists them", async () => {
+    const own = new URL("/assets/tasks-c.css", document.baseURI).href;
+    const other = new URL("/assets/schedules-d.css", document.baseURI).href;
+    const list = document.createElement("meta");
+    list.name = "jj-chunk-stylesheets";
+    list.content = "Dialog=/assets/tasks-c.css;Panel=;Screen=/assets/x.css";
+    document.head.append(list);
+    try {
+      stylesheet(own).dispatchEvent(new Event("error"));
+      stylesheet(other).dispatchEvent(new Event("error"));
+      // A chunk with no stylesheets of its own loads at once, whatever failed
+      // (offline, an unvisited screen's stylesheet must not stop it).
+      const panel = vi.fn(async () => Part);
+      await lazyComponent("Panel", panel).load();
+      expect(panel).toHaveBeenCalledTimes(1);
+      // A chunk that needs one waits for it, and only for it.
+      const dialog = vi.fn(async () => Part);
+      const loading = lazyComponent("Dialog", dialog).load();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(dialog).not.toHaveBeenCalled();
+      links(own)[0]?.dispatchEvent(new Event("load"));
+      await loading;
+      expect(dialog).toHaveBeenCalledTimes(1);
+    } finally {
+      list.remove();
+      // Leave nothing failed behind for the other tests.
+      const done = restoreStylesheets();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (const link of [...links(own), ...links(other)])
+        link.dispatchEvent(new Event("load"));
+      await done;
+    }
+  });
+});
+
+describe("openWhenLoaded", () => {
+  const held = () => {
+    let settle: (ok: boolean) => void = () => {};
+    const load = vi.fn(
+      () =>
+        new Promise<unknown>((resolve, reject) => {
+          settle = (ok) => (ok ? resolve(Part) : reject(new Error("failed")));
+        }),
+    );
+    return { part: { load }, settle: (ok: boolean) => settle(ok) };
+  };
+
+  it("opens as soon as the part has loaded, before the wait is over", async () => {
+    vi.useFakeTimers();
+    try {
+      const { part, settle } = held();
+      const open = vi.fn();
+      openWhenLoaded(part, open);
+      expect(part.load).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30);
+      expect(open).not.toHaveBeenCalled();
+      settle(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(open).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(OPEN_WAIT_MS);
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens with the placeholder once the wait is over, and once only", async () => {
+    vi.useFakeTimers();
+    try {
+      const { part, settle } = held();
+      const open = vi.fn();
+      openWhenLoaded(part, open);
+      await vi.advanceTimersByTimeAsync(OPEN_WAIT_MS - 1);
+      expect(open).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(open).toHaveBeenCalledTimes(1);
+      settle(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(open).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens on a failed load too, so the part's boundary says what failed", async () => {
+    const { part, settle } = held();
+    const open = vi.fn();
+    openWhenLoaded(part, open);
+    settle(false);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
   });
 });

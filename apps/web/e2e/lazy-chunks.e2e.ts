@@ -125,3 +125,57 @@ test("a stylesheet that never arrives shows an honest error, not an unstyled par
   ).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
 });
+
+test("prefetched, the New task dialog and the profile panel open without their loading placeholder", async ({
+  page,
+  request,
+}) => {
+  const bot = await createBot(request, "Nova");
+  const { chat } = await openChat(page, bot);
+  // Once the browser has prefetched both chunks...
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          performance
+            .getEntriesByType("resource")
+            .filter((entry) =>
+              /\/assets\/(NewTaskDialog|BotInspector)-[\w-]+\.js$/.test(
+                entry.name,
+              ),
+            ).length,
+      ),
+    )
+    .toBe(2);
+  // ...note every placeholder that shows from now on, however briefly.
+  await page.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { placeholders: string[] }).placeholders = seen;
+    new MutationObserver(() => {
+      for (const status of document.querySelectorAll('[role="status"]')) {
+        const text = status.textContent ?? "";
+        if (
+          (text === "Loading…" && status.closest("dialog")) ||
+          text === "Loading profile…"
+        )
+          seen.push(text);
+      }
+    }).observe(document.body, { subtree: true, childList: true });
+  });
+  const placeholders = () =>
+    page.evaluate(
+      () => (window as unknown as { placeholders: string[] }).placeholders,
+    );
+
+  await chat.getByRole("button", { name: "New task" }).click();
+  const dialog = page.getByRole("dialog", { name: "New task" });
+  await expect(dialog.getByRole("textbox", { name: "Goal" })).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await chat.getByRole("button", { name: "Profile" }).click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "Nova's profile" })
+      .getByRole("textbox", { name: "Role" }),
+  ).toBeVisible();
+  expect(await placeholders()).toEqual([]);
+});

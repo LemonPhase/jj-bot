@@ -20,7 +20,11 @@ import {
   Spinner,
   StatusTag,
 } from "../../components/ui";
-import { LoadBoundary, lazyComponent } from "../../lib/lazyComponent";
+import {
+  LoadBoundary,
+  lazyComponent,
+  openWhenLoaded,
+} from "../../lib/lazyComponent";
 import { moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { botHref } from "../shell/router";
@@ -149,10 +153,13 @@ function BotScreen({ bot }: { bot: Bot }) {
     if (takeBotFocus(bot.id)) headingRef.current?.focus();
   }, [bot.id]);
 
-  const openInspector = (target: InspectorFocus) => {
-    setInspectorOpen(true);
-    setFocus(target);
-  };
+  // Prefetched, the panel opens once loaded, without its placeholder.
+  const showInspector = (target: InspectorFocus | null) =>
+    openWhenLoaded(inspector, () => {
+      setInspectorOpen(true);
+      if (target) setFocus(target);
+    });
+  const openInspector = (target: InspectorFocus) => showInspector(target);
   const closeInspector = () => {
     setInspectorOpen(false);
     document.getElementById(toggleId)?.focus();
@@ -191,7 +198,7 @@ function BotScreen({ bot }: { bot: Bot }) {
                 pressed={inspectorOpen}
                 aria-controls={inspectorOpen ? inspectorId : undefined}
                 onClick={() =>
-                  inspectorOpen ? closeInspector() : setInspectorOpen(true)
+                  inspectorOpen ? closeInspector() : showInspector(null)
                 }
               />
             </>

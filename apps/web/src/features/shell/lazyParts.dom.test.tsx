@@ -101,11 +101,13 @@ describe("the first screen's on-demand parts", () => {
     expect(chunks.newTask.started).toBe(0);
     expect(chunks.inspector.started).toBe(1);
 
-    // Asked for before its chunk arrives, the dialog opens with its name.
+    // Asked for, the dialog waits briefly for its chunk (from the prefetch
+    // cache it arrives in time and opens complete); one that takes longer
+    // opens with its name and a spinner.
     const chat = screen.getByRole("main", { name: "Chat with Kite" });
     fireEvent.click(within(chat).getByRole("button", { name: "New task" }));
-    const loading = screen.getByRole("dialog", { name: "New task" });
     await vi.waitFor(() => expect(chunks.newTask.started).toBe(1));
+    const loading = await screen.findByRole("dialog", { name: "New task" });
     expect(within(loading).getByRole("status").textContent).toBe("Loading…");
     act(() => chunks.newTask.arrive());
     expect(await screen.findByText("New task form")).toBeTruthy();
