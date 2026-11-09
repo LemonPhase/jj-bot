@@ -14,6 +14,7 @@
 export { z } from "zod";
 export * from "./api";
 export * from "./approvals";
+export * from "./auth";
 export * from "./bots";
 export * from "./canonical";
 export * from "./common";
