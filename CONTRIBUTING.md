@@ -43,4 +43,4 @@ Docs hold invariants, not progress. Keep `docs/` to contracts, boundaries, seman
 3. Get an independent review of the diff, by a person or an agent session that did not write it, against the acceptance criteria (the issue's, or the PR's without one). Fix what it finds, re-run the affected checks, and record the findings and their fixes in the PR.
 4. Merge once CI passes and the acceptance criteria hold with evidence; the PR closes its issue, if any. If you stop before then, comment on the issue (or, without one, the PR) with commit or PR links, results, blockers and the exact next action. Keep issues curated; do not paste conversation transcripts.
 
-No API keys belong in code, issues or browser bundles. The API has one shared bearer token and no per-user identity: never expose it beyond loopback except behind HTTPS.
+No API keys belong in code, issues or browser bundles. The API has one owner, one access token and no per-user identity: never expose it beyond loopback except behind HTTPS ([Remote access](docs/development.md#remote-access)).

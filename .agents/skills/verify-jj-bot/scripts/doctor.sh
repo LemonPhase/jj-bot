@@ -29,7 +29,10 @@ fi
 ready=$(curl -s "$url/health/ready")
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$url/health/ready")" = 200 ] && ok "ready: $ready" || bad "not ready: $ready"
 
-boot=$(curl -s "$url/api/bootstrap")
+# A run launched with --auth answers the API only with its token.
+auth=()
+[ -s "$run/token" ] && auth=(-H "Authorization: Bearer $(cat "$run/token")")
+boot=$(curl -s ${auth[@]+"${auth[@]}"} "$url/api/bootstrap")
 node -e '
   const b = JSON.parse(process.argv[1]);
   const lines = [

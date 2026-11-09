@@ -37,6 +37,7 @@ Each feature file starts with an H1 and one paragraph describing the user-visibl
 - [Task templates](templates.md): save a task as a template, start it again with instructions for that run, and see one with an archived bot refused.
 - [Schedules](schedules.md): schedule a template with a preset and a zone, see its next runs and inline refusals, watch it fire once at its time, and see a template it uses refused deletion.
 - [Uploads](uploads.md): give a new task files, see them in its workspace before the coordinator starts, a file over the limit refused, and more files from the task chat's paperclip.
+- [Sign-in](login.md): sign in with a login link, the token or a password at desktop and phone widths, see the countdown after failures, list and sign out devices, and rotate the token.
 - [Verification checks](verification.md): give a task checks, watch a failing one fixed and passed, one that cannot pass, and edit them as a new goal version.
 - [Settings](settings.md): models, runtime profiles and sandbox drivers.
 - [Spend caps](spend-caps.md): a task stopped at its cap and continued, a bot at its daily cap, and usage reporting.
