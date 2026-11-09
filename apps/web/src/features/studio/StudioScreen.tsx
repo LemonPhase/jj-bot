@@ -96,12 +96,22 @@ function Studio({ bot }: { bot: Bot | null }) {
   const dirty = bot ? update !== null : true;
   const busy = save.kind === "busy";
 
-  // While nothing is edited here, follow changes saved elsewhere.
+  // When the stored bot changes (its `updatedAt`), the draft is reset to it
+  // only if `dirty` is false. `dirty` compares the draft with the new stored
+  // bot, so a change saved elsewhere to a field shown here leaves the old
+  // value in the draft, and saving writes it back over that change:
+  // https://github.com/LemonPhase/jj-bot/issues/150. Never on mount, where
+  // the draft already is the stored bot: React can run this effect after a
+  // first edit is made (it only runs effects before that edit renders), and
+  // a reset queued then would throw the edit away.
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const updatedAt = bot?.updatedAt;
+  const followedAt = useRef(updatedAt);
   useEffect(() => {
-    if (bot && !dirtyRef.current)
+    if (!bot || updatedAt === followedAt.current) return;
+    followedAt.current = updatedAt;
+    if (!dirtyRef.current)
       dispatch({ type: "reset", draft: draftFromBot(bot) });
     // `updatedAt` stands for every stored field of the bot.
   }, [updatedAt]);

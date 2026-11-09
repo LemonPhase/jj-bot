@@ -54,10 +54,21 @@ async function setup(options: Parameters<typeof testEngine>[1] = {}) {
   return engine;
 }
 
-/** Workers over one database and one workspace root, as across a restart. */
-async function worker(options: Parameters<typeof testEngine>[1] = {}) {
+/**
+ * Workers over one database and one workspace root, as across a restart.
+ * `ready` sets up the worker's fake model (its bots' replies) before the
+ * worker starts: a started worker claims a queued job at once, and a reply
+ * set up after that comes too late for the run ("No brain for Ada").
+ */
+async function worker(
+  options: Parameters<typeof testEngine>[1] = {},
+  ready: (executor: FakeExecutor) => unknown = () => {},
+) {
   root ??= await mkdtemp(join(tmpdir(), "jj-artifacts-"));
-  return setup({ workspaceRoot: root, ...options });
+  const engine = await setup({ workspaceRoot: root, ...options, start: false });
+  ready(engine.executor);
+  await engine.engine.worker.start();
+  return engine;
 }
 
 /** The clock of a worker that resumes the work a minute later. */
@@ -605,8 +616,9 @@ describe("artifacts of runs that ended without a snapshot", () => {
     // The stop stores nothing; the files are still in the workspace.
     expect((await first.engine.tasks.get(task.id)).artifacts).toEqual([]);
 
-    const second = await worker({ clock: aMinuteLater });
-    second.executor.brain(ada, writesThenHolds);
+    const second = await worker({ clock: aMinuteLater }, (executor) =>
+      executor.brain(ada, writesThenHolds),
+    );
     const view = await untilTask(second.engine, task.id, completed);
     const [handed, resumed] = await runRows(task.id);
     expect([handed, resumed].map(runSummary)).toEqual([
@@ -631,11 +643,10 @@ describe("artifacts of runs that ended without a snapshot", () => {
     await first.executor.gate("hold").reached;
     await first.engine.worker.abandon();
 
-    const second = await worker({
-      config: { leaseMs: 1_000 },
-      clock: aMinuteLater,
-    });
-    second.executor.brain(ada, writesThenHolds);
+    const second = await worker(
+      { config: { leaseMs: 1_000 }, clock: aMinuteLater },
+      (executor) => executor.brain(ada, writesThenHolds),
+    );
     const view = await untilTask(
       second.engine,
       task.id,
@@ -711,8 +722,9 @@ describe("artifacts of runs that ended without a snapshot", () => {
     ]);
     await first.engine.worker.stop();
 
-    const second = await worker({ clock: aMinuteLater });
-    second.executor.brain(ada, coordinator).brain(bob, reporter);
+    const second = await worker({ clock: aMinuteLater }, (executor) =>
+      executor.brain(ada, coordinator).brain(bob, reporter),
+    );
     const view = await untilTask(second.engine, task.id, completed);
     const adaSession = view.sessions.find((s) => s.botId === team.byName[ada]);
     const bobSession = view.sessions.find((s) => s.botId === team.byName[bob]);
@@ -822,8 +834,9 @@ describe("artifacts of runs that ended without a snapshot", () => {
     });
     await first.executor.gate("hold").reached;
     await first.engine.worker.stop();
-    const second = await worker({ clock: aMinuteLater });
-    second.executor.brain(ada, brain);
+    const second = await worker({ clock: aMinuteLater }, (executor) =>
+      executor.brain(ada, brain),
+    );
     const view = await untilTask(second.engine, task.id, completed);
     const [handed, resumed] = await runRows(task.id);
     expect(fileCredits(view)).toEqual([
@@ -884,8 +897,9 @@ describe("artifacts of runs that ended without a snapshot", () => {
     await first.executor.gate("bob-hold").reached;
     await first.engine.worker.stop();
 
-    const second = await worker({ clock: aMinuteLater });
-    second.executor.brain(ada, coordinator).brain(bob, reporterAfter);
+    const second = await worker({ clock: aMinuteLater }, (executor) =>
+      executor.brain(ada, coordinator).brain(bob, reporterAfter),
+    );
     await second.executor.gate("bob-resumed").reached;
     const adaWaiting = await untilTask(
       second.engine,
@@ -948,8 +962,9 @@ describe("artifacts of runs that ended without a snapshot", () => {
         ),
       );
 
-    const second = await worker({ clock: aMinuteLater });
-    second.executor.brain(ada, coordinator).brain(bob, reporter);
+    const second = await worker({ clock: aMinuteLater }, (executor) =>
+      executor.brain(ada, coordinator).brain(bob, reporter),
+    );
     // Ada runs again (the run holds the task's sandbox) and is stopped there.
     await second.engine.tasks.postMessage(task.id, { text: "status?" });
     await second.executor.gate("ada-hold").reached;

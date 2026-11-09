@@ -26,22 +26,80 @@ function nested(depth: number): Record<string, unknown> {
   return schema;
 }
 
+interface Timed<T> {
+  value: T;
+  /** Processor time, in milliseconds. */
+  ms: number;
+}
+
 /**
- * The result and the fastest of three timings, after a warm-up run: the
- * machine is shared, so one slow run says little, while work that grows
- * with a hostile input (a regular expression run, a deep walk) is slow
- * every time.
+ * The processor time this process spends in `run`: unlike wall time, it does
+ * not grow while other processes have the machine.
  */
-const timed = <T>(run: () => T): { value: T; ms: number } => {
-  let value = run();
-  let ms = Number.POSITIVE_INFINITY;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const start = performance.now();
-    value = run();
-    ms = Math.min(ms, performance.now() - start);
+function processorTime<T>(run: () => T): Timed<T> {
+  const start = process.cpuUsage();
+  const value = run();
+  const spent = process.cpuUsage(start);
+  return { value, ms: (spent.user + spent.system) / 1000 };
+}
+
+/**
+ * `run` and the work it is held against, timed in turns: the least processor
+ * time of five runs of each, after a warm-up run of each. A loaded machine
+ * leaves processor time alone where it stretches wall time, which failed a
+ * fixed limit in milliseconds on a busy machine; the comparison takes care
+ * of a slower machine. Work that grows with a hostile input (a regular
+ * expression's backtracking, references that expand, a walk over every tool)
+ * costs many times its comparison, on every run.
+ */
+function timedAgainst<T, C>(
+  run: () => T,
+  comparison: () => C,
+): [Timed<T>, Timed<C>] {
+  const timed: [Timed<T>, Timed<C>] = [
+    { value: run(), ms: Number.POSITIVE_INFINITY },
+    { value: comparison(), ms: Number.POSITIVE_INFINITY },
+  ];
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const first = processorTime(run);
+    timed[0] = { value: first.value, ms: Math.min(timed[0].ms, first.ms) };
+    const second = processorTime(comparison);
+    timed[1] = { value: second.value, ms: Math.min(timed[1].ms, second.ms) };
   }
-  return { value, ms };
-};
+  return timed;
+}
+
+/**
+ * Fast: at most `times` the comparison, plus 5 ms for a garbage collection
+ * or timer granularity on tiny timings, and under a second on any machine.
+ */
+function expectWithin(
+  timed: { ms: number },
+  comparison: { ms: number },
+  times: number,
+) {
+  expect(timed.ms).toBeLessThan(1_000);
+  expect(timed.ms).toBeLessThan(times * comparison.ms + 5);
+}
+
+/**
+ * Ordinary work to hold a refusal against: sanitizing a plain tool with 40
+ * properties, under a millisecond of processor time.
+ */
+const ordinary = () =>
+  sanitizeTools("docs", [
+    tool("plain", {
+      inputSchema: {
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 40 }, (_, index) => [
+            `field_${index}`,
+            { type: "string", description: "A field." },
+          ]),
+        ),
+      },
+    }),
+  ]);
 
 describe("sanitizeTools: hostile input schemas", () => {
   it("drops a catastrophic pattern and format, so validating a call stays fast", () => {
@@ -55,8 +113,20 @@ describe("sanitizeTools: hostile input schemas", () => {
         required: ["query"],
       },
     });
-    const { value, ms } = timed(() => sanitizeTools("docs", [hostile]));
-    expect(ms).toBeLessThan(50);
+    // Sanitizing it costs about what the same tool without those keywords does.
+    const plain = tool("search", {
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    });
+    const [sanitized, plainly] = timedAgainst(
+      () => sanitizeTools("docs", [hostile]),
+      () => sanitizeTools("docs", [plain]),
+    );
+    expectWithin(sanitized, plainly, 3);
+    const { value } = sanitized;
     const [kept] = value.tools;
     expect(kept?.inputSchema).toEqual({
       type: "object",
@@ -67,8 +137,9 @@ describe("sanitizeTools: hostile input schemas", () => {
       "search: left out schema keywords format, pattern, patternProperties.",
     ]);
     // pi validates arguments with the reduced schema; with the pattern kept,
-    // this input would backtrack for seconds.
-    const validated = timed(() =>
+    // the first input would backtrack for seconds, where the second, which
+    // the pattern matches at once, takes no time either way.
+    const validate = (query: string) =>
       validateToolArguments(
         {
           name: "mcp__docs__search",
@@ -79,22 +150,35 @@ describe("sanitizeTools: hostile input schemas", () => {
           type: "toolCall",
           id: "1",
           name: "mcp__docs__search",
-          arguments: { query: `${"a".repeat(30)}!` },
+          arguments: { query },
         },
-      ),
+      );
+    const [backtracking, matching] = timedAgainst(
+      () => validate(`${"a".repeat(30)}!`),
+      () => validate("a".repeat(31)),
     );
-    expect(validated.ms).toBeLessThan(50);
+    expectWithin(backtracking, matching, 3);
   });
 
   it("refuses a schema 100 levels deep, and keeps one exactly at the depth limit", () => {
-    const { value, ms } = timed(() =>
-      sanitizeTools("docs", [
-        tool("deep", { inputSchema: nested(100) }),
-        tool("limit", { inputSchema: nested(12) }),
-        tool("over", { inputSchema: nested(13) }),
-      ]),
+    const listing = (depth: number) => [
+      tool("deep", { inputSchema: nested(depth) }),
+      tool("limit", { inputSchema: nested(12) }),
+      tool("over", { inputSchema: nested(13) }),
+    ];
+    // Refused at the limit: it costs about what ordinary work does, and
+    // twice as deep costs about the same.
+    const [refused, plain] = timedAgainst(
+      () => sanitizeTools("docs", listing(100)),
+      ordinary,
     );
-    expect(ms).toBeLessThan(50);
+    expectWithin(refused, plain, 10);
+    const [doubled, once] = timedAgainst(
+      () => sanitizeTools("docs", listing(200)),
+      () => sanitizeTools("docs", listing(100)),
+    );
+    expectWithin(doubled, once, 3);
+    const { value } = refused;
     expect(value.tools.map((kept) => kept.name)).toEqual(["limit"]);
     expect(value.warnings).toEqual([
       "deep: left out, since its input schema nests deeper than 12 levels.",
@@ -124,13 +208,18 @@ describe("sanitizeTools: hostile input schemas", () => {
         ),
       },
     };
-    const { value, ms } = timed(() =>
-      sanitizeTools("docs", [
-        tool("huge", { inputSchema: huge }),
-        tool("padded", { inputSchema: padded }),
-      ]),
+    // Refused early: about one pass over the input, where reducing all of it
+    // costs ten times that.
+    const [sanitized, serialized] = timedAgainst(
+      () =>
+        sanitizeTools("docs", [
+          tool("huge", { inputSchema: huge }),
+          tool("padded", { inputSchema: padded }),
+        ]),
+      () => JSON.stringify(huge),
     );
-    expect(ms).toBeLessThan(50);
+    expectWithin(sanitized, serialized, 3);
+    const { value } = sanitized;
     expect(value.tools).toEqual([]);
     expect(value.warnings).toEqual([
       `huge: left out, since its input schema is larger than ${MCP_SCHEMA_BYTES_LIMIT} bytes once reduced.`,
@@ -198,13 +287,24 @@ describe("sanitizeTools: hostile input schemas", () => {
   it("refuses a small schema whose references expand past the cap, quickly, and inlines a modest one", () => {
     const hostile = doubling(28);
     expect(JSON.stringify(hostile).length).toBeLessThan(2_000);
-    const { value, ms } = timed(() =>
-      sanitizeTools("docs", [
-        tool("doubling", { inputSchema: hostile }),
-        tool("modest", { inputSchema: doubling(2) }),
-      ]),
+    const listing = (levels: number) => [
+      tool("doubling", { inputSchema: doubling(levels) }),
+      tool("modest", { inputSchema: doubling(2) }),
+    ];
+    // Expanded, each level would double the work. Stopped at the cap, the
+    // refusal costs about what ordinary work does, and twice the levels cost
+    // about the same.
+    const [refused, plain] = timedAgainst(
+      () => sanitizeTools("docs", listing(28)),
+      ordinary,
     );
-    expect(ms).toBeLessThan(50);
+    expectWithin(refused, plain, 10);
+    const [doubled, once] = timedAgainst(
+      () => sanitizeTools("docs", listing(56)),
+      () => sanitizeTools("docs", listing(28)),
+    );
+    expectWithin(doubled, once, 3);
+    const { value } = refused;
     expect(value.tools.map((kept) => kept.name)).toEqual(["modest"]);
     expect(value.warnings).toEqual([
       `doubling: left out, since its input schema is larger than ${MCP_SCHEMA_BYTES_LIMIT} bytes once its references are expanded.`,
@@ -285,10 +385,20 @@ describe("sanitizeTools: hostile input schemas", () => {
         },
       }),
     );
-    // Sanitizing every tool before choosing took seconds.
-    const { value, ms } = timed(() => sanitizeTools("docs", listed));
-    expect(ms).toBeLessThan(300);
-    const { tools, warnings } = value;
+    // Sanitizing every tool before choosing took seconds: twenty times what
+    // sanitizing 5,000 of them, 200 at a time, costs. Choosing first costs
+    // a fraction of that.
+    const batches = Array.from({ length: 25 }, (_, batch) =>
+      listed.slice(batch * 200, (batch + 1) * 200),
+    );
+    const [chosen, fiveThousand] = timedAgainst(
+      () => sanitizeTools("docs", listed),
+      () => {
+        for (const batch of batches) sanitizeTools("docs", batch);
+      },
+    );
+    expectWithin(chosen, fiveThousand, 1);
+    const { tools, warnings } = chosen.value;
     expect(tools).toHaveLength(200);
     expect(tools.at(-1)?.name).toBe("tool_000199");
     expect(warnings).toEqual([
