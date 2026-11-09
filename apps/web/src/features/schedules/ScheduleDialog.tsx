@@ -5,6 +5,7 @@ import {
   SCHEDULE_NAME_LIMIT,
   type Schedule,
   TEMPLATE_INSTRUCTIONS_LIMIT,
+  type UpdateScheduleCommand,
 } from "@jj/contracts";
 import { type FormEvent, useId, useMemo, useState } from "react";
 import {
@@ -30,7 +31,7 @@ import {
   presetOf,
   uncappedTemplate,
 } from "./scheduleModel";
-import { previewTrigger } from "./scheduleTimes";
+import { previewTrigger, sameTrigger } from "./scheduleTimes";
 import "./schedules.css";
 
 const reasonOf = (reason: unknown, fallback: string) =>
@@ -91,7 +92,10 @@ export default function ScheduleDialog({
  * expression, in a time zone, previewed as its next 3 runs by the same
  * functions the server uses), the instructions each run adds, how many
  * finished runs keep their workspace, which chat updates it sends, and
- * whether it is on. The server's refusals are shown as they come.
+ * whether it is on. An edit sends only what changed, and, as the server
+ * checks only a changed trigger or template or a schedule turned on, saves
+ * a rename or a turn-off while the preview shows a problem with times that
+ * stay as they are. The server's refusals are shown as they come.
  */
 function ScheduleEditor({
   schedule,
@@ -142,9 +146,23 @@ function ScheduleEditor({
   const zones = useMemo(knownTimeZones, []);
   const minInterval =
     schedules?.scheduler.minIntervalMinutes ?? DEFAULT_MIN_INTERVAL;
-  const trigger = { kind: "cron" as const, cron, timeZone: timeZone.trim() };
-  const preview = previewTrigger(trigger, new Date(), minInterval);
+  const trigger = useMemo(
+    () => ({ kind: "cron" as const, cron, timeZone: timeZone.trim() }),
+    [cron, timeZone],
+  );
+  // The cron walk runs when the times change, not on every keystroke.
+  const preview = useMemo(
+    () => previewTrigger(trigger, new Date(), minInterval),
+    [trigger, minInterval],
+  );
   const preset = presetOf(cron);
+  const triggerChanged = !schedule || !sameTrigger(trigger, schedule.trigger);
+  const checked =
+    !schedule ||
+    triggerChanged ||
+    chosen !== schedule.templateId ||
+    (enabled && !schedule.enabled);
+  const blocked = checked && Boolean(preview.problem);
   const templateProblems = template ? problemLines(template.problems) : [];
   const noCap = template ? uncappedTemplate(template, bots, profiles) : false;
   const paused =
@@ -166,7 +184,7 @@ function ScheduleEditor({
     )
       found.keep = `A whole number from 0 to ${MAX_KEEP_WORKSPACES}.`;
     setErrors(found);
-    if (Object.keys(found).length > 0 || preview.problem || !template) return;
+    if (Object.keys(found).length > 0 || blocked || !template) return;
     const fields = {
       name: name.trim(),
       templateId: template.id,
@@ -176,10 +194,26 @@ function ScheduleEditor({
       keepWorkspaces: keep,
       chatUpdates,
     };
+    const patch: UpdateScheduleCommand = {};
+    if (schedule) {
+      if (fields.name !== schedule.name) patch.name = fields.name;
+      if (fields.templateId !== schedule.templateId)
+        patch.templateId = fields.templateId;
+      if (triggerChanged) patch.trigger = trigger;
+      if (fields.instructions !== schedule.instructions)
+        patch.instructions = fields.instructions;
+      if (enabled !== schedule.enabled) patch.enabled = enabled;
+      if (keep !== schedule.keepWorkspaces) patch.keepWorkspaces = keep;
+      if (chatUpdates !== schedule.chatUpdates) patch.chatUpdates = chatUpdates;
+      if (Object.keys(patch).length === 0) {
+        onClose();
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
     try {
-      if (schedule) await updateSchedule(schedule.id, fields);
+      if (schedule) await updateSchedule(schedule.id, patch);
       else await createSchedule(fields);
       onClose();
     } catch (reason) {
@@ -207,7 +241,7 @@ function ScheduleEditor({
             type="submit"
             form={formId}
             variant="primary"
-            disabled={busy || !template || Boolean(preview.problem)}
+            disabled={busy || !template || blocked}
           >
             {busy ? "Saving…" : "Save schedule"}
           </Button>
@@ -291,6 +325,12 @@ function ScheduleEditor({
                 ))}
               </datalist>
             </div>
+            {preview.problem && !blocked && (
+              <p className="schedule-editor__note" role="note">
+                Its times stay as they are: you can still rename it or turn it
+                off.
+              </p>
+            )}
             <div id={runsId} className="schedule-editor__runs">
               {preview.runs.length > 0 && (
                 <>

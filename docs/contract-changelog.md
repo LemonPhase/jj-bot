@@ -67,7 +67,8 @@ rather than landing it and announcing it afterwards.
     schedule always finds its next fire), `firesBetween(trigger, after, until, limit)`,
     `minimumGapMinutes(trigger, from, stopBelow?)` (over `SCHEDULE_GAP_DAYS`, measured on the zone's
     wall clock; with `stopBelow` it returns at the first gap under it; null for fewer than two
-    fires), `triggerProblem(trigger, from, minIntervalMinutes)` and `formatFireTime`. A wall time
+    fires), `triggerProblem(trigger, from, minIntervalMinutes)`, `sameTrigger(a, b)` (the same
+    expression, single-spaced, in the same canonical zone) and `formatFireTime`. A wall time
     daylight saving skips fires once, at the end of the gap; a repeated one once, at its first
     occurrence; in real time a change of offset can bring two runs as close as a minute, which the
     docs state. The zone is read about twice per matching day, never per minute.
@@ -78,8 +79,9 @@ rather than landing it and announcing it afterwards.
   `scheduleId`. A save answers `VALIDATION_FAILED` for a bad cron or zone, one that never runs in
   the horizon, a gap under the server's minimum, or a template that is unknown or whose task cap
   resolves to none, and `CONFLICT` past either limit. A `PATCH` runs the trigger and template
-  checks only when it changes the trigger or the template or enables the schedule, so one that
-  disables it always applies.
+  checks only when it changes the trigger (`sameTrigger`) or the template from the stored ones, or
+  turns a disabled schedule on, so one that disables it always applies, even when it repeats the
+  trigger and template unchanged.
 - `capabilities.schedules` (false by default, so older servers read as without them); while false
   the routes answer 404. `taskObjectSchema.scheduleId` (null by default and for records before
   1.11.0). The hint `schedules.changed`. The error `TEMPLATE_IN_USE` (409, `details` per

@@ -5,6 +5,7 @@ import type {
   ScheduleFire,
   ScheduleList as ScheduleListView,
   TaskView,
+  UpdateScheduleCommand,
 } from "@jj/contracts";
 import {
   configure,
@@ -15,7 +16,7 @@ import {
   within,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiProvider } from "../../api/ApiContext";
 import type { JJApi } from "../../api/client";
 import { createDemoApi } from "../../api/demoApi";
@@ -27,6 +28,13 @@ import TemplateDialog from "../templates/TemplateDialog";
 import { TemplateList } from "../templates/TemplateList";
 import ScheduleDialog from "./ScheduleDialog";
 import { ScheduleList } from "./ScheduleList";
+import { previewTrigger } from "./scheduleTimes";
+
+// Counted, to show the editor previews again only when the times change.
+vi.mock("./scheduleTimes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./scheduleTimes")>();
+  return { ...actual, previewTrigger: vi.fn(actual.previewTrigger) };
+});
 
 configure({ asyncUtilTimeout: 5000 });
 
@@ -38,6 +46,10 @@ const demo = () => createDemoApi({ autoplay: false, tasks: [] });
 afterEach(() => {
   window.location.hash = "";
 });
+
+// A <dialog> opens in an effect after its content commits, and roles inside
+// a closed one are hidden: each editor test finds its first role with
+// findByRole, which waits for the dialog to open.
 
 /** Renders once the workspace and its schedules have loaded over `api`. */
 function renderReady(
@@ -304,7 +316,7 @@ describe("the schedule editor", () => {
     const zone = screen.getByLabelText("Time zone") as HTMLInputElement;
     fireEvent.change(zone, { target: { value: "UTC" } });
     expect(cron.value).toBe("0 9 * * *");
-    fireEvent.click(screen.getByRole("radio", { name: "Weekdays" }));
+    fireEvent.click(await screen.findByRole("radio", { name: "Weekdays" }));
     expect(cron.value).toBe("0 9 * * 1-5");
     fireEvent.click(screen.getByRole("radio", { name: "Hourly" }));
     expect(cron.value).toBe("0 * * * *");
@@ -335,7 +347,7 @@ describe("the schedule editor", () => {
     open();
     const cron = await screen.findByLabelText("Cron");
     const zone = screen.getByLabelText("Time zone");
-    const save = screen.getByRole("button", { name: "Save schedule" });
+    const save = await screen.findByRole("button", { name: "Save schedule" });
     fireEvent.change(zone, { target: { value: "UTC" } });
     fireEvent.change(cron, { target: { value: "*/30 * * * *" } });
     expect(
@@ -384,7 +396,9 @@ describe("the schedule editor", () => {
     fireEvent.change(screen.getByLabelText("Time zone"), {
       target: { value: "America/New_York" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save schedule" }),
+    );
     expect(await screen.findByText("Evening digest")).toBeTruthy();
     expect(closed).toBe(true);
     const saved = (await api.listSchedules()).schedules.find(
@@ -420,7 +434,9 @@ describe("the schedule editor", () => {
     fireEvent.change(screen.getByLabelText("Time zone"), {
       target: { value: "UTC" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Save schedule" }),
+    );
     const refusal = await screen.findByRole("alert");
     expect(refusal.textContent).toMatch(
       /Not saved.*starts tasks with no spend cap, and a scheduled task needs one/,
@@ -441,9 +457,9 @@ describe("the schedule editor", () => {
       ((await screen.findByLabelText("Cron")) as HTMLInputElement).value,
     ).toBe("0 9 * * 1");
     expect(
-      screen
-        .getByRole("radio", { name: "Weekly" })
-        .getAttribute("aria-checked"),
+      (await screen.findByRole("radio", { name: "Weekly" })).getAttribute(
+        "aria-checked",
+      ),
     ).toBe("true");
     fireEvent.click(screen.getByRole("radio", { name: "Every update" }));
     fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
@@ -457,6 +473,100 @@ describe("the schedule editor", () => {
       cron: "0 9 * * 1",
       timeZone: "Europe/London",
     });
+  });
+
+  it("previews again when the times change, not on every keystroke", async () => {
+    open();
+    const name = await screen.findByLabelText("Name");
+    const calls = () => vi.mocked(previewTrigger).mock.calls.length;
+    const before = calls();
+    for (const value of ["M", "Mo", "Mor"])
+      fireEvent.change(name, { target: { value } });
+    expect(calls()).toBe(before);
+    fireEvent.change(screen.getByLabelText("Cron"), {
+      target: { value: "0 8 * * *" },
+    });
+    expect(calls()).toBeGreaterThan(before);
+  });
+
+  it("renames and turns off a schedule whose times no longer pass, sending only what changed", async () => {
+    // Saved hourly at 9 and 10, before the server's minimum was raised to 120.
+    const stored = schedule({
+      trigger: { kind: "cron", cron: "0 9,10 * * *", timeZone: "UTC" },
+    });
+    const sent: [string, UpdateScheduleCommand][] = [];
+    const api: JJApi = {
+      ...demo(),
+      listSchedules: async () => ({
+        schedules: [stored],
+        scheduler: { ...fresh(), minIntervalMinutes: 120 },
+      }),
+      updateSchedule: async (scheduleId, command) => {
+        sent.push([scheduleId, command]);
+        return { ...stored, ...command } as Schedule;
+      },
+    };
+    let closed = false;
+    renderReady(
+      <ScheduleDialog
+        request={{ kind: "edit", scheduleId: "s1" }}
+        onClose={() => {
+          closed = true;
+        }}
+      />,
+      api,
+    );
+    const problem =
+      "This schedule runs 60 minutes apart at times, under this server's minimum of 120 minutes between runs.";
+    expect(await screen.findByText(problem)).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Its times stay as they are: you can still rename it or turn it off.",
+      ),
+    ).toBeTruthy();
+    const save = await screen.findByRole("button", { name: "Save schedule" });
+    expect(save).toHaveProperty("disabled", false);
+    // Other times that fail are refused inline, as the server would.
+    const cron = screen.getByLabelText("Cron");
+    fireEvent.change(cron, { target: { value: "30 9,10 * * *" } });
+    expect(save).toHaveProperty("disabled", true);
+    fireEvent.change(cron, { target: { value: "0 9,10 * * *" } });
+    expect(save).toHaveProperty("disabled", false);
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "Digest, paused" },
+    });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "On: start tasks at these times" }),
+    );
+    expect(screen.getByText(problem)).toBeTruthy();
+    fireEvent.click(save);
+    await waitFor(() => expect(closed).toBe(true));
+    expect(sent).toEqual([["s1", { name: "Digest, paused", enabled: false }]]);
+  });
+
+  it("checks the times again before turning a paused schedule on", async () => {
+    const stored = schedule({
+      trigger: { kind: "cron", cron: "0 9,10 * * *", timeZone: "UTC" },
+      enabled: false,
+      pausedReason: "interval_too_short",
+      nextFireAt: null,
+    });
+    renderReady(
+      <ScheduleDialog
+        request={{ kind: "edit", scheduleId: "s1" }}
+        onClose={() => {}}
+      />,
+      withSchedules({
+        schedules: [stored],
+        scheduler: { ...fresh(), minIntervalMinutes: 120 },
+      }),
+    );
+    const save = await screen.findByRole("button", { name: "Save schedule" });
+    expect(save).toHaveProperty("disabled", false);
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "On: start tasks at these times" }),
+    );
+    expect(save).toHaveProperty("disabled", true);
   });
 
   it("confirms a deletion", async () => {

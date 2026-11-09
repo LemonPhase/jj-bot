@@ -16,6 +16,7 @@ import {
 import {
   createScheduleCommandSchema,
   nextFires,
+  sameTrigger,
   triggerProblem,
   updateScheduleCommandSchema,
 } from "@jj/contracts/schedule-rules";
@@ -279,9 +280,10 @@ export async function createSchedule(
 
 /**
  * `PATCH /api/schedules/:id`: the patch merged onto the stored schedule. A
- * patch that changes the trigger or the template, or enables the schedule,
- * is checked as a save; any other (disabling it, or changing its name,
- * instructions, kept workspaces or chat updates) applies even when the
+ * patch that changes the trigger or the template from the stored ones, or
+ * turns a disabled schedule on, is checked as a save; any other (disabling
+ * it, or changing its name, instructions, kept workspaces or chat updates,
+ * even with the trigger and template repeated as they are) applies when the
  * schedule would no longer pass those checks, so it can always be turned
  * off. Every edit computes the next fire from now, so nothing missed while
  * it was disabled or due starts afterwards; enabling clears a pause.
@@ -303,10 +305,13 @@ export async function updateSchedule(
       keepWorkspaces: command.keepWorkspaces ?? current.keepWorkspaces,
       chatUpdates: command.chatUpdates ?? current.chatUpdates,
     };
+    const stored = current.trigger as unknown as StoredTrigger;
     const full =
-      command.trigger !== undefined ||
-      command.templateId !== undefined ||
-      command.enabled === true;
+      (command.trigger !== undefined &&
+        !sameTrigger(command.trigger, stored)) ||
+      (command.templateId !== undefined &&
+        command.templateId !== current.templateId) ||
+      (command.enabled === true && !current.enabled);
     const placed = await checkSave(tx, ctx, draft, scheduleId, full);
     const [updated] = await tx
       .update(schedules)

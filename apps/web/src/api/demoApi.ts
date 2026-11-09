@@ -72,6 +72,7 @@ import {
   firesBetween,
   minimumGapMinutes,
   nextFires,
+  sameTrigger,
   triggerProblem,
   updateScheduleCommandSchema,
 } from "@jj/contracts/schedule-rules";
@@ -1005,10 +1006,47 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
   };
   const nextFireFrom = (trigger: StoredTrigger, from: Date) =>
     nextFires(trigger, from, 1)[0]?.toISOString() ?? null;
-  /** The save checks of services/schedules.ts; returns the next fire. */
+  /**
+   * The save checks of services/schedules.ts: with `full`, the trigger and
+   * the template; always, the limits. Returns the next fire, or a pause
+   * when an enabled schedule has none.
+   */
   const checkScheduleSave = (
     draft: Pick<StoredSchedule, "templateId" | "trigger" | "enabled">,
     existingId?: string,
+    full = true,
+  ): { nextFireAt: string | null; pausedReason?: "no_next_fire" } => {
+    if (full) checkTriggerAndTemplate(draft);
+    if (!existingId && schedules.size >= MAX_SCHEDULES)
+      throw new ApiError(
+        "CONFLICT",
+        `This server keeps at most ${MAX_SCHEDULES} schedules; delete one before saving another.`,
+        { limit: MAX_SCHEDULES },
+        409,
+      );
+    const enabled = [...schedules.values()].filter(
+      (schedule) => schedule.enabled && schedule.id !== existingId,
+    ).length;
+    if (draft.enabled && enabled >= MAX_ENABLED_SCHEDULES)
+      throw new ApiError(
+        "CONFLICT",
+        `At most ${MAX_ENABLED_SCHEDULES} schedules can be enabled at once; disable one first.`,
+        { limit: MAX_ENABLED_SCHEDULES },
+        409,
+      );
+    if (!draft.enabled) return { nextFireAt: null };
+    let next: string | null;
+    try {
+      next = nextFireFrom(draft.trigger, new Date(now()));
+    } catch {
+      next = null;
+    }
+    return next
+      ? { nextFireAt: next }
+      : { nextFireAt: null, pausedReason: "no_next_fire" };
+  };
+  const checkTriggerAndTemplate = (
+    draft: Pick<StoredSchedule, "templateId" | "trigger">,
   ) => {
     const problem = triggerProblem(
       draft.trigger,
@@ -1039,24 +1077,6 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         { field: "templateId" },
         400,
       );
-    if (!existingId && schedules.size >= MAX_SCHEDULES)
-      throw new ApiError(
-        "CONFLICT",
-        `This server keeps at most ${MAX_SCHEDULES} schedules; delete one before saving another.`,
-        { limit: MAX_SCHEDULES },
-        409,
-      );
-    const enabled = [...schedules.values()].filter(
-      (schedule) => schedule.enabled && schedule.id !== existingId,
-    ).length;
-    if (draft.enabled && enabled >= MAX_ENABLED_SCHEDULES)
-      throw new ApiError(
-        "CONFLICT",
-        `At most ${MAX_ENABLED_SCHEDULES} schedules can be enabled at once; disable one first.`,
-        { limit: MAX_ENABLED_SCHEDULES },
-        409,
-      );
-    return draft.enabled ? nextFireFrom(draft.trigger, new Date(now())) : null;
   };
   const recordFire = (
     schedule: StoredSchedule,
@@ -1693,7 +1713,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         keepWorkspaces: parsed.keepWorkspaces ?? 10,
         chatUpdates: parsed.chatUpdates ?? "attention",
       };
-      const nextFireAt = checkScheduleSave(draft);
+      const { nextFireAt } = checkScheduleSave(draft);
       const createdAt = now();
       const schedule: StoredSchedule = {
         id: `sched-${++scheduleCounter}`,
@@ -1729,11 +1749,24 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           ? { chatUpdates: parsed.chatUpdates }
           : {}),
       };
-      const nextFireAt = checkScheduleSave(draft, scheduleId);
+      // As the server: only a changed trigger or template, or turning it
+      // on, is checked as a save, so a schedule can always be turned off.
+      const full =
+        (parsed.trigger !== undefined &&
+          !sameTrigger(parsed.trigger, current.trigger)) ||
+        (parsed.templateId !== undefined &&
+          parsed.templateId !== current.templateId) ||
+        (parsed.enabled === true && !current.enabled);
+      const placed = checkScheduleSave(draft, scheduleId, full);
       const schedule: StoredSchedule = {
         ...draft,
-        nextFireAt,
-        pausedReason: parsed.enabled === true ? null : current.pausedReason,
+        nextFireAt: placed.nextFireAt,
+        ...(placed.pausedReason
+          ? { enabled: false, pausedReason: placed.pausedReason }
+          : {
+              pausedReason:
+                parsed.enabled === true ? null : current.pausedReason,
+            }),
         updatedAt: now(),
       };
       schedules.set(scheduleId, schedule);

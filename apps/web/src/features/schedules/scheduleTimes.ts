@@ -8,6 +8,8 @@ import {
 // The editor's evaluation of a trigger, loaded with the schedule dialog
 // only: the cron walk and the zone math stay out of the initial bundle.
 
+export { sameTrigger } from "@jj/contracts/schedule-rules";
+
 export interface TriggerPreview {
   /** Why the server would refuse it, in one sentence. */
   problem?: string;

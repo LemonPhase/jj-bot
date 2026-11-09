@@ -318,6 +318,19 @@ export function triggerProblem(
 }
 
 /**
+ * Whether two triggers name the same times: the same expression, its fields
+ * single-spaced, in the same zone, in canonical form. A patch whose trigger
+ * is the stored one does not change it, so it is not checked again.
+ */
+export function sameTrigger(a: StoredTrigger, b: StoredTrigger): boolean {
+  const cron = (trigger: StoredTrigger) =>
+    trigger.cron.trim().split(/\s+/).join(" ");
+  const zone = (trigger: StoredTrigger) =>
+    canonicalTimeZone(trigger.timeZone) ?? trigger.timeZone.trim();
+  return a.kind === b.kind && cron(a) === cron(b) && zone(a) === zone(b);
+}
+
+/**
  * A fire's time on the schedule's wall clock, for the brief and the UI:
  * `2026-11-04 09:00 Europe/London`.
  */
@@ -406,10 +419,11 @@ export const updateScheduleCommandObjectSchema =
 /**
  * `PATCH /api/schedules/:id`: the patch merged onto the stored schedule.
  * The trigger and template checks of a save run when the patch changes the
- * trigger or the template, or enables the schedule; a patch that disables it
- * or changes only its name, instructions, kept workspaces or chat updates
- * always applies. Every edit computes the next fire from now: nothing missed
- * is started afterwards.
+ * trigger or the template from the stored ones (`sameTrigger`), or turns a
+ * disabled schedule on; any other patch, one that disables it or changes
+ * only its name, instructions, kept workspaces or chat updates, applies even
+ * when the fields it repeats unchanged would no longer pass. Every edit
+ * computes the next fire from now: nothing missed is started afterwards.
  */
 export const updateScheduleCommandSchema =
   updateScheduleCommandObjectSchema.refine(hasSomeField, SOME_FIELD_REQUIRED);

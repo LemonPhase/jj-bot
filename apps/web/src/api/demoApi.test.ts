@@ -1091,6 +1091,48 @@ describe("demo schedules (as services/schedules.ts and worker/scheduler.ts)", ()
     await rejects(api.getSchedule(created.id), "NOT_FOUND");
   });
 
+  it("turns off a schedule whose times no longer pass, with its trigger and template repeated unchanged", async () => {
+    // As one saved before the server's minimum was raised.
+    const api = demo({
+      now: () => new Date("2026-11-09T08:00:00.000Z"),
+      tasks: [],
+      schedules: [
+        {
+          id: "sched-often",
+          name: "Half-hourly",
+          templateId: "tmpl-demo-1",
+          trigger: { kind: "cron", cron: "*/30 * * * *", timeZone: "UTC" },
+          instructions: "",
+          minutesAgo: 60,
+        },
+      ],
+    });
+    const off = await api.updateSchedule("sched-often", {
+      name: "Half-hourly, off",
+      templateId: "tmpl-demo-1",
+      trigger: { kind: "cron", cron: "*/30  * * * *", timeZone: "utc" },
+      instructions: "",
+      enabled: false,
+      keepWorkspaces: 10,
+      chatUpdates: "attention",
+    });
+    expect(off).toMatchObject({
+      name: "Half-hourly, off",
+      enabled: false,
+      nextFireAt: null,
+    });
+    await rejects(
+      api.updateSchedule("sched-often", { enabled: true }),
+      "VALIDATION_FAILED",
+    );
+    await rejects(
+      api.updateSchedule("sched-often", {
+        trigger: { kind: "cron", cron: "*/20 * * * *", timeZone: "UTC" },
+      }),
+      "VALIDATION_FAILED",
+    );
+  });
+
   it("starts the template at its time on the demo clock, skips while that task runs, and records a downtime missed", async () => {
     const { api, set } = clocked("2026-11-09T08:00:00.000Z");
     set("2026-11-09T09:00:10.000Z");

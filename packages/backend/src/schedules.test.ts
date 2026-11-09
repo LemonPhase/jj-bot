@@ -793,6 +793,43 @@ describe("a schedule that no longer passes the save checks", () => {
     ).toBe("VALIDATION_FAILED");
   });
 
+  it("applies a patch that repeats its trigger and template unchanged, as an editor sends them", async () => {
+    const { schedule, strict } = await tooOften();
+    const repeated = {
+      templateId: schedule.templateId,
+      // The stored trigger, spelled loosely: the same times.
+      trigger: { kind: "cron" as const, cron: " 0  * * * * ", timeZone: "utc" },
+      instructions: schedule.instructions,
+      keepWorkspaces: schedule.keepWorkspaces,
+      chatUpdates: schedule.chatUpdates,
+    };
+    const { schedule: renamed } = await strict.engine.schedules.update(
+      schedule.id,
+      { ...repeated, name: "Hourly", enabled: true },
+    );
+    expect(renamed).toMatchObject({
+      name: "Hourly",
+      enabled: true,
+      trigger: { kind: "cron", cron: "0 * * * *", timeZone: "UTC" },
+    });
+    const { schedule: off } = await strict.engine.schedules.update(
+      schedule.id,
+      { ...repeated, name: "Hourly", enabled: false },
+    );
+    expect(off).toMatchObject({ enabled: false, nextFireAt: null });
+    // Times that do change are checked, on a disabled schedule too.
+    expect(
+      (
+        await refusal(
+          strict.engine.schedules.update(schedule.id, {
+            ...repeated,
+            trigger: { kind: "cron", cron: "30 * * * *", timeZone: "UTC" },
+          }),
+        )
+      ).code,
+    ).toBe("VALIDATION_FAILED");
+  });
+
   it("pauses at its next due time with the reason, instead of refusing every one", async () => {
     const { clock, schedule, strict } = await tooOften();
     clock.set("2026-01-13T09:00:01Z");
