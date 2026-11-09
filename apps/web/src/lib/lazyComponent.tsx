@@ -12,8 +12,8 @@ export interface LazyComponent<P extends object> {
   Component: ComponentType<P>;
   /**
    * Starts loading the chunk on the first call; later calls share that load.
-   * A load that fails is forgotten, so the next call (a render after a failed
-   * preload) tries again.
+   * A load that fails is forgotten, so the next call tries again: a render
+   * after a failed preload, or the render's own second try.
    */
   load: () => Promise<unknown>;
 }
@@ -45,7 +45,14 @@ export function lazyComponent<P extends object>(
     );
     return loading;
   };
-  const Lazy = lazy(() => load().then((component) => ({ default: component })));
+  // A render tries a failed load once more before its boundary shows: a
+  // preload in flight when the component is asked for may have hit a
+  // passing network error.
+  const Lazy = lazy(() =>
+    load()
+      .catch(() => load())
+      .then((component) => ({ default: component })),
+  );
   function Loaded(props: P) {
     // Chosen once per mount, so it never remounts when its chunk lands.
     const [Chosen] = useState<ComponentType<P>>(() => loaded ?? Lazy);

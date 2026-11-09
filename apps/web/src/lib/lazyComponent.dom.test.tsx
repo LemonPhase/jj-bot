@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../test/dom";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { Suspense } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoadBoundary, lazyComponent, whenIdle } from "./lazyComponent";
@@ -38,6 +38,31 @@ describe("lazyComponent", () => {
     expect(importPart).toHaveBeenCalledTimes(2);
   });
 
+  it("tries once more when a preload it waits on fails", async () => {
+    let fail: (error: Error) => void = () => {};
+    const importPart = vi
+      .fn<() => Promise<typeof Part>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      )
+      .mockResolvedValue(Part);
+    const part = lazyComponent("Part", importPart);
+    const preload = part.load().catch(() => {});
+    // Asked for while the preload is in flight, then the preload fails.
+    render(
+      <Suspense fallback={<p>Loading part…</p>}>
+        <part.Component name="Moss" />
+      </Suspense>,
+    );
+    act(() => fail(new TypeError("net::ERR_NETWORK_CHANGED")));
+    await preload;
+    expect(await screen.findByText("Hello Moss")).toBeTruthy();
+    expect(importPart).toHaveBeenCalledTimes(2);
+  });
+
   it("renders at once, without its fallback, once its chunk is in", async () => {
     const part = lazyComponent("Part", async () => Part);
     await part.load();
@@ -50,11 +75,12 @@ describe("lazyComponent", () => {
     expect(screen.queryByText("Loading part…")).toBeNull();
   });
 
-  it("shows its boundary's message when the chunk does not arrive", async () => {
+  it("shows its boundary's message when the chunk does not arrive twice", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const part = lazyComponent<{ name: string }>("Part", async () => {
+    const importPart = vi.fn(async (): Promise<typeof Part> => {
       throw new TypeError("Failed to fetch dynamically imported module");
     });
+    const part = lazyComponent<{ name: string }>("Part", importPart);
     render(
       <LoadBoundary failed={(error) => <p role="alert">{error.message}</p>}>
         <Suspense fallback={null}>
@@ -65,6 +91,7 @@ describe("lazyComponent", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(
       "Failed to fetch dynamically imported module",
     );
+    expect(importPart).toHaveBeenCalledTimes(2);
   });
 });
 
