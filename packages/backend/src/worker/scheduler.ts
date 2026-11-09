@@ -260,7 +260,13 @@ async function fireDue(
   dueAt: Date,
 ): Promise<Fire> {
   const minimum = ctx.config.scheduleMinIntervalMinutes;
-  const gap = minimumGapMinutes(trigger, dueAt, minimum);
+  // From just before the due time, so the gap after it counts: a save
+  // measures a year ahead, and a leap-day pair saved earlier shows only here.
+  const gap = minimumGapMinutes(
+    trigger,
+    new Date(dueAt.getTime() - 1),
+    minimum,
+  );
   if (gap !== null && gap < minimum)
     return {
       outcome: "refused",

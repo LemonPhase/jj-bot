@@ -1219,6 +1219,34 @@ describe("no next fire, and clocks that disagree", () => {
     });
   });
 
+  it("refuses a leap-day pair of runs closer than the minimum when the day comes", async () => {
+    // Saved more than a year ahead: no two of its runs fall in the year a
+    // save measures.
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template } = await templateFor(engine.engine);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id, {
+        trigger: { kind: "cron", cron: "0,30 0 29 2 *", timeZone: "UTC" },
+      }),
+    );
+    expect(schedule.nextFireAt).toBe("2028-02-29T00:00:00.000Z");
+    // Ahead of real time: nothing runs, so no run deadline applies.
+    clock.set("2028-02-29T00:00:10Z");
+    await pass(engine);
+    expect(
+      (await firesOf(schedule.id)).map((fire) => [fire.outcome, fire.code]),
+    ).toEqual([["refused", "VALIDATION_FAILED"]]);
+    expect(
+      (await engine.engine.schedules.get(schedule.id)).schedule,
+    ).toMatchObject({
+      enabled: false,
+      pausedReason: "interval_too_short",
+      nextFireAt: null,
+    });
+    expect(await tasksOf(schedule.id)).toEqual([]);
+  });
+
   it("pauses a schedule whose times can no longer be computed, rather than leave it enabled and dormant", async () => {
     const clock = fakeClock("2026-01-13T08:00:00Z");
     const engine = await setup(clock);
