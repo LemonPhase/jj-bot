@@ -1,7 +1,8 @@
 // MCP servers in the runtime: the connector port and its pi-mcp client, the
 // sandbox stdio and guarded remote transports, the sanitizer that turns a
 // server's listing into snapshot tools, and the adapter that declares a
-// pinned snapshot's tools to pi.
+// pinned snapshot's tools to pi; and discovery, which the engine's
+// `mcp.discover` job runs.
 export {
   createMcpTools,
   MCP_MAX_IMAGE_BYTES,
@@ -26,6 +27,14 @@ export {
   McpStartBudget,
   type McpToolList,
 } from "./connector";
+export {
+  MCP_DISCOVERY_LIST_MS,
+  McpDiscoverer,
+  type McpDiscovererOptions,
+  type McpDiscoverInput,
+  type McpDiscoverResult,
+  stdioLaunch,
+} from "./discover";
 export {
   MCP_MAX_MESSAGE_BYTES,
   MCP_STDERR_RING_BYTES,

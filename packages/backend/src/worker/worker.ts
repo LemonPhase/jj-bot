@@ -9,6 +9,7 @@ import {
   complete,
   enqueue,
   heartbeat,
+  type JobKind,
   pruneWorkerHeartbeats,
   recordWorkerHeartbeat,
   releaseLease,
@@ -26,6 +27,8 @@ import { sweepStagedUploads } from "../services/uploads";
 import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
+import { runCompactionJob, scheduleCompaction } from "./maintenance";
+import { runDiscoveryJob } from "./mcp-discovery";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
 import { TaskSandboxes } from "./sandboxes";
@@ -36,6 +39,15 @@ interface ActiveJob {
   control: JobControl;
   done: Promise<void>;
 }
+
+/** Jobs that every free slot may take. */
+const WORK_KINDS: readonly JobKind[] = [
+  "session.run",
+  "chat.reply",
+  "maintenance.compact",
+];
+/** Jobs that take at most `maxConcurrentDiscoveries` slots. */
+const DISCOVERY_KINDS: readonly JobKind[] = ["mcp.discover"];
 
 /** How often a polling worker records its heartbeat row (`worker_heartbeats`). */
 export const WORKER_HEARTBEAT_MS = 5_000;
@@ -153,7 +165,11 @@ export function createWorker(
       () =>
         (job.kind === "session.run"
           ? runSessionJob(deps, executor, job, control)
-          : runChatJob(deps, chat, job, control)
+          : job.kind === "chat.reply"
+            ? runChatJob(deps, chat, job, control)
+            : job.kind === "mcp.discover"
+              ? runDiscoveryJob(deps, job, control)
+              : runCompactionJob(ctx, job, control)
         ).catch((error: unknown) => {
           ctx.logger.error(`Job ${job.id} (${job.kind}) failed unexpectedly`, {
             error: errorMessage(error),
@@ -210,37 +226,37 @@ export function createWorker(
       do {
         again = false;
         while (!stopping && !draining && active.size < ctx.config.concurrency) {
-          // Never its own runs: a stall that held their heartbeats past the
-          // lease leaves them alive, not abandoned.
-          const { jobs, exhausted } = await claim(
-            ctx.db,
-            ctx.config.workerId,
-            ctx.config.concurrency - active.size,
-            ctx.config.leaseMs,
-            { running: [...active.keys()] },
+          // Discoveries take at most their own slots, which leave session
+          // runs and chat replies at least `concurrency - 1`. With slots to
+          // spare a waiting discovery goes first, so steady chat never
+          // starves it; with one slot, once it has waited
+          // `discoveryMaxWaitMs`, or when nothing else waits.
+          const free = ctx.config.concurrency - active.size;
+          const discovering = [...active.values()].filter(
+            (entry) => entry.job.kind === "mcp.discover",
+          ).length;
+          const room = Math.min(
+            free,
+            ctx.config.maxConcurrentDiscoveries - discovering,
           );
-          for (const job of exhausted) {
-            const result = await handleExhausted(ctx, job).catch(
-              (error: unknown) => {
-                ctx.logger.error(`Recovering job ${job.id} failed`, {
-                  error: errorMessage(error),
-                });
-                return {} as { finishedTaskId?: string };
-              },
-            );
-            if (result.finishedTaskId) sandboxes.finish(result.finishedTaskId);
-          }
-          for (const job of jobs) {
-            // The first claim: how long the job waited once it was due.
-            if (job.attempts === 1)
-              ctx.metrics.claimed(
-                job.kind,
-                (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
-              );
-            if (stopping || draining) await handBack(job);
-            else launch(job);
-          }
-          if (jobs.length === 0) break;
+          const single = ctx.config.concurrency === 1;
+          const first =
+            room > 0
+              ? await claimOf(
+                  room,
+                  DISCOVERY_KINDS,
+                  single ? ctx.config.discoveryMaxWaitMs : undefined,
+                )
+              : 0;
+          const work =
+            free > first && !stopping && !draining
+              ? await claimOf(free - first, WORK_KINDS)
+              : 0;
+          const idle =
+            single && room > first && work === 0 && !stopping && !draining
+              ? await claimOf(room - first, DISCOVERY_KINDS)
+              : 0;
+          if (first + work + idle === 0) break;
         }
       } while (again && !stopping && !draining);
       if (!stopping && !draining) {
@@ -254,6 +270,50 @@ export function createWorker(
     } finally {
       pumping = false;
     }
+  }
+
+  /**
+   * Claims up to `limit` jobs of `kinds` (queued ones due for at least
+   * `waitedMs`, when given) and launches them; returns how many it claimed.
+   */
+  async function claimOf(
+    limit: number,
+    kinds: readonly JobKind[],
+    waitedMs?: number,
+  ): Promise<number> {
+    // Never its own runs: a stall that held their heartbeats past the
+    // lease leaves them alive, not abandoned.
+    const { jobs, exhausted } = await claim(
+      ctx.db,
+      ctx.config.workerId,
+      limit,
+      ctx.config.leaseMs,
+      {
+        running: [...active.keys()],
+        kinds,
+        ...(waitedMs !== undefined ? { waitedMs } : {}),
+      },
+    );
+    for (const job of exhausted) {
+      const result = await handleExhausted(ctx, job).catch((error: unknown) => {
+        ctx.logger.error(`Recovering job ${job.id} failed`, {
+          error: errorMessage(error),
+        });
+        return {} as { finishedTaskId?: string };
+      });
+      if (result.finishedTaskId) sandboxes.finish(result.finishedTaskId);
+    }
+    for (const job of jobs) {
+      // The first claim: how long the job waited once it was due.
+      if (job.attempts === 1)
+        ctx.metrics.claimed(
+          job.kind,
+          (job.updatedAt.getTime() - job.runAfter.getTime()) / 1000,
+        );
+      if (stopping || draining) await handBack(job);
+      else launch(job);
+    }
+    return jobs.length;
   }
 
   /**
@@ -481,6 +541,12 @@ export function createWorker(
             }),
         );
       await reapOrphans();
+      // The first compaction pass soon after boot, unless one is queued already.
+      await scheduleCompaction(ctx.db, ctx, 0).catch((error: unknown) =>
+        ctx.logger.warn("Scheduling event compaction failed", {
+          error: errorMessage(error),
+        }),
+      );
       unsubscribers.push(
         await ctx.bus.subscribe("jj_control", (message) => {
           void onControl(message).catch((error: unknown) =>

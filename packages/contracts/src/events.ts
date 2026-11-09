@@ -11,6 +11,7 @@ import { mcpServerEventSchema } from "./mcp";
 import {
   ACTIVITY_TEXT_LIMIT,
   type Activity,
+  type Artifact,
   addUsage,
   artifactSchema,
   type ExecutionSession,
@@ -50,8 +51,19 @@ export const TOOL_OUTPUT_PREVIEW_LIMIT = 64 * 1024;
 export const TASK_VIEW_EVENT_LIMIT = 500;
 
 /**
+ * Ceiling of the server's event payload cap (`JJ_EVENT_PAYLOAD_CAP_BYTES`),
+ * in UTF-8 bytes of a payload's JSON. In a payload over the cap, what no
+ * record bounds (a tool's output preview, error and stop texts, a held call's
+ * arguments) is clipped and the full payload saved as an `output` artifact
+ * (`payloadArtifactId`). Record snapshots, which their schemas bound, are
+ * stored whole. A stored payload always parses with its type's schema.
+ */
+export const EVENT_PAYLOAD_CAP_BYTES = 1024 * 1024;
+
+/**
  * Fields every task event carries. `sequence` is allocated per task, gap-free,
- * in the same transaction as the change the event records.
+ * in the same transaction as the change the event records; a compacted log
+ * has gaps at or below its `compactedThrough`.
  */
 const eventBaseSchema = z.object({
   id: idSchema,
@@ -63,6 +75,14 @@ const eventBaseSchema = z.object({
   runId: idSchema.nullable(),
   /** The event that caused this one, when there is one. */
   causedBy: idSchema.nullable(),
+  /**
+   * Set when the payload was over the server's cap and clipped: the full
+   * payload is this `output` artifact (`savedPayloadPath`), as JSON, and this
+   * payload keeps its shape, valid for its type, with each unbounded string
+   * over 4 KiB clipped and marked. A client folds it, then refetches the
+   * view, whose records are whole.
+   */
+  payloadArtifactId: idSchema.optional(),
 });
 
 const event = <Type extends string, Payload extends z.ZodType>(
@@ -270,6 +290,21 @@ export const taskEventSchema = z.discriminatedUnion("type", [
    * Attributed to the session whose call started it, when there is one.
    */
   event("mcp.server", mcpServerEventSchema),
+  /**
+   * Marker: the task's events at or below `through` were compacted after it
+   * finished. `removed` events were deleted (activity, and snapshots that a
+   * later snapshot of the same record supersedes); `stripped` events lost
+   * their previews (`tool.finished` output, `model.finished` text). The
+   * records themselves are untouched.
+   */
+  event(
+    "task.compacted",
+    z.object({
+      through: z.number().int().nonnegative(),
+      removed: z.number().int().nonnegative(),
+      stripped: z.number().int().nonnegative(),
+    }),
+  ),
   event("cancellation.requested", z.object({ reason: z.string().nullable() })),
   event(
     "cancellation.completed",
@@ -300,6 +335,25 @@ export const TASK_EVENT_TYPES: readonly TaskEventType[] =
   taskEventSchema.options.map((option) => option.shape.type.value);
 
 const knownEventTypes = new Set<string>(TASK_EVENT_TYPES);
+
+const SAVED_PAYLOAD_SUFFIX = " payload";
+
+/** The path of the `output` artifact saving an over-cap event's payload: `<type> payload`. */
+export const savedPayloadPath = (type: TaskEventType): string =>
+  `${type}${SAVED_PAYLOAD_SUFFIX}`;
+
+/** The event type whose payload an artifact saves, from its path; undefined for any other artifact. */
+export function savedPayloadType(
+  artifact: Pick<Artifact, "kind" | "path">,
+): TaskEventType | undefined {
+  if (
+    artifact.kind !== "output" ||
+    !artifact.path.endsWith(SAVED_PAYLOAD_SUFFIX)
+  )
+    return undefined;
+  const type = artifact.path.slice(0, -SAVED_PAYLOAD_SUFFIX.length);
+  return knownEventTypes.has(type) ? (type as TaskEventType) : undefined;
+}
 
 /**
  * An event of a type this contract version does not know. Clients ignore
@@ -367,6 +421,11 @@ export const taskViewSchema = z.object({
   hasEarlier: z.boolean(),
   /** Sequence of the last event the view reflects. */
   cursor: z.number().int().nonnegative(),
+  /**
+   * Events at or below this sequence were compacted (`task.compacted`): the
+   * log has gaps there and their previews are gone. 0 for none.
+   */
+  compactedThrough: z.number().int().nonnegative().default(0),
 });
 
 export type TaskView = z.infer<typeof taskViewSchema>;
@@ -378,6 +437,8 @@ export const taskEventPageSchema = z.object({
   cursor: z.number().int().nonnegative(),
   /** More events follow `cursor`. */
   hasMore: z.boolean(),
+  /** Events at or below this sequence were compacted, as in the view; 0 for none. */
+  compactedThrough: z.number().int().nonnegative().default(0),
 });
 
 export type TaskEventPage = z.infer<typeof taskEventPageSchema>;
@@ -542,8 +603,10 @@ const upsert = <Item extends { id: string }>(
 /**
  * Folds one streamed event onto a task view, so that the view at sequence n
  * plus events n+1..m equals the view at m (snapshot events aside, which drop
- * output previews). Pure. Events at or before `cursor` are already reflected
- * and are ignored; unknown event types only advance the cursor.
+ * output previews), its records compared by id. That holds from any n of a
+ * compacted log too: the events compaction keeps after n fold into the same
+ * records. Pure. Events at or before `cursor` are already reflected and are
+ * ignored; unknown event types only advance the cursor.
  */
 export function applyTaskEvent(
   view: TaskView,
@@ -560,6 +623,7 @@ export function applyTaskEvent(
     approvals,
     verificationChecks,
     usage,
+    compactedThrough,
   } = view;
   switch (event.type) {
     case "task.created":
@@ -603,6 +667,9 @@ export function applyTaskEvent(
       );
       break;
     }
+    case "task.compacted":
+      compactedThrough = Math.max(compactedThrough, event.payload.through);
+      break;
     case "model.finished": {
       const added = event.payload.usage;
       const { sessionId } = event;
@@ -646,5 +713,6 @@ export function applyTaskEvent(
       : view.firstSequence,
     hasEarlier: view.hasEarlier || trimmed,
     cursor: event.sequence,
+    compactedThrough,
   };
 }

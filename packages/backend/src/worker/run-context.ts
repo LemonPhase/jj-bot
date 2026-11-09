@@ -327,7 +327,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
   const { ctx } = rc.deps;
   switch (event.type) {
     case "model.started":
-      await emit(tx, rc.task.id, {
+      await emit(tx, ctx, rc.task.id, {
         type: "model.started",
         payload: {},
         ...attribution,
@@ -356,7 +356,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
         priced: event.usage.unpricedCalls === 0,
         createdAt: ctx.clock(),
       });
-      await emit(tx, rc.task.id, {
+      await emit(tx, ctx, rc.task.id, {
         type: "model.finished",
         payload: {
           model: event.model,
@@ -369,7 +369,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
       return;
     }
     case "tool.started":
-      await emit(tx, rc.task.id, {
+      await emit(tx, ctx, rc.task.id, {
         type: "tool.started",
         payload: {
           toolCallId: clip(event.toolCallId, 128),
@@ -395,7 +395,7 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
         output = truncateUtf8(output, cap);
         truncated = true;
       }
-      await emit(tx, rc.task.id, {
+      await emit(tx, ctx, rc.task.id, {
         type: "tool.finished",
         payload: {
           toolCallId: clip(event.toolCallId, 128),
@@ -426,11 +426,11 @@ async function admitModelCall(rc: RunContext): Promise<string | undefined> {
       botId: rc.bot.id,
     });
     if (!stop) {
-      await noteThreshold(tx, rc.task.id, attribution);
+      await noteThreshold(tx, rc.deps.ctx, rc.task.id, attribution);
       return undefined;
     }
     rc.spendStop = stop;
-    await noteCapped(tx, rc.task.id, stop, attribution);
+    await noteCapped(tx, rc.deps.ctx, rc.task.id, stop, attribution);
     return stop.message;
   });
 }

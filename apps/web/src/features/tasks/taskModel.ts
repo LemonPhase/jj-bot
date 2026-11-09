@@ -214,6 +214,10 @@ export interface ToolCall {
   summary: string;
   state: "running" | "ok" | "failed";
   exitCode: number | null;
+  /** Its output preview was dropped when the task's events were compacted. */
+  outputGone: boolean;
+  /** The artifact holding its event in full, when the event was over the payload cap. */
+  savedCopy: string | null;
 }
 
 export interface SessionTools {
@@ -230,7 +234,7 @@ export interface SessionTools {
  * oldest first per session.
  */
 export function toolCallsBySession(
-  view: Pick<TaskView, "events" | "hasEarlier">,
+  view: Pick<TaskView, "events" | "hasEarlier" | "compactedThrough">,
   /** The previous result: unchanged entries are reused, so memoised rows can skip. */
   previous?: ReadonlyMap<string, SessionTools>,
 ): Map<string, SessionTools> {
@@ -248,16 +252,27 @@ export function toolCallsBySession(
     const mine = calls.get(sessionId) ?? new Map<string, ToolCall>();
     calls.set(sessionId, mine);
     const { toolCallId, tool, summary } = event.payload;
+    const savedCopy = event.payloadArtifactId ?? null;
     mine.set(
       toolCallId,
       event.type === "tool.started"
-        ? { id: toolCallId, tool, summary, state: "running", exitCode: null }
+        ? {
+            id: toolCallId,
+            tool,
+            summary,
+            state: "running",
+            exitCode: null,
+            outputGone: false,
+            savedCopy,
+          }
         : {
             id: toolCallId,
             tool,
             summary,
             state: event.payload.ok ? "ok" : "failed",
             exitCode: event.payload.exitCode ?? null,
+            outputGone: event.sequence <= view.compactedThrough,
+            savedCopy,
           },
     );
   }
@@ -283,13 +298,15 @@ const sameTools = (a: SessionTools, b: SessionTools) =>
       call.id === other.id &&
       call.state === other.state &&
       call.exitCode === other.exitCode &&
-      call.summary === other.summary
+      call.summary === other.summary &&
+      call.outputGone === other.outputGone &&
+      call.savedCopy === other.savedCopy
     );
   });
 
 /** The tool calls a session made, from the view's events, oldest first. */
 export function sessionToolCalls(
-  view: Pick<TaskView, "events" | "hasEarlier">,
+  view: Pick<TaskView, "events" | "hasEarlier" | "compactedThrough">,
   sessionId: string,
 ): SessionTools {
   return (
@@ -298,6 +315,40 @@ export function sessionToolCalls(
       partial: view.hasEarlier,
     }
   );
+}
+
+/**
+ * When a compacted task's events were compacted: the time of the newest
+ * `task.compacted` the view holds, or null when that is older than the
+ * view's events. Undefined for a task never compacted.
+ */
+export function compactedAt(
+  view: Pick<TaskView, "events" | "compactedThrough">,
+): string | null | undefined {
+  if (view.compactedThrough === 0) return undefined;
+  for (let index = view.events.length - 1; index >= 0; index -= 1) {
+    const event = view.events[index];
+    if (event?.type === "task.compacted") return event.occurredAt;
+  }
+  return null;
+}
+
+/**
+ * The saved copies of the view's approval events whose held call's
+ * arguments were over the payload cap (`payloadArtifactId`), by approval id;
+ * the newest event of an approval wins. Other records are never clipped.
+ */
+export function savedApprovalCopies(
+  view: Pick<TaskView, "events">,
+): Map<string, string> {
+  const copies = new Map<string, string>();
+  for (const event of view.events)
+    if (
+      event.payloadArtifactId &&
+      (event.type === "approval.requested" || event.type === "approval.updated")
+    )
+      copies.set(event.payload.approval.id, event.payloadArtifactId);
+  return copies;
 }
 
 /** "bash(npm test)", or the bare tool name when it has no summary. */
@@ -499,15 +550,15 @@ const noticeText = (event: TaskEvent): string | null => {
  * requests and the finish placed where they happened. Notices come from the
  * view's retained events, so very old ones may be missing; messages never are.
  * The user message posted after a `task.goal_changed` is marked as the new goal.
+ * Approvals are records, placed by when they were requested, so their place
+ * holds once compaction removed the event that requested them.
  */
 export function taskTimeline(view: TaskView): TimelineEntry[] {
   const postedAt = new Map<string, number>();
   const goalSetBy = new Map<string, number>();
   const notices: { sequence: number; entry: TimelineEntry }[] = [];
-  const approvals = new Map(
-    view.approvals.map((approval) => [approval.id, approval]),
-  );
-  const placed = new Set<string>();
+  // When each entry happened, to place approvals among them.
+  const happened = new Map<TimelineEntry, string>();
   // The server posts the user's message after `task.goal_changed` (and the
   // task reopening) in the same transaction, so the next user message is the
   // one that set the goal.
@@ -523,22 +574,10 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
       }
     }
     const text = noticeText(event);
-    if (text)
-      notices.push({
-        sequence: event.sequence,
-        entry: { kind: "notice", id: event.id, text },
-      });
-    // An approval shows where it was requested, as it is now.
-    const approval =
-      event.type === "approval.requested"
-        ? approvals.get(event.payload.approval.id)
-        : undefined;
-    if (approval && !placed.has(approval.id)) {
-      placed.add(approval.id);
-      notices.push({
-        sequence: event.sequence,
-        entry: { kind: "approval", approval },
-      });
+    if (text) {
+      const entry: TimelineEntry = { kind: "notice", id: event.id, text };
+      happened.set(entry, event.occurredAt);
+      notices.push({ sequence: event.sequence, entry });
     }
   }
 
@@ -550,26 +589,28 @@ export function taskTimeline(view: TaskView): TimelineEntry[] {
     if (at !== undefined)
       while (next < notices.length && (notices[next]?.sequence ?? 0) < at)
         entries.push((notices[next++] as (typeof notices)[number]).entry);
-    entries.push({
+    const entry: TimelineEntry = {
       kind: "message",
       message,
       goalVersion: goalSetBy.get(message.id) ?? null,
-    });
+    };
+    happened.set(entry, message.createdAt);
+    entries.push(entry);
   }
   for (; next < notices.length; next += 1)
     entries.push((notices[next] as (typeof notices)[number]).entry);
-  // Requested before the retained events: placed among messages by time.
-  for (const approval of view.approvals) {
-    if (placed.has(approval.id)) continue;
+  // Each approval, oldest first, before the first entry that happened after it.
+  const approvals = [...view.approvals].sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  );
+  for (const approval of approvals) {
     const at = entries.findIndex(
-      (entry) =>
-        entry.kind === "message" &&
-        entry.message.createdAt > approval.createdAt,
+      (entry) => (happened.get(entry) ?? "") > approval.createdAt,
     );
-    entries.splice(at === -1 ? entries.length : at, 0, {
-      kind: "approval",
-      approval,
-    });
+    const entry: TimelineEntry = { kind: "approval", approval };
+    happened.set(entry, approval.createdAt);
+    entries.splice(at === -1 ? entries.length : at, 0, entry);
   }
   return entries;
 }

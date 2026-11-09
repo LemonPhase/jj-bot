@@ -87,6 +87,8 @@ services:
       JJ_TASKS_PER_BOT_PER_HOUR: ${JJ_TASKS_PER_BOT_PER_HOUR:-}
       JJ_MAX_USD_PER_DAY: ${JJ_MAX_USD_PER_DAY:-}
       JJ_OUTPUT_CAP_BYTES: ${JJ_OUTPUT_CAP_BYTES:-}
+      JJ_EVENT_RETENTION_DAYS: ${JJ_EVENT_RETENTION_DAYS:-}
+      JJ_EVENT_PAYLOAD_CAP_BYTES: ${JJ_EVENT_PAYLOAD_CAP_BYTES:-}
       # How long a stop lets running sessions reach a turn boundary; 20 s
       # when unset. Raising it, raise JJ_STOP_GRACE_PERIOD (stop_grace_period
       # below) with it, to at least 25 s more.

@@ -20,16 +20,16 @@ import {
 
 const char = (code: number) => String.fromCodePoint(code);
 
-describe("contract 1.10.0", () => {
-  it("is 1.10.0, and the changelog's newest entry records it", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.0");
+describe("contract 1.11.0", () => {
+  it("is 1.11.0, and the changelog's newest entry records it", () => {
+    expect(CONTRACT_VERSION).toBe("1.11.0");
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",
     );
     const newest = /^## (\d+\.\d+\.\d+) — /m.exec(changelog)?.[1];
     expect(newest).toBe(CONTRACT_VERSION);
-    expect(changelog).toMatch(/^## 1\.10\.0 — .* — Uploads$/m);
+    expect(changelog).toMatch(/^## 1\.11\.0 — .* — Uploads$/m);
     expect(API_ERROR_CODES).toContain("UPLOAD_TOO_LARGE");
   });
 });

@@ -32,6 +32,7 @@ import { acceptsMessages, moodForStatus } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ActivityText } from "./ActivityText";
 import { ApprovalCard } from "./ApprovalCard";
+import { SavedCopy } from "./ArtifactList";
 import { coordinatorHolds } from "./approvals";
 import {
   type ActivityLine,
@@ -39,6 +40,7 @@ import {
   botName,
   createMentionMatcher,
   type MentionSegment,
+  savedApprovalCopies,
   statusAnnouncements,
   type TimelineEntry,
   taskTimeline,
@@ -116,6 +118,7 @@ export function TaskChat({ view }: { view: TaskView }) {
       setAttaching(false);
     }
   };
+  const copies = useMemo(() => savedApprovalCopies({ events }), [events]);
   const activityKey = lines
     .map((line) => `${line.session.id}:${line.text}`)
     .join("|");
@@ -179,6 +182,12 @@ export function TaskChat({ view }: { view: TaskView }) {
                 files={
                   entry.kind === "message"
                     ? uploadedBy.get(entry.message.id)
+                    : undefined
+                }
+                view={view}
+                savedCopy={
+                  entry.kind === "approval"
+                    ? copies.get(entry.approval.id)
                     : undefined
                 }
               />
@@ -302,7 +311,31 @@ export function TaskChat({ view }: { view: TaskView }) {
   );
 }
 
+/** A timeline entry, followed by the saved copy of its event when that was over the payload cap. */
 function TimelineItem({
+  savedCopy,
+  view,
+  ...props
+}: {
+  entry: TimelineEntry;
+  mention: (text: string) => MentionSegment[];
+  getBot: (botId: string) => Bot | undefined;
+  taskId: string;
+  /** The files a user announcement attached. */
+  files?: readonly Artifact[];
+  view: TaskView;
+  savedCopy: string | undefined;
+}) {
+  if (!savedCopy) return <TimelineContent {...props} />;
+  return (
+    <div className="task-chat__large">
+      <TimelineContent {...props} />
+      <SavedCopy view={view} artifactId={savedCopy} />
+    </div>
+  );
+}
+
+function TimelineContent({
   entry,
   mention,
   getBot,

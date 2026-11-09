@@ -100,7 +100,7 @@ export async function storeArtifact(
     .returning(artifactColumns);
   if (!row) throw new Error("The artifact insert returned no row.");
   const artifact = toArtifact(row);
-  await emit(tx, input.taskId, {
+  await emit(tx, ctx, input.taskId, {
     type: "artifact.created",
     payload: { artifact },
     ...attribution,

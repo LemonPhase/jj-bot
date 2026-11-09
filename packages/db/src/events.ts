@@ -29,6 +29,8 @@ export interface AppendEventInput {
   sessionId?: string | null;
   runId?: string | null;
   causedBy?: string | null;
+  /** The artifact holding the full payload, when `payload` is its clipped copy. */
+  payloadArtifactId?: string | null;
   /** Defaults to a new `evt_…` id. */
   id?: string;
 }
@@ -64,6 +66,7 @@ export async function appendEvent(
       runId: input.runId ?? null,
       causedBy: input.causedBy ?? null,
       payload: input.payload ?? {},
+      payloadArtifactId: input.payloadArtifactId ?? null,
     })
     .returning();
   if (!event) throw new Error("The event insert returned no row.");

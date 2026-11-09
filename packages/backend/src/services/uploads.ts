@@ -477,7 +477,7 @@ export async function attachUploadsTx(
     if (!row) throw new Error(`The upload ${file.row.id} was not copied.`);
     const artifact = toArtifact(row);
     stored.push(artifact);
-    await emit(tx, task.id, {
+    await emit(tx, ctx, task.id, {
       type: "artifact.created",
       payload: { artifact },
     });

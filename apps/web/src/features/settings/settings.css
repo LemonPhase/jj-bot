@@ -195,6 +195,26 @@
   color: var(--ink-muted);
 }
 
+.settings-about {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-6);
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-ui);
+}
+
+.settings-about dt {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
+.settings-about dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
 .settings-card__actions {
   display: flex;
   flex-wrap: wrap;

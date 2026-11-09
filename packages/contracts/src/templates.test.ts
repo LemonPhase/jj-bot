@@ -4,7 +4,6 @@ import {
   API_ERROR_CODES,
   apiErrorCodeSchema,
   COMMAND_TEXT_LIMIT,
-  CONTRACT_VERSION,
   createTaskTemplateCommandSchema,
   describeTemplateProblem,
   MAX_TASK_TEMPLATES,

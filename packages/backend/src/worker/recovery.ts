@@ -1,18 +1,22 @@
 // Recovery after a crash. claim() reclaims expired leases (the run resumes from
 // its transcript, see session-run.ts); jobs whose lease expired too often are
-// returned as exhausted and fail their session or chat reply visibly.
+// returned as exhausted and fail their session or chat reply visibly (a
+// compaction pass is queued again instead).
 import { isFinishedStatus } from "@jj/contracts";
 import type { JobRow, SessionRow, TaskRow } from "@jj/db";
 import type { EngineContext } from "../context";
 import { getSession, lockTask } from "../services/sessions";
 import { settleCancellation } from "../services/tasks";
 import { giveUpChatReply } from "./chat-reply";
+import { scheduleCompaction } from "./maintenance";
+import { giveUpDiscovery } from "./mcp-discovery";
 import { failSessionTx } from "./outcomes";
 import { closeStaleRun, runningRun } from "./runs";
 
 /**
  * Jobs whose lease expired after their last attempt (claim marked them
- * failed): the session fails visibly, and so does a chat reply.
+ * failed): the session fails visibly, and so do a chat reply and an MCP
+ * discovery.
  */
 export async function handleExhausted(
   ctx: EngineContext,
@@ -20,6 +24,15 @@ export async function handleExhausted(
 ): Promise<{ finishedTaskId?: string }> {
   if (job.kind === "chat.reply") {
     await giveUpChatReply(ctx, job);
+    return {};
+  }
+  if (job.kind === "mcp.discover") {
+    await giveUpDiscovery(ctx, job);
+    return {};
+  }
+  // A pass that kept dying is idempotent: the next one starts at the next interval.
+  if (job.kind === "maintenance.compact") {
+    await scheduleCompaction(ctx.db, ctx, ctx.config.compactionIntervalMs);
     return {};
   }
   if (!job.sessionId) return {};

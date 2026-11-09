@@ -3,6 +3,7 @@
 // transaction, so nothing is published before it is durable.
 import {
   activityFromEvent,
+  savedPayloadPath,
   type TaskEvent,
   type TaskEventOf,
   type TaskEventType,
@@ -17,7 +18,11 @@ import {
   type Tx,
 } from "@jj/db";
 import { eq } from "drizzle-orm";
+import { afterCommit } from "./commit-hooks";
+import type { EngineContext } from "./context";
+import { clippedPayload } from "./event-payloads";
 import { toTaskEvent } from "./records";
+import { storeArtifact } from "./services/artifacts";
 
 export interface Attribution {
   botId?: string | null;
@@ -36,21 +41,59 @@ export type EmitInput = {
 /**
  * Appends a task event and applies `activityFromEvent` to its session, so the
  * stored activity always equals what a client folds from the stream. Sends the
- * workspace hints the event implies.
+ * workspace hints the event implies. A payload whose JSON is over the cap
+ * (`eventPayloadCapBytes`) and that has unbounded parts to clip is stored in
+ * full as an `output` artifact first, attributed like the event, and the
+ * event keeps a clipped copy, valid for its type, that names it
+ * (`payloadArtifactId`). Record snapshots, which their schemas bound, are
+ * stored whole whatever their size.
  */
 export async function emit(
   tx: Tx,
+  ctx: EngineContext,
   taskId: string,
   input: EmitInput,
 ): Promise<TaskEvent> {
+  let payload = input.payload as Record<string, unknown>;
+  let payloadArtifactId: string | null = null;
+  const json = JSON.stringify(payload);
+  const clipped =
+    Buffer.byteLength(json, "utf8") > ctx.config.eventPayloadCapBytes
+      ? clippedPayload(input.type, payload, ctx.config.eventPayloadCapBytes)
+      : undefined;
+  if (clipped) {
+    const artifact = await storeArtifact(
+      tx,
+      ctx,
+      {
+        taskId,
+        kind: "output",
+        path: savedPayloadPath(input.type),
+        name: `${input.type}.json`,
+        content: Buffer.from(json, "utf8"),
+        contentType: "application/json",
+      },
+      {
+        botId: input.botId,
+        sessionId: input.sessionId,
+        runId: input.runId,
+        causedBy: input.causedBy,
+      },
+    );
+    payload = clipped;
+    payloadArtifactId = artifact.id;
+    const { type } = input;
+    afterCommit(tx, () => ctx.metrics.payloadSpilled(type));
+  }
   const row = await appendEvent(tx, {
     taskId,
     type: input.type,
-    payload: input.payload as Record<string, unknown>,
+    payload,
     botId: input.botId ?? null,
     sessionId: input.sessionId ?? null,
     runId: input.runId ?? null,
     causedBy: input.causedBy ?? null,
+    payloadArtifactId,
   });
   const event = toTaskEvent(row);
   const activity = activityFromEvent(event);

@@ -36,5 +36,5 @@ export function useSessionTools(
     return (sessionId: string) =>
       map.get(sessionId) ??
       (view.hasEarlier ? { ...NO_TOOLS, partial: true } : NO_TOOLS);
-  }, [view.events, view.hasEarlier]);
+  }, [view.events, view.hasEarlier, view.compactedThrough]);
 }

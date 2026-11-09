@@ -27,6 +27,8 @@ import {
   emptyUsage,
   isFinishedStatus,
   MAX_TASK_TEMPLATES,
+  type McpDiscovery,
+  type McpServer,
   mcpRulesWithoutTool,
   PROFILE_SPEND_CAP,
   pendingApprovalOf,
@@ -36,6 +38,7 @@ import {
   type SandboxSpec,
   sandboxSpecSchema,
   sendBotMessageCommandSchema,
+  startMcpDiscoveryCommandSchema,
   startTemplateCommandSchema,
   stopTaskCommandSchema,
   type Task,
@@ -50,6 +53,7 @@ import {
   templateRunGoal,
   templateTaskCommand,
   type UsageReport,
+  ungrantedMcpSecrets,
   updateBotCommandSchema,
   updateBotMemoryCommandSchema,
   updateRuntimeProfileCommandSchema,
@@ -266,6 +270,8 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     demoProfiles(ago).map((profile) => [profile.id, profile]),
   );
   let profileCounter = 0;
+  const discoveries = new Map<string, McpDiscovery>();
+  let discoveryCounter = 0;
 
   // ── Tasks ────────────────────────────────────────────────────────────────
   const tasks = new Map<string, TaskState>();
@@ -351,6 +357,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         firstSequence: 1,
         hasEarlier: false,
         cursor: 0,
+        compactedThrough: 0,
       },
       log: [],
       steps: [],
@@ -803,27 +810,87 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       );
     return names;
   };
-  /** The demo runs no MCP server and holds no skills library, like a server without them. */
-  const assertNoMcp = (command: {
-    mcpServers?: readonly unknown[];
-    skills?: readonly unknown[];
-    approvals?: readonly ApprovalRule[];
-  }) => {
-    if (command.mcpServers?.length || command.skills?.length)
+  /** The demo has no skills library, like a server without one. */
+  const assertNoSkills = (command: { skills?: readonly unknown[] }) => {
+    if (command.skills?.length)
       throw new ApiError(
         "MCP_UNAVAILABLE",
-        "The demo runs no MCP servers and has no skills library: connect JJ Bot to a server that reports them.",
+        "skills: the demo has no skills library: connect JJ Bot to a server that reports one.",
         undefined,
         422,
       );
-    // With no server, no exact MCP rule names a tool of a pinned snapshot.
-    const [unknown] = mcpRulesWithoutTool(command.approvals ?? [], [], []);
+  };
+  /**
+   * MCP servers are stored under a server's save-time rules (where `list`
+   * names them in messages). The demo tests no server, so it holds no
+   * snapshot: a server pins none, and no exact MCP rule names a pinned tool.
+   * It stores no secrets, so no `secretHeaders` can be sent.
+   */
+  const assertMcp = (
+    profile: {
+      sandbox: SandboxSpec;
+      secrets: readonly string[];
+      mcpServers: readonly McpServer[];
+      approvals: readonly ApprovalRule[];
+    },
+    item: (index: number) => string = (index) => `mcpServers.${index}`,
+  ) => {
+    const fail = (
+      code: "MCP_UNAVAILABLE" | "VALIDATION_FAILED" | "MCP_SNAPSHOT_MISMATCH",
+      message: string,
+    ) =>
+      new ApiError(
+        code,
+        message,
+        undefined,
+        code === "MCP_UNAVAILABLE"
+          ? 422
+          : code === "VALIDATION_FAILED"
+            ? 400
+            : 409,
+      );
+    const driver = DEMO_DRIVERS.find((d) => d.id === profile.sandbox.driver);
+    profile.mcpServers.forEach((server, index) => {
+      if (server.transport === "stdio" && !driver?.capabilities.spawn)
+        throw fail(
+          "MCP_UNAVAILABLE",
+          `${item(index)}: ${server.name} runs in the task's sandbox, and the ${profile.sandbox.driver} driver cannot start long-lived processes (spawn).`,
+        );
+    });
+    const [ungranted] = ungrantedMcpSecrets(
+      profile.mcpServers,
+      profile.secrets,
+    );
+    if (ungranted)
+      throw fail(
+        "VALIDATION_FAILED",
+        `${item(ungranted.index)}.secretEnv.${ungranted.variable}: ${ungranted.secret} is not granted by this profile; grant it under secrets first.`,
+      );
+    profile.mcpServers.forEach((server, index) => {
+      const [header] =
+        server.transport === "http" ? Object.entries(server.secretHeaders) : [];
+      if (header)
+        throw fail(
+          "VALIDATION_FAILED",
+          `${item(index)}.secretHeaders.${header[0]}: no sandbox secret named ${header[1].secret} is stored. Add it in Settings → Secrets first.`,
+        );
+    });
+    profile.mcpServers.forEach((server, index) => {
+      if (server.snapshotId !== null)
+        throw fail(
+          "MCP_SNAPSHOT_MISMATCH",
+          `mcpServers.${index}.snapshotId: ${server.snapshotId} is not a snapshot of ${server.name} in this profile. The demo tests no MCP server, so it has none.`,
+        );
+    });
+    const [unknown] = mcpRulesWithoutTool(
+      profile.approvals,
+      profile.mcpServers,
+      [],
+    );
     if (unknown !== undefined)
-      throw new ApiError(
+      throw fail(
         "VALIDATION_FAILED",
         `approvals.${unknown}.tool: names no tool of its MCP server's pinned snapshot; mcp__<server>__* covers every tool of a server.`,
-        undefined,
-        400,
       );
   };
   const noStore = () =>
@@ -1095,8 +1162,14 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     getProfile: async (profileId) => clone(getProfileRecord(profileId)),
     createProfile: async (command) => {
       const parsed = validate(createRuntimeProfileCommandSchema, command);
-      assertNoMcp(parsed);
+      assertNoSkills(parsed);
       assertSupported(parsed.sandbox);
+      assertMcp({
+        sandbox: parsed.sandbox,
+        secrets: parsed.secrets ?? [],
+        mcpServers: parsed.mcpServers ?? [],
+        approvals: parsed.approvals ?? [],
+      });
       const createdAt = now();
       const profile: RuntimeProfile = {
         id: `profile-new-${++profileCounter}`,
@@ -1115,7 +1188,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         budgets: parsed.budgets ?? profileBudgetsSchema.parse({}),
         approvals: parsed.approvals ?? [],
         secrets: assertGranted(parsed.secrets ?? []),
-        mcpServers: [],
+        mcpServers: parsed.mcpServers ?? [],
         skills: [],
         isDefault: false,
         status: profileStatus(parsed.sandbox),
@@ -1130,7 +1203,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     updateProfile: async (profileId, command) => {
       const stored = getProfileRecord(profileId);
       const patch = validate(updateRuntimeProfileCommandSchema, command);
-      assertNoMcp(patch);
+      assertNoSkills(patch);
       if (patch.isDefault === false && stored.isDefault)
         throw new ApiError(
           "CONFLICT",
@@ -1159,14 +1232,23 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       if (merged.image === undefined) delete merged.image;
       const sandbox = validate(sandboxSpecSchema, merged);
       assertSupported(sandbox);
+      const mcpServers = patch.mcpServers ?? stored.mcpServers;
+      const approvals = patch.approvals ?? stored.approvals;
+      assertMcp({
+        sandbox,
+        secrets: patch.secrets ?? stored.secrets,
+        mcpServers,
+        approvals,
+      });
       const next: RuntimeProfile = {
         ...stored,
         name: patch.name ?? stored.name,
         description: patch.description ?? stored.description,
         tools: patch.tools ?? stored.tools,
         budgets: { ...stored.budgets, ...patch.budgets },
-        approvals: patch.approvals ?? stored.approvals,
+        approvals,
         secrets: patch.secrets ? assertGranted(patch.secrets) : stored.secrets,
+        mcpServers,
         sandbox,
         status: profileStatus(sandbox),
         updatedAt: now(),
@@ -1198,6 +1280,50 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         );
       profiles.delete(profileId);
       notify({ type: "profiles.changed" });
+    },
+    // The demo tests no MCP server: a discovery is checked as a server
+    // checks it, then fails at once, saying why.
+    startMcpDiscovery: async (profileId, command) => {
+      const profile = getProfileRecord(profileId);
+      const { server, sandbox } = validate(
+        startMcpDiscoveryCommandSchema,
+        command,
+      );
+      // A draft sandbox is checked as a profile's is; a disabled draft as enabled.
+      if (sandbox) assertSupported(sandbox);
+      assertMcp(
+        {
+          ...profile,
+          sandbox: sandbox ?? profile.sandbox,
+          mcpServers: [{ ...server, enabled: true, snapshotId: null }],
+          approvals: [],
+        },
+        () => "server",
+      );
+      const at = now();
+      const discovery: McpDiscovery = {
+        id: `mcp-discovery-${++discoveryCounter}`,
+        profileId,
+        server: server.name,
+        status: "failed",
+        error:
+          "Demo data: no MCP server runs in demo mode. Connect JJ Bot to a server to test it.",
+        stderrTail: null,
+        snapshot: null,
+        durationMs: 0,
+        createdAt: at,
+        finishedAt: at,
+      };
+      discoveries.set(discovery.id, discovery);
+      return clone(discovery);
+    },
+    getMcpDiscovery: async (discoveryId) => {
+      const discovery = discoveries.get(discoveryId);
+      if (!discovery) throw notFound("MCP discovery", discoveryId);
+      return clone(discovery);
+    },
+    getMcpSnapshot: async (snapshotId) => {
+      throw notFound("MCP tool snapshot", snapshotId);
     },
     listDrivers: async () => clone([...DEMO_DRIVERS]),
     getModels: async () => clone(DEMO_MODELS),

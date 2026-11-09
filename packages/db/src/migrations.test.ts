@@ -239,6 +239,90 @@ describe.each(targets)("migrations on $name", (target) => {
   );
 
   it(
+    "0015 gives existing profiles no MCP servers, and keeps discoveries and snapshots with their profile",
+    async () => {
+      const database = await databaseBefore(target, "0015_mcp_discovery");
+      try {
+        await database.execute(sql`
+          insert into runtime_profiles (id, name, sandbox, tools, budgets)
+          values ('prof_1', 'Old', '{"driver":"local"}', '["bash"]', '{}');
+        `);
+        await expect(
+          database.execute(
+            sql`insert into jobs (id, kind) values ('job_0', 'mcp.discover')`,
+          ),
+        ).rejects.toThrow();
+
+        await database.upgrade();
+
+        const profiles = await database.execute(
+          sql`select id, mcp_servers from runtime_profiles`,
+        );
+        expect(profiles.rows).toEqual([{ id: "prof_1", mcp_servers: [] }]);
+        await database.execute(sql`
+          insert into mcp_tool_snapshots (id, profile_id, server, config_hash, server_info, tools)
+          values ('mcps_1', 'prof_1', 'docs', 'hash', '{}', '[]');
+        `);
+        await database.execute(sql`
+          insert into mcp_discoveries (id, profile_id, server, config, config_hash, status, snapshot_id)
+          values ('mcpd_1', 'prof_1', 'docs', '{}', 'hash', 'succeeded', 'mcps_1'),
+            ('mcpd_2', 'prof_1', 'docs', '{}', 'hash', 'queued', null);
+        `);
+        await database.execute(sql`
+          insert into jobs (id, kind, payload)
+          values ('job_1', 'mcp.discover', '{"discoveryId":"mcpd_2"}');
+        `);
+        // Only a succeeded discovery holds a snapshot; statuses are a closed set.
+        await expect(
+          database.execute(
+            sql`update mcp_discoveries set status = 'failed' where id = 'mcpd_1'`,
+          ),
+        ).rejects.toThrow();
+        await expect(
+          database.execute(
+            sql`update mcp_discoveries set status = 'lost' where id = 'mcpd_2'`,
+          ),
+        ).rejects.toThrow();
+        // A server has at most one test queued or running.
+        await expect(
+          database.execute(sql`
+            insert into mcp_discoveries (id, profile_id, server, config, config_hash, status)
+            values ('mcpd_3', 'prof_1', 'docs', '{}', 'hash', 'running');
+          `),
+        ).rejects.toThrow();
+        await database.execute(sql`
+          insert into mcp_discoveries (id, profile_id, server, config, config_hash, status)
+          values ('mcpd_4', 'prof_1', 'docs', '{}', 'hash', 'failed');
+        `);
+        // A pruned snapshot leaves its discovery without one.
+        await database.execute(
+          sql`delete from mcp_tool_snapshots where id = 'mcps_1'`,
+        );
+        const pruned = await database.execute(
+          sql`select snapshot_id from mcp_discoveries where id = 'mcpd_1'`,
+        );
+        expect(pruned.rows).toEqual([{ snapshot_id: null }]);
+        // Both go with their profile.
+        await database.execute(sql`
+          insert into mcp_tool_snapshots (id, profile_id, server, config_hash, server_info, tools)
+          values ('mcps_2', 'prof_1', 'docs', 'hash', '{}', '[]');
+        `);
+        await database.execute(
+          sql`delete from runtime_profiles where id = 'prof_1'`,
+        );
+        const left = await database.execute(sql`
+          select (select count(*) from mcp_discoveries)::int as discoveries,
+            (select count(*) from mcp_tool_snapshots)::int as snapshots
+        `);
+        expect(left.rows).toEqual([{ discoveries: 0, snapshots: 0 }]);
+      } finally {
+        await database.close();
+      }
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
     "0012 puts every bot name and role on one line and keeps active names unique",
     async () => {
       const database = await databaseBefore(target, ONE_LINE);

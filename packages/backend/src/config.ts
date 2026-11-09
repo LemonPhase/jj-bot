@@ -1,11 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import {
+  EVENT_PAYLOAD_CAP_BYTES,
   MAX_SPEND_CAP_USD,
   MAX_UPLOAD_FILES,
   TOOL_OUTPUT_PREVIEW_LIMIT,
   UPLOAD_COMMAND_MAX_BYTES,
 } from "@jj/contracts";
+
+/** Longest `JJ_EVENT_RETENTION_DAYS`: ten years. */
+export const MAX_EVENT_RETENTION_DAYS = 3650;
+export const DEFAULT_EVENT_RETENTION_DAYS = 30;
+/** Smallest `JJ_EVENT_PAYLOAD_CAP_BYTES`, so ordinary events never spill. */
+export const MIN_EVENT_PAYLOAD_CAP_BYTES = 128 * 1024;
+export const DEFAULT_EVENT_PAYLOAD_CAP_BYTES = 256 * 1024;
 
 const MiB = 1024 * 1024;
 
@@ -76,8 +84,23 @@ export interface ArtifactLimits {
 export interface EngineConfig {
   /** Lease owner name for this worker; unique per process. */
   workerId: string;
-  /** Jobs (session runs and chat replies) one worker runs at once. `JJ_CONCURRENCY`. */
+  /** Jobs (session runs, chat replies and MCP discoveries) one worker runs at once. `JJ_CONCURRENCY`. */
   concurrency: number;
+  /**
+   * MCP discoveries one worker runs at once, default 1: they take slots of
+   * `concurrency`, so the rest always stay for session runs and chat
+   * replies (with `concurrency` 1, a discovery takes the only one while it
+   * runs). Never more than `concurrency - 1` when that is at least 1.
+   */
+  maxConcurrentDiscoveries: number;
+  /** How long a discovery waits for its ephemeral sandbox to start, default 60 s. */
+  discoveryAcquireMs: number;
+  /**
+   * With `concurrency` 1, how long a queued discovery yields to session runs
+   * and chat replies before it takes the next free slot, default 60 s.
+   * With more slots, a waiting discovery goes first into its own.
+   */
+  discoveryMaxWaitMs: number;
   leaseMs: number;
   /** How often the worker claims when no wake arrives. */
   pollIntervalMs: number;
@@ -138,6 +161,24 @@ export interface EngineConfig {
   probeTtlMs: number;
   /** What the server takes as uploads; null when it serves none (`JJ_UPLOADS=off`). */
   uploads: UploadSettings | null;
+  /**
+   * `JJ_EVENT_RETENTION_DAYS`: a completed, failed or cancelled task's
+   * events are compacted this many days after it finished (default 30, at
+   * most 3650); 0 never compacts.
+   */
+  eventRetentionDays: number;
+  /**
+   * `JJ_EVENT_PAYLOAD_CAP_BYTES`: an event payload whose JSON is larger is
+   * stored in full as an `output` artifact and clipped in the event (default
+   * 256 KiB, from 128 KiB to the contract's 1 MiB ceiling).
+   */
+  eventPayloadCapBytes: number;
+  /** Time between compaction passes (one hour). */
+  compactionIntervalMs: number;
+  /** Most tasks one compaction pass compacts. */
+  compactionMaxTasks: number;
+  /** A compaction pass starts no task after this long. */
+  compactionMaxMs: number;
 }
 
 export type EngineConfigInput = Partial<
@@ -166,6 +207,9 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
   const config: EngineConfig = {
     workerId: `worker-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`,
     concurrency: 4,
+    maxConcurrentDiscoveries: 1,
+    discoveryAcquireMs: 60_000,
+    discoveryMaxWaitMs: 60_000,
     leaseMs: 30_000,
     pollIntervalMs: 1_000,
     maxSessionsPerTask: 16,
@@ -185,6 +229,11 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     workerHeartbeat: true,
     streamPollMs: 15_000,
     probeTtlMs: 10_000,
+    eventRetentionDays: DEFAULT_EVENT_RETENTION_DAYS,
+    eventPayloadCapBytes: DEFAULT_EVENT_PAYLOAD_CAP_BYTES,
+    compactionIntervalMs: 60 * 60_000,
+    compactionMaxTasks: 50,
+    compactionMaxMs: 30_000,
     ...stripUndefined(rest),
     artifacts: {
       ...DEFAULT_ARTIFACT_LIMITS,
@@ -197,6 +246,8 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
   };
   config.outputCapBytes = clampOutputCap(config.outputCapBytes);
   if (config.uploads) checkUploadSettings(config.uploads);
+  checkRetentionDays(config.eventRetentionDays, "eventRetentionDays");
+  checkPayloadCap(config.eventPayloadCapBytes, "eventPayloadCapBytes");
   if (
     config.maxUsdPerDay !== null &&
     !(
@@ -221,11 +272,21 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "chatMaxTurns",
     "ephemeralIdleMs",
     "maxHeldSandboxes",
+    "compactionIntervalMs",
+    "compactionMaxTasks",
+    "compactionMaxMs",
+    "maxConcurrentDiscoveries",
+    "discoveryAcquireMs",
+    "discoveryMaxWaitMs",
   ] as const) {
     const value = config[key];
     if (!Number.isSafeInteger(value) || value < 1)
       throw new RangeError(`${key} must be a positive integer.`);
   }
+  config.maxConcurrentDiscoveries = Math.min(
+    config.maxConcurrentDiscoveries,
+    Math.max(1, config.concurrency - 1),
+  );
   return config;
 }
 
@@ -252,6 +313,43 @@ function checkUploadSettings(settings: UploadSettings) {
       throw new RangeError(
         `uploads.${key} must be at most ${UPLOAD_CEILINGS[key]}.`,
       );
+}
+
+function checkRetentionDays(value: number, name: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > MAX_EVENT_RETENTION_DAYS
+  )
+    throw new RangeError(
+      `${name} must be a whole number of days from 0 (never compact) to ${MAX_EVENT_RETENTION_DAYS}.`,
+    );
+  return value;
+}
+
+function checkPayloadCap(value: number, name: string): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < MIN_EVENT_PAYLOAD_CAP_BYTES ||
+    value > EVENT_PAYLOAD_CAP_BYTES
+  )
+    throw new RangeError(
+      `${name} must be a number of bytes from ${MIN_EVENT_PAYLOAD_CAP_BYTES} (128 KiB) to ${EVENT_PAYLOAD_CAP_BYTES} (1 MiB).`,
+    );
+  return value;
+}
+
+/**
+ * `JJ_EVENT_RETENTION_DAYS` alone, read as `configFromEnv` reads it: the
+ * default when unset. Throws on a value the server would refuse to boot with.
+ */
+export function eventRetentionDaysFromEnv(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = env.JJ_EVENT_RETENTION_DAYS?.trim();
+  return raw
+    ? checkRetentionDays(Number(raw), "JJ_EVENT_RETENTION_DAYS")
+    : DEFAULT_EVENT_RETENTION_DAYS;
 }
 
 /** The output cap the engine and events use: at most the contract's preview limit. */
@@ -286,6 +384,13 @@ export function configFromEnv(
       );
     return value;
   };
+  const checked = (
+    name: string,
+    check: (value: number, name: string) => number,
+  ) => {
+    const raw = env[name]?.trim();
+    return raw ? check(Number(raw), name) : undefined;
+  };
   // PostgreSQL when DATABASE_URL is set, else PGlite at JJ_DATABASE_PATH,
   // where `memory://` keeps nothing across restarts.
   const inMemory =
@@ -302,6 +407,13 @@ export function configFromEnv(
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
     uploads: uploadsFromEnv(env, int),
+    eventRetentionDays: env.JJ_EVENT_RETENTION_DAYS?.trim()
+      ? eventRetentionDaysFromEnv(env)
+      : undefined,
+    eventPayloadCapBytes: checked(
+      "JJ_EVENT_PAYLOAD_CAP_BYTES",
+      checkPayloadCap,
+    ),
     persistence: !inMemory,
     workerHeartbeat: Boolean(env.DATABASE_URL?.trim()),
   };

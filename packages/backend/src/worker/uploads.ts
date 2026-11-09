@@ -213,7 +213,7 @@ export async function settleUpload(
     .returning(artifactColumns);
   // Another attempt recorded it first.
   if (!row?.uploadMessageId) return false;
-  await emit(tx, taskId, {
+  await emit(tx, ctx, taskId, {
     type: "artifact.updated",
     payload: { artifact: toArtifact(row), previousState: "pending" },
     ...attribution,

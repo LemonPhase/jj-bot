@@ -75,7 +75,12 @@ describe("readDataReport", () => {
         tasks: 3,
         artifacts: 5,
         artifactBytes: expect.any(Number),
+        events: expect.any(Number),
+        eventBytes: expect.any(Number),
+        compactedTasks: 0,
+        waitingOnSnapshots: 0,
       });
+      expect(report.records?.events).toBeGreaterThan(0);
       // Before the secrets store, there is nothing to report on secrets.
       expect(report.secrets).toBeUndefined();
       expect(formatReport(report)).toContain(
@@ -252,6 +257,68 @@ describe("readDataReport", () => {
           )
         ).dockerNamespace,
       ).toBe(dockerNamespace({ JJ_DOCKER_NAMESPACE: "jj-bot" }));
+    },
+    OPEN_TIMEOUT,
+  );
+
+  it(
+    "counts the finished tasks past the retention that a pending snapshot keeps from compaction",
+    async () => {
+      const path = await directory();
+      await seedPreviousRelease({ mode: "pglite", path });
+      const t = await testApp({
+        startWorker: false,
+        database: { mode: "pglite", path },
+      });
+      try {
+        // A task that finished 40 days ago, one of whose runs never got its snapshot.
+        const result = (await t.database.db.execute(
+          sql`update tasks set finished_at = now() - interval '40 days' where id = (select id from tasks where status = 'completed' order by id limit 1) returning id`,
+        )) as unknown as { rows: { id: string }[] };
+        const taskId = result.rows[0]?.id as string;
+        expect(taskId).toBeDefined();
+        await t.database.db.execute(
+          sql`update runs set snapshot_pending = true where id = (select id from runs where task_id = ${taskId} and status <> 'running' limit 1)`,
+        );
+      } finally {
+        await t.dispose();
+      }
+      const setting = { mode: "pglite" as const, path };
+      const report = await readDataReport(setting, {});
+      expect(report.records?.waitingOnSnapshots).toBe(1);
+      expect(formatReport(report)).toContain(
+        "1 finished task past the retention wait on a run pending a snapshot and are not compacted",
+      );
+      expect(formatEnv(report)).toContain("\nevents_waiting_on_snapshots=1\n");
+      // Within a longer retention, or with retention off, nothing waits, even
+      // when another setting is one the server would refuse.
+      for (const days of ["50", "0"])
+        for (const other of [{}, { JJ_CONCURRENCY: "none" }])
+          expect(
+            (
+              await readDataReport(setting, {
+                JJ_EVENT_RETENTION_DAYS: days,
+                ...other,
+              })
+            ).records?.waitingOnSnapshots,
+            `${days} days, ${JSON.stringify(other)}`,
+          ).toBe(0);
+      // A task another guard holds back too (a stop in progress) waits on
+      // more than its snapshot, so it is not counted.
+      const t2 = await testApp({
+        startWorker: false,
+        database: setting,
+      });
+      try {
+        await t2.database.db.execute(
+          sql`update tasks set cancel_requested_at = now() where id = (select task_id from runs where snapshot_pending limit 1)`,
+        );
+      } finally {
+        await t2.dispose();
+      }
+      expect(
+        (await readDataReport(setting, {})).records?.waitingOnSnapshots,
+      ).toBe(0);
     },
     OPEN_TIMEOUT,
   );
