@@ -90,6 +90,7 @@ import {
   stageUpload,
   sweepStagedUploads,
   uploadLimits,
+  uploadReceiveMs,
   uploadSettings,
   uploadToTask,
 } from "./services/uploads";
@@ -250,6 +251,12 @@ export interface Engine {
     assertServed(): void;
     /** `POST /api/uploads`: every limit is checked before the body is read. */
     stage(input: StageUploadInput): Promise<{ upload: StagedUpload }>;
+    /**
+     * The longest an upload of this size may take to arrive, at the slowest
+     * pace staging accepts; null while uploads are off. The API gives an
+     * upload's request this long instead of its usual deadline.
+     */
+    receiveMs(sizeBytes: number): number | null;
     /** `DELETE /api/uploads/:id`. */
     delete(uploadId: string): Promise<void>;
   };
@@ -472,6 +479,7 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
         uploadSettings(ctx);
       },
       stage: (input) => stageUpload(ctx, input),
+      receiveMs: (sizeBytes) => uploadReceiveMs(ctx, sizeBytes),
       delete: (uploadId) => deleteStagedUpload(ctx, uploadId),
     },
     maintenance: {
