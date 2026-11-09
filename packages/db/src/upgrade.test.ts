@@ -22,7 +22,13 @@ import {
   SchemaTooNewError,
   shippedMigrations,
 } from "./migrations";
-import { conversationMessages, tables, tasks, usage } from "./schema";
+import {
+  conversationMessages,
+  sessionToolsets,
+  tables,
+  tasks,
+  usage,
+} from "./schema";
 import { cleanup, OPEN_TIMEOUT, type Target, targets } from "./test-helpers";
 import {
   type DatabaseLocation,
@@ -239,10 +245,19 @@ describe.each(targets)("upgrades on $name", (target) => {
     });
 
     it("reads every table through the current schema, old rows included", async () => {
+      // A toolset for each session that ran (backfilled, below); every other table as it was.
+      const ran = (before.sessions ?? []).filter(
+        (row) => Number(row.run_count) > 0,
+      );
+      expect(ran.length).toBeGreaterThan(0);
       for (const table of Object.values(tables)) {
         const name = getTableName(table);
         const rows = await database.db.select().from(table);
-        expect(rows.length, name).toBe(before[name]?.length ?? 0);
+        expect(rows.length, name).toBe(
+          name === "session_toolsets"
+            ? ran.length
+            : (before[name]?.length ?? 0),
+        );
       }
     });
 
@@ -261,6 +276,14 @@ describe.each(targets)("upgrades on $name", (target) => {
         .from(conversationMessages)
         .where(sql`${conversationMessages.handledAt} is null`);
       expect(waiting.filter((message) => message.role === "user")).toEqual([]);
+      // Every session that ran pinned no MCP tool, so it never gains one.
+      const toolsets = await database.db.select().from(sessionToolsets);
+      expect(toolsets.map((row) => [row.sessionId, row.mcp]).sort()).toEqual(
+        (before.sessions ?? [])
+          .filter((row) => Number(row.run_count) > 0)
+          .map((row) => [row.id, []])
+          .sort(),
+      );
     });
 
     it("carries on writing from the old counters", async () => {
