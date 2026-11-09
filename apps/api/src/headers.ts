@@ -9,8 +9,8 @@
 //   A route that sets a stricter policy of its own keeps it, as artifact
 //   downloads do (`sandbox`).
 // - `X-Frame-Options: DENY` refuses framing in browsers that predate
-//   `frame-ancestors`; `Referrer-Policy: no-referrer` keeps an address that
-//   carries `?token=` out of `Referer`; `X-Content-Type-Options: nosniff`
+//   `frame-ancestors`; `Referrer-Policy: no-referrer` keeps the app's addresses
+//   out of `Referer` (an old link's `?token=` too); `X-Content-Type-Options: nosniff`
 //   stops browsers guessing types, so only what is declared a script or a
 //   style sheet runs as one.
 // - `Strict-Transport-Security` only when the app is opened over https

@@ -8,12 +8,35 @@ import { type SSEStreamingApi, streamSSE } from "hono/streaming";
 /** Thrown into a source's write when the client has gone; never logged. */
 export const STREAM_CLOSED = new Error("The event stream closed.");
 
-/** Open streams, so shutdown can end them. */
-export class StreamRegistry {
-  private readonly open = new Set<() => void>();
+/** What a stream was opened with: a cookie session, the bearer token, or neither. */
+export interface StreamCredential {
+  /** The cookie session it was opened with. */
+  sessionId?: string;
+  /** It was opened with the bearer token. */
+  bearer?: boolean;
+}
 
-  add(end: () => void): () => void {
-    this.open.add(end);
+/** How the auth guard tells a stream what it was opened with, and how to recheck it. */
+export interface StreamAuth {
+  credential: StreamCredential;
+  /** Whether the credential is still good; checked at every heartbeat. */
+  alive(): Promise<boolean>;
+}
+
+const STREAM_AUTH = "jjStreamAuth";
+
+export const setStreamAuth = (c: Context, auth: StreamAuth) =>
+  c.set(STREAM_AUTH as never, auth as never);
+
+const streamAuthOf = (c: Context) =>
+  c.get(STREAM_AUTH as never) as StreamAuth | undefined;
+
+/** Open streams, so shutdown and signing out can end them. */
+export class StreamRegistry {
+  private readonly open = new Map<() => void, StreamCredential>();
+
+  add(end: () => void, credential: StreamCredential = {}): () => void {
+    this.open.set(end, credential);
     return () => this.open.delete(end);
   }
 
@@ -23,7 +46,14 @@ export class StreamRegistry {
 
   /** Ends every open stream; their sources close as they unwind. */
   endAll(): void {
-    for (const end of [...this.open]) end();
+    for (const end of [...this.open.keys()]) end();
+  }
+
+  /** Ends the streams whose credential matches; returns how many. */
+  endWhere(match: (credential: StreamCredential) => boolean): number {
+    const ending = [...this.open].filter(([, credential]) => match(credential));
+    for (const [end] of ending) end();
+    return ending.length;
   }
 }
 
@@ -97,7 +127,8 @@ export async function eventStream(
     const signal = c.req.raw.signal;
     if (signal.aborted) end();
     else signal.addEventListener("abort", end, { once: true });
-    const unregister = options.registry.add(end);
+    const auth = streamAuthOf(c);
+    const unregister = options.registry.add(end, auth?.credential);
     let isEnded = false;
     void ended.then(() => {
       isEnded = true;
@@ -114,7 +145,17 @@ export async function eventStream(
       ]);
     };
     const heartbeat = setInterval(() => {
-      if (!gone()) send(": heartbeat\n\n").catch(() => {});
+      if (gone()) return;
+      send(": heartbeat\n\n").catch(() => {});
+      // A session signed out or a token rotated by another process ends the
+      // stream here; in this process signing out ends it at once
+      // (`endWhere`). A failed check (the database briefly away) keeps it.
+      auth
+        ?.alive()
+        .then((alive) => {
+          if (!alive) end();
+        })
+        .catch(() => {});
     }, options.heartbeatMs);
     heartbeat.unref();
     let queue = Promise.resolve();

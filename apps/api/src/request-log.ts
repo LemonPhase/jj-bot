@@ -5,8 +5,8 @@
 // starts: a health probe at debug whatever it answers (its checks log their
 // own failures), a failure (5xx) as a warning, a refusal (4xx) or a change
 // (any method but GET, HEAD and OPTIONS) at info, and a read that succeeded,
-// a scrape included, at debug. The path is logged without its query, which
-// can carry `?token=`.
+// a scrape included, at debug. The path is logged without its query, and no
+// header is logged: never `Authorization`, `Cookie` or `Set-Cookie`.
 import { randomBytes } from "node:crypto";
 import { type Logger, withLogFields } from "@jj/backend";
 import type { MiddlewareHandler } from "hono";

@@ -7,6 +7,7 @@ import {
   botMemorySchema,
   botSchema,
   COMMAND_TEXT_LIMIT,
+  CONTRACT_VERSION,
   conversationViewSchema,
   mcpDiscoveryResultSchema,
   mcpServerSchema,
@@ -144,7 +145,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.12.0",
+      contractVersion: CONTRACT_VERSION,
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,

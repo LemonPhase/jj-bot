@@ -75,7 +75,7 @@ export function otlpHeaderSecrets(env: Env): Secret[] {
 }
 
 /**
- * The server's secrets: the provider keys in `env`, `API_TOKEN`, the database
+ * The server's secrets: the provider keys in `env`, `API_TOKEN`, `JJ_PASSWORD_HASH`, the database
  * password, the secrets store's master keys, the OTLP exporter's headers, and
  * the generated API token,
  * which is read from the database on each call, so a worker that started
@@ -92,6 +92,10 @@ function serverSecrets(
     ...models.secretValues(),
     ...(env.API_TOKEN?.trim()
       ? [{ name: "API_TOKEN", value: env.API_TOKEN.trim() }]
+      : []),
+    // Not the password, but what a guesser would start from.
+    ...(env.JJ_PASSWORD_HASH?.trim()
+      ? [{ name: "JJ_PASSWORD_HASH", value: env.JJ_PASSWORD_HASH.trim() }]
       : []),
     ...(config.secretKeys?.texts ?? []).map((value, index) => ({
       name: index === 0 ? "JJ_SECRET_KEY" : "JJ_SECRET_KEY_PREVIOUS",

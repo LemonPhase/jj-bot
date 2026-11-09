@@ -79,10 +79,10 @@ describe("liveApi against the real server", () => {
     expect(api.capabilities.agentExecution).toBe(true);
   });
 
-  it("asks for the token when it is missing", async () => {
+  it("asks to sign in without the token or a session", async () => {
     const probe = await probeBackend({ baseUrl: server.url });
     expect(probe).toMatchObject({ ok: false });
-    if (!probe.ok) expect(probe.reason).toContain("requires a token");
+    if (!probe.ok) expect(probe.reason).toContain("asks to sign in");
   });
 
   it("round-trips bots, memory, profiles, drivers and models", async () => {

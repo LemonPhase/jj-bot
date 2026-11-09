@@ -10,6 +10,7 @@ import { type ServerType, serve } from "@hono/node-server";
 import { createLogger, type Logger } from "@jj/backend";
 import { configureOutboundProxy } from "@jj/runtime";
 import { createApp, type JJApp } from "./app";
+import { loginLink } from "./auth/link";
 import {
   type Env,
   loadServerConfig,
@@ -119,17 +120,28 @@ export async function startServer(
   let server: ServerType | undefined;
   try {
     const auth = await resolveApiToken(config, database.db);
+    // Every line from now on redacts a generated token, even one generated
+    // just now. No line carries it: `npm run auth:token` reads it.
+    if (auth.kind === "generated") await engine.context.redactor();
     const app = createApp({
       engine,
       logger,
       config: {
         ...(auth.kind === "none" ? {} : { apiToken: auth.token }),
+        auth: {
+          generated: auth.kind === "generated",
+          ...(config.password ? { password: config.password } : {}),
+          ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
+          trustedProxies: config.trustedProxies,
+        },
         allowedHosts: config.allowedHosts,
         workerEmbedded: config.embedWorker,
         webDist: config.webDist,
         strictTransportSecurity: sendsHsts(config.publicUrl),
       },
     });
+    // A token or password changed since the last boot signs every device out.
+    await app.auth.reconcileCredentials();
     // Listen first: a port clash fails before the worker claims any run.
     const listening = await listen(app, config.host, config.port);
     server = listening.server;
@@ -148,7 +160,7 @@ export async function startServer(
         `worker ${config.embedWorker ? "embedded" : "separate"}`,
         `drivers ${drivers.map((info) => `${info.id}${info.available ? "" : " (unavailable)"}`).join(", ")}`,
         `models ${providers.length > 0 ? providers.join(", ") : "none configured"}`,
-        `auth ${describeAuth(auth)}`,
+        `auth ${describeAuth(auth, config.password !== undefined)}`,
         `web ${config.webDist ? "served" : "not built"}`,
       ].join(" · "),
     );
@@ -156,13 +168,13 @@ export async function startServer(
     if (defaultModelWarning) logger.warn(defaultModelWarning);
     const graceWarning = stopGraceWarning(config);
     if (graceWarning) logger.warn(graceWarning);
-    // The one line that carries a generated token: the user opens it once,
-    // and the web app keeps the token and drops it from the address bar.
-    // Every other line redacts it, from now on even one generated just now.
-    if (auth.kind === "generated") {
-      await engine.context.redactor();
-      const line = `Open JJ Bot: ${config.publicUrl ?? `http://127.0.0.1:${listening.address.port}`}/?token=${auth.token}`;
-      if (logger.reveal) logger.reveal(line, auth.token);
+    // A one-time login link, whatever JJ_LOG_LEVEL says. Its code is in the
+    // fragment, which no browser sends to a server, so it never reaches a
+    // proxy's log or a `Referer`; it signs in once, within 15 minutes.
+    if (app.auth.required) {
+      const code = await app.auth.store.createLoginCode();
+      const line = `Open JJ Bot: ${loginLink(config.publicUrl ?? `http://127.0.0.1:${listening.address.port}`, code)}`;
+      if (logger.reveal) logger.reveal(line, code);
       else logger.info(line);
     }
 

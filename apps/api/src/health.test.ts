@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Engine } from "@jj/backend";
+import { CONTRACT_VERSION } from "@jj/contracts";
 import { migrationsFolder, recordWorkerHeartbeat } from "@jj/db";
 import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -52,7 +53,7 @@ describe("GET /health/live and /health", () => {
       expect(await json(response)).toEqual({
         status: "ok",
         service: "jj-api",
-        contractVersion: "1.12.0",
+        contractVersion: CONTRACT_VERSION,
       });
     }
   });

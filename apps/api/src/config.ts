@@ -15,6 +15,17 @@ import {
 import { nodeDataDirectory } from "@jj/db";
 import { remoteMcpEnabled } from "@jj/runtime";
 import { parseSubnetPool } from "@jj/sandbox";
+import {
+  DEFAULT_TRUSTED_PROXIES,
+  parseTrustedProxies,
+  type TrustedProxies,
+  TrustedProxiesError,
+} from "./auth/clients";
+import {
+  type PasswordHash,
+  PasswordHashError,
+  parsePasswordHash,
+} from "./auth/password";
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -127,9 +138,13 @@ export interface ServerConfig extends ServicesConfig {
   /** The listen address, without IPv6 brackets. */
   host: string;
   port: number;
-  /** `API_TOKEN`. Without it, a listener beyond loopback uses a generated token. */
+  /** `API_TOKEN`. Without it, a listener beyond loopback, or a password, uses a generated token. */
   apiToken?: string;
-  /** Where users open the app, for the startup line: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
+  /** `JJ_PASSWORD_HASH`, parsed, with its text: a sign-in password besides the token. */
+  password?: { hash: PasswordHash; text: string };
+  /** `JJ_TRUSTED_PROXIES`: peers whose `X-Forwarded-For` names the client for rate limits. Default loopback. */
+  trustedProxies: TrustedProxies;
+  /** Where users open the app, for the startup line and the session cookie: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
   publicUrl?: string;
   /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token (refused at boot without one). */
   allowedHosts: string[];
@@ -326,13 +341,42 @@ export function loadServicesConfig(env: Env): ServicesConfig {
 }
 
 /**
- * Whether the API answers without any token: no API_TOKEN and a loopback
- * listener. Anywhere else it requires one, generating it when API_TOKEN is
- * unset (see `resolveApiToken`).
+ * Whether the API answers without any token: no API_TOKEN, no password and a
+ * loopback listener. Anywhere else it requires sign-in, generating the token
+ * when API_TOKEN is unset (see `resolveApiToken`): a password asks for
+ * sign-in even on loopback.
  */
 export const servesWithoutToken = (
-  config: Pick<ServerConfig, "apiToken" | "host">,
-) => !config.apiToken && isLoopbackHost(config.host);
+  config: Pick<ServerConfig, "apiToken" | "host"> & {
+    password?: unknown;
+  },
+) => !config.apiToken && !config.password && isLoopbackHost(config.host);
+
+/** `JJ_PASSWORD_HASH`, parsed; a malformed one stops the boot. */
+function passwordSetting(env: Env): ServerConfig["password"] {
+  const value = text(env, "JJ_PASSWORD_HASH");
+  if (value === undefined) return undefined;
+  try {
+    return { hash: parsePasswordHash(value), text: value };
+  } catch (error) {
+    if (error instanceof PasswordHashError)
+      throw new ConfigError(error.message);
+    throw error;
+  }
+}
+
+/** `JJ_TRUSTED_PROXIES`, default loopback; a malformed one stops the boot. */
+function trustedProxiesSetting(env: Env): TrustedProxies {
+  try {
+    return parseTrustedProxies(
+      text(env, "JJ_TRUSTED_PROXIES") ?? DEFAULT_TRUSTED_PROXIES,
+    );
+  } catch (error) {
+    if (error instanceof TrustedProxiesError)
+      throw new ConfigError(error.message);
+    throw error;
+  }
+}
 
 /**
  * Refuses settings that would expose the API beyond this machine without a
@@ -348,7 +392,7 @@ function checkExposure(
   env: Env,
   config: Pick<
     ServerConfig,
-    "apiToken" | "host" | "allowedHosts" | "publicUrl"
+    "apiToken" | "password" | "host" | "allowedHosts" | "publicUrl"
   >,
 ) {
   const url = config.publicUrl ? new URL(config.publicUrl) : undefined;
@@ -357,11 +401,11 @@ function checkExposure(
   if (servesWithoutToken(config)) {
     if (config.allowedHosts.length > 0)
       throw new ConfigError(
-        "API_ALLOWED_HOSTS is set, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards those names to it (a reverse proxy, `tailscale serve`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.",
+        "API_ALLOWED_HOSTS is set, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards those names to it (a reverse proxy, `tailscale serve`) would expose it unauthenticated. Set API_TOKEN (or JJ_PASSWORD_HASH, and the server generates a token), and serve it over HTTPS.",
       );
     if (remote)
       throw new ConfigError(
-        `API_PUBLIC_URL names "${remote.hostname}", beyond loopback, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards that address to it (a reverse proxy, \`tailscale serve\`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.`,
+        `API_PUBLIC_URL names "${remote.hostname}", beyond loopback, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards that address to it (a reverse proxy, \`tailscale serve\`) would expose it unauthenticated. Set API_TOKEN (or JJ_PASSWORD_HASH, and the server generates a token), and serve it over HTTPS.`,
       );
   }
   if (remote?.protocol === "http:" && !allowInsecure)
@@ -413,10 +457,12 @@ export function loadServerConfig(env: Env): ServerConfig {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+  const password = passwordSetting(env);
   checkExposure(env, {
     host,
     allowedHosts,
     ...(apiToken ? { apiToken } : {}),
+    ...(password ? { password } : {}),
     ...(url ? { publicUrl: url } : {}),
   });
   return {
@@ -424,6 +470,8 @@ export function loadServerConfig(env: Env): ServerConfig {
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
+    ...(password ? { password } : {}),
+    trustedProxies: trustedProxiesSetting(env),
     ...(url ? { publicUrl: url } : {}),
     allowedHosts,
     embedWorker,
