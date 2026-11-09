@@ -8,6 +8,8 @@ export const ID_PREFIXES = {
   taskUpdate: "upd",
   task: "task",
   template: "tmpl",
+  schedule: "sched",
+  scheduleFire: "fire",
   session: "sess",
   run: "run",
   inboxItem: "inbox",

@@ -291,6 +291,19 @@ export const taskEventSchema = z.discriminatedUnion("type", [
    */
   event("mcp.server", mcpServerEventSchema),
   /**
+   * Marker: the task's `task` workspace was removed through its sandbox
+   * driver, because the schedule that started it keeps only its newest
+   * `keepWorkspaces` finished tasks' workspaces. The artifacts, transcripts
+   * and task log stay; a continued task starts with a fresh workspace.
+   */
+  event(
+    "workspace.removed",
+    z.object({
+      scheduleId: idSchema,
+      keepWorkspaces: z.number().int().nonnegative(),
+    }),
+  ),
+  /**
    * Marker: the task's events at or below `through` were compacted after it
    * finished. `removed` events were deleted (activity, and snapshots that a
    * later snapshot of the same record supersedes); `stripped` events lost

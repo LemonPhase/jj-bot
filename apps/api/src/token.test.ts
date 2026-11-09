@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "@jj/backend";
 import { instanceSettings } from "@jj/db";
+import { eq, ne } from "drizzle-orm";
 import {
   afterAll,
   afterEach,
@@ -107,9 +108,11 @@ describe("beyond loopback without API_TOKEN", () => {
       await fetch(`${base}/?token=${token}`);
       await fetch(`${base}/api/nope?token=${token}`);
 
+      // The scheduler's last pass is stored there too; the token is the only secret.
       const stored = await server.services.database.db
         .select()
-        .from(instanceSettings);
+        .from(instanceSettings)
+        .where(ne(instanceSettings.key, "scheduler.last_pass_at"));
       expect(stored.map((row) => [row.key, row.value])).toEqual([
         [GENERATED_TOKEN_KEY, token],
       ]);
@@ -237,7 +240,10 @@ describe("API_TOKEN and loopback", () => {
         }),
       ).toBe(200);
       expect(
-        await server.services.database.db.select().from(instanceSettings),
+        await server.services.database.db
+          .select()
+          .from(instanceSettings)
+          .where(eq(instanceSettings.key, GENERATED_TOKEN_KEY)),
       ).toEqual([]);
       expect(lines.join("\n")).not.toContain("configured-token");
       expect(lines.join("\n")).not.toContain("Open JJ Bot");
@@ -283,7 +289,10 @@ describe("API_TOKEN and loopback", () => {
       );
       expect(rebound.status).toBe(403);
       expect(
-        await server.services.database.db.select().from(instanceSettings),
+        await server.services.database.db
+          .select()
+          .from(instanceSettings)
+          .where(eq(instanceSettings.key, GENERATED_TOKEN_KEY)),
       ).toEqual([]);
       expect(lines.join("\n")).toContain("auth none (loopback only)");
       expect(lines.join("\n")).not.toContain("Open JJ Bot");
