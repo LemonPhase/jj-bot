@@ -3,7 +3,9 @@ import { hostname } from "node:os";
 import {
   EVENT_PAYLOAD_CAP_BYTES,
   MAX_SPEND_CAP_USD,
+  MAX_UPLOAD_FILES,
   TOOL_OUTPUT_PREVIEW_LIMIT,
+  UPLOAD_COMMAND_MAX_BYTES,
 } from "@jj/contracts";
 
 /** Longest `JJ_EVENT_RETENTION_DAYS`: ten years. */
@@ -12,6 +14,61 @@ export const DEFAULT_EVENT_RETENTION_DAYS = 30;
 /** Smallest `JJ_EVENT_PAYLOAD_CAP_BYTES`, so ordinary events never spill. */
 export const MIN_EVENT_PAYLOAD_CAP_BYTES = 128 * 1024;
 export const DEFAULT_EVENT_PAYLOAD_CAP_BYTES = 256 * 1024;
+
+const MiB = 1024 * 1024;
+
+/**
+ * What the server takes as uploads (`capabilities.uploads`). Each limit is
+ * set by an environment variable, up to a hard ceiling (UPLOAD_CEILINGS).
+ */
+export interface UploadSettings {
+  /** One file (`JJ_UPLOAD_MAX_FILE_MB`, default 16 MiB, at most 64). */
+  maxFileBytes: number;
+  /** Files one command attaches (`JJ_UPLOAD_MAX_FILES`, default and at most 20). */
+  maxFiles: number;
+  /** One command's files in all: 64 MiB. */
+  maxCommandBytes: number;
+  /** A task's uploads in all (`JJ_UPLOAD_MAX_TASK_MB`, default 128 MiB, at most 1024). */
+  maxTaskBytes: number;
+  /** Staged bytes not yet attached, across the server (`JJ_UPLOAD_MAX_STAGED_MB`, default 256 MiB, at most 4096). */
+  maxStagedBytes: number;
+  /** Uploads one process receives at once; more answer 429 RATE_LIMITED. */
+  maxInFlight: number;
+  /** How long a staged upload waits to be attached before it is deleted. */
+  stagedTtlMs: number;
+  /**
+   * The slowest an upload's body may come: under this many bytes a second
+   * over `slowWindowMs` (16 KiB over 30 s), it is abandoned with 408.
+   */
+  minBytesPerSecond: number;
+  slowWindowMs: number;
+  /**
+   * Extensions a name must end with (`JJ_UPLOAD_EXTENSIONS`, lowercase,
+   * with the dot), or null for any regular file.
+   */
+  extensions: readonly string[] | null;
+}
+
+/** The highest value each upload limit may be set to. */
+export const UPLOAD_CEILINGS = {
+  maxFileBytes: 64 * MiB,
+  maxFiles: MAX_UPLOAD_FILES,
+  maxTaskBytes: 1024 * MiB,
+  maxStagedBytes: 4096 * MiB,
+} as const;
+
+export const DEFAULT_UPLOAD_SETTINGS: UploadSettings = {
+  maxFileBytes: 16 * MiB,
+  maxFiles: MAX_UPLOAD_FILES,
+  maxCommandBytes: UPLOAD_COMMAND_MAX_BYTES,
+  maxTaskBytes: 128 * MiB,
+  maxStagedBytes: 256 * MiB,
+  maxInFlight: 4,
+  stagedTtlMs: 60 * 60_000,
+  minBytesPerSecond: 16 * 1024,
+  slowWindowMs: 30_000,
+  extensions: null,
+};
 
 export interface ArtifactLimits {
   /** Files larger than this are not snapshotted. */
@@ -102,6 +159,8 @@ export interface EngineConfig {
   streamPollMs: number;
   /** How long a driver probe result is reused. */
   probeTtlMs: number;
+  /** What the server takes as uploads; null when it serves none (`JJ_UPLOADS=off`). */
+  uploads: UploadSettings | null;
   /**
    * `JJ_EVENT_RETENTION_DAYS`: a completed, failed or cancelled task's
    * events are compacted this many days after it finished (default 30, at
@@ -122,8 +181,11 @@ export interface EngineConfig {
   compactionMaxMs: number;
 }
 
-export type EngineConfigInput = Partial<Omit<EngineConfig, "artifacts">> & {
+export type EngineConfigInput = Partial<
+  Omit<EngineConfig, "artifacts" | "uploads">
+> & {
   artifacts?: Partial<ArtifactLimits>;
+  uploads?: Partial<UploadSettings> | null;
 };
 
 export const DEFAULT_ARTIFACT_LIMITS: ArtifactLimits = {
@@ -141,7 +203,7 @@ export const DEFAULT_ARTIFACT_LIMITS: ArtifactLimits = {
 };
 
 export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
-  const { artifacts, ...rest } = input;
+  const { artifacts, uploads, ...rest } = input;
   const config: EngineConfig = {
     workerId: `worker-${hostname()}-${process.pid}-${randomUUID().slice(0, 8)}`,
     concurrency: 4,
@@ -177,8 +239,13 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
       ...DEFAULT_ARTIFACT_LIMITS,
       ...stripUndefined(artifacts ?? {}),
     },
+    uploads:
+      uploads === null
+        ? null
+        : { ...DEFAULT_UPLOAD_SETTINGS, ...stripUndefined(uploads ?? {}) },
   };
   config.outputCapBytes = clampOutputCap(config.outputCapBytes);
+  if (config.uploads) checkUploadSettings(config.uploads);
   checkRetentionDays(config.eventRetentionDays, "eventRetentionDays");
   checkPayloadCap(config.eventPayloadCapBytes, "eventPayloadCapBytes");
   if (
@@ -221,6 +288,31 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     Math.max(1, config.concurrency - 1),
   );
   return config;
+}
+
+function checkUploadSettings(settings: UploadSettings) {
+  for (const key of [
+    "maxFileBytes",
+    "maxFiles",
+    "maxCommandBytes",
+    "maxTaskBytes",
+    "maxStagedBytes",
+    "maxInFlight",
+    "stagedTtlMs",
+    "minBytesPerSecond",
+    "slowWindowMs",
+  ] as const) {
+    const value = settings[key];
+    if (!Number.isSafeInteger(value) || value < 1)
+      throw new RangeError(`uploads.${key} must be a positive integer.`);
+  }
+  for (const key of Object.keys(
+    UPLOAD_CEILINGS,
+  ) as (keyof typeof UPLOAD_CEILINGS)[])
+    if (settings[key] > UPLOAD_CEILINGS[key])
+      throw new RangeError(
+        `uploads.${key} must be at most ${UPLOAD_CEILINGS[key]}.`,
+      );
 }
 
 function checkRetentionDays(value: number, name: string): number {
@@ -314,6 +406,7 @@ export function configFromEnv(
     maxVerificationAttempts: int("JJ_MAX_VERIFICATION_ATTEMPTS"),
     ephemeralIdleMs: minutes(int("JJ_EPHEMERAL_IDLE_MINUTES")),
     maxHeldSandboxes: int("JJ_MAX_HELD_SANDBOXES"),
+    uploads: uploadsFromEnv(env, int),
     eventRetentionDays: env.JJ_EVENT_RETENTION_DAYS?.trim()
       ? eventRetentionDaysFromEnv(env)
       : undefined,
@@ -323,6 +416,62 @@ export function configFromEnv(
     ),
     persistence: !inMemory,
     workerHeartbeat: Boolean(env.DATABASE_URL?.trim()),
+  };
+}
+
+/**
+ * Upload settings from `JJ_UPLOADS` (`off` serves none), the
+ * `JJ_UPLOAD_MAX_*` limits (megabytes are MiB) and `JJ_UPLOAD_EXTENSIONS`.
+ */
+function uploadsFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  int: (name: string) => number | undefined,
+): Partial<UploadSettings> | null {
+  const switched = env.JJ_UPLOADS?.trim().toLowerCase();
+  if (switched === "off" || switched === "false") return null;
+  if (switched && switched !== "on" && switched !== "true")
+    throw new RangeError("JJ_UPLOADS must be on or off.");
+  const megabytes = (name: string, ceiling: number) => {
+    const value = int(name);
+    if (value === undefined) return undefined;
+    if (value * MiB > ceiling)
+      throw new RangeError(`${name} must be at most ${ceiling / MiB}.`);
+    return value * MiB;
+  };
+  const maxFiles = int("JJ_UPLOAD_MAX_FILES");
+  if (maxFiles !== undefined && maxFiles > UPLOAD_CEILINGS.maxFiles)
+    throw new RangeError(
+      `JJ_UPLOAD_MAX_FILES must be at most ${UPLOAD_CEILINGS.maxFiles}.`,
+    );
+  const listed = env.JJ_UPLOAD_EXTENSIONS?.trim();
+  let extensions: string[] | undefined;
+  if (listed) {
+    extensions = listed
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean)
+      .map((entry) => (entry.startsWith(".") ? entry : `.${entry}`));
+    for (const extension of extensions)
+      if (!/^[.][a-z0-9][a-z0-9._+-]*$/.test(extension))
+        throw new RangeError(
+          `JJ_UPLOAD_EXTENSIONS: ${extension} is not a file extension; list them comma-separated, such as .csv,.txt`,
+        );
+  }
+  return {
+    maxFileBytes: megabytes(
+      "JJ_UPLOAD_MAX_FILE_MB",
+      UPLOAD_CEILINGS.maxFileBytes,
+    ),
+    maxFiles,
+    maxTaskBytes: megabytes(
+      "JJ_UPLOAD_MAX_TASK_MB",
+      UPLOAD_CEILINGS.maxTaskBytes,
+    ),
+    maxStagedBytes: megabytes(
+      "JJ_UPLOAD_MAX_STAGED_MB",
+      UPLOAD_CEILINGS.maxStagedBytes,
+    ),
+    extensions,
   };
 }
 

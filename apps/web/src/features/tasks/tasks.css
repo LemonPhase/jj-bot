@@ -1304,3 +1304,146 @@
   flex-direction: column;
   gap: var(--sp-4);
 }
+
+/* ── Uploads ───────────────────────────────────────────────────────────── */
+.new-task-form__files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.upload-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.upload-field__zone {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  padding: var(--sp-8);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  transition: border-color var(--dur-ui) var(--ease-ui);
+}
+
+.upload-field__zone[data-over] {
+  border-color: var(--ink-2);
+  background: var(--bg-hover);
+}
+
+.upload-field__lead {
+  font-size: var(--fs-ui);
+  color: var(--ink-muted);
+}
+
+.upload-field__hint {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+.upload-drafts,
+.upload-card__files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upload-draft,
+.upload-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-5);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-6);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+}
+
+.upload-draft__text,
+.upload-chip__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  line-height: var(--lh-step);
+}
+
+.upload-draft__name,
+.upload-chip__name {
+  font-size: var(--fs-ui);
+}
+
+.upload-draft__meta,
+.upload-chip__size,
+.upload-chip__state {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  color: var(--ink-muted);
+}
+
+.upload-chip[data-state="failed"] .upload-chip__state,
+.upload-draft__error-word {
+  color: var(--status-failed-ink);
+}
+
+.upload-draft__progress {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--status-running);
+}
+
+.upload-draft__error {
+  font-size: var(--fs-small);
+  color: var(--ink-2);
+}
+
+.upload-draft__error-word {
+  font-weight: var(--fw-medium);
+}
+
+/* The announcement: right-aligned like the user's other messages. */
+.upload-card .upload-card__files {
+  width: min(420px, 100%);
+}
+
+.task-chat__uploads {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: 100%;
+  max-width: 688px;
+  margin: 0 auto;
+  padding: 8px 24px 0;
+}
+
+.task-chat__uploads-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-4);
+}
+
+.task-chat__uploads-hint {
+  font-size: var(--fs-small);
+  color: var(--ink-muted);
+}
+
+@media (max-width: 759px) {
+  .task-chat__uploads {
+    padding: 8px 16px 0;
+  }
+}

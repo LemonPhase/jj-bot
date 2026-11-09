@@ -70,6 +70,8 @@ export const APPROVAL_STATUSES = [
 /** What an approval holds: a tool call, or spend past the threshold of a cap. */
 export const APPROVAL_KINDS = ["tool", "spend"] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
+/** Where an uploaded file stands in the workspace; set exactly on uploaded artifacts. */
+export const UPLOAD_STATES = ["pending", "placed", "failed"] as const;
 export const CHECK_METHODS = ["command", "file", "result"] as const;
 export const CHECK_OUTCOMES = ["passed", "failed", "inconclusive"] as const;
 export const JOB_KINDS = [
@@ -109,6 +111,7 @@ export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
+export type UploadState = (typeof UPLOAD_STATES)[number];
 export type CheckMethod = (typeof CHECK_METHODS)[number];
 export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 export type JobKind = (typeof JOB_KINDS)[number];
@@ -665,12 +668,58 @@ export const artifacts = pgTable(
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     sha256: text("sha256").notNull(),
     content: bytea("content").notNull(),
+    /**
+     * For a file the user uploaded: the task message that announced it.
+     * Null for every other artifact. Attribution, not a foreign key.
+     */
+    uploadMessageId: text("upload_message_id"),
+    /** Set exactly when `upload_message_id` is: pending until a run places it, once. */
+    uploadState: text("upload_state").$type<UploadState>(),
+    placedAt: optionalTime("placed_at"),
+    /** Why a failed upload could not be placed. */
+    uploadError: text("upload_error"),
     createdAt: createdAt(),
   },
   (t) => [
     index("artifacts_task_path_idx").on(t.taskId, t.path),
+    // Placement looks for a task's pending uploads at every turn boundary.
+    index("artifacts_pending_uploads_idx")
+      .on(t.taskId, t.createdAt)
+      .where(sql`${t.uploadState} = 'pending'`),
+    // At most one pending upload per path of a task, ignoring case.
+    uniqueIndex("artifacts_pending_upload_path_unique")
+      .on(t.taskId, sql`lower(${t.path})`)
+      .where(sql`${t.uploadState} = 'pending'`),
     check("artifacts_kind_check", oneOf(t.kind, ARTIFACT_KINDS)),
+    check(
+      "artifacts_upload_state_check",
+      sql`(${t.uploadMessageId} is null and ${t.uploadState} is null) or (${t.uploadMessageId} is not null and ${t.uploadState} in ('pending', 'placed', 'failed') and ${t.kind} = 'file')`,
+    ),
   ],
+);
+
+/**
+ * Bytes the user uploaded (`POST /api/uploads`) that no command has attached
+ * yet. Attaching one copies it into `artifacts`, under the same id, and
+ * deletes it; one not attached by `expires_at` is deleted by the worker's
+ * sweep and at boot.
+ */
+export const stagedUploads = pgTable(
+  "staged_uploads",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    /** The file name, NFC, one path segment (`uploadNameProblem`). */
+    name: text("name").notNull(),
+    /** Derived by the server from the name and the bytes. */
+    contentType: text("content_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text("sha256").notNull(),
+    content: bytea("content").notNull(),
+    createdAt: createdAt(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("staged_uploads_expires_idx").on(t.expiresAt)],
 );
 
 /**
@@ -956,6 +1005,7 @@ export type TaskEventRow = typeof taskEvents.$inferSelect;
 export type NewTaskEvent = typeof taskEvents.$inferInsert;
 export type ArtifactRow = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
+export type StagedUploadRow = typeof stagedUploads.$inferSelect;
 export type UsageRow = typeof usage.$inferSelect;
 export type NewUsage = typeof usage.$inferInsert;
 export type ApprovalRow = typeof approvals.$inferSelect;
@@ -1158,6 +1208,7 @@ export const tables = {
   taskMessages,
   taskEvents,
   artifacts,
+  stagedUploads,
   verificationChecks,
   usage,
   approvals,

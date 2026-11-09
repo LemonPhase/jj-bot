@@ -71,6 +71,7 @@ export const COMPACTION: Readonly<
   "tool.started": { action: "delete" },
   "tool.finished": { action: "strip", field: "output" },
   "artifact.created": { action: "keep" },
+  "artifact.updated": { action: "keep" },
   "steering.received": { action: "keep" },
   "verification.started": { action: "keep" },
   "verification.checked": { action: "keep" },

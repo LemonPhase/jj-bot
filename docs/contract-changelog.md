@@ -31,15 +31,15 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.11.0 — 2026-11-09 — Spend approvals past the soft threshold
+## 1.12.0 — 2026-11-09 — Spend approvals past the soft threshold
 
-**Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.10 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
+**Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.11 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
 
 - `profileBudgetsSchema.approveSpendPastThreshold`: boolean, default false (parsed as false from
   stored profiles). Optional in `updateRuntimeProfileCommandSchema.budgets`; omitting it keeps the
   stored value, so an older editor never turns it off.
 - `taskObjectSchema.approveSpendPastThreshold`: boolean, false when missing (events stored before
-  1.11.0). Copied from the coordinator's profile when the task is created, like `spendCapUsd`;
+  1.12.0). Copied from the coordinator's profile when the task is created, like `spendCapUsd`;
   optional in `createTaskCommandObjectSchema` (omitted: the profile's) and in
   `updateTaskCommandSchema` (PATCH). Not in the template create command: a task started from a
   template takes the coordinator's profile's.
@@ -67,6 +67,60 @@ threshold of a cap whose option is on and that no approval covers, the API answe
 approvals with the existing route, and PATCH or a profile change expires a pending one. The
 migration adds `approvals.kind`, the `spend` column, a check per kind, the one-pending-spend-per-cap
 index and `tasks.approve_spend_past_threshold`.
+
+## 1.11.0 — 2026-11-09 — Uploads
+
+**Changed by:** backend and frontend ([#88](https://github.com/LemonPhase/jj-bot/issues/88), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/88#issuecomment-6613492421)) · **Compatibility:** additive
+
+The upload routes are part of the contract, but a server serves them only while it reports
+`capabilities.uploads`; a server that reports null answers them 404.
+
+- New `uploads.ts`. `uploadPathProblem(path)` (pure) and `uploadPathSchema`: a workspace-relative
+  POSIX path in Unicode NFC, of 1 to `UPLOAD_PATH_MAX_SEGMENTS` = 8 segments of 1 to
+  `UPLOAD_SEGMENT_MAX_BYTES` = 255 UTF-8 bytes each, and at most `UPLOAD_PATH_MAX_LENGTH` = 1024
+  characters. Refused: an absolute path; an empty, `.` or `..` segment; a backslash, NUL, any
+  control character (`\p{Cc}`, LS, PS), a character `hasInvisible` reports, or a lone surrogate;
+  a segment that starts with `-` or ends with a space or a dot; a first segment in
+  `RESERVED_UPLOAD_ROOTS` (`.git`, `.jj`, `.jj-bot`) in any case. `uploadNameProblem(name)` checks a
+  staged file's name: one such segment, whose default path `defaultUploadPath(name)`
+  (`uploads/<name>`, `DEFAULT_UPLOAD_DIR`) is valid.
+- `stagedUploadSchema`: `id`, `name`, `sizeBytes`, `sha256`, `contentType` (derived by the server,
+  never taken from the client) and `expiresAt`; `stagedUploadResultSchema` (`{ upload }`).
+- `uploadEntrySchema`: `{ uploadId, path? }`. `uploadEntryListSchema`: at most `MAX_UPLOAD_FILES` =
+  20 entries, each upload once, explicit paths unique ignoring case (`sameUploadPath`).
+- Commands: `createTaskCommandObjectSchema.uploads` (default `[]`, and so `POST /api/tasks`);
+  `startTemplateCommandSchema.uploads` (default `[]`; `templateTaskCommand` passes them on);
+  `uploadToTaskCommandSchema` (`{ files }`, 1 to 20 entries). A template's own create and update
+  commands take no uploads: a template carries no files.
+- `artifactSchema.upload`: `{ messageId, state, placedAt, error } | null` (`artifactUploadSchema`),
+  null by default, so records stored before 1.11.0 parse; `state` is `uploadStateSchema`
+  (`pending`, `placed`, `failed`). An uploaded file is an artifact of kind `file` with no session or
+  run, so 1.10.1 readers still parse task views.
+- New event `artifact.updated` (`{ artifact, previousState }`): an upload was placed or could not
+  be, once. `applyTaskEvent` upserts it like `artifact.created`.
+- `capabilitiesSchema.uploads`: `uploadLimitsSchema` (`maxFileBytes`, `maxFiles`, `maxTaskBytes`) or
+  null, parsed as null from servers before uploads. A command also attaches at most
+  `UPLOAD_COMMAND_MAX_BYTES` = 64 MiB.
+- Routes: `POST /api/uploads?name=…` with the file's bytes as `Content-Type:
+  application/octet-stream` and a `Content-Length` (411 without one; `Expect: 100-continue` is
+  answered only once the limits pass) → 201 `stagedUploadResultSchema`. It is the only write
+  whose body is not JSON; JSON, multipart and form bodies answer 415. `DELETE /api/uploads/:id` →
+  204. `POST /api/tasks/:id/uploads` with `uploadToTaskCommandSchema` → 201
+  `uploadToTaskResultSchema` (`{ artifacts, message }`).
+- API error code `UPLOAD_TOO_LARGE` (413): a file, a command's files, a task's uploads in all, or
+  the server's staging space over its limit. Existing codes cover the rest: `NOT_FOUND` (an
+  unknown, expired or removed staged upload), `CONFLICT` (already attached, or an upload waiting
+  to be placed at that path), `TASK_TERMINAL`, `VALIDATION_FAILED` (408 for a body that comes too
+  slowly) and `RATE_LIMITED` (too many uploads in flight).
+- `formatUploadSize` and `uploadAnnouncement` word sizes and the task log's announcement
+  ("Uploaded 2 files: uploads/a.csv (1.2 KB), …") the same way on every side.
+
+**Action required (frontend):** a drop zone in New task, a paperclip in the task chat, an upload
+card with each file's state, and "Uploaded by you" in the artifact list. Done in the same change,
+the demo included.
+**Action required (backend):** none beyond this change; a client built against 1.10.1 ignores
+`artifact.updated` and the new capability. Migration 0016 adds `staged_uploads` and the upload
+columns of `artifacts`, with their indexes and check.
 
 ## 1.10.1 — 2026-11-04 — Disabled MCP servers and draft sandboxes in discoveries
 

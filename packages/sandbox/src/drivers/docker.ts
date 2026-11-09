@@ -452,6 +452,8 @@ const ERRNO_TEXT: Array<[RegExp, string]> = [
   [/No such file or directory/, "ENOENT"],
   [/Not a directory/, "ENOTDIR"],
   [/Is a directory/, "EISDIR"],
+  // mv -T onto a directory; rename(2) answers EISDIR, as on `local`.
+  [/cannot overwrite directory/, "EISDIR"],
   [/Permission denied/, "EACCES"],
   [/Directory not empty/, "ENOTEMPTY"],
   [/File exists/, "EEXIST"],

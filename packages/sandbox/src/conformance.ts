@@ -498,6 +498,34 @@ export function describeSandboxConformance(
     );
 
     it(
+      "moves onto a symlink by replacing it, and refuses a move onto a directory",
+      async () => {
+        const sandbox = await acquire();
+        await sandbox.fs.write("kept.txt", "kept");
+        const linked = await sandbox.exec(
+          "ln -s kept.txt link.txt && mkdir -p taken/dir",
+        );
+        expect(linked.exitCode).toBe(0);
+        await sandbox.fs.write("first.txt", "first");
+        await sandbox.fs.move("first.txt", "link.txt");
+        expect((await sandbox.fs.read("kept.txt")).toString("utf8")).toBe(
+          "kept",
+        );
+        expect((await sandbox.fs.read("link.txt")).toString("utf8")).toBe(
+          "first",
+        );
+        const plain = await sandbox.exec("test -L link.txt || echo plain");
+        expect(plain.stdout.trim()).toBe("plain");
+        await sandbox.fs.write("second.txt", "second");
+        await expect(
+          sandbox.fs.move("second.txt", "taken/dir"),
+        ).rejects.toMatchObject({ code: "EISDIR" });
+        expect((await sandbox.fs.stat("taken/dir"))?.kind).toBe("directory");
+      },
+      testTimeout,
+    );
+
+    it(
       "rejects paths that escape the workspace",
       async () => {
         const sandbox = await acquire();

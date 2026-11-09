@@ -41,6 +41,7 @@ import {
 } from "./sessions";
 import { assertWithinCaps, taskSpendFor } from "./spend";
 import { recheckSpendApprovals } from "./spend-approvals";
+import { attachUploadsTx, uploadSettings } from "./uploads";
 
 /** A title from the goal's first line when the creator gives none. */
 export function deriveTitle(goal: string): string {
@@ -168,7 +169,9 @@ export function assertModel(
 
 /**
  * `POST /api/tasks`, and the start of a task template (`templateId`), which
- * makes the same task from the template's fields.
+ * makes the same task from the template's fields. Its uploads are attached
+ * in the same transaction, so the coordinator's first run places them
+ * before its first model call.
  */
 export async function createTask(
   ctx: EngineContext,
@@ -192,9 +195,18 @@ export async function createTask(
       { botIds: missing },
     );
   for (const bot of found) assertModel(ctx, bot);
-  const { task } = await ctx.db.transaction((tx) =>
-    createTaskTx(tx, ctx, { ...command, templateId: options.templateId }),
-  );
+  const { uploads, ...fields } = command;
+  if (uploads.length > 0) uploadSettings(ctx);
+  // Built before the transaction: reading the stored secrets queries the database.
+  const redact = uploads.length > 0 ? await ctx.redactor() : undefined;
+  const { task } = await ctx.db.transaction(async (tx) => {
+    const created = await createTaskTx(tx, ctx, {
+      ...fields,
+      templateId: options.templateId,
+    });
+    if (redact) await attachUploadsTx(tx, ctx, created.task, uploads, redact);
+    return created;
+  });
   return { task: toTask(task, command.participantBotIds) };
 }
 

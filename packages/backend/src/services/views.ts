@@ -62,6 +62,10 @@ export const artifactColumns = {
   contentType: artifacts.contentType,
   sizeBytes: artifacts.sizeBytes,
   sha256: artifacts.sha256,
+  uploadMessageId: artifacts.uploadMessageId,
+  uploadState: artifacts.uploadState,
+  placedAt: artifacts.placedAt,
+  uploadError: artifacts.uploadError,
   createdAt: artifacts.createdAt,
 };
 

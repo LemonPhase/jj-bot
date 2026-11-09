@@ -1,5 +1,5 @@
 {
-  "id": "4a4d8d35-c093-4e11-aa71-97d3aa55ac9d",
+  "id": "32d5503e-c3f1-4e8d-bf59-2defdd65c330",
   "prevId": "84b9a1fe-9fe9-4716-9d3a-5ca57de72b89",
   "version": "7",
   "dialect": "postgresql",
@@ -33,13 +33,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'tool'"
-        },
         "run_id": {
           "name": "run_id",
           "type": "text",
@@ -56,31 +49,31 @@
           "name": "tool_call_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "tool": {
           "name": "tool",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "summary": {
           "name": "summary",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "args": {
           "name": "args",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "rule": {
           "name": "rule",
           "type": "jsonb",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "text": {
           "name": "text",
@@ -93,13 +86,7 @@
           "name": "goal_version",
           "type": "integer",
           "primaryKey": false,
-          "notNull": false
-        },
-        "spend": {
-          "name": "spend",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "status": {
           "name": "status",
@@ -164,41 +151,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"approvals\".\"kind\" = 'tool' and \"approvals\".\"status\" = 'pending'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "approvals_one_pending_spend": {
-          "name": "approvals_one_pending_spend",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "(\"spend\" ->> 'scope')",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "(case when \"spend\" ->> 'scope' = 'bot' then \"bot_id\" else '' end)",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "((\"spend\" ->> 'capUsd')::numeric)",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"approvals\".\"kind\" = 'spend' and \"approvals\".\"status\" = 'pending'",
+          "where": "\"approvals\".\"status\" = 'pending'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -258,14 +211,6 @@
         "approvals_status_check": {
           "name": "approvals_status_check",
           "value": "\"approvals\".\"status\" in ('pending', 'approved', 'denied', 'expired', 'cancelled')"
-        },
-        "approvals_kind_check": {
-          "name": "approvals_kind_check",
-          "value": "\"approvals\".\"kind\" in ('tool', 'spend')"
-        },
-        "approvals_kind_columns_check": {
-          "name": "approvals_kind_columns_check",
-          "value": "case when \"approvals\".\"kind\" = 'tool' then \"approvals\".\"tool_call_id\" is not null and \"approvals\".\"tool\" is not null and \"approvals\".\"summary\" is not null and \"approvals\".\"args\" is not null and \"approvals\".\"rule\" is not null and \"approvals\".\"goal_version\" is not null and \"approvals\".\"spend\" is null else \"approvals\".\"spend\" is not null and \"approvals\".\"tool_call_id\" is null and \"approvals\".\"tool\" is null and \"approvals\".\"args\" is null and \"approvals\".\"rule\" is null and \"approvals\".\"spend\" ->> 'scope' in ('task', 'bot') end"
         }
       },
       "isRLSEnabled": false
@@ -347,6 +292,30 @@
           "primaryKey": false,
           "notNull": true
         },
+        "upload_message_id": {
+          "name": "upload_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "upload_state": {
+          "name": "upload_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "placed_at": {
+          "name": "placed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "upload_error": {
+          "name": "upload_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -376,6 +345,50 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "artifacts_pending_uploads_idx": {
+          "name": "artifacts_pending_uploads_idx",
+          "columns": [
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"artifacts\".\"upload_state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "artifacts_pending_upload_path_unique": {
+          "name": "artifacts_pending_upload_path_unique",
+          "columns": [
+            {
+              "expression": "task_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"path\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"artifacts\".\"upload_state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -396,6 +409,10 @@
         "artifacts_kind_check": {
           "name": "artifacts_kind_check",
           "value": "\"artifacts\".\"kind\" in ('file', 'output')"
+        },
+        "artifacts_upload_state_check": {
+          "name": "artifacts_upload_state_check",
+          "value": "(\"artifacts\".\"upload_message_id\" is null and \"artifacts\".\"upload_state\" is null) or (\"artifacts\".\"upload_message_id\" is not null and \"artifacts\".\"upload_state\" in ('pending', 'placed', 'failed') and \"artifacts\".\"kind\" = 'file')"
         }
       },
       "isRLSEnabled": false
@@ -2361,6 +2378,91 @@
       },
       "isRLSEnabled": false
     },
+    "public.staged_uploads": {
+      "name": "staged_uploads",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "owner_id": {
+          "name": "owner_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_type": {
+          "name": "content_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "size_bytes": {
+          "name": "size_bytes",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "staged_uploads_expires_idx": {
+          "name": "staged_uploads_expires_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.task_events": {
       "name": "task_events",
       "schema": "",
@@ -2973,13 +3075,6 @@
           "type": "double precision",
           "primaryKey": false,
           "notNull": false
-        },
-        "approve_spend_past_threshold": {
-          "name": "approve_spend_past_threshold",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "verification_plan": {
           "name": "verification_plan",

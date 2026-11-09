@@ -170,6 +170,8 @@ export interface RunContext {
   goalVersionSeen?: number;
   /** The run's span, with its model turns and tool calls (session-run.ts). */
   activity?: ActivityTrace;
+  /** Uploads this run failed to place for a passing reason: the next run tries again (uploads.ts). */
+  deferredUploads?: Set<string>;
 }
 
 export const writeRun = <T>(rc: RunContext, fn: (tx: Tx) => Promise<T>) =>

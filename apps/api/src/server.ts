@@ -4,6 +4,7 @@
 // worker lets running sessions reach a turn boundary, requests are still
 // served), then stop accepting connections, end event streams, stop the
 // worker, close the database, flush the traces.
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type ServerType, serve } from "@hono/node-server";
 import { createLogger, type Logger } from "@jj/backend";
@@ -69,8 +70,23 @@ function listen(
       resolve({ server, address }),
     );
     server.once("error", reject);
+    // `Expect: 100-continue`: Node answers 100 at once unless someone
+    // listens. An upload's route answers it itself, once its limits pass, so
+    // a body it refuses is never sent; every other request is invited as before.
+    server.on(
+      "checkContinue",
+      (request: IncomingMessage, response: ServerResponse) => {
+        if (!isUploadWrite(request)) response.writeContinue();
+        server.emit("request", request, response);
+      },
+    );
   });
 }
+
+/** `POST /api/uploads`, as the raw request names it. */
+const isUploadWrite = (request: IncomingMessage) =>
+  request.method === "POST" &&
+  (request.url ?? "").split("?", 1)[0] === "/api/uploads";
 
 const hostForUrl = (host: string) => (host.includes(":") ? `[${host}]` : host);
 

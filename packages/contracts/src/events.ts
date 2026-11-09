@@ -25,6 +25,7 @@ import {
   taskStatusSchema,
   usageSchema,
 } from "./tasks";
+import { uploadStateSchema } from "./uploads";
 import { spendScopeSchema } from "./usage";
 import {
   checkOutcomeSchema,
@@ -94,8 +95,8 @@ const toolSummarySchema = z.string().max(300);
 /**
  * Events that change a record carry the whole record after the change
  * (`task.created`, `task.updated`, `session.created`, `session.updated`,
- * `message.posted`, `artifact.created`, `approval.requested`,
- * `approval.updated`), so `applyTaskEvent` keeps a view in
+ * `message.posted`, `artifact.created`, `artifact.updated`,
+ * `approval.requested`, `approval.updated`), so `applyTaskEvent` keeps a view in
  * step with the stream on its own. The other events are markers and activity.
  */
 export const taskEventSchema = z.discriminatedUnion("type", [
@@ -199,6 +200,14 @@ export const taskEventSchema = z.discriminatedUnion("type", [
     }),
   ),
   event("artifact.created", z.object({ artifact: artifactSchema })),
+  /**
+   * An uploaded file was placed in the workspace, or could not be
+   * (`artifact.upload.state`), once. Attributed to the run that placed it.
+   */
+  event(
+    "artifact.updated",
+    z.object({ artifact: artifactSchema, previousState: uploadStateSchema }),
+  ),
   event(
     "steering.received",
     z.object({
@@ -638,6 +647,7 @@ export function applyTaskEvent(
       messages = upsert(messages, event.payload.message);
       break;
     case "artifact.created":
+    case "artifact.updated":
       artifacts = upsert(artifacts, event.payload.artifact);
       break;
     case "approval.requested":

@@ -26,6 +26,7 @@ const bootstrap: Bootstrap = {
     secretStore: false,
     mcp: { stdio: false, remote: false },
     skills: false,
+    uploads: null,
     drivers: [{ id: "docker", available: true, isolated: true }],
   },
   defaultModel: "anthropic/model",
@@ -275,6 +276,86 @@ describe("live API requests", () => {
       code: "NOT_FOUND",
       message: "No artifact.",
     });
+  });
+
+  it("stages a file as raw octet-stream bytes, attaches it as JSON, and keeps the server's refusals", async () => {
+    const staged = {
+      id: "upl_1",
+      name: "data.csv",
+      sizeBytes: 4,
+      sha256: "a".repeat(64),
+      contentType: "text/csv; charset=utf-8",
+      expiresAt: T0,
+    };
+    const { fetch, calls } = mockFetch({
+      "POST /api/uploads": (_init: RequestInit, url: string) =>
+        url.includes("big")
+          ? json(413, {
+              error: { code: "UPLOAD_TOO_LARGE", message: "Too large." },
+            })
+          : json(201, { upload: staged }),
+      "POST /api/tasks/task-1/uploads": () =>
+        json(201, {
+          artifacts: [],
+          message: {
+            id: "m1",
+            taskId: "task-1",
+            sequence: 1,
+            authorKind: "user",
+            authorBotId: null,
+            sessionId: null,
+            intent: "notification",
+            text: "Uploaded 1 file: uploads/data.csv (4 B)",
+            recipientBotIds: [],
+            createdAt: T0,
+          },
+        }),
+      "DELETE /api/uploads/upl_1": () => new Response(null, { status: 204 }),
+    });
+    const api = createLiveApi({ bootstrap, fetch, token: "secret" });
+    const progress: number[] = [];
+    const file = new Blob(["a,b\n"]);
+    // Sent in NFC whatever form the file's name came in.
+    const nfd = "cafe\u0301.csv";
+    const upload = await api.stageUpload(file, nfd, {
+      onProgress: (sent) => progress.push(sent),
+    });
+    expect(upload).toEqual(staged);
+    expect(progress).toEqual([4]);
+    const [sent] = calls;
+    expect(new URL(sent?.url ?? "", "http://x").searchParams.get("name")).toBe(
+      nfd.normalize("NFC"),
+    );
+    expect(sent?.init.method).toBe("POST");
+    expect(sent?.init.body).toBe(file);
+    expect(sent?.init.headers).toMatchObject({
+      "Content-Type": "application/octet-stream",
+      Authorization: "Bearer secret",
+    });
+    await expect(api.stageUpload(file, "big.bin")).rejects.toMatchObject({
+      code: "UPLOAD_TOO_LARGE",
+      status: 413,
+      message: "Too large.",
+    });
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(
+      api.stageUpload(file, "a.csv", { signal: aborted.signal }),
+    ).rejects.toMatchObject({ code: "ABORTED" });
+    const attached = await api.uploadToTask("task-1", {
+      files: [{ uploadId: "upl_1" }],
+    });
+    expect(attached.message.intent).toBe("notification");
+    expect(JSON.parse(String(calls.at(-1)?.init.body))).toEqual({
+      files: [{ uploadId: "upl_1" }],
+    });
+    await expect(
+      api.uploadToTask("task-1", {
+        files: [{ uploadId: "upl_1", path: "../x" }],
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    await api.deleteUpload("upl_1");
+    expect(calls.at(-1)?.init.method).toBe("DELETE");
   });
 
   it("reports network failures and validates commands before sending", async () => {

@@ -233,6 +233,13 @@ export const DEMO_MODELS: ModelsView = {
   ],
 };
 
+/** What the demo takes as uploads: a server's default limits. */
+export const DEMO_UPLOAD_LIMITS = {
+  maxFileBytes: 16 * 1024 * 1024,
+  maxFiles: 20,
+  maxTaskBytes: 128 * 1024 * 1024,
+};
+
 /** Nothing really runs in demo mode, so nothing is reported as able to. */
 export const DEMO_CAPABILITIES: Capabilities = {
   agentExecution: false,
@@ -242,6 +249,9 @@ export const DEMO_CAPABILITIES: Capabilities = {
   secretStore: false,
   mcp: { stdio: false, remote: false },
   skills: false,
+  // The demo keeps uploaded files in the page's memory and places them in
+  // its scripted workspace: the same limits as a server's defaults.
+  uploads: DEMO_UPLOAD_LIMITS,
   drivers: DEMO_DRIVERS.map((driver) => ({
     id: driver.id,
     available: driver.available,

@@ -69,6 +69,7 @@ const saved: Artifact = {
   contentType: "application/json",
   sizeBytes: 300_000,
   sha256: "a".repeat(64),
+  upload: null,
   createdAt: at(6),
 };
 const held: Approval = {

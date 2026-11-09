@@ -141,7 +141,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.11.0",
+      contractVersion: "1.12.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -153,6 +153,12 @@ describe("bootstrap, models and drivers", () => {
         // stored server reaches a session on this build, so none is claimed.
         mcp: { stdio: false, remote: false },
         skills: false,
+        // The defaults: 16 MiB a file, 20 files a command, 128 MiB a task.
+        uploads: {
+          maxFileBytes: 16 * 1024 * 1024,
+          maxFiles: 20,
+          maxTaskBytes: 128 * 1024 * 1024,
+        },
         drivers: [{ id: "local", available: true, isolated: false }],
       },
     });

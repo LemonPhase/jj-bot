@@ -15,6 +15,7 @@ import {
   taskObjectSchema,
   withCoordinator,
 } from "./tasks";
+import { uploadEntryListSchema } from "./uploads";
 import { verificationPlanSchema } from "./verification";
 
 /**
@@ -88,12 +89,13 @@ export const taskTemplateSchema = taskTemplateObjectSchema.superRefine(
 
 /**
  * The create command before participant normalization: the create-task
- * fields, with a title. A task started from a template takes the
- * coordinator's profile's `approveSpendPastThreshold`.
+ * fields, with a title. A template carries no files: uploads are given at
+ * each start. A task started from a template takes the coordinator's
+ * profile's `approveSpendPastThreshold`.
  */
 export const createTaskTemplateCommandObjectSchema =
   createTaskCommandObjectSchema
-    .omit({ approveSpendPastThreshold: true })
+    .omit({ uploads: true, approveSpendPastThreshold: true })
     .extend({ title: titleSchema });
 
 /**
@@ -136,7 +138,8 @@ export const updateTaskTemplateCommandSchema =
  * `POST /api/task-templates/:id/tasks`. `instructions` are appended to the
  * goal (`templateRunGoal`); a goal that then exceeds COMMAND_TEXT_LIMIT
  * answers 422 VALIDATION_FAILED. `title` replaces the template's title for
- * this task, and `spendCapUsd` its cap (null for none). A template with
+ * this task, and `spendCapUsd` its cap (null for none). `uploads` attaches
+ * staged uploads to the new task, as `POST /api/tasks` does. A template with
  * problems answers 409 TEMPLATE_UNUSABLE with `details.problems`, and a
  * coordinator at its cap 409 SPEND_CAP_REACHED; neither writes anything.
  */
@@ -149,6 +152,7 @@ export const startTemplateCommandSchema = z.object({
     .optional(),
   title: titleSchema.optional(),
   spendCapUsd: spendCapUsdSchema.nullable().optional(),
+  uploads: uploadEntryListSchema.default(() => []),
 });
 
 /** `GET /api/task-templates`, oldest first. */
@@ -174,8 +178,8 @@ export function templateRunGoal(goal: string, instructions?: string): string {
 
 /**
  * The create-task command a start makes: the template's fields, with the
- * run's instructions appended to the goal and its title and cap in place of
- * the template's when given. Its `goal` may exceed COMMAND_TEXT_LIMIT
+ * run's instructions appended to the goal, its title and cap in place of
+ * the template's when given, and its uploads. Its `goal` may exceed COMMAND_TEXT_LIMIT
  * (`templateGoalTooLong`).
  */
 export function templateTaskCommand(
@@ -188,7 +192,7 @@ export function templateTaskCommand(
     | "verificationPlan"
     | "spendCapUsd"
   >,
-  start: z.output<typeof startTemplateCommandSchema> = {},
+  start: Partial<z.output<typeof startTemplateCommandSchema>> = {},
 ): CreateTaskCommand {
   const spendCapUsd =
     start.spendCapUsd !== undefined ? start.spendCapUsd : template.spendCapUsd;
@@ -199,6 +203,9 @@ export function templateTaskCommand(
     participantBotIds: [...template.participantBotIds],
     verificationPlan: template.verificationPlan,
     ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
+    ...(start.uploads && start.uploads.length > 0
+      ? { uploads: start.uploads.map((entry) => ({ ...entry })) }
+      : {}),
   };
 }
 
