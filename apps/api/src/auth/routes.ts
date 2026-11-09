@@ -93,14 +93,14 @@ export function authRoutes(auth: AuthService, streams: StreamRegistry) {
       await auth.store.deleteSession(previous);
       endSessionStreams([previous]);
     }
-    // The cookie lasts the session's absolute lifetime; the server ends an
-    // idle one before that, and the browser sends the cookie only until then.
+    // The cookie lasts the new session's absolute lifetime; the server ends
+    // an idle one before that, and the browser sends the cookie only until then.
     c.header(
       "Set-Cookie",
       setSessionCookie(
         auth.cookie,
         secret,
-        row.expiresAt.getTime() - auth.now(),
+        row.expiresAt.getTime() - row.createdAt.getTime(),
       ),
       { append: true },
     );
