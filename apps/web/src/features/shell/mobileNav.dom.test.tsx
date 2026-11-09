@@ -129,6 +129,8 @@ describe("the phone menu", () => {
       ).getByRole("button", { name: "New task" }),
     );
     await waitFor(() => expect(drawer()?.hasAttribute("open")).toBe(false));
-    expect(screen.getByRole("dialog", { name: "New task" })).toBeTruthy();
+    expect(
+      await screen.findByRole("dialog", { name: "New task" }),
+    ).toBeTruthy();
   });
 });

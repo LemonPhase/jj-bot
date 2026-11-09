@@ -176,7 +176,7 @@ async function storeShell(html, answered) {
     }),
   );
   // A response of its own, with no URL: the address it was loaded from, a
-  // `?token=` included, never reaches the cache.
+  // query (an old link's `?token=` too), never reaches the cache.
   await cache.put(SHELL, new Response(html, { headers }));
   const others = (await cache.keys()).filter((request) => {
     const path = new URL(request.url).pathname;

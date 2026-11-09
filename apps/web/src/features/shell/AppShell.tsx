@@ -13,7 +13,6 @@ import { Button, Dialog, ErrorBanner, Spinner } from "../../components/ui";
 import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
-import { NewTaskDialog } from "../tasks/NewTaskDialog";
 import { NavDrawer, TopBar } from "./MobileNav";
 import {
   canonicalRoute,
@@ -49,6 +48,12 @@ type OpenDialog =
 const TemplateDialog = lazy(() => import("../templates/TemplateDialog"));
 /** The schedule dialogs, loaded when one first opens. */
 const ScheduleDialog = lazy(() => import("../schedules/ScheduleDialog"));
+/** The New task dialog, loaded when it first opens. */
+const NewTaskDialog = lazy(() =>
+  import("../tasks/NewTaskDialog").then((module) => ({
+    default: module.NewTaskDialog,
+  })),
+);
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -214,7 +219,14 @@ export function AppShell() {
         </div>
       </div>
       {dialog.kind === "task" && (
-        <NewTaskDialog initialBotIds={dialog.botIds} onClose={closeDialog} />
+        <DialogBoundary onClose={closeDialog}>
+          <Suspense fallback={null}>
+            <NewTaskDialog
+              initialBotIds={dialog.botIds}
+              onClose={closeDialog}
+            />
+          </Suspense>
+        </DialogBoundary>
       )}
       {dialog.kind === "template" && (
         <DialogBoundary onClose={closeDialog}>

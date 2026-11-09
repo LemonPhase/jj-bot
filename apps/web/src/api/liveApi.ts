@@ -55,6 +55,7 @@ import {
   workspaceHintSchema,
   z,
 } from "@jj/contracts";
+import type { AuthApi } from "./auth";
 import {
   type ApiBadge,
   ApiError,
@@ -75,9 +76,17 @@ import {
 export interface HttpOptions {
   /** Prefix for `/api/...`; empty for the same origin (the Vite proxy in development). */
   baseUrl?: string;
-  /** Sent as `Authorization: Bearer <token>` on every request and stream. */
+  /**
+   * Sent as `Authorization: Bearer <token>` on every request and stream, for
+   * clients other than the web app, which signs in to a session cookie.
+   */
   token?: string | null;
   fetch?: typeof fetch;
+  /**
+   * A request outside `/api/auth` answered 401: the session ended (signed
+   * out elsewhere, expired, or the token rotated).
+   */
+  onUnauthorized?: () => void;
 }
 
 export interface LiveApiOptions extends HttpOptions {
@@ -86,6 +95,8 @@ export interface LiveApiOptions extends HttpOptions {
   models?: ModelsView | null;
   /** Defaults to the browser's EventSource; ignored when a token is set. */
   eventSource?: EventSourceFactory;
+  /** Signing in, on a server that asks for it: Settings → Security uses it. */
+  auth?: AuthApi;
   /** First delay before reopening a stream that closed. */
   retryMs?: number;
 }
@@ -186,12 +197,24 @@ export function createHttp({
   baseUrl = "",
   token,
   fetch: fetchImpl,
+  onUnauthorized,
 }: HttpOptions) {
   const doFetch =
     fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
   const authorization: Record<string, string> = token
     ? { Authorization: `Bearer ${token}` }
     : {};
+  /** The ApiError for a refusal, telling `onUnauthorized` of an ended session. */
+  const refusal = (
+    response: Response,
+    data: unknown,
+    what: string,
+    path: string,
+  ) => {
+    if (response.status === 401 && !path.startsWith("/auth/"))
+      onUnauthorized?.();
+    return responseError(response, data, what);
+  };
 
   function request(
     method: Method,
@@ -242,7 +265,7 @@ export function createHttp({
       }
     }
     if (!response.ok)
-      throw responseError(response, data, `${method} /api${path}`);
+      throw refusal(response, data, `${method} /api${path}`, path);
     if (!schema) return undefined;
     if (!json)
       throw new ApiError(
@@ -278,7 +301,7 @@ export function createHttp({
     }
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw responseError(response, parseJson(text), `GET /api${path}`);
+      throw refusal(response, parseJson(text), `GET /api${path}`, path);
     }
     return response.blob();
   }
@@ -298,7 +321,7 @@ export function createHttp({
     const answer = (status: number, text: string) => {
       const data = parseJson(text);
       if (status < 200 || status >= 300)
-        throw responseError({ status } as Response, data, what);
+        throw refusal({ status } as Response, data, what, "/uploads");
       const parsed = stagedUploadResultSchema.safeParse(data);
       if (!parsed.success)
         throw new ApiError(
@@ -434,11 +457,32 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
   const { request } = http;
   const id = encodeURIComponent;
 
-  const connect: SseConnect = options.token
+  const transport: SseConnect = options.token
     ? fetchSseConnect(http.doFetch, http.authorization)
     : eventSourceConnect(
         options.eventSource ?? ((url) => new EventSource(url)),
       );
+  // A stream the browser gave up on may have lost its session (signed out
+  // elsewhere, the token rotated): EventSource does not say why, so ask.
+  const auth = options.auth;
+  const connect: SseConnect =
+    auth && options.onUnauthorized && !options.token
+      ? (request, handlers) =>
+          transport(request, {
+            ...handlers,
+            onError: (retrying) => {
+              if (!retrying)
+                void auth.state().then(
+                  (state) => {
+                    if (state.required && !state.authenticated)
+                      options.onUnauthorized?.();
+                  },
+                  () => {},
+                );
+              handlers.onError(retrying);
+            },
+          })
+      : transport;
 
   const getConversation = (botId: string) =>
     request("GET", `/bots/${id(botId)}/messages`, conversationViewSchema);
@@ -475,6 +519,14 @@ export function createLiveApi(options: LiveApiOptions): JJApi {
 
   return {
     mode: "live",
+    ...(auth
+      ? {
+          auth: {
+            ...auth,
+            ended: () => options.onUnauthorized?.(),
+          },
+        }
+      : {}),
     badge: liveBadge(initial, models),
     capabilities: initial.capabilities,
     contractVersion: initial.contractVersion,
@@ -935,7 +987,7 @@ export async function probeBackend(
   if (status === 401)
     return probeFailure(
       false,
-      "The API requires a token. Open the app once with ?token=<API_TOKEN> to keep it in this browser.",
+      "The API asks to sign in, and this browser is not signed in: reload to sign in.",
     );
   // The server down behind a proxy.
   if (status >= 500) return probeFailure(false, UNREACHABLE);
