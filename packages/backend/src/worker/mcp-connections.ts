@@ -436,14 +436,17 @@ export class McpConnections {
       throw error;
     }
     const ready = connector;
-    entry.connector = ready;
+    // Watched from here, so an exit during the listing is seen; handed to
+    // other calls only once its `ready` is recorded, below.
     ready.onClose((end) => this.ended(entry, ready, end));
     let drift: string[] = [];
     try {
       drift = await this.mcp().drift(ready, {
         server: server.name,
         tools: target.snapshotTools,
-        redact: (text) => entry.redact(text),
+        // The connection's own redaction: the header values it sends may
+        // be newer than the calling run's redactor.
+        redact: (text) => ready.redact(text),
         timeoutMs: MCP_DRIFT_LIST_MS,
         signal: abort.signal,
       });
@@ -459,6 +462,7 @@ export class McpConnections {
     // Ended during the listing, by the worker or by the server: it never
     // became ready.
     if (entry.ended || ready.state !== "ready") {
+      await ready.close().catch(() => {});
       const error = entry.ended
         ? stoppedAsItStarted()
         : new McpCallNotSent(
@@ -478,6 +482,16 @@ export class McpConnections {
       durationMs: Date.now() - startedAt,
       ...(drift.length > 0 ? { drift } : {}),
     });
+    // Ended while `ready` was recorded: it was never handed out.
+    if (entry.ended) {
+      if (entry.ended === "config" || entry.ended === "idle")
+        this.reportAll(entry, { state: "exited" });
+      await ready.close().catch(() => {});
+      throw stoppedAsItStarted();
+    }
+    // Published only now, so no call goes out before its `ready` is
+    // recorded, or on a connection whose start then fails.
+    entry.connector = ready;
     return ready;
   }
 
@@ -529,11 +543,40 @@ export class McpConnections {
     });
   }
 
-  /** An event in every task that used the entry, outside any run. */
+  /**
+   * An event in every task that used the entry and has not finished,
+   * outside any run; a task that finished is forgotten here too, without
+   * waiting for the next sweep.
+   */
   private reportAll(entry: Entry, event: McpServerReport) {
+    void this.reportLive(entry, [...entry.tasks], event).catch(
+      (error: unknown) =>
+        this.ctx.logger.warn("Recording an mcp.server event failed", {
+          error: errorMessage(error),
+        }),
+    );
+  }
+
+  private async reportLive(
+    entry: Entry,
+    taskIds: readonly string[],
+    event: McpServerReport,
+  ): Promise<void> {
+    if (taskIds.length === 0) return;
     const { ctx } = this;
-    for (const taskId of entry.tasks)
-      void ctx.db
+    const rows = await ctx.db
+      .select({ id: tasksTable.id, status: tasksTable.status })
+      .from(tasksTable)
+      .where(inArray(tasksTable.id, [...taskIds]));
+    const live = new Set(
+      rows.filter((row) => !isFinishedStatus(row.status)).map((row) => row.id),
+    );
+    for (const taskId of taskIds) {
+      if (!live.has(taskId)) {
+        entry.tasks.delete(taskId);
+        continue;
+      }
+      await ctx.db
         .transaction((tx) =>
           emit(tx, ctx, taskId, {
             type: "mcp.server",
@@ -550,5 +593,6 @@ export class McpConnections {
             error: errorMessage(error),
           }),
         );
+    }
   }
 }

@@ -93,6 +93,13 @@ let endpoint: Server;
 let port = 0;
 /** What the endpoint received: JSON-RPC methods, tool calls and the Authorization header. */
 const received: { method: string; tool?: string; authorization: string }[] = [];
+/**
+ * `tools/list` requests received and answered, and for each `tools/call`
+ * how many listings had been answered when it arrived. With `X-Slow-List:
+ * <ms>` a listing is answered that late; with `X-Echo-Tools`, the endpoint
+ * also lists a tool named after the token it was sent.
+ */
+const listings = { received: 0, answered: 0, answeredAtCall: [] as number[] };
 
 beforeAll(async () => {
   db = await openTestDatabase();
@@ -150,45 +157,56 @@ beforeAll(async () => {
           capabilities: { tools: {} },
           serverInfo: { name: "remote-fixture", version: "2.0.0" },
         });
-      else if (message.method === "tools/list")
-        reply({
-          tools: [
-            {
-              name: "lookup",
-              description: "Looks a record up.",
-              inputSchema: {
-                type: "object",
-                properties: { id: { type: "string" } },
+      else if (message.method === "tools/list") {
+        listings.received += 1;
+        const echoed = authorization.startsWith("Bearer ")
+          ? authorization.slice("Bearer ".length)
+          : "";
+        const answer = () => {
+          listings.answered += 1;
+          reply({
+            tools: [
+              ...(req.headers["x-echo-tools"] && echoed
+                ? [
+                    {
+                      name: `t_${echoed}`,
+                      description: "Named after the token it was sent.",
+                      inputSchema: { type: "object" },
+                    },
+                  ]
+                : []),
+              {
+                name: "lookup",
+                description: "Looks a record up.",
+                inputSchema: {
+                  type: "object",
+                  properties: { id: { type: "string" } },
+                },
               },
-            },
-            {
-              name: "slow",
-              description: "Answers after ms milliseconds.",
-              inputSchema: {
-                type: "object",
-                properties: { ms: { type: "number" } },
+              {
+                name: "slow",
+                description: "Answers after ms milliseconds.",
+                inputSchema: {
+                  type: "object",
+                  properties: { ms: { type: "number" } },
+                },
               },
-            },
-          ],
-        });
-      else if (
-        message.method === "tools/call" &&
-        message.params?.name === "slow"
-      )
-        setTimeout(
-          () => reply({ content: [{ type: "text", text: "slow done" }] }),
-          Number(message.params?.arguments?.ms ?? 1000),
-        );
-      else if (message.method === "tools/call")
-        reply({
-          content: [
-            {
-              type: "text",
-              text: `Record ${message.params?.arguments?.id}, fetched with ${authorization}.`,
-            },
-          ],
-        });
-      else
+            ],
+          });
+        };
+        const delay = Number(req.headers["x-slow-list"] ?? 0);
+        if (delay > 0) setTimeout(answer, delay);
+        else answer();
+      } else if (message.method === "tools/call") {
+        listings.answeredAtCall.push(listings.answered);
+        const text = `Record ${message.params?.arguments?.id}, fetched with ${authorization}.`;
+        if (message.params?.name === "slow")
+          setTimeout(
+            () => reply({ content: [{ type: "text", text: "slow done" }] }),
+            Number(message.params?.arguments?.ms ?? 1000),
+          );
+        else reply({ content: [{ type: "text", text }] });
+      } else
         res.writeHead(200, { "content-type": "application/json" }).end(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -213,6 +231,9 @@ afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
   received.length = 0;
+  listings.received = 0;
+  listings.answered = 0;
+  listings.answeredAtCall.length = 0;
 });
 
 afterAll(async () => {
@@ -1112,6 +1133,55 @@ describe("connection lifecycle", () => {
         ?.payload,
     ).toMatchObject({ ok: true });
   }, 60_000);
+
+  it("hands a connection to other calls only once its tools are listed and it is reported ready", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root);
+    // Every listing, the drift listing after initialize included, is slow.
+    const { bot } = await mcpBot(engine, [
+      remote({
+        askUnlessReadOnly: false,
+        headers: { "X-Slow-List": "3000" },
+      }),
+    ]);
+    const discovered = listings.answered;
+    faux.setResponses([
+      call("mcp__remote__lookup", { id: "1" }, "lookup_1"),
+      call("mcp__remote__lookup", { id: "2" }, "lookup_2"),
+      callTool("complete_task", { result: "Done." }),
+      callTool("complete_task", { result: "Done." }),
+    ]);
+    const { task: first } = await engine.tasks.create({
+      goal: "First",
+      coordinatorBotId: bot.id,
+    });
+    // The first call started the connection, which is listing its tools.
+    await until(() => listings.received > discovered, {
+      what: "the drift listing",
+    });
+    // Another task's call arrives meanwhile, and waits for it.
+    const { task: second } = await engine.tasks.create({
+      goal: "Second",
+      coordinatorBotId: bot.id,
+    });
+    for (const task of [first, second])
+      await untilTask(
+        engine,
+        task.id,
+        (view) => view.task.status === "completed",
+        "the task",
+      );
+    expect(listings.answeredAtCall).toHaveLength(2);
+    for (const answered of listings.answeredAtCall)
+      expect(answered).toBeGreaterThan(discovered);
+    // One connection served both, started once.
+    const events = mcpEvents(await engine.tasks.events(first.id));
+    expect(events.map((event) => event.payload.state)).toEqual([
+      "starting",
+      "ready",
+    ]);
+    expect(mcpEvents(await engine.tasks.events(second.id))).toEqual([]);
+  }, 60_000);
 });
 
 describe("remote servers' secret headers", () => {
@@ -1203,6 +1273,61 @@ describe("remote servers' secret headers", () => {
       "Record 9, fetched with Bearer [redacted].",
     );
     await expectNoSecretStored(task.id, [fresh]);
+  }, 60_000);
+
+  it("redacts a header value newer than the run's redactor from the drift a ready connection reports", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root);
+    // The server lists a tool named after the token it is sent.
+    const { bot } = await mcpBot(engine, [
+      remote({
+        askUnlessReadOnly: false,
+        headers: { "X-Echo-Tools": "names" },
+      }),
+    ]);
+    const fresh = "header-token-midrun-0123456789abcdefUVW";
+    faux.setResponses([
+      async () => {
+        await engine.secrets.put("DOCS_KEY", { value: fresh });
+        return call("mcp__remote__lookup", { id: "9" }, "lookup_9");
+      },
+      callTool("complete_task", { result: "Done." }),
+    ]);
+    const task = await complete(engine, bot.id, "Look it up");
+    const ready = mcpEvents(await engine.tasks.events(task.id)).find(
+      (event) => event.payload.state === "ready",
+    );
+    expect(ready).toBeDefined();
+    // A tool whose name holds a secret is left out, as discovery leaves it out.
+    expect(ready?.payload.drift).toBeUndefined();
+    await expectNoSecretStored(task.id, [fresh]);
+  }, 60_000);
+
+  it("reports a retired connection's end only in tasks that have not finished, also before any sweep", async () => {
+    const root = await workspace();
+    const { engine, faux } = await start(root);
+    const { bot } = await mcpBot(engine, [
+      remote({ askUnlessReadOnly: false }),
+    ]);
+    faux.setResponses([
+      call("mcp__remote__lookup", { id: "1" }, "lookup_1"),
+      callTool("complete_task", { result: "One." }),
+      call("mcp__remote__lookup", { id: "2" }, "lookup_2"),
+      callTool("complete_task", { result: "Two." }),
+    ]);
+    const finishedTask = await complete(engine, bot.id, "First");
+    // A new header value retires the first task's connection at the next
+    // call, long before a sweep (every 30 s here).
+    await engine.secrets.put("DOCS_KEY", {
+      value: "header-token-rotated-0123456789abcdefLMN",
+    });
+    await complete(engine, bot.id, "Second");
+    await sleep(500);
+    expect(
+      mcpEvents(await engine.tasks.events(finishedTask.id)).map(
+        (event) => event.payload.state,
+      ),
+    ).toEqual(["starting", "ready"]);
   }, 60_000);
 });
 
