@@ -100,13 +100,15 @@ interface OpenTool {
  * One session run or chat reply as a span, with a child span per model turn
  * and per tool call built from the executor's events. Tool calls are timed
  * into `jj_tool_call_duration_seconds` too, under the tool's name when the
- * activity declared it, else `other` (a model can call a tool that does not
- * exist, and its name is the model's text).
+ * activity declared it, `mcp` for a declared MCP tool (whose names are the
+ * servers'), else `other` (a model can call a tool that does not exist, and
+ * its name is the model's text).
  */
 export class ActivityTrace {
   readonly span: Span;
   readonly context: Context;
   private known: ReadonlySet<string> = new Set();
+  private mcp: ReadonlySet<string> = new Set();
   private turn: Span | undefined;
   private readonly tools = new Map<string, OpenTool>();
   private readonly totals = {
@@ -131,14 +133,16 @@ export class ActivityTrace {
     this.context = trace.setSpan(ROOT_CONTEXT, this.span);
   }
 
-  /** The tools this activity offers its model, by name. */
-  declareTools(names: Iterable<string>) {
+  /** The tools this activity offers its model, by name, and its MCP tools, labelled `mcp`. */
+  declareTools(names: Iterable<string>, mcp: Iterable<string> = []) {
     this.known = new Set(names);
+    this.mcp = new Set(mcp);
   }
 
-  /** The tool's metric label and span name: its own when declared, else `other`. */
+  /** The tool's metric label and span name: its own when declared, `mcp` for a declared MCP tool, else `other`. */
   toolLabel(name: string): string {
-    return this.known.has(name) ? name : "other";
+    if (this.known.has(name)) return name;
+    return this.mcp.has(name) ? "mcp" : "other";
   }
 
   observe(event: ExecutorEvent): void {

@@ -12,7 +12,12 @@ const SOURCE = readFileSync(
 const LOADER = "eval(process.argv.slice(1).join(''))";
 const PIECE = 1000;
 
-export type FixtureMode = "crash" | "silent" | "hostile" | `many:${number}`;
+export type FixtureMode =
+  | "session"
+  | "crash"
+  | "silent"
+  | "hostile"
+  | `many:${number}`;
 
 /** A stdio server running the fixture; `command` is Node (`process.execPath` by default, for `local`). */
 export function mcpFixture(

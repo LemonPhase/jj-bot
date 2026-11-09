@@ -29,10 +29,12 @@ export {
 } from "./connector";
 export {
   MCP_DISCOVERY_LIST_MS,
+  type McpConnectInput,
   McpDiscoverer,
   type McpDiscovererOptions,
   type McpDiscoverInput,
   type McpDiscoverResult,
+  type McpDriftInput,
   stdioLaunch,
 } from "./discover";
 export {

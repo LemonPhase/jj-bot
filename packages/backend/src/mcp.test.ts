@@ -649,15 +649,24 @@ describe("MCP discovery", () => {
   });
 
   it(
-    "keeps at most one test of a server queued or running, and answers a second test with it",
+    "keeps at most one test of a server queued or running, and answers a second test of the same configuration with it",
     async () => {
       const { engine, profile } = await setup();
       await engine.worker.stop();
       const start = async (server: McpServerInput) =>
         (await engine.mcp.startDiscovery(profile.id, { server })).discovery;
       const first = await start(mcpFixture());
-      // Another draft of the same server while the first waits: the first.
-      expect(await start(mcpFixture({ mode: "hostile" }))).toEqual(first);
+      // The same configuration while the first waits: the first.
+      expect(
+        await start(mcpFixture({ description: "Described anew" })),
+      ).toEqual(first);
+      // Another configuration of the same server: refused while it waits.
+      expect(
+        await failure(start(mcpFixture({ mode: "hostile" }))),
+      ).toMatchObject({
+        code: "CONFLICT",
+        details: { discoveryId: first.id, configHash: first.configHash },
+      });
       const other = await start(mcpFixture({ name: "docs_two" }));
       expect(other.id).not.toBe(first.id);
       const queued = await db.database.db

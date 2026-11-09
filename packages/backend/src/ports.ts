@@ -1,5 +1,6 @@
 // The engine's ports: what it needs from the agent runtime (sessions, chat
-// replies and MCP discovery), the model registry and the sandbox drivers.
+// replies, MCP discovery and connections), the model registry and the
+// sandbox drivers.
 // The engine depends on these shapes only, never on `@jj/runtime` or a
 // concrete driver, so `apps/api` passes the runtime objects
 // (`PiSessionExecutor`, `ChatResponder`, `McpDiscoverer`, `ModelRegistry`)
@@ -199,6 +200,12 @@ export interface RunInput {
   sandboxLimits: SandboxLimits;
   codingTools: readonly ToolName[];
   collaborationTools: readonly CollabTool[];
+  /**
+   * The MCP tools of the session's pinned toolset, declared after the coding
+   * and collaboration tools, sorted by exposed name. Their calls are
+   * reviewed like any other.
+   */
+  mcpTools?: readonly McpToolBinding[];
   budgets: RunBudgets;
   /** Aborting stops the model call and the in-flight sandbox command; outcome `aborted`. */
   signal: AbortSignal;
@@ -334,16 +341,116 @@ export interface McpDiscoverResult {
   warnings: string[];
 }
 
+export interface McpServerInfo {
+  name: string;
+  version: string;
+  protocolVersion: string;
+}
+
+/** How a connection ended (`requested`: it was closed; otherwise its process exited or the connection dropped). */
+export interface McpConnectionEnd {
+  reason: "exited" | "closed" | "requested";
+  /** Redacted. */
+  error?: string;
+  exitCode?: number | null;
+  /** The server's latest stderr, redacted, at most 2000 characters. */
+  stderrTail?: string;
+}
+
 /**
- * Starts an MCP server, calls `initialize` and `tools/list` only, and
- * closes it, whatever happens. A failure throws an error whose message is
- * redacted and, for a stdio server, may carry `stderrTail`, the redacted
- * end of its stderr.
+ * One connection to one MCP server (the runtime's `McpConnector`), as the
+ * engine drives it: it starts it, watches it end and closes it. It never
+ * restarts itself. The engine hands it to the runtime through
+ * `McpToolBinding.connect`, which calls its tools.
+ */
+export interface McpConnector {
+  readonly state: "idle" | "starting" | "ready" | "closed";
+  /** Starts the transport and runs `initialize`, within the server's startup timeout. Errors are redacted. */
+  start(signal?: AbortSignal): Promise<McpServerInfo>;
+  /** `tools/call`; the runtime makes the calls and reads their results. */
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    options: {
+      signal?: AbortSignal;
+      timeoutMs: number;
+      onProgress?(progress: unknown): void;
+    },
+  ): Promise<unknown>;
+  /** Closes it (a stdio server's process is stopped). Idempotent. */
+  close(): Promise<void>;
+  /** Called once, when it ends for any reason. */
+  onClose(listener: (end: McpConnectionEnd) => void): () => void;
+  /**
+   * Replaces its secrets (a remote server's header values, then the
+   * redactor it was made with); the runtime applies it to every result and
+   * error of its calls, before the run's redactor.
+   */
+  redact(text: string, cut?: CutEdges): string;
+}
+
+/** A session connection to one server, made with the configuration the profile holds now. */
+export interface McpConnectInput {
+  server: McpServer;
+  /** A stdio server's task sandbox. */
+  sandbox?: Sandbox;
+  /** A remote server's `secretHeaders` with their stored values, by header name. */
+  secretHeaders?: Readonly<Record<string, { prefix: string; value: string }>>;
+  /** Replaces the server's secrets in every text the connection reports. */
+  redact: (text: string, cut?: CutEdges) => string;
+}
+
+/** The restart budget of one connection key (the runtime's `McpStartBudget`). */
+export interface McpStartBudget {
+  /** Starts allowed within `windowMs`. */
+  readonly maxStarts: number;
+  readonly windowMs: number;
+  /** Takes one start: `ok`, or when the next is allowed (ms since the epoch). */
+  take(): { ok: true } | { ok: false; retryAt: number };
+}
+
+/**
+ * One MCP tool a session declares: a tool of its pinned toolset, and how to
+ * reach its server (the runtime's `McpToolBinding`).
+ */
+export interface McpToolBinding {
+  /** The server's name in the profile. */
+  server: string;
+  /** The tool as the session pinned it; its declaration comes only from here. */
+  tool: McpTool;
+  /** Bounds each call (the server's `timeoutSec`); the run's deadline caps it. */
+  timeoutMs: number;
+  /** The server's connection, started on first use; the engine owns it and its restarts. */
+  connect(signal: AbortSignal): Promise<McpConnector>;
+  /** Why the tool may no longer be called (its error result, the tool stays declared), or undefined. */
+  refusal?(): string | undefined | Promise<string | undefined>;
+}
+
+/**
+ * The runtime's MCP client. `discover` starts an MCP server, calls
+ * `initialize` and `tools/list` only, and closes it, whatever happens; a
+ * failure throws an error whose message is redacted and, for a stdio server,
+ * may carry `stderrTail`, the redacted end of its stderr. `connect` makes a
+ * session connection, not started; `startBudget` the restart budget of one
+ * connection key; `drift` lists a running server's tools and says how they
+ * differ from its snapshot's.
  */
 export interface McpDiscoverer {
   /** Remote servers may be called (`JJ_MCP_REMOTE` is not off). */
   readonly remote: boolean;
   discover(input: McpDiscoverInput): Promise<McpDiscoverResult>;
+  connect(input: McpConnectInput): Promise<McpConnector>;
+  startBudget(): McpStartBudget;
+  drift(
+    connector: McpConnector,
+    input: {
+      server: string;
+      tools: readonly McpTool[];
+      redact: (text: string) => string;
+      timeoutMs: number;
+      signal?: AbortSignal;
+    },
+  ): Promise<string[]>;
 }
 
 /**
