@@ -103,6 +103,7 @@ export class TaskSandboxes {
   private readonly statuses: TaskStatusLookup;
 
   private readonly onRelease?: (taskId: string, spec: SandboxSpec) => void;
+  private readonly beforeRelease?: (sandbox: Sandbox) => Promise<void>;
   private readonly onFinished?: (
     taskId: string,
     sandbox: Sandbox,
@@ -116,6 +117,11 @@ export class TaskSandboxes {
       /** Called when a sandbox is released (its holder record is cleared). */
       onRelease?: (taskId: string, spec: SandboxSpec) => void;
       /**
+       * Runs right before the driver releases a sandbox, after `onFinished`:
+       * the MCP servers running in it are stopped first.
+       */
+      beforeRelease?: (sandbox: Sandbox) => Promise<void>;
+      /**
        * Runs before the sandbox of a finished task is released (a final
        * snapshot), with the values the sandbox was started with.
        */
@@ -128,6 +134,7 @@ export class TaskSandboxes {
   ) {
     this.statuses = options.statuses ?? dbStatuses(ctx);
     this.onRelease = options.onRelease;
+    this.beforeRelease = options.beforeRelease;
     this.onFinished = options.onFinished;
   }
 
@@ -387,6 +394,12 @@ export class TaskSandboxes {
                 { error: errorMessage(error) },
               ),
           );
+        await this.beforeRelease?.(sandbox).catch((error: unknown) =>
+          this.ctx.logger.warn(
+            `Stopping the MCP servers in the sandbox of ${taskId} failed`,
+            { error: errorMessage(error) },
+          ),
+        );
         await sandbox.release();
       })
       .catch((error: unknown) => {

@@ -4,7 +4,9 @@
 import {
   ModelRegistry,
   ChatResponder as PiChatResponder,
+  type McpConnection as PiMcpConnection,
   McpDiscoverer as PiMcpDiscoverer,
+  type McpToolBinding as PiMcpToolBinding,
   PiSessionExecutor,
   type CollabTool as RuntimeCollabTool,
   type ExecutorEvent as RuntimeExecutorEvent,
@@ -16,7 +18,9 @@ import type {
   ChatResponder,
   CollabTool,
   ExecutorEvent,
+  McpConnector,
   McpDiscoverer,
+  McpToolBinding,
   ModelCatalog,
   RunExecutor,
   RunHooks,
@@ -43,5 +47,14 @@ describe("runtime ports", () => {
     // ... and receives events and outcomes back.
     expectTypeOf<RuntimeExecutorEvent>().toMatchTypeOf<ExecutorEvent>();
     expectTypeOf<RuntimeRunOutcome>().toMatchTypeOf<RunOutcome>();
+  });
+
+  it("exchange compatible MCP connections and tool bindings", () => {
+    // The runtime's connections are what the engine starts, shares and ends ...
+    expectTypeOf<PiMcpConnection>().toMatchTypeOf<McpConnector>();
+    // ... and the engine's bindings carry what the runtime declares and calls.
+    expectTypeOf<Omit<McpToolBinding, "connect">>().toMatchTypeOf<
+      Omit<PiMcpToolBinding, "connect">
+    >();
   });
 });

@@ -363,10 +363,15 @@ export async function createEngine(options: EngineOptions): Promise<Engine> {
           streaming: true,
           verification: VERIFICATION_ENFORCED,
           secretStore: store.available,
-          // Profiles store MCP servers and discovery tests them, but no
-          // server reaches a session on this build, so bots cannot use one.
-          // Skills are refused.
-          mcp: { stdio: false, remote: false },
+          // A kind is reported only where sessions can really use it: a
+          // stdio server needs an available driver that can spawn it, a
+          // remote one JJ_MCP_REMOTE not off. Skills are refused.
+          mcp: {
+            stdio:
+              ctx.mcp !== undefined &&
+              drivers.some((info) => info.available && info.capabilities.spawn),
+            remote: ctx.mcp?.remote === true,
+          },
           skills: false,
           drivers: drivers.map((info) => ({
             id: info.id,

@@ -27,6 +27,7 @@ import { snapshotFinishedTask } from "./artifacts";
 import { runChatJob } from "./chat-reply";
 import { refreshHolders, releaseHolder } from "./holders";
 import { runCompactionJob, scheduleCompaction } from "./maintenance";
+import { McpConnections } from "./mcp-connections";
 import { runDiscoveryJob } from "./mcp-discovery";
 import { handleExhausted } from "./recovery";
 import { type AbortReason, JobControl } from "./run-context";
@@ -39,14 +40,25 @@ interface ActiveJob {
   done: Promise<void>;
 }
 
+/**
+ * Which slots each job kind takes: `work`, any free slot; `discovery`, at
+ * most `maxConcurrentDiscoveries` of them. Every kind is listed, so a new
+ * one cannot go unclaimed.
+ */
+export const CLAIM_CLASSES: Readonly<Record<JobKind, "work" | "discovery">> = {
+  "session.run": "work",
+  "chat.reply": "work",
+  "maintenance.compact": "work",
+  "mcp.discover": "discovery",
+};
+const kindsOf = (claimClass: "work" | "discovery"): readonly JobKind[] =>
+  (Object.keys(CLAIM_CLASSES) as JobKind[]).filter(
+    (kind) => CLAIM_CLASSES[kind] === claimClass,
+  );
 /** Jobs that every free slot may take. */
-const WORK_KINDS: readonly JobKind[] = [
-  "session.run",
-  "chat.reply",
-  "maintenance.compact",
-];
+const WORK_KINDS = kindsOf("work");
 /** Jobs that take at most `maxConcurrentDiscoveries` slots. */
-const DISCOVERY_KINDS: readonly JobKind[] = ["mcp.discover"];
+const DISCOVERY_KINDS = kindsOf("discovery");
 
 /** How often a polling worker records its heartbeat row (`worker_heartbeats`). */
 export const WORKER_HEARTBEAT_MS = 5_000;
@@ -98,6 +110,7 @@ export function createWorker(
   executor: RunExecutor,
   chat: ChatResponder,
 ): Worker {
+  const mcp = new McpConnections(ctx);
   const sandboxes = new TaskSandboxes(ctx, {
     // A crash writes nothing, the final snapshot included.
     onFinished: async (taskId, sandbox, secrets) => {
@@ -114,6 +127,7 @@ export function createWorker(
         (text) => redact(text),
       );
     },
+    beforeRelease: (sandbox) => mcp.releaseSandbox(sandbox.id),
     onRelease: (taskId, spec) => {
       if (spec.workspace !== "ephemeral") return;
       void releaseHolder(ctx, taskId).catch((error: unknown) =>
@@ -125,7 +139,19 @@ export function createWorker(
   });
   // Every redactor of this worker covers the values its sandboxes hold.
   ctx.heldSecrets = () => sandboxes.heldSecrets();
-  const deps = { ctx, sandboxes };
+  const deps = { ctx, sandboxes, mcp };
+  /** How each job kind runs; every kind is listed. */
+  const runners: Record<
+    JobKind,
+    (job: ClaimedJob, control: JobControl) => Promise<void>
+  > = {
+    "session.run": (job, control) =>
+      runSessionJob(deps, executor, job, control),
+    "chat.reply": (job, control) => runChatJob(deps, chat, job, control),
+    "mcp.discover": (job, control) => runDiscoveryJob(deps, job, control),
+    "maintenance.compact": (job, control) =>
+      runCompactionJob(ctx, job, control),
+  };
   const active = new Map<string, ActiveJob>();
   const timers: NodeJS.Timeout[] = [];
   const unsubscribers: Unsubscribe[] = [];
@@ -160,14 +186,7 @@ export function createWorker(
         ...(job.sessionId ? { sessionId: job.sessionId } : {}),
       },
       () =>
-        (job.kind === "session.run"
-          ? runSessionJob(deps, executor, job, control)
-          : job.kind === "chat.reply"
-            ? runChatJob(deps, chat, job, control)
-            : job.kind === "mcp.discover"
-              ? runDiscoveryJob(deps, job, control)
-              : runCompactionJob(ctx, job, control)
-        ).catch((error: unknown) => {
+        runners[job.kind](job, control).catch((error: unknown) => {
           ctx.logger.error(`Job ${job.id} (${job.kind}) failed unexpectedly`, {
             error: errorMessage(error),
           });
@@ -501,6 +520,7 @@ export function createWorker(
     while (pumping) await new Promise((resolve) => setTimeout(resolve, 5));
     for (const entry of active.values()) entry.control.abort(reason);
     await Promise.all([...active.values()].map((entry) => entry.done));
+    await mcp.stop();
     await sandboxes.releaseAll();
     // A crash leaves its row to go stale, as a dead process would.
     if (!crashing && ctx.config.workerHeartbeat)
@@ -530,6 +550,7 @@ export function createWorker(
       drained = undefined;
       crashing = false;
       lastBeatAt = 0;
+      mcp.resume();
       if (ctx.config.workerHeartbeat)
         await pruneWorkerHeartbeats(ctx.db, STALE_HEARTBEAT_MS).catch(
           (error: unknown) =>
@@ -572,6 +593,8 @@ export function createWorker(
       every(Math.min(ctx.config.sandboxIdleMs, 30_000), () =>
         sandboxes.sweep(),
       );
+      // Ends remote MCP connections idle past `mcpIdleMs`.
+      every(Math.min(ctx.config.mcpIdleMs, 30_000), () => mcp.sweep());
       await pump();
     },
     stop: () => shutDown("shutdown"),

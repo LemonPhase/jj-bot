@@ -1,7 +1,11 @@
 // Approvals in a session's runs: the review that holds a call, the claim
 // that starts an approved one at most once, the decision a run applies, and
 // parking a session that holds a call, at the end of its run or at launch.
-import { matchingApprovalRule } from "@jj/contracts";
+import {
+  type ApprovalRule,
+  MCP_TOOL_PREFIX,
+  matchingApprovalRule,
+} from "@jj/contracts";
 import { type RunRow, type SessionRow, sessions, type Tx, tasks } from "@jj/db";
 import { and, eq, inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
@@ -31,18 +35,23 @@ export const ONE_APPROVAL_AT_A_TIME =
 
 /**
  * Before a call runs: held for the user's approval when a rule of the bot's
- * own profile matches it, recorded with the call's redacted arguments.
+ * own profile matches it, or when it is an MCP tool its server asks for
+ * (`askUnlessReadOnly`, the tool not marked read-only), recorded with the
+ * call's redacted arguments. An MCP call its profile no longer allows is
+ * refused with the reason rather than held.
  */
 export async function reviewCall(
   rc: RunContext,
   call: PendingToolCall,
 ): Promise<ToolCallVerdict> {
-  const rule = matchingApprovalRule(
-    rc.approvalRules ?? [],
-    call.tool,
-    call.args,
-  );
+  const rule: ApprovalRule | undefined =
+    matchingApprovalRule(rc.approvalRules ?? [], call.tool, call.args) ??
+    (rc.mcp?.askFirst.has(call.tool) && call.tool.startsWith(MCP_TOOL_PREFIX)
+      ? { tool: call.tool as `mcp__${string}` }
+      : undefined);
   if (!rule) return "run";
+  const refusal = await rc.mcp?.refusal(call.tool);
+  if (refusal !== undefined) return { refuse: refusal };
   if (rc.heldApprovalId) return { refuse: ONE_APPROVAL_AT_A_TIME };
   return writeRun(rc, async (tx) => {
     const task = (await lockTask(tx, rc.task.id)) ?? rc.task;

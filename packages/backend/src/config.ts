@@ -81,6 +81,12 @@ export interface EngineConfig {
    */
   ephemeralIdleMs: number;
   /**
+   * A remote MCP server's connection is ended after this long without a
+   * call (ten minutes); a stdio server's lives as long as its task's
+   * sandbox.
+   */
+  mcpIdleMs: number;
+  /**
    * Sandboxes one worker holds at once (`JJ_MAX_HELD_SANDBOXES`). Over it,
    * the least recently used idle one is released, a `task` workspace first.
    */
@@ -159,6 +165,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     maxVerificationAttempts: 3,
     sandboxIdleMs: 10 * 60_000,
     ephemeralIdleMs: 6 * 60 * 60_000,
+    mcpIdleMs: 10 * 60_000,
     maxHeldSandboxes: 32,
     chatHistoryLimit: 40,
     chatMaxTurns: 6,
@@ -204,6 +211,7 @@ export function resolveConfig(input: EngineConfigInput = {}): EngineConfig {
     "chatHistoryLimit",
     "chatMaxTurns",
     "ephemeralIdleMs",
+    "mcpIdleMs",
     "maxHeldSandboxes",
     "compactionIntervalMs",
     "compactionMaxTasks",

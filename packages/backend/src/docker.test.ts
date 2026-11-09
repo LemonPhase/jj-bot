@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
-import { McpDiscoverer } from "@jj/runtime";
+import { McpDiscoverer, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
+import { callTool, fauxProvider } from "@jj/runtime/testing";
 import { DOCKER_BASE_IMAGE, DockerSandboxDriver } from "@jj/sandbox";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDriverRegistry } from "./drivers";
@@ -399,5 +400,114 @@ describe.skipIf(!health.ok)("docker driver", () => {
     ]);
     expect(volumes.stdout.trim()).toBe("");
     expect(JSON.stringify([found, crashed])).not.toContain(token);
+  }, 180_000);
+
+  it("runs a session's stdio MCP server in the task's container, with its granted secret, until the sandbox goes", async () => {
+    await current?.dispose();
+    const token = `docs-docker-${randomBytes(12).toString("hex")}`;
+    const namespace = `jj-mcps-${runId}`;
+    const docker = recordingDriver(
+      new DockerSandboxDriver({ namespace, labels, killGraceMs: 300 }),
+    );
+    const faux = fauxProvider();
+    current = await testEngine(db.database, {
+      registry: createDriverRegistry([
+        { driver: docker.driver, label: "Docker" },
+      ]),
+      runExecutor: new PiSessionExecutor({
+        models: new ModelRegistry({ env: {}, extraProviders: [faux.provider] }),
+      }),
+      secretStore: new SecretStore({
+        db: db.database.db,
+        keyring: createKeyring(randomBytes(32)),
+      }),
+      mcp: new McpDiscoverer({ env: {}, closeGraceMs: 300 }),
+    });
+    const { engine } = current;
+    await engine.secrets.put("DOCS_SECRET", { value: token });
+    const { profile } = await engine.profiles.create({
+      name: "Docker MCP session",
+      sandbox: {
+        driver: "docker",
+        image,
+        network: { mode: "none" },
+        resources: { cpus: 1, memoryMb: 512 },
+      },
+      secrets: ["DOCS_SECRET"],
+    });
+    const server = mcpFixture({ command: "node", mode: "session" });
+    const { discovery } = await engine.mcp.startDiscovery(profile.id, {
+      server,
+    });
+    const found = await until(
+      async () => {
+        const { discovery: now } = await engine.mcp.discovery(discovery.id);
+        return now.status === "succeeded" || now.status === "failed"
+          ? now
+          : undefined;
+      },
+      { what: "the docker discovery", timeoutMs: 90_000 },
+    );
+    expect(found.error).toBeNull();
+    await engine.profiles.update(profile.id, {
+      mcpServers: [{ ...server, snapshotId: found.snapshot?.id ?? null }],
+    });
+    const { bot } = await engine.bots.create({
+      name: "Dora",
+      runtimeProfileId: profile.id,
+    });
+    faux.setResponses([
+      callTool("mcp__docs__search", { query: "containers" }),
+      callTool("complete_task", { result: "Found it." }),
+    ]);
+    const { task } = await engine.tasks.create({
+      goal: "Search the docs",
+      coordinatorBotId: bot.id,
+    });
+    await untilTask(
+      engine,
+      task.id,
+      (view) => view.task.status === "completed",
+      "the docker MCP task",
+      90_000,
+    );
+    const { events } = await engine.tasks.events(task.id);
+    const answer = events.find(
+      (event) =>
+        event.type === "tool.finished" &&
+        event.payload.tool === "mcp__docs__search",
+    );
+    // The server ran in the task's container with the granted secret, and
+    // what it said with it is stored redacted.
+    expect(answer?.payload).toMatchObject({
+      ok: true,
+      output: `Results for "containers": docs/intro.md (searched as ${REDACTED})`,
+    });
+    expect(
+      events.flatMap((event) =>
+        event.type === "mcp.server" ? [event.payload.state] : [],
+      ),
+    ).toEqual(["starting", "ready"]);
+    expect(JSON.stringify(events)).not.toContain(token);
+    // The discovery's container and the task's, both released and removed,
+    // the server with the task's.
+    await until(
+      async () => {
+        const { stdout } = await run("docker", [
+          "ps",
+          "-aq",
+          "--filter",
+          `label=jj.test-run=${runId}`,
+          "--filter",
+          `name=${namespace}`,
+        ]);
+        return stdout.trim() === "";
+      },
+      { what: "the containers to go", timeoutMs: 30_000 },
+    );
+    expect(docker.acquired).toMatchObject([
+      { spec: { workspace: "ephemeral" }, released: true },
+      { spec: { workspace: "task" }, released: true },
+    ]);
   }, 180_000);
 });

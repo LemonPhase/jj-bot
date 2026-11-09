@@ -220,11 +220,12 @@ export async function assertSecretHeadersStored(
 
 /**
  * The snapshots `servers` pin, each locked for the transaction.
- * MCP_SNAPSHOT_MISMATCH unless each exists, was discovered for this
- * profile and this server, and for the configuration the server has now,
- * in the profile's sandbox (`mcpConfigHash`). A disabled server's pin is
- * kept as it is (its approval rules still name its tools), and checked
- * once it is enabled.
+ * MCP_SNAPSHOT_MISMATCH unless each exists and was discovered for this
+ * profile and this server, and, for an enabled server, for the
+ * configuration it has now, in the profile's sandbox (`mcpConfigHash`). A
+ * disabled server's pin may be of an earlier configuration (its approval
+ * rules still name its tools), which is checked once it is enabled; it can
+ * never name another server's snapshot or none at all.
  */
 export async function pinnedSnapshots(
   tx: Tx,
@@ -242,13 +243,14 @@ export async function pinnedSnapshots(
     .where(inArray(mcpToolSnapshots.id, [...new Set(ids)]))
     .for("share");
   const problems = servers.flatMap((server, index) => {
-    if (server.snapshotId === null || !server.enabled) return [];
+    if (server.snapshotId === null) return [];
     const row = rows.find((candidate) => candidate.id === server.snapshotId);
     const where = `mcpServers.${index}.snapshotId`;
     if (!row || row.profileId !== profileId || row.server !== server.name)
       return [
         `${where}: ${server.snapshotId} is not a snapshot of ${server.name} in this profile. Test the server and pin the snapshot it finds.`,
       ];
+    if (!server.enabled) return [];
     if (row.configHash !== mcpConfigHash(server, sandbox))
       return [
         `${where}: ${server.snapshotId} was discovered for another configuration of ${server.name}, or another sandbox. Test the server again with the new sandbox settings, then save the snapshot it finds together with them.`,
@@ -394,7 +396,9 @@ async function prune(tx: Tx, profileId: string, pinned: readonly string[]) {
  * `secretEnv` secrets granted by the profile and its `secretHeaders`
  * secrets stored. The worker runs it; poll `GET /api/mcp-discoveries/:id`.
  * A server of the profile has at most one discovery queued or running: a
- * test while one is returns that one.
+ * test of the same configuration (`configHash`, which covers a stdio
+ * server's draft sandbox) while one is returns that one, and a test of
+ * another is refused with CONFLICT naming the one that runs.
  */
 export async function startDiscovery(
   ctx: EngineContext,
@@ -442,7 +446,15 @@ export async function startDiscovery(
         ),
       )
       .limit(1);
-    if (active) return { discovery: toMcpDiscovery(active, undefined) };
+    if (active) {
+      if (active.configHash === configHash)
+        return { discovery: toMcpDiscovery(active, undefined) };
+      throw new DomainError(
+        "CONFLICT",
+        `A test of ${server.name} with another configuration${server.transport === "stdio" ? " or sandbox" : ""} is ${active.status} (${active.id}). Wait for it to finish, then test this one.`,
+        { discoveryId: active.id, configHash: active.configHash },
+      );
+    }
     const id = ctx.ids("mcpDiscovery");
     const [inserted] = await tx
       .insert(mcpDiscoveries)

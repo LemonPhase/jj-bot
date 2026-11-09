@@ -94,7 +94,7 @@ describe("bootstrap", () => {
       // Plans are accepted and enforced (verification.test.ts).
       verification: true,
       secretStore: false,
-      // No MCP server or skill reaches a session on this build.
+      // This engine has no MCP client, and skills are not served yet.
       mcp: { stdio: false, remote: false },
       skills: false,
       drivers: [
