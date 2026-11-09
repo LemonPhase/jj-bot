@@ -478,3 +478,125 @@ describe("over a socket", () => {
     expect(answer).toMatch(/^HTTP\/1\.1 413 /);
   });
 });
+
+describe("request deadlines", () => {
+  let server: RunningServer;
+  let root: string;
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "jj-upload-deadline-"));
+    server = await startServer({
+      logger: quietLogger,
+      // Every request must arrive within half a second, but an upload that
+      // needs longer at the pace staging accepts.
+      requestTimeoutMs: 500,
+      env: {
+        API_PORT: "0",
+        JJ_DATABASE_PATH: "memory://",
+        JJ_SANDBOX_DRIVERS: "local",
+        JJ_SANDBOX_ROOT: root,
+      },
+    });
+  }, OPEN_TIMEOUT);
+  afterAll(async () => {
+    await server?.close();
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+
+  /**
+   * Sends `head`, then each of `chunks` `everyMs` apart, and nothing more;
+   * resolves with all the server answered once it closes the connection.
+   */
+  function exchange(head: string[], chunks: Buffer[], everyMs: number) {
+    const url = new URL(server.url);
+    return new Promise<string>((resolve, reject) => {
+      const socket = connect(Number(url.port), url.hostname);
+      let received = "";
+      socket.on("data", (chunk: Buffer) => {
+        received += chunk.toString("latin1");
+      });
+      socket.on("close", () => resolve(received));
+      socket.on("error", reject);
+      socket.write(
+        [...head, `Host: 127.0.0.1:${url.port}`, "", ""].join("\r\n"),
+      );
+      let index = 0;
+      const next = () => {
+        const chunk = chunks[index++];
+        if (!chunk || socket.destroyed) return;
+        socket.write(chunk);
+        setTimeout(next, everyMs);
+      };
+      next();
+    });
+  }
+
+  it("takes an upload still arriving past the request timeout, at a pace staging accepts", async () => {
+    const chunk = Buffer.alloc(4096, 7);
+    // 32 KiB over about 1.6 s: three times the request timeout.
+    const answer = await exchange(
+      [
+        "POST /api/uploads?name=slow.bin HTTP/1.1",
+        "Content-Type: application/octet-stream",
+        `Content-Length: ${8 * chunk.length}`,
+        "Connection: close",
+      ],
+      Array.from({ length: 8 }, () => chunk),
+      200,
+    );
+    expect(answer).toMatch(/^HTTP\/1\.1 201 /);
+  });
+
+  it("answers the API's JSON 408 to a request that does not arrive in time, and closes", async () => {
+    const started = Date.now();
+    const answer = await exchange(
+      [
+        "POST /api/bots HTTP/1.1",
+        "Content-Type: application/json",
+        "Content-Length: 100",
+      ],
+      [Buffer.from('{"name":')],
+      0,
+    );
+    expect(Date.now() - started).toBeGreaterThanOrEqual(450);
+    expect(answer).toMatch(/^HTTP\/1\.1 408 /);
+    const [head = "", body = ""] = answer.split("\r\n\r\n");
+    expect(head).toMatch(/^Content-Type: application\/json$/im);
+    expect(head).toMatch(/^X-Content-Type-Options: nosniff$/im);
+    expect(refused(JSON.parse(body))).toMatchObject({
+      code: "VALIDATION_FAILED",
+      message: expect.stringMatching(/did not arrive within 0\.5 s/),
+    });
+  });
+
+  it("leaves an event stream open past the request timeout", async () => {
+    const url = new URL(server.url);
+    const socket = connect(Number(url.port), url.hostname);
+    try {
+      let closed = false;
+      socket.on("close", () => {
+        closed = true;
+      });
+      const head = new Promise<string>((resolve) => {
+        let received = "";
+        socket.on("data", (chunk: Buffer) => {
+          received += chunk.toString("latin1");
+          if (received.includes("\r\n\r\n")) resolve(received);
+        });
+      });
+      socket.write(
+        [
+          "GET /api/stream HTTP/1.1",
+          `Host: 127.0.0.1:${url.port}`,
+          "Accept: text/event-stream",
+          "",
+          "",
+        ].join("\r\n"),
+      );
+      expect(await head).toMatch(/^HTTP\/1\.1 200 /);
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      expect(closed).toBe(false);
+    } finally {
+      socket.destroy();
+    }
+  });
+});

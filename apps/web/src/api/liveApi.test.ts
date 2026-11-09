@@ -359,6 +359,31 @@ describe("live API requests", () => {
     expect(calls.at(-1)?.init.method).toBe("DELETE");
   });
 
+  it("says an upload took too long when the server stops receiving it (408)", async () => {
+    const tooSlow = "The file did not arrive within 18 minutes.";
+    const { fetch } = mockFetch({
+      "POST /api/uploads": (_init: RequestInit, url: string) =>
+        url.includes("json")
+          ? json(408, {
+              error: { code: "VALIDATION_FAILED", message: tooSlow },
+            })
+          : new Response("", { status: 408 }),
+    });
+    const api = createLiveApi({ bootstrap, fetch });
+    const file = new Blob(["a,b\n"]);
+    // The API's own 408 keeps its message.
+    await expect(api.stageUpload(file, "json.csv")).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      status: 408,
+      message: tooSlow,
+    });
+    // A bare one (a proxy's, or an older server's) still says what happened.
+    await expect(api.stageUpload(file, "bare.csv")).rejects.toMatchObject({
+      status: 408,
+      message: expect.stringMatching(/took too long to arrive/),
+    });
+  });
+
   it("reports network failures and validates commands before sending", async () => {
     const fetch = vi.fn(async () => {
       throw new TypeError("fetch failed");
