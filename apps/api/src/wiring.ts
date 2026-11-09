@@ -15,7 +15,12 @@ import {
   SecretStore,
 } from "@jj/backend";
 import { type Database, openDatabase, readInstanceSetting } from "@jj/db";
-import { ChatResponder, ModelRegistry, PiSessionExecutor } from "@jj/runtime";
+import {
+  ChatResponder,
+  McpDiscoverer,
+  ModelRegistry,
+  PiSessionExecutor,
+} from "@jj/runtime";
 import { DockerSandboxDriver, LocalSandboxDriver } from "@jj/sandbox";
 import type { Tracer } from "@opentelemetry/api";
 import {
@@ -211,6 +216,13 @@ export async function openServices(
       drivers,
       executor: new PiSessionExecutor({ models, outputCapBytes }),
       chat: new ChatResponder({ models, outputCapBytes }),
+      // Remote servers go through the operator's proxy settings in `env`.
+      mcp: new McpDiscoverer({
+        env: {
+          ...env,
+          JJ_MCP_REMOTE: config.mcpRemote === false ? "off" : "on",
+        },
+      }),
       models,
       config: config.engine,
       logger,

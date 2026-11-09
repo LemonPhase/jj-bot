@@ -18,6 +18,7 @@ import { createEngine, type Engine } from "../engine";
 import type {
   ChatResponder,
   DriverRegistry,
+  McpDiscoverer,
   ModelCatalog,
   RunExecutor,
 } from "../ports";
@@ -132,6 +133,8 @@ export interface TestEngineOptions {
   secrets?: Secret[];
   /** The stored secrets; default a store with no master key. */
   secretStore?: SecretStore;
+  /** Tests MCP servers (the runtime's `McpDiscoverer`); default none. */
+  mcp?: McpDiscoverer;
 }
 
 export async function testEngine(
@@ -164,6 +167,7 @@ export async function testEngine(
     clock: options.clock,
     secrets: () => options.secrets ?? [],
     ...(options.secretStore ? { secretStore: options.secretStore } : {}),
+    ...(options.mcp ? { mcp: options.mcp } : {}),
     config: {
       pollIntervalMs: 25,
       leaseMs: 5_000,
@@ -270,4 +274,54 @@ export function countingDriver<D extends import("../ports").EngineDriver>(
     },
   };
   return { driver, counts };
+}
+
+/** One sandbox a `recordingDriver` gave. */
+export interface RecordedSandbox {
+  spec: import("@jj/sandbox/contract").SandboxSpec;
+  /** The names of the secrets it was started with. */
+  secrets: string[];
+  workspaceDir: string;
+  released: boolean;
+}
+
+/**
+ * Wraps a driver to record every sandbox it gives and whether it was
+ * released. `spawn: false` declares no spawn and hides the sandboxes' own.
+ */
+export function recordingDriver(
+  inner: import("../ports").EngineDriver,
+  options: { spawn?: boolean } = {},
+) {
+  const spawn = options.spawn ?? inner.capabilities.spawn;
+  const acquired: RecordedSandbox[] = [];
+  const driver: import("../ports").EngineDriver = {
+    id: inner.id,
+    capabilities: { ...inner.capabilities, spawn },
+    validateSpec: (spec) => inner.validateSpec(spec),
+    probe: () => inner.probe(),
+    async acquire(request) {
+      const sandbox = await inner.acquire(request);
+      const entry: RecordedSandbox = {
+        spec: request.spec,
+        secrets: Object.keys(request.secrets ?? {}),
+        workspaceDir: sandbox.workspaceDir,
+        released: false,
+      };
+      acquired.push(entry);
+      return new Proxy(sandbox, {
+        get(target, property) {
+          if (property === "release")
+            return async (releaseOptions?: { persist?: boolean }) => {
+              entry.released = true;
+              await target.release(releaseOptions);
+            };
+          if (property === "spawn" && !spawn) return undefined;
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  return { driver, acquired };
 }

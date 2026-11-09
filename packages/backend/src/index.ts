@@ -49,6 +49,7 @@ export {
   type SecretStoreOptions,
   type StoredProviderKey,
 } from "./secrets/store";
+export { MAX_KEPT_DISCOVERIES, mcpConfigHash } from "./services/mcp";
 export {
   type CompactionPass,
   type CompactionPassOptions,
