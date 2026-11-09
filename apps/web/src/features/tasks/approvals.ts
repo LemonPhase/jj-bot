@@ -7,7 +7,9 @@ import {
   canonicalJson,
   MCP_TOOL_PREFIX,
   type PendingApproval,
+  type SpendApproval,
   type TaskView,
+  type ToolApproval,
 } from "@jj/contracts";
 import type { StatusTone } from "../../lib/status";
 
@@ -21,6 +23,7 @@ export interface ApprovalState {
 
 /** The card's state line, from the record alone. */
 export function approvalState(approval: Approval): ApprovalState {
+  if (approval.kind === "spend") return spendApprovalState(approval);
   switch (approval.status) {
     case "pending":
       return { text: "waiting for your approval · not run", tone: "verifying" };
@@ -53,6 +56,31 @@ export function approvalState(approval: Approval): ApprovalState {
         ? { text: `ran${exit}`, tone: "completed" }
         : { text: `ran · failed${exit}`, tone: "failed" };
     }
+  }
+}
+
+/**
+ * A spend approval's state line: no model call it covers starts while it
+ * waits; a denial stopped the task at the threshold; an expiry means the cap
+ * (or the question) changed before the answer.
+ */
+export function spendApprovalState(approval: SpendApproval): ApprovalState {
+  switch (approval.status) {
+    case "pending":
+      return { text: "waiting · no model calls", tone: "verifying" };
+    case "approved":
+      return { text: "approved", tone: "completed" };
+    case "denied":
+      return { text: "denied · task stopped", tone: "idle" };
+    case "expired":
+      return {
+        text: approval.reason?.includes("turned off")
+          ? "expired · question turned off"
+          : "expired · cap changed",
+        tone: "idle",
+      };
+    case "cancelled":
+      return { text: "cancelled", tone: "idle" };
   }
 }
 
@@ -141,7 +169,7 @@ export function argumentsPreview(
  * arguments.
  */
 export function approvalCall(
-  approval: Pick<Approval, "tool" | "args">,
+  approval: Pick<ToolApproval, "tool" | "args">,
 ): string {
   const { tool, args } = approval;
   if (tool === "bash" && typeof args.command === "string") return args.command;
@@ -151,8 +179,9 @@ export function approvalCall(
 }
 
 /** Why the call waits whatever its rule's match: its arguments could not be checked. */
-export const approvalProblem = (approval: Pick<Approval, "tool" | "args">) =>
-  approvalSubjectProblem(approval.tool, approval.args);
+export const approvalProblem = (
+  approval: Pick<ToolApproval, "tool" | "args">,
+) => approvalSubjectProblem(approval.tool, approval.args);
 
 /** The task's approvals still waiting for the user, oldest first. */
 export const pendingOf = (approvals: readonly Approval[]): Approval[] =>
@@ -166,7 +195,11 @@ export function pendingLabel(
   return `${pending.length} approval${pending.length === 1 ? "" : "s"} waiting`;
 }
 
-/** True while the task's coordinator holds a call: a message reaches it with the answer. */
+/**
+ * True while an approval holds the task's coordinator (a call of its own, or
+ * spend past a threshold that covers it): a message reaches it with the
+ * answer.
+ */
 export function coordinatorHolds(view: TaskView): boolean {
   const root = view.sessions.find(
     (session) => session.parentSessionId === null,
@@ -175,7 +208,10 @@ export function coordinatorHolds(view: TaskView): boolean {
     root &&
       view.approvals.some(
         (approval) =>
-          approval.status === "pending" && approval.sessionId === root.id,
+          approval.status === "pending" &&
+          (approval.kind === "spend"
+            ? approval.scope === "task" || approval.botId === root.botId
+            : approval.sessionId === root.id),
       ),
   );
 }

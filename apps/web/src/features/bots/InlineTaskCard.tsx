@@ -177,14 +177,21 @@ function ChatApproval({
     <li className="chat-approval">
       <p className="chat-approval__text">
         <StatusSquare tone={answer ? "idle" : "verifying"} />
-        <span>
-          {name} asks to run {approval.tool}:{" "}
-          <code className="chat-approval__call">
-            {visibleText(approval.summary)}
-          </code>
-          {!approval.shownInFull &&
-            " (shortened: the task shows the whole call)"}
-        </span>
+        {approval.kind === "spend" ? (
+          // The summary is all of it: the cap and the threshold.
+          <span>
+            {approval.summary}: no model call starts until you answer.
+          </span>
+        ) : (
+          <span>
+            {name} asks to run {approval.tool}:{" "}
+            <code className="chat-approval__call">
+              {visibleText(approval.summary)}
+            </code>
+            {!approval.shownInFull &&
+              " (shortened: the task shows the whole call)"}
+          </span>
+        )}
       </p>
       {answer ? (
         <p className="chat-approval__answer" role="status">

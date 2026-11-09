@@ -50,6 +50,7 @@ const task: Task = {
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: null,
+  approveSpendPastThreshold: false,
   templateId: null,
   createdAt: at(0),
   updatedAt: at(0),

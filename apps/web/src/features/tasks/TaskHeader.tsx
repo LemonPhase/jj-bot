@@ -57,7 +57,7 @@ export function TaskHeader({ view }: { view: TaskView }) {
             {approvals && (
               <Badge
                 tone="verifying"
-                title="Calls waiting for your approval: answer them in the chat"
+                title="Approvals waiting for you: answer them in the chat"
               >
                 {approvals}
               </Badge>

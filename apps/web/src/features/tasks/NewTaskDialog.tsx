@@ -12,7 +12,7 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
 import { formatCap } from "./format";
-import { readCapInput } from "./SpendControl";
+import { readCapInput, SpendQuestion } from "./SpendControl";
 import { rosterOf, TeamPicker } from "./TeamPicker";
 import { type CheckDraft, planFromDrafts } from "./verification";
 
@@ -50,9 +50,12 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
   const profile = coordinator?.runtimeProfileId
     ? profiles.find((entry) => entry.id === coordinator.runtimeProfileId)
     : profiles.find((entry) => entry.isDefault);
-  const profileCap = (profile?.budgets ?? profileBudgetsSchema.parse({}))
-    .maxUsdPerTask;
+  const budgets = profile?.budgets ?? profileBudgetsSchema.parse({});
+  const profileCap = budgets.maxUsdPerTask;
   const capValue = capText ?? (profileCap === null ? "" : String(profileCap));
+  /** Null until changed: the coordinator's profile's choice applies. */
+  const [asking, setAsking] = useState<boolean | null>(null);
+  const askValue = asking ?? budgets.approveSpendPastThreshold;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const participants = rosterOf(coordinatorId, others);
@@ -77,6 +80,7 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
         verificationPlan: checks.plan,
         // An untouched field leaves the cap to the server (the profile's).
         ...(capText !== null ? { spendCapUsd: cap.value } : {}),
+        ...(asking !== null ? { approveSpendPastThreshold: asking } : {}),
       });
       onClose();
     } catch (reason) {
@@ -154,6 +158,11 @@ export function NewTaskDialog({ initialBotIds, onClose }: NewTaskDialogProps) {
             error={capError ?? undefined}
             value={capValue}
             onChange={(event) => setCapText(event.target.value)}
+          />
+          <SpendQuestion
+            checked={askValue}
+            onChange={setAsking}
+            disabled={busy}
           />
           {api.capabilities.verification && (
             <div className="new-task-form__checks">

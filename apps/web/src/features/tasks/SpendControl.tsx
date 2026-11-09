@@ -1,4 +1,9 @@
-import { MAX_SPEND_CAP_USD, type TaskView } from "@jj/contracts";
+import {
+  MAX_SPEND_CAP_USD,
+  SPEND_SOFT_THRESHOLD,
+  type TaskView,
+  type UpdateTaskCommand,
+} from "@jj/contracts";
 import { type FormEvent, useId, useState } from "react";
 import { useApi } from "../../api/ApiContext";
 import {
@@ -116,27 +121,62 @@ export function SpendControl({ view }: { view: TaskView }) {
         <SpendCapDialog
           view={view}
           onClose={() => setEditing(false)}
-          save={(spendCapUsd) => api.updateTask(task.id, { spendCapUsd })}
+          save={(command) => api.updateTask(task.id, command)}
         />
       )}
     </>
   );
 }
 
-function SpendCapDialog({
+/** The share of a cap past which the question is asked, as people read it: "80%". */
+export const THRESHOLD_PERCENT = `${Math.round(SPEND_SOFT_THRESHOLD * 100)}%`;
+
+/**
+ * The option to be asked before a task spends past 80% of its cap: no model
+ * call starts there until the user approves it in the task.
+ */
+export function SpendQuestion({
+  checked,
+  onChange,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="task-check">
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      Ask before spending past {THRESHOLD_PERCENT} of a cap
+    </label>
+  );
+}
+
+/**
+ * Changes the task's cap and whether to ask past 80% of it. Saves only what
+ * changed; a change that leaves a pending spend approval about another cap,
+ * or no question, expires it on the server.
+ */
+export function SpendCapDialog({
   view,
   onClose,
   save,
 }: {
   view: TaskView;
   onClose: () => void;
-  save: (spendCapUsd: number | null) => Promise<unknown>;
+  save: (command: UpdateTaskCommand) => Promise<unknown>;
 }) {
   const formId = useId();
   const { task, usage } = view;
   const [text, setText] = useState(
     task.spendCapUsd === null ? "" : String(task.spendCapUsd),
   );
+  const [asking, setAsking] = useState(task.approveSpendPastThreshold);
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -150,10 +190,20 @@ function SpendCapDialog({
       return;
     }
     setFieldError(null);
+    const command: UpdateTaskCommand = {
+      ...(read.value !== task.spendCapUsd ? { spendCapUsd: read.value } : {}),
+      ...(asking !== task.approveSpendPastThreshold
+        ? { approveSpendPastThreshold: asking }
+        : {}),
+    };
+    if (Object.keys(command).length === 0) {
+      onClose();
+      return;
+    }
     setBusy(true);
     setFailure(null);
     try {
-      await save(read.value);
+      await save(command);
       onClose();
     } catch (reason) {
       setFailure(
@@ -196,6 +246,7 @@ function SpendCapDialog({
           value={text}
           onChange={(event) => setText(event.target.value)}
         />
+        <SpendQuestion checked={asking} onChange={setAsking} disabled={busy} />
         {stopped && (
           <p className="new-task-form__note">
             The task stopped at its cap. After raising it, send a message in the

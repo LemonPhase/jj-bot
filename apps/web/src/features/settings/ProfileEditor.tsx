@@ -321,9 +321,22 @@ export function ProfileEditor({
               />
             ))}
           </div>
+          <label className="settings-check">
+            <input
+              type="checkbox"
+              checked={draft.approveSpendPastThreshold}
+              onChange={(event) =>
+                set({ approveSpendPastThreshold: event.target.checked })
+              }
+            />
+            Ask before spending past 80% of a cap
+          </label>
           <p className="ui-field__hint">
             Spend caps count model calls with a listed price. Calls on a model
             with no listed price are counted apart, and no cap can bound them.
+            With asking on, no model call starts past 80% of a task's cap (new
+            tasks this profile coordinates) or of a bot's daily cap until you
+            approve it in the task.
           </p>
         </fieldset>
 

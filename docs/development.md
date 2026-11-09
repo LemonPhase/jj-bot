@@ -262,9 +262,10 @@ The route table and every shape are in [the contract changelog](contract-changel
 | `GET`  | `/api/secrets`                                 | `{ available, secrets }`: names and hints, never a value    |
 | `PUT`  | `/api/secrets/:name`, `DELETE`                 | `{ secret }` (201 new, 200 replaced); 204                   |
 | `GET`  | `/api/tasks`, `POST /api/tasks`                | `{ tasks }` (summaries); `{ task }` (201)                   |
-| `GET`  | `/api/tasks/:id`                               | the task view, with its `cursor`                            |
+| `GET`  | `/api/tasks/:id`, `PATCH`                      | the task view; `{ task }` (its cap, the question past 80%)  |
 | `POST` | `/api/tasks/:id/messages`                      | `{ message }` (201)                                         |
 | `POST` | `/api/tasks/:id/stop`                          | `{ task }`                                                  |
+| `POST` | `/api/tasks/:id/approvals/:approvalId`         | `{ approval }`: the user's answer, once (else 409)          |
 | `GET`  | `/api/tasks/:id/events?after=&limit=`          | events with their previews, and `compactedThrough`          |
 | `GET`  | `/api/tasks/:id/stream`                        | SSE task events                                             |
 | `GET`  | `/api/tasks/:id/artifacts/:artifactId/content` | the artifact's bytes                                        |

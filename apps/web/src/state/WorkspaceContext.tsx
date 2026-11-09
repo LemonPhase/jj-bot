@@ -70,6 +70,8 @@ export interface NewTaskInput {
   verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's cap. Null: no cap. */
   spendCapUsd?: number | null;
+  /** Omitted: the coordinator's profile's choice. */
+  approveSpendPastThreshold?: boolean;
 }
 
 interface WorkspaceValue {
@@ -625,6 +627,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         participantBotIds,
         verificationPlan,
         spendCapUsd,
+        approveSpendPastThreshold,
       }) => {
         const [coordinatorBotId] = participantBotIds;
         if (!coordinatorBotId)
@@ -635,6 +638,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           participantBotIds,
           ...(verificationPlan ? { verificationPlan } : {}),
           ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
+          ...(approveSpendPastThreshold !== undefined
+            ? { approveSpendPastThreshold }
+            : {}),
         });
         openCreated(task);
         return task;

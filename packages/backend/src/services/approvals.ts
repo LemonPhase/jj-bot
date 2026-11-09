@@ -498,8 +498,9 @@ export async function expireApprovals(
 }
 
 /**
- * A session finished (stopped, failed or completed): its pending approval,
- * or an approved call that has not started, is cancelled and never runs. An
+ * A session finished (stopped, failed or completed): its pending tool
+ * approval, or an approved call that has not started, is cancelled and never
+ * runs (a spend approval is the task's, cancelled when the task finishes). An
  * approved call a run started and never reported (that run stopped before
  * its result was stored) gets an unknown outcome: it may have run, and no
  * run is left to say.

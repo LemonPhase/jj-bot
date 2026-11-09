@@ -93,6 +93,7 @@ function viewOf(
       cancelRequestedAt: null,
       verificationPlan: taskPlan,
       spendCapUsd: null,
+      approveSpendPastThreshold: false,
       templateId: null,
       createdAt: at,
       updatedAt: at,

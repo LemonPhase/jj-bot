@@ -72,6 +72,7 @@ const saved: Artifact = {
   createdAt: at(6),
 };
 const held: Approval = {
+  kind: "tool",
   id: "ap-1",
   taskId: "task-1",
   sessionId: "s-1",
@@ -185,6 +186,7 @@ function compactedView(): TaskView {
       cancelRequestedAt: null,
       verificationPlan: null,
       spendCapUsd: null,
+      approveSpendPastThreshold: false,
       templateId: null,
       createdAt: at(0),
       updatedAt: at(12),
