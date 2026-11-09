@@ -9,6 +9,7 @@
 // would, at the threshold. The records share the approvals table, events and
 // route with tool approvals (approvals.ts).
 import {
+  formatSpendAgainstCap,
   formatUsd,
   SPEND_SOFT_THRESHOLD,
   type SpendApproval,
@@ -401,6 +402,53 @@ export async function recheckSpendApprovals(
     if (expired) woken.add(row.taskId);
   }
   for (const taskId of woken) await wakeSpendHeld(tx, taskId);
+}
+
+/**
+ * Spend reached the cap a pending spend approval asks about (calls already
+ * running finished past it): continuing up to the cap is no longer a
+ * question, so it expires, and the sessions it held wake to stop at the cap.
+ * Call it once spend was recorded, with the task locked.
+ */
+export async function expireReachedCaps(
+  tx: Tx,
+  ctx: EngineContext,
+  taskId: string,
+): Promise<void> {
+  const rows = await tx
+    .select()
+    .from(approvals)
+    .where(
+      and(
+        isSpend,
+        eq(approvals.taskId, taskId),
+        eq(approvals.status, "pending"),
+      ),
+    );
+  let expired = false;
+  for (const row of rows) {
+    const spend = spendOf(row);
+    const spentUsd =
+      spend.scope === "task"
+        ? await taskSpentUsd(tx, taskId)
+        : await botSpentUsd(tx, row.botId, ctx.clock());
+    if (spentUsd < spend.capUsd) continue;
+    const shown = formatSpendAgainstCap(spentUsd, spend.capUsd);
+    const amounts = `${shown.spent} of ${shown.cap}`;
+    const reason =
+      spend.scope === "task"
+        ? `the task reached its spend cap (${amounts}) before the user answered.`
+        : `${(await botCapUsd(tx, row.botId)).name} reached its daily spend cap (${amounts}) before the user answered.`;
+    if (
+      await updateApproval(tx, ctx, row, {
+        status: "expired",
+        reason,
+        decidedAt: ctx.clock(),
+      })
+    )
+      expired = true;
+  }
+  if (expired) await wakeSpendHeld(tx, taskId);
 }
 
 /**

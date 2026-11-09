@@ -83,7 +83,9 @@ export function spendApprovalState(approval: SpendApproval): ApprovalState {
       return {
         text: approval.reason?.includes("turned off")
           ? "expired · question turned off"
-          : "expired · cap changed",
+          : approval.reason?.includes("reached")
+            ? "expired · cap reached"
+            : "expired · cap changed",
         tone: "idle",
       };
     case "cancelled":

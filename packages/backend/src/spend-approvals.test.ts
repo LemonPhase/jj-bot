@@ -12,7 +12,9 @@ import { ModelRegistry, PiSessionExecutor } from "@jj/runtime";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DomainError } from "./errors";
+import type { RunExecutor, RunInput } from "./ports";
 import { updateApproval } from "./services/approvals";
+import { promptBot } from "./testing/fake-executor";
 import {
   OPEN_TIMEOUT,
   openTestDatabase,
@@ -635,6 +637,91 @@ describe("spend approvals past the soft threshold", () => {
       status: "expired",
       reason: expect.stringContaining("daily spend cap changed to $2.00"),
     });
+  });
+});
+
+describe("a cap reached while the question waits", () => {
+  it("expires the question once a call already running finishes past the cap, and the task stops at the cap", async () => {
+    const models = new ModelRegistry({ env: {}, enableScripted: true });
+    const inner: RunExecutor = new PiSessionExecutor({ models });
+    let slowName = "";
+    let heldOnce: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      heldOnce = resolve;
+    });
+    let slowed = false;
+    // The slow worker's first call stays in flight until a teammate's call
+    // is held, then finishes far past the cap.
+    const executor: RunExecutor = {
+      run(input: RunInput) {
+        const slow = promptBot(input.systemPrompt) === slowName;
+        const admit = input.hooks.admitModelCall?.bind(input.hooks);
+        return inner.run({
+          ...input,
+          hooks: {
+            ...input.hooks,
+            ...(admit
+              ? {
+                  admitModelCall: async () => {
+                    const answer = await admit();
+                    if (typeof answer === "object") heldOnce();
+                    return answer;
+                  },
+                }
+              : {}),
+            onEvent: async (event) => {
+              if (slow && !slowed && event.type === "model.finished") {
+                slowed = true;
+                await Promise.race([held, sleep(30_000)]);
+                return input.hooks.onEvent({
+                  ...event,
+                  usage: { ...event.usage, costUsd: 0.06 },
+                });
+              }
+              return input.hooks.onEvent(event);
+            },
+          },
+        });
+      },
+    };
+    const test = await testEngine(db.database, {
+      models,
+      runExecutor: executor,
+    });
+    engines.push(test);
+    const { engine } = test;
+    const lead = await pricedBot(engine, "Lead");
+    const grace = await pricedBot(engine, "Grace");
+    const linus = await pricedBot(engine, "Linus");
+    slowName = linus.name;
+    const { task } = await engine.tasks.create({
+      goal: LONG_WORK,
+      coordinatorBotId: lead.id,
+      participantBotIds: [grace.id, linus.id],
+      spendCapUsd: 0.05,
+      approveSpendPastThreshold: true,
+    });
+    const stopped = await untilTask(
+      engine,
+      task.id,
+      (view) =>
+        waitingAtCap(view) &&
+        view.sessions[0]?.waitingFor === "user" &&
+        spendApprovals(view).every((approval) => approval.status !== "pending"),
+      "the task to stop at its cap",
+    );
+    expect(slowed).toBe(true);
+    const [approval] = spendApprovals(stopped);
+    expect(approval).toMatchObject({ status: "expired", capUsd: 0.05 });
+    expect(approval?.reason).toMatch(
+      /^the task reached its spend cap \(\$0\.\d+ of \$0\.05\) before the user answered\.$/,
+    );
+    expect(stopped.messages.at(-1)?.text).toMatch(
+      /^Stopped: The task reached its spend cap/,
+    );
+    expect(
+      stopped.sessions.some((session) => session.waitingFor === "approval"),
+    ).toBe(false);
   });
 });
 

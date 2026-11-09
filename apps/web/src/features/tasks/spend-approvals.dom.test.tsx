@@ -216,6 +216,14 @@ describe("a spend approval's card", () => {
         },
         "expired · question turned off",
       ],
+      [
+        {
+          status: "expired",
+          reason:
+            "the task reached its spend cap ($0.0512 of $0.05) before the user answered.",
+        },
+        "expired · cap reached",
+      ],
       [{ status: "cancelled" }, "cancelled"],
     ];
     for (const [patch, text] of cases)

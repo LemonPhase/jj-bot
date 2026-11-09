@@ -31,7 +31,10 @@ import {
   type SpendStop,
   spendStop,
 } from "../services/spend";
-import { spendApprovalVerdict } from "../services/spend-approvals";
+import {
+  expireReachedCaps,
+  spendApprovalVerdict,
+} from "../services/spend-approvals";
 import { reviewTurn } from "./parking";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import { hasContinuingInput, isContinuing } from "./runs";
@@ -367,6 +370,9 @@ async function recordEvent(tx: Tx, rc: RunContext, event: ExecutorEvent) {
         },
         ...attribution,
       });
+      // A call that finished past a cap a pending spend approval asks about
+      // makes the question moot (the task row is locked by the emit).
+      await expireReachedCaps(tx, ctx, rc.task.id);
       return;
     }
     case "tool.started":
@@ -435,6 +441,8 @@ async function admitModelCall(
     if (stop) {
       rc.spendStop = stop;
       await noteCapped(tx, ctx, rc.task.id, stop, attribution);
+      // Spend recorded elsewhere (a bot's chat) can reach a cap too.
+      await expireReachedCaps(tx, ctx, rc.task.id);
       return stop.message;
     }
     await noteThreshold(tx, ctx, rc.task.id, attribution);
