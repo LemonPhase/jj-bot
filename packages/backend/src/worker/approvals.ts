@@ -2,10 +2,17 @@
 // that starts an approved one at most once, the decision a run applies, and
 // parking a session that holds a call, at the end of its run or at launch.
 import { matchingApprovalRule } from "@jj/contracts";
-import { type RunRow, type SessionRow, sessions, type Tx, tasks } from "@jj/db";
+import {
+  enqueue,
+  type RunRow,
+  type SessionRow,
+  sessions,
+  type Tx,
+  tasks,
+} from "@jj/db";
 import { and, eq, inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
-import type { Attribution } from "../events";
+import { type Attribution, wakeWorkers } from "../events";
 import type {
   HeldCallDecision,
   PendingToolCall,
@@ -94,7 +101,13 @@ export async function runDecision(
   return { decision: decisionInput(row), inputs: [COMPLETION_SET_ASIDE] };
 }
 
-/** The run ended `held`: the session waits for the user's answer, without a run. */
+/**
+ * The run ended `held`: the session waits for the user's answer, without a
+ * run. Call it with the task locked. An answer (or expiry) that landed after
+ * the hold and before this write found the session still running, so it
+ * woke nobody: checked again here, a session nothing holds any more is
+ * woken at once, and its next run goes on.
+ */
 export async function parkHeld(
   tx: Tx,
   rc: RunContext,
@@ -110,6 +123,13 @@ export async function parkHeld(
     { status: "waiting", waitingFor: "approval" },
     attribution,
   );
+  if (await holdingApproval(tx, session)) return;
+  await enqueue(tx, {
+    kind: "session.run",
+    taskId: session.taskId,
+    sessionId: session.id,
+  });
+  await wakeWorkers(tx, session.taskId);
 }
 
 /**
