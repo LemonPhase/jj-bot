@@ -59,7 +59,7 @@ function fixedHeaders(options: SecurityHeaderOptions): [string, string][] {
 }
 
 /**
- * Every security header, for an answer written outside the app: server.ts
+ * Every security header, for an answer written outside the app: deadlines.ts
  * writes a request's timeout straight to its socket.
  */
 export const securityHeaderList = (
