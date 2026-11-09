@@ -31,6 +31,7 @@ import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import { planOf, toMessage } from "../records";
 import { expireApprovals, pendingApproval } from "./approvals";
+import { workspaceRemovalUnderWay } from "./schedules";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
 import { describePlan } from "./verification";
@@ -230,7 +231,7 @@ export async function continueTask(
   // A coordinator holding a call for approval reads the message with the
   // user's answer: nothing reopens, and the message waits in its inbox.
   if (await pendingApproval(tx, root.id)) return { task, root };
-  if (task.workspaceRemovingAt)
+  if (workspaceRemovalUnderWay(task, ctx.clock()))
     throw new DomainError(
       "CONFLICT",
       "This task's workspace is being removed right now (its schedule keeps only its newest tasks' workspaces); send the message again in a minute.",
@@ -251,6 +252,9 @@ export async function continueTask(
         result: null,
         error: null,
         ...(removedAt ? { workspaceRemovedAt: null } : {}),
+        // A stale claim, lost by a worker that stopped, is released: a late
+        // answer to it then records nothing on the continued task.
+        ...(task.workspaceRemovingAt ? { workspaceRemovingAt: null } : {}),
       },
       attribution,
     );

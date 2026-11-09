@@ -27,6 +27,7 @@ import {
   type ScheduleRow,
   scheduleFires,
   schedules,
+  type TaskRow,
   type Tx,
   taskTemplates,
 } from "@jj/db";
@@ -39,6 +40,25 @@ import { templateTaskCap } from "./templates";
 
 /** The instance setting holding when a worker last ran a scheduler pass. */
 export const SCHEDULER_PASS_KEY = "scheduler.last_pass_at";
+
+/**
+ * A workspace removal claimed this long ago, with no result recorded, is
+ * taken as lost (a worker stopped mid-way): a continuation goes ahead, and a
+ * scheduler pass releases the claim and may claim it again.
+ */
+export const WORKSPACE_REMOVAL_STALE_MS = 5 * 60_000;
+
+/** Whether a schedule's removal of the task's workspace is under way: claimed, and not stale. */
+export function workspaceRemovalUnderWay(
+  task: Pick<TaskRow, "workspaceRemovingAt">,
+  now: Date,
+): boolean {
+  return (
+    task.workspaceRemovingAt !== null &&
+    now.getTime() - task.workspaceRemovingAt.getTime() <
+      WORKSPACE_REMOVAL_STALE_MS
+  );
+}
 
 /** Each schedule's latest fire by due time. */
 async function latestFires(

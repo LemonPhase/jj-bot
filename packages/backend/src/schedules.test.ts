@@ -1464,6 +1464,52 @@ describe("removing the workspaces a schedule does not keep", () => {
     ).toHaveLength(1);
   });
 
+  it("takes a claim older than 5 minutes as lost: a pass releases it, and a continuation goes ahead", async () => {
+    const clock = fakeClock("2026-01-13T08:00:00Z");
+    const engine = await setup(clock);
+    const { template, bot } = await templateFor(engine.engine);
+    writingBrain(engine, bot.name);
+    const { schedule } = await engine.engine.schedules.create(
+      daily(template.id),
+    );
+    const first = await finishRun(
+      engine,
+      clock,
+      schedule.id,
+      "2026-01-13T09:00:01Z",
+    );
+    // A worker claimed the removal and stopped; the schedule is deleted since.
+    const claim = () =>
+      db.database.db
+        .update(tasks)
+        .set({ workspaceRemovingAt: new Date("2026-01-13T09:10:00Z") })
+        .where(eq(tasks.id, first));
+    const claimed = async () =>
+      (await db.database.db.select().from(tasks).where(eq(tasks.id, first)))[0]
+        ?.workspaceRemovingAt;
+    await claim();
+    await engine.engine.schedules.delete(schedule.id);
+    clock.set("2026-01-13T09:14:00Z");
+    expect(
+      (
+        await refusal(
+          engine.engine.tasks.postMessage(first, { text: "One more thing." }),
+        )
+      ).code,
+    ).toBe("CONFLICT");
+    // A day later a pass releases it.
+    clock.set("2026-01-14T09:10:00Z");
+    await pass(engine);
+    expect(await claimed()).toBeNull();
+    // And with no pass between, a continuation goes ahead and releases it.
+    await claim();
+    await engine.engine.tasks.postMessage(first, {
+      text: "Check the notes again.",
+    });
+    expect(await claimed()).toBeNull();
+    expect((await engine.engine.tasks.get(first)).task.status).toBe("running");
+  });
+
   it("refuses a continuation while the removal is under way", async () => {
     const clock = fakeClock("2026-01-13T08:00:00Z");
     const engine = await setup(clock);

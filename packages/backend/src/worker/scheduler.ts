@@ -43,6 +43,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   ne,
   notInArray,
@@ -51,7 +52,11 @@ import {
 import type { EngineContext } from "../context";
 import { DomainError, errorMessage } from "../errors";
 import { emit, hint } from "../events";
-import { SCHEDULER_PASS_KEY } from "../services/schedules";
+import {
+  SCHEDULER_PASS_KEY,
+  WORKSPACE_REMOVAL_STALE_MS,
+  workspaceRemovalUnderWay,
+} from "../services/schedules";
 import { lockTask } from "../services/sessions";
 import { startTemplateTx, templateTaskCap } from "../services/templates";
 
@@ -423,9 +428,6 @@ async function settle(
   await hint(tx, { type: "schedules.changed" });
 }
 
-/** A removal claimed this long ago, with no result recorded, is taken as lost (a crash) and retried. */
-const REMOVAL_STALE_MS = 5 * 60_000;
-
 /**
  * Keeps the `task` workspaces of each schedule's newest `keepWorkspaces`
  * finished tasks and removes the older ones through the driver that holds
@@ -439,12 +441,23 @@ const REMOVAL_STALE_MS = 5 * 60_000;
  * only while it is finished with nothing queued or running; a continuation
  * meanwhile is refused. The removal is recorded (`workspace_removed_at`,
  * `workspace.removed`) only once the driver answers that the workspace is
- * gone; a failure releases the claim.
+ * gone; a failure releases the claim. A claim older than
+ * WORKSPACE_REMOVAL_STALE_MS was lost by a worker that stopped: each pass
+ * releases it first, whether or not the task is still one to remove.
  */
 async function trimWorkspaces(
   ctx: EngineContext,
   holds: (taskId: string) => boolean,
 ): Promise<void> {
+  await ctx.db
+    .update(tasks)
+    .set({ workspaceRemovingAt: null })
+    .where(
+      lt(
+        tasks.workspaceRemovingAt,
+        new Date(ctx.clock().getTime() - WORKSPACE_REMOVAL_STALE_MS),
+      ),
+    );
   const rows = await ctx.db
     .select({
       id: tasks.id,
@@ -487,8 +500,7 @@ async function trimWorkspaces(
         task.workspaceRemovedAt ||
         task.workspaceDriver !== driver.id ||
         !(FINISHED_TASK_STATUSES as readonly string[]).includes(task.status) ||
-        (task.workspaceRemovingAt &&
-          now.getTime() - task.workspaceRemovingAt.getTime() < REMOVAL_STALE_MS)
+        workspaceRemovalUnderWay(task, now)
       )
         return undefined;
       const [active] = await tx
