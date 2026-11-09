@@ -70,6 +70,7 @@ import {
   verificationSummary,
 } from "@jj/contracts";
 import { ModelRegistry } from "@jj/runtime";
+import { mcpFixture } from "../packages/backend/src/testing/mcp-fixture";
 
 const setting = (name: string) => process.env[name]?.trim() || undefined;
 const realModel = setting("JJ_SMOKE_MODEL");
@@ -830,6 +831,109 @@ async function main(): Promise<boolean> {
         check(
           again.error.code === "APPROVAL_NOT_PENDING",
           `answered again with ${again.error.code}`,
+        );
+      },
+    );
+
+    await step(
+      "test a stdio MCP server, pin it, and have a bot call it in its task's sandbox",
+      async () => {
+        const bootstrap = await expectStatus("GET", "/api/bootstrap", 200);
+        check(
+          bootstrap.capabilities.mcp?.stdio === true,
+          `capabilities.mcp ${JSON.stringify(bootstrap.capabilities.mcp)}`,
+        );
+        const { profiles } = await expectStatus(
+          "GET",
+          "/api/runtime-profiles",
+          200,
+        );
+        const like =
+          dockerProfile ??
+          profiles.find((profile: { isDefault: boolean }) => profile.isDefault);
+        check(like, "no default profile to copy");
+        // The fixture travels in its args and needs only Node in the sandbox.
+        const server = mcpFixture({
+          ...(onDocker ? { command: "node" } : {}),
+          secretEnv: {},
+        });
+        const { profile } = await expectStatus(
+          "POST",
+          "/api/runtime-profiles",
+          201,
+          { name: `With MCP${suffix}`, sandbox: like.sandbox },
+        );
+        const { discovery } = await expectStatus(
+          "POST",
+          `/api/runtime-profiles/${profile.id}/mcp-discoveries`,
+          202,
+          { server },
+        );
+        const deadline = Date.now() + timeoutMs;
+        let tested = discovery;
+        while (tested.status === "queued" || tested.status === "running") {
+          check(Date.now() < deadline, `the test is still ${tested.status}`);
+          await sleep(100);
+          ({ discovery: tested } = await expectStatus(
+            "GET",
+            `/api/mcp-discoveries/${discovery.id}`,
+            200,
+          ));
+        }
+        check(
+          tested.status === "succeeded" &&
+            tested.snapshot?.configHash === discovery.configHash,
+          `discovery ${JSON.stringify(tested)}`,
+        );
+        await expectStatus(
+          "PATCH",
+          `/api/runtime-profiles/${profile.id}`,
+          200,
+          { mcpServers: [{ ...server, snapshotId: tested.snapshot.id }] },
+        );
+        const { bot: caller } = await expectStatus("POST", "/api/bots", 201, {
+          name: `Librarian${suffix}`,
+          runtimeProfileId: profile.id,
+          ...(realModel ? { model: realModel } : {}),
+        });
+        const { task } = await expectStatus("POST", "/api/tasks", 201, {
+          goal: 'Look the docs up: call `mcp__docs__search {"query":"smoke"}` once, then complete the task with what it found.',
+          title: "MCP lookup",
+          coordinatorBotId: caller.id,
+        });
+        let current: TaskView;
+        for (;;) {
+          current = await expectStatus("GET", `/api/tasks/${task.id}`, 200);
+          if (current.task.status === "completed") break;
+          check(
+            current.task.status !== "failed",
+            `the task failed: ${current.task.error}`,
+          );
+          check(Date.now() < deadline, `still ${current.task.status}`);
+          await sleep(100);
+        }
+        const { events } = await expectStatus(
+          "GET",
+          `/api/tasks/${task.id}/events`,
+          200,
+        );
+        const states = (events as TaskEvent[]).flatMap((event) =>
+          event.type === "mcp.server" ? [event.payload.state] : [],
+        );
+        check(
+          isDeepStrictEqual(states.slice(0, 2), ["starting", "ready"]),
+          `mcp.server states ${states.join(", ")}`,
+        );
+        const answered = (events as TaskEvent[]).find(
+          (event) =>
+            event.type === "tool.finished" &&
+            event.payload.tool === "mcp__docs__search",
+        );
+        check(
+          answered?.type === "tool.finished" &&
+            answered.payload.ok &&
+            answered.payload.output?.startsWith('Results for "smoke"'),
+          `the MCP call ${JSON.stringify(answered?.payload)}`,
         );
       },
     );

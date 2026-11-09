@@ -7,8 +7,10 @@ import {
   fauxAssistantMessage,
   fauxText,
   fauxToolCall,
+  getCurrentTools,
   type JsonObject,
   type Message,
+  type Tool,
   type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { LocalSandboxDriver, type Sandbox } from "@jj/sandbox";
@@ -150,6 +152,10 @@ export const conversation = (context: TranscriptContext) =>
 
 export const lastMessage = (context: TranscriptContext) =>
   conversation(context).at(-1);
+
+/** The tools a request declares, in order, as the provider receives them. */
+export const declaredTools = (context: TranscriptContext): Tool[] =>
+  getCurrentTools(context.messages);
 
 export const callTool = (name: string, args: JsonObject): AssistantMessage =>
   fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" });

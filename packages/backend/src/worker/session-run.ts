@@ -46,6 +46,7 @@ import { snapshotArtifacts } from "./artifacts";
 import { sessionTools, type Teammate } from "./collab-tools";
 import { runVerificationGate } from "./gate";
 import { claimHolder, heldByAnotherWorker } from "./holders";
+import { sessionMcpTools } from "./mcp-tools";
 import { finishRun } from "./outcomes";
 import { sessionPrompt } from "./prompts";
 import {
@@ -347,11 +348,15 @@ async function prepare(
     rc,
     team.filter((member) => !member.self),
   );
-  // Tool calls are traced and counted under these names; any other is `other`.
-  rc.activity?.declareTools([
-    ...(ownSettings?.tools ?? []),
-    ...tools.map((tool) => tool.name),
-  ]);
+  // Pinned at the session's first run, from the bot's own profile.
+  const mcp = await sessionMcpTools(rc, hold, own);
+  rc.mcp = mcp.mcp;
+  // Tool calls are traced and counted under these names (MCP tools as
+  // `mcp`); any other is `other`.
+  rc.activity?.declareTools(
+    [...(ownSettings?.tools ?? []), ...tools.map((tool) => tool.name)],
+    mcp.bindings.map((binding) => binding.tool.exposedName),
+  );
   const deadline = new Date(
     rc.startedAt.getTime() +
       (ownSettings?.budgets.maxRunMinutes ?? 30) * 60_000,
@@ -390,6 +395,7 @@ async function prepare(
       sandboxLimits: hold.spec.limits,
       codingTools: ownSettings?.tools ?? [],
       collaborationTools: tools,
+      ...(mcp.bindings.length > 0 ? { mcpTools: mcp.bindings } : {}),
       budgets: {
         maxTurns: ownSettings?.budgets.maxTurnsPerRun ?? 60,
         deadline,
