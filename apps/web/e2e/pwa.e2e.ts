@@ -148,7 +148,8 @@ test("serves the shell from its cache and never /api, even offline", async ({
   request,
 }) => {
   await createBot(request, "Nova");
-  // A token in the address is kept by the app and must never reach the cache.
+  // A token in an old link's address is dropped by the app, and must never
+  // reach the cache either.
   await page.goto("/?token=not-for-the-cache");
   await expect(
     page.getByRole("heading", { level: 1, name: "Nova" }),
@@ -213,8 +214,9 @@ test("serves the shell from its cache and never /api, even offline", async ({
   ])
     expect(shellHeaders[name], name).toBe(served[name]);
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  // Its first API request, the sign-in state, went to the network and failed.
   expect(failed.map((url) => new URL(url).pathname)).toContain(
-    "/api/bootstrap",
+    "/api/auth/session",
   );
   await page.context().setOffline(false);
 });
