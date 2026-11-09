@@ -52,7 +52,7 @@ describe("GET /health/live and /health", () => {
       expect(await json(response)).toEqual({
         status: "ok",
         service: "jj-api",
-        contractVersion: "1.10.1",
+        contractVersion: "1.11.0",
       });
     }
   });

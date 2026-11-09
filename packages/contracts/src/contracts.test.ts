@@ -124,6 +124,7 @@ const artifact = {
   contentType: "text/typescript",
   sizeBytes: 120,
   sha256: "a".repeat(64),
+  upload: null,
   createdAt: at,
 };
 
@@ -191,6 +192,20 @@ const payloads: { [Type in TaskEventType]: TaskEventOf<Type>["payload"] } = {
     artifactId: "a1",
   },
   "artifact.created": { artifact },
+  "artifact.updated": {
+    artifact: {
+      ...artifact,
+      sessionId: null,
+      runId: null,
+      upload: {
+        messageId: "m1",
+        state: "placed",
+        placedAt: at,
+        error: null,
+      },
+    },
+    previousState: "pending",
+  },
   "steering.received": {
     messageId: "m1",
     goalVersion: 1,
@@ -285,8 +300,8 @@ const loneSurrogate =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 describe("contracts 1.0", () => {
-  it("is version 1.10.1", () => {
-    expect(CONTRACT_VERSION).toBe("1.10.1");
+  it("is version 1.11.0", () => {
+    expect(CONTRACT_VERSION).toBe("1.11.0");
   });
 
   it("requires the coordinator to participate and participants to be unique", () => {

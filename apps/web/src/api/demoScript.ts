@@ -261,6 +261,7 @@ export class Ops {
       contentType: "text/markdown",
       sizeBytes: new TextEncoder().encode(content).length,
       sha256: demoDigest(content),
+      upload: null,
       createdAt: this.host.now(),
     };
     this.host.emit("artifact.created", { artifact }, this.ref(sessionId));

@@ -1,4 +1,5 @@
 import type {
+  Artifact,
   Bot,
   ExecutionSession,
   TaskMessage,
@@ -12,6 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useApi } from "../../api/ApiContext";
 import type { ApiError } from "../../api/client";
 import {
   Avatar,
@@ -19,6 +21,8 @@ import {
   Composer,
   cx,
   ErrorBanner,
+  Icon,
+  IconButton,
   Mention,
   Tooltip,
   TypingDots,
@@ -41,6 +45,13 @@ import {
   type TimelineEntry,
   taskTimeline,
 } from "./taskModel";
+import { UploadCard, uploadsByMessage } from "./UploadCard";
+import {
+  FileInput,
+  UploadDraftList,
+  useDiscardOnUnmount,
+  useUploadDrafts,
+} from "./uploads";
 
 /** Within this many px of the bottom, new messages keep the log scrolled down. */
 const STICK_PX = 80;
@@ -48,11 +59,13 @@ const STICK_PX = 80;
 /**
  * The task group chat (SPEC §5.2): attributed messages and notices, what each
  * bot is doing right now, and the composer. Every message steers the
- * coordinator; with "new goal" on it also replaces the goal.
+ * coordinator; with "new goal" on it also replaces the goal. The paperclip
+ * picks files to upload into the workspace, alone or with the next message.
  */
 export function TaskChat({ view }: { view: TaskView }) {
   const { bots, getBot, postTaskMessage, pendingTaskSends, retryTask } =
     useWorkspace();
+  const api = useApi();
   const { task } = view;
   const [changingGoal, setChangingGoal] = useState(false);
   const [sendError, setSendError] = useState<ApiError | null>(null);
@@ -70,6 +83,41 @@ export function TaskChat({ view }: { view: TaskView }) {
     [task.status, sessions],
   );
   const mention = useMemo(() => createMentionMatcher(bots), [bots]);
+  const uploads = useUploadDrafts();
+  // Files picked and left unsent are removed when the chat moves on.
+  useDiscardOnUnmount(uploads, task.id);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const canUpload = Boolean(uploads.limits) && open;
+  const uploadedBy = useMemo(
+    () => uploadsByMessage(view.artifacts),
+    [view.artifacts],
+  );
+  /** Attaches the staged files; true once they are (or when there are none). */
+  const attach = async (): Promise<boolean> => {
+    if (uploads.uploading) {
+      setUploadError("Wait until every file has uploaded.");
+      return false;
+    }
+    if (uploads.entries.length === 0) return true;
+    setAttaching(true);
+    setUploadError(null);
+    try {
+      await api.uploadToTask(task.id, { files: uploads.entries });
+      uploads.clear();
+      return true;
+    } catch (reason) {
+      setUploadError(
+        reason instanceof Error
+          ? reason.message
+          : "Could not upload the files.",
+      );
+      return false;
+    } finally {
+      setAttaching(false);
+    }
+  };
   const copies = useMemo(() => savedApprovalCopies({ events }), [events]);
   const activityKey = lines
     .map((line) => `${line.session.id}:${line.text}`)
@@ -130,6 +178,12 @@ export function TaskChat({ view }: { view: TaskView }) {
                 entry={entry}
                 mention={mention}
                 getBot={getBot}
+                taskId={task.id}
+                files={
+                  entry.kind === "message"
+                    ? uploadedBy.get(entry.message.id)
+                    : undefined
+                }
                 view={view}
                 savedCopy={
                   entry.kind === "approval"
@@ -168,6 +222,35 @@ export function TaskChat({ view }: { view: TaskView }) {
           />
         </div>
       )}
+      {(uploads.drafts.length > 0 || uploadError) && (
+        <div className="task-chat__uploads">
+          <UploadDraftList uploads={uploads} disabled={attaching} />
+          {uploadError && (
+            <ErrorBanner
+              word="Not uploaded"
+              onDismiss={() => setUploadError(null)}
+            >
+              {uploadError}
+            </ErrorBanner>
+          )}
+          {uploads.entries.length > 0 && (
+            <div className="task-chat__uploads-actions">
+              <span className="task-chat__uploads-hint">
+                Sent with your next message, or on their own:
+              </span>
+              <Button
+                size="sm"
+                disabled={uploads.uploading || attaching}
+                onClick={() => void attach()}
+              >
+                {attaching
+                  ? "Uploading…"
+                  : `Upload ${uploads.entries.length === 1 ? "1 file" : `${uploads.entries.length} files`}`}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       <Composer
         key={task.id}
         variant="task"
@@ -176,21 +259,45 @@ export function TaskChat({ view }: { view: TaskView }) {
         sending={Boolean(pending)}
         disabled={!open}
         leading={
-          <Tooltip content="Send this message as the task's new goal">
-            <Button
-              size="lg"
-              mono
-              pressed={changingGoal}
-              disabled={!open}
-              onClick={() => setChangingGoal((on) => !on)}
-            >
-              new goal
-            </Button>
-          </Tooltip>
+          <>
+            {canUpload && (
+              <>
+                <IconButton
+                  label="Attach files"
+                  tooltip="Upload files into the task's workspace"
+                  size="lg"
+                  icon={<Icon name="paperclip" size={16} />}
+                  disabled={attaching}
+                  onClick={() => fileInput.current?.click()}
+                />
+                <FileInput
+                  ref={fileInput}
+                  label="Files to upload into the task"
+                  onFiles={(files) => {
+                    setUploadError(null);
+                    uploads.add(files);
+                  }}
+                />
+              </>
+            )}
+            <Tooltip content="Send this message as the task's new goal">
+              <Button
+                size="lg"
+                mono
+                pressed={changingGoal}
+                disabled={!open}
+                onClick={() => setChangingGoal((on) => !on)}
+              >
+                new goal
+              </Button>
+            </Tooltip>
+          </>
         }
         onSubmit={async (text) => {
           setSendError(null);
           stick.current = true;
+          // Files picked first go in with the message, ahead of it.
+          if (!(await attach())) return false;
           const result = await postTaskMessage(task.id, text, changingGoal);
           if (!result.ok) {
             setSendError(result.error);
@@ -213,6 +320,9 @@ function TimelineItem({
   entry: TimelineEntry;
   mention: (text: string) => MentionSegment[];
   getBot: (botId: string) => Bot | undefined;
+  taskId: string;
+  /** The files a user announcement attached. */
+  files?: readonly Artifact[];
   view: TaskView;
   savedCopy: string | undefined;
 }) {
@@ -229,10 +339,15 @@ function TimelineContent({
   entry,
   mention,
   getBot,
+  taskId,
+  files,
 }: {
   entry: TimelineEntry;
   mention: (text: string) => MentionSegment[];
   getBot: (botId: string) => Bot | undefined;
+  taskId: string;
+  /** The files a user announcement attached. */
+  files?: readonly Artifact[];
 }) {
   if (entry.kind === "notice")
     return <p className="task-notice">{entry.text}</p>;
@@ -246,6 +361,8 @@ function TimelineContent({
   const { message, goalVersion } = entry;
   if (message.authorKind === "system")
     return <p className="task-notice">{message.text}</p>;
+  if (message.authorKind === "user" && files && files.length > 0)
+    return <UploadCard taskId={taskId} message={message} files={files} />;
   if (message.authorKind === "user")
     return (
       <UserBubble
