@@ -67,6 +67,7 @@ COPY apps/worker ./apps/worker
 COPY --from=build /src/apps/web/dist ./apps/web/dist
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/jj-entrypoint
 COPY --chmod=755 docker/healthcheck.sh /usr/local/bin/jj-healthcheck
+COPY --chmod=755 docker/auth.sh /usr/local/bin/jj-auth
 
 ENV NODE_ENV=production \
   API_HOST=0.0.0.0 \

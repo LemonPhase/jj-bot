@@ -10,7 +10,10 @@
 // verified, and a check that cannot pass leaves its task waiting.
 // Then it chats with another bot: a request for a file creates a task, the
 // bot tells its result in the chat, answers how it went, and a follow-up
-// continues the same task.
+// continues the same task. With a token, it also signs in as the web app
+// does: a cookie session (`__Host-jj_session` and Secure over https), the
+// first task's stream resumed on it with `Last-Event-ID`, a cookie write
+// without the app's Origin refused, and signing out.
 //
 // JJ_SMOKE_RESTART_COMMAND (with JJ_SMOKE_BASE_URL) adds restart survival: a
 // third task is caught mid-command, the command restarts the server (for
@@ -524,6 +527,12 @@ async function main(): Promise<boolean> {
       const peak = maxParallelRuns(events, new Set(workers.map((s) => s.id)));
       check(peak >= 2, `at most ${peak} worker run(s) at once`);
     });
+
+    if (token)
+      await step(
+        "sign in to a cookie session, resume the task's stream on it, sign out",
+        () => cookieSession(base, token, task.id, events),
+      );
 
     if (remoteUrl && !realModel)
       await step(
@@ -1814,6 +1823,83 @@ async function follow(
 }
 
 class StreamEnded extends Error {}
+
+/**
+ * Signs in with the token as the web app does, and checks the session: its
+ * cookie's name and flags for the base URL's scheme (HSTS too over https),
+ * the task stream resumed on the cookie from the middle with
+ * `Last-Event-ID`, a cookie write without the app's Origin refused, and
+ * signing out ending it.
+ */
+async function cookieSession(
+  base: string,
+  token: string,
+  taskId: string,
+  events: TaskEvent[],
+): Promise<void> {
+  const https = new URL(base).protocol === "https:";
+  const origin = new URL(base).origin;
+  const json = { "Content-Type": "application/json" };
+  const login = await fetch(`${base}/api/auth/login`, {
+    method: "POST",
+    headers: { ...json, Origin: origin },
+    body: JSON.stringify({ token }),
+  });
+  check(login.status === 200, `sign-in answered ${login.status}`);
+  const setCookie = login.headers.get("Set-Cookie") ?? "";
+  const name = https ? "__Host-jj_session" : "jj_session";
+  check(setCookie.startsWith(`${name}=`), `cookie ${setCookie.split("=")[0]}`);
+  const flags = setCookie.split(";").map((part) => part.trim());
+  for (const flag of ["Path=/", "HttpOnly", "SameSite=Strict"])
+    check(flags.includes(flag), `the cookie lacks ${flag}`);
+  check(
+    flags.includes("Secure") === https,
+    `Secure over ${new URL(base).protocol}`,
+  );
+  if (https)
+    check(
+      login.headers.get("Strict-Transport-Security"),
+      "no Strict-Transport-Security over https",
+    );
+  const cookie = { Cookie: setCookie.split(";")[0] as string };
+  const state = (await (
+    await fetch(`${base}/api/auth/session`, { headers: cookie })
+  ).json()) as { authenticated: boolean; via: string };
+  check(
+    state.authenticated && state.via === "cookie",
+    `session ${JSON.stringify(state)}`,
+  );
+  const middle = events[Math.floor(events.length / 2)]?.sequence ?? 0;
+  const last = events.at(-1)?.sequence ?? 0;
+  const replayed = await follow(base, cookie, taskId, {
+    after: middle,
+    reconnect: false,
+    until: (event) => event.sequence >= last,
+  });
+  check(
+    isDeepStrictEqual(
+      replayed,
+      events.filter((event) => event.sequence > middle),
+    ),
+    "the stream resumed on the cookie differs from the first one",
+  );
+  const forged = await fetch(`${base}/api/bots`, {
+    method: "POST",
+    headers: { ...json, ...cookie },
+    body: JSON.stringify({ name: "Forged" }),
+  });
+  check(
+    forged.status === 403,
+    `a cookie write without Origin: ${forged.status}`,
+  );
+  const out = await fetch(`${base}/api/auth/logout`, {
+    method: "POST",
+    headers: { ...json, ...cookie, Origin: origin },
+  });
+  check(out.status === 204, `sign-out answered ${out.status}`);
+  const after = await fetch(`${base}/api/bootstrap`, { headers: cookie });
+  check(after.status === 401, `a signed-out cookie: ${after.status}`);
+}
 
 function maxParallelRuns(events: TaskEvent[], sessionIds: Set<string>): number {
   const open = new Set<string>();

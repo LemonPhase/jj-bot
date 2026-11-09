@@ -188,13 +188,13 @@ jobs:
       - name: Start the stack
         run: docker compose up -d --wait --wait-timeout 180
 
-      # Without API_TOKEN the app generated a token and printed it in one line.
-      # The smoke reads it from there, as a user would, so CI covers the default.
-      # It also learns the app's and PostgreSQL's addresses, which sandboxes
-      # must not reach.
+      # Without API_TOKEN the app generated a token, which no log line prints:
+      # the smoke reads it with `jj-auth token`, as a user would, so CI covers
+      # the default. It also learns the app's and PostgreSQL's addresses,
+      # which sandboxes must not reach.
       - name: Read the generated token and the stack's addresses
         run: |
-          token=$(docker compose logs --no-color app | sed -n 's/.*Open JJ Bot: [^ ]*[?]token=\([A-Za-z0-9_-]*\).*/\1/p' | tail -n 1)
+          token=$(docker compose exec -T app jj-auth token)
           test -n "$token"
           echo "::add-mask::$token"
           echo "JJ_SMOKE_TOKEN=$token" >> "$GITHUB_ENV"
@@ -277,16 +277,16 @@ jobs:
           cat restore.err
           grep -F "the stack is not empty" restore.err
 
-      # One "Open JJ Bot" line per boot (two, with the restart), all with the
-      # same token, and the token in no other line.
-      - name: Check the token is kept and printed only to open the app
+      # One "Open JJ Bot" login link per boot (two, with the restart), its
+      # code in the fragment, and the token in no line at all.
+      - name: Check the token is kept and never printed
         run: |
           logs=$(docker compose logs --no-color app)
           carrying=$(grep -cF -- "$JJ_SMOKE_TOKEN" <<<"$logs" || true)
-          opening=$(grep -cF -- "Open JJ Bot: http://127.0.0.1:3001/?token=$JJ_SMOKE_TOKEN" <<<"$logs" || true)
+          opening=$(grep -cE -- 'Open JJ Bot: http://127\.0\.0\.1:3001/#/login\?code=[A-Za-z0-9_-]{43}' <<<"$logs" || true)
           echo "lines with the token: $carrying; Open JJ Bot lines: $opening"
           test "$opening" -ge 2
-          test "$carrying" = "$opening"
+          test "$carrying" = 0
 
       # A backup holding an archive its manifest does not list (named for the
       # PostgreSQL volume) is refused before anything changes; --force then
@@ -318,6 +318,120 @@ jobs:
 
       # Sandboxes and their volumes belong to the driver, not to compose; the
       # namespace is the project name. Containers go first, so no volume is in use.
+      - name: Stop the stack and remove its volumes
+        if: ${{ always() }}
+        run: |
+          docker compose down -v --remove-orphans
+          docker ps -aq --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker rm -f
+          docker volume ls -q --filter label=jj.sandbox.namespace=jj-bot | xargs -r docker volume rm
+
+  compose-https:
+    # Remote access as documented: the compose `https` profile, Caddy in front
+    # of the app with a certificate from a test CA (Caddy's own, `JJ_TLS=internal`)
+    # for a name that resolves to the runner. The smoke runs over HTTPS from
+    # outside, its event streams resumed across an app restart through Caddy,
+    # and signs in to a `__Host-` Secure cookie session.
+    name: Compose stack (https)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      JJ_ENABLE_SCRIPTED_MODEL: "true"
+      JJ_DEFAULT_MODEL: scripted/team
+      COMPOSE_PROFILES: https
+      API_PUBLIC_URL: https://jj.test
+      JJ_TLS: internal
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js from .nvmrc
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve the test name to this runner
+        run: echo "127.0.0.1 jj.test" | sudo tee -a /etc/hosts
+
+      - name: Build images
+        run: docker compose build
+
+      - name: Start the stack
+        run: docker compose up -d --wait --wait-timeout 180
+
+      # Caddy's local CA signs the certificate; the smoke, curl and Node
+      # trust its root and nothing else extra.
+      - name: Trust the stack's test CA
+        run: |
+          root=/data/caddy/pki/authorities/local/root.crt
+          for _ in $(seq 1 60); do
+            docker compose exec -T caddy test -s "$root" && break
+            sleep 1
+          done
+          docker compose exec -T caddy cat "$root" >"$RUNNER_TEMP/test-ca.crt"
+          openssl x509 -in "$RUNNER_TEMP/test-ca.crt" -noout -subject
+          echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/test-ca.crt" >>"$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            curl -fsS --cacert "$RUNNER_TEMP/test-ca.crt" https://jj.test/health/ready && break
+            sleep 2
+          done
+          curl -fsS --cacert "$RUNNER_TEMP/test-ca.crt" https://jj.test/health/ready
+
+      - name: Read the token with the CLI and the stack's addresses
+        run: |
+          token=$(docker compose exec -T app jj-auth token)
+          test -n "$token"
+          echo "::add-mask::$token"
+          echo "JJ_SMOKE_TOKEN=$token" >>"$GITHUB_ENV"
+          address() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$(docker compose ps -q "$1")" | cut -d' ' -f1; }
+          echo "JJ_SMOKE_UNREACHABLE=app:3001,postgres:5432,caddy:443,$(address app):3001,$(address postgres):5432" >>"$GITHUB_ENV"
+
+      # The boot line is a login link on the https address, its code in the
+      # fragment; the app answers with HSTS and the security headers through
+      # Caddy, and a login link signs in to a __Host- Secure cookie.
+      - name: Check the login link, the headers and the cookie over HTTPS
+        run: |
+          ca=(--cacert "$RUNNER_TEMP/test-ca.crt")
+          docker compose logs --no-color app | grep -E 'Open JJ Bot: https://jj\.test/#/login\?code=[A-Za-z0-9_-]{43}'
+          curl -fsS "${ca[@]}" -D page.headers -o /dev/null https://jj.test/
+          grep -i '^strict-transport-security: max-age=31536000' page.headers
+          grep -i "^content-security-policy: .*frame-ancestors 'none'" page.headers
+          grep -i '^x-frame-options: DENY' page.headers
+          link=$(docker compose exec -T app jj-auth login-link)
+          code=${link##*code=}
+          test "$link" = "https://jj.test/#/login?code=$code"
+          curl -fsS "${ca[@]}" -D login.headers -o /dev/null -H 'Content-Type: application/json' -H 'Origin: https://jj.test' --data "{\"code\":\"$code\"}" https://jj.test/api/auth/login
+          grep -iE '^set-cookie: __Host-jj_session=[A-Za-z0-9_-]{43}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Strict; Secure' login.headers
+          status=$(curl -sS "${ca[@]}" -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H 'Origin: https://jj.test' --data "{\"code\":\"$code\"}" https://jj.test/api/auth/login)
+          test "$status" = 401
+
+      # From outside, as a browser on another device would. The restart lands
+      # mid-command; the task's stream resumes through Caddy with Last-Event-ID.
+      - name: Smoke over HTTPS (docker driver, SSE resume across a restart, cookie session)
+        env:
+          JJ_SMOKE_BASE_URL: https://jj.test
+          JJ_SMOKE_RESTART_COMMAND: docker compose restart app
+        run: npm run smoke:e2e
+
+      - name: Check the token is in no log line
+        run: |
+          logs=$(docker compose logs --no-color)
+          if grep -qF -- "$JJ_SMOKE_TOKEN" <<<"$logs"; then
+            echo "a log line carries the token"
+            exit 1
+          fi
+
+      - name: Show the stack's state and logs
+        if: ${{ failure() }}
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --timestamps
+
       - name: Stop the stack and remove its volumes
         if: ${{ always() }}
         run: |

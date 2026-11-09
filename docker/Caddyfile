@@ -1,0 +1,32 @@
+# HTTPS in front of the JJ Bot app: compose's `https` profile
+# (docs/development.md, "Remote access"). The site is API_PUBLIC_URL (an
+# https:// address, as JJ_SITE). JJ_TLS picks the certificate: `auto` (the
+# default) gets one from Let's Encrypt or ZeroSSL, which needs the name to
+# resolve to this host and ports 80 and 443 to reach it; `internal` issues one
+# from Caddy's own local CA, for a LAN or a test, whose root each device must
+# trust (/data/caddy/pki/authorities/local/root.crt in the caddy container).
+#
+# JJ_UPSTREAM (default app:3001) is where the app listens, for a Caddy run
+# outside compose.
+#
+# Caddy sets X-Forwarded-For to the client's address (it trusts no incoming
+# one), which the app reads for its rate limits; it logs no requests. Event
+# streams are flushed as they are written.
+{
+	admin off
+	skip_install_trust
+}
+
+(tls-auto) {
+}
+
+(tls-internal) {
+	tls internal
+}
+
+{$JJ_SITE} {
+	import tls-{$JJ_TLS:auto}
+	reverse_proxy {$JJ_UPSTREAM:app:3001} {
+		flush_interval -1
+	}
+}

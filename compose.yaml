@@ -1,12 +1,15 @@
 # JJ Bot in one command. Put one model provider key in .env
 # (`cp .env.example .env`), or a JJ_SECRET_KEY to enter keys in Settings,
-# run `docker compose up -d --build --wait`, then
-# open the link `docker compose logs app | grep -o 'Open JJ Bot: [^"]*'` prints. Compose
+# run `docker compose up -d --build --wait`, then open the one-time login
+# link `docker compose logs app | grep -o 'Open JJ Bot: [^"]*'` prints (or
+# `docker compose exec app jj-auth login-link` mints). Compose
 # reads .env only to fill the variables below. `docker compose up -d postgres`
-# alone starts just the database for `npm run dev`. Two optional files go
-# with this one: compose.image.yaml runs the published images instead of
-# building, and compose.socket-proxy.yaml puts a socket proxy between the app
-# and the Docker daemon. Details: docs/development.md, "Docker Compose".
+# alone starts just the database for `npm run dev`. The `https` profile
+# (COMPOSE_PROFILES=https) puts Caddy in front for another device. Two
+# optional files go with this one: compose.image.yaml runs the published
+# images instead of building, and compose.socket-proxy.yaml puts a socket
+# proxy between the app and the Docker daemon. Details: docs/development.md,
+# "Docker Compose" and "Remote access".
 name: jj-bot
 
 services:
@@ -46,11 +49,20 @@ services:
       DATABASE_URL: postgresql://jj:jj_local@postgres:5432/jj_bot
       API_HOST: 0.0.0.0
       API_PORT: "3001"
-      # Listening on 0.0.0.0, the API always requires a token: API_TOKEN, or
-      # one it generates on first boot and keeps in the database. The startup
-      # line "Open JJ Bot: <API_PUBLIC_URL>/?token=…" carries it.
+      # Listening on 0.0.0.0, the API always asks to sign in: with API_TOKEN,
+      # or one it generates on first boot and keeps in the database, which no
+      # log line prints (`docker compose exec app jj-auth token`), or with
+      # JJ_PASSWORD_HASH. Each boot prints a one-time login link,
+      # "Open JJ Bot: <API_PUBLIC_URL>/#/login?code=…".
       API_TOKEN: ${API_TOKEN:-}
-      API_PUBLIC_URL: http://127.0.0.1:${JJ_PORT:-3001}
+      JJ_PASSWORD_HASH: ${JJ_PASSWORD_HASH:-}
+      # Where users open the app: the published loopback port, or with the
+      # `https` profile the https:// address Caddy serves.
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://127.0.0.1:${JJ_PORT:-3001}}
+      # The sign-in rate limits count each client apart: X-Forwarded-For is
+      # read from peers on this container's own networks (the `https`
+      # profile's Caddy), and from no one else.
+      JJ_TRUSTED_PROXIES: ${JJ_TRUSTED_PROXIES:-loopback,local-subnets}
       # The isolating docker driver only, so the default profile is docker.
       # Never enable `local` here: its commands would run in this container,
       # next to the model keys and the Docker socket.
@@ -143,6 +155,47 @@ services:
     stop_grace_period: ${JJ_STOP_GRACE_PERIOD:-45s}
     restart: unless-stopped
 
+  # HTTPS in front of the app, for another device: `COMPOSE_PROFILES=https`
+  # with API_PUBLIC_URL set to its https:// address (docs/development.md,
+  # "Remote access"). JJ_TLS=auto (the default) gets a certificate from a
+  # public CA, so the name must resolve to this host and ports 80 and 443
+  # reach it; JJ_TLS=internal uses Caddy's own local CA, for a LAN, whose
+  # root each device trusts. The app's port stays on loopback; Caddy reaches
+  # it over the compose network and logs no requests (docker/Caddyfile).
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:0bbb055bda6793c999bde78b1b5ce3e89f829fb031af2cf50056ea1246559fee
+    profiles: [https]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      JJ_SITE: ${API_PUBLIC_URL:-}
+      JJ_TLS: ${JJ_TLS:-auto}
+    # Refuses to serve anything but an https:// API_PUBLIC_URL.
+    command:
+      - sh
+      - -c
+      - >-
+        case "$$JJ_SITE" in https://*) ;; *) echo "The https profile serves API_PUBLIC_URL, which must be an https:// address; got \"$$JJ_SITE\"." >&2; exit 1 ;; esac;
+        exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    ports:
+      - "${JJ_HTTPS_PORT:-443}:443"
+      - "${JJ_HTTPS_PORT:-443}:443/udp"
+      - "${JJ_HTTP_PORT:-80}:80"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Its certificates, keys and local CA.
+      - jj_caddy_data:/data
+      - jj_caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: unless-stopped
+
   # Builds the sandbox base image on the host's daemon, where the docker
   # driver looks for it. The container does nothing and exits at once; the app
   # waits for that exit only so that the image exists (and `up --wait` passes).
@@ -156,3 +209,5 @@ services:
 
 volumes:
   jj_postgres:
+  jj_caddy_data:
+  jj_caddy_config:
