@@ -4,7 +4,8 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Database, openDatabase } from "./database";
-import { stagedUploads } from "./schema";
+import { artifacts, stagedUploads } from "./schema";
+import { seedTask } from "./test-helpers";
 
 /** Far above the fast path (a few hundred ms on a loaded machine), far below PGlite's own codec (5 s and more). */
 const STALL_BOUND_MS = 2_000;
@@ -71,6 +72,33 @@ describe("bytea on PGlite", () => {
     console.info(
       `16 MiB bytea on PGlite: the write held the loop ${Math.round(written.ms)} ms, the read ${Math.round(read.ms)} ms`,
     );
+  }, 120_000);
+
+  it("writes and reads an artifact's content, as snapshots and spills do, without holding the event loop", async () => {
+    const task = await seedTask(database.db);
+    const content = Buffer.alloc(16 * 1024 * 1024, 3);
+    const written = await stall(() =>
+      database.db.insert(artifacts).values({
+        id: "art_bytea_stall",
+        taskId: task.id,
+        kind: "output",
+        path: "output/big.txt",
+        name: "big.txt",
+        contentType: "text/plain",
+        sizeBytes: content.length,
+        sha256: "0".repeat(64),
+        content,
+      }),
+    );
+    expect(written.ms).toBeLessThan(STALL_BOUND_MS);
+    const read = await stall(() =>
+      database.db
+        .select({ content: artifacts.content })
+        .from(artifacts)
+        .where(eq(artifacts.id, "art_bytea_stall")),
+    );
+    expect(read.ms).toBeLessThan(STALL_BOUND_MS);
+    expect(read.value[0]?.content.byteLength).toBe(content.length);
   }, 120_000);
 
   it("keeps empty and small values exact", async () => {
