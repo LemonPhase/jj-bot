@@ -8,6 +8,9 @@ import {
   botSchema,
   COMMAND_TEXT_LIMIT,
   conversationViewSchema,
+  mcpDiscoveryResultSchema,
+  mcpServerSchema,
+  mcpSnapshotResultSchema,
   modelsViewSchema,
   runtimeProfileSchema,
   sandboxDriverInfoSchema,
@@ -138,7 +141,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.10.0",
+      contractVersion: "1.10.1",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -146,8 +149,8 @@ describe("bootstrap, models and drivers", () => {
         streaming: true,
         verification: true,
         secretStore: false,
-        // This build runs no MCP server or skill, so neither is claimed,
-        // although its local driver can spawn the processes stdio servers need.
+        // Profiles store MCP servers and the worker tests them, but no
+        // stored server reaches a session on this build, so none is claimed.
         mcp: { stdio: false, remote: false },
         skills: false,
         drivers: [{ id: "local", available: true, isolated: false }],
@@ -467,36 +470,148 @@ describe("runtime profiles", () => {
     );
   });
 
-  it("refuses MCP servers and skills it cannot run, and stores none", async () => {
-    const before = await t.call("GET", "/api/runtime-profiles");
-    const docs = {
-      name: "docs",
-      transport: "stdio",
-      command: "npx",
-      args: ["-y", "@example/docs-mcp"],
-    };
-    const tracker = {
-      name: "tracker",
-      transport: "http",
-      url: "https://mcp.example.com/mcp",
-    };
-    for (const fields of [
-      { mcpServers: [docs] },
-      { mcpServers: [tracker] },
-      { skills: ["pdf-tools"] },
-    ]) {
-      const refused = expectError(
-        await t.call("POST", "/api/runtime-profiles", {
-          name: "With MCP",
-          sandbox: spec,
-          ...fields,
-        }),
-        422,
-        "MCP_UNAVAILABLE",
+  /** A stdio MCP server in one line of Node: initialize and one tool. */
+  const echoServer = {
+    name: "echo",
+    transport: "stdio",
+    command: process.execPath,
+    args: [
+      "-e",
+      'const r=require("readline").createInterface({input:process.stdin});r.on("line",l=>{const m=JSON.parse(l);if(m.id===undefined)return;const o=m.method==="initialize"?{protocolVersion:"2025-11-25",capabilities:{tools:{}},serverInfo:{name:"api-fixture",version:"1"}}:m.method==="tools/list"?{tools:[{name:"say",description:"Says.",inputSchema:{type:"object"}}]}:null;process.stdout.write(JSON.stringify(o?{jsonrpc:"2.0",id:m.id,result:o}:{jsonrpc:"2.0",id:m.id,error:{code:-32601,message:"no"}})+"\\n")});r.on("close",()=>process.exit(0))',
+    ],
+    startupTimeoutSec: 20,
+  };
+
+  it("stores MCP servers, tests one in the worker and pins what it found", async () => {
+    const created = await t.call("POST", "/api/runtime-profiles", {
+      name: "With MCP",
+      sandbox: spec,
+      mcpServers: [echoServer],
+    });
+    expect(created.status).toBe(201);
+    const profile = runtimeProfileSchema.parse(created.body.profile);
+    expect(profile.mcpServers).toEqual([mcpServerSchema.parse(echoServer)]);
+
+    const started = await t.call(
+      "POST",
+      `/api/runtime-profiles/${profile.id}/mcp-discoveries`,
+      { server: echoServer },
+    );
+    expect(started.status).toBe(202);
+    const { discovery } = mcpDiscoveryResultSchema.parse(started.body);
+    expect(discovery).toMatchObject({
+      profileId: profile.id,
+      server: "echo",
+      status: "queued",
+      snapshot: null,
+    });
+    const done = await until(async () => {
+      const polled = await t.call(
+        "GET",
+        `/api/mcp-discoveries/${discovery.id}`,
       );
-      expect(refused.error.message).toMatch(/^(mcpServers|skills): /);
-    }
-    // Nothing was created by the refused requests.
+      const { discovery: now } = mcpDiscoveryResultSchema.parse(polled.body);
+      return now.status === "succeeded" || now.status === "failed"
+        ? now
+        : undefined;
+    });
+    expect(done.error).toBeNull();
+    expect(done.snapshot?.tools).toEqual([
+      expect.objectContaining({ name: "say", exposedName: "mcp__echo__say" }),
+    ]);
+    const snapshotId = done.snapshot?.id as string;
+    const read = await t.call("GET", `/api/mcp-snapshots/${snapshotId}`);
+    expect(read.status).toBe(200);
+    expect(mcpSnapshotResultSchema.parse(read.body).snapshot).toEqual(
+      done.snapshot,
+    );
+
+    const pinned = await t.call(
+      "PATCH",
+      `/api/runtime-profiles/${profile.id}`,
+      {
+        mcpServers: [{ ...echoServer, snapshotId }],
+        approvals: [{ tool: "mcp__echo__say" }],
+      },
+    );
+    expect(pinned.status).toBe(200);
+    expect(pinned.body.profile.mcpServers[0].snapshotId).toBe(snapshotId);
+    const mismatch = expectError(
+      await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+        mcpServers: [{ ...echoServer, args: ["-e", "0"], snapshotId }],
+      }),
+      409,
+      "MCP_SNAPSHOT_MISMATCH",
+    );
+    expect(mismatch.error.message).toMatch(
+      /^mcpServers\.0\.snapshotId: .* was discovered for another configuration of echo/,
+    );
+  });
+
+  it("answers the discovery routes' refusals", async () => {
+    const { body } = await t.call("POST", "/api/runtime-profiles", {
+      name: "Plain",
+      sandbox: spec,
+    });
+    const profileId = body.profile.id as string;
+    expectError(
+      await t.call("GET", "/api/mcp-discoveries/mcpd_missing"),
+      404,
+      "NOT_FOUND",
+    );
+    expectError(
+      await t.call("GET", "/api/mcp-snapshots/mcps_missing"),
+      404,
+      "NOT_FOUND",
+    );
+    expectError(
+      await t.call(
+        "POST",
+        "/api/runtime-profiles/prof_missing/mcp-discoveries",
+        {
+          server: echoServer,
+        },
+      ),
+      404,
+      "NOT_FOUND",
+    );
+    for (const command of [
+      {},
+      { server: { ...echoServer, name: "Echo" } },
+      { server: { ...echoServer, secretEnv: { TOKEN: "TOKEN" } } },
+      {
+        server: {
+          name: "tracker",
+          transport: "http",
+          url: "https://mcp.example.com/mcp",
+          secretHeaders: { Authorization: { secret: "TRACKER_KEY" } },
+        },
+      },
+    ])
+      expectError(
+        await t.call(
+          "POST",
+          `/api/runtime-profiles/${profileId}/mcp-discoveries`,
+          command,
+        ),
+        400,
+        "VALIDATION_FAILED",
+      );
+  });
+
+  it("refuses skills it cannot serve, and exact MCP rules that name no pinned tool", async () => {
+    const before = await t.call("GET", "/api/runtime-profiles");
+    const refused = expectError(
+      await t.call("POST", "/api/runtime-profiles", {
+        name: "With skills",
+        sandbox: spec,
+        skills: ["pdf-tools"],
+      }),
+      422,
+      "MCP_UNAVAILABLE",
+    );
+    expect(refused.error.message).toMatch(/^skills: /);
+    // Nothing was created by the refused request.
     expect((await t.call("GET", "/api/runtime-profiles")).body).toEqual(
       before.body,
     );
@@ -506,13 +621,15 @@ describe("runtime profiles", () => {
       await t.call("POST", "/api/runtime-profiles", {
         name: "Ungranted",
         sandbox: spec,
-        mcpServers: [{ ...docs, secretEnv: { DOCS_TOKEN: "DOCS_TOKEN" } }],
+        mcpServers: [
+          { ...echoServer, secretEnv: { DOCS_TOKEN: "DOCS_TOKEN" } },
+        ],
       }),
       400,
       "VALIDATION_FAILED",
     );
 
-    // Empty lists are what every profile holds, and read back as such.
+    // Empty lists are what a profile holds by default, and read back as such.
     const created = await t.call("POST", "/api/runtime-profiles", {
       name: "Plain",
       sandbox: spec,
@@ -522,17 +639,13 @@ describe("runtime profiles", () => {
     expect(created.status).toBe(201);
     const profile = runtimeProfileSchema.parse(created.body.profile);
     expect(profile).toMatchObject({ mcpServers: [], skills: [] });
-
-    for (const patch of [
-      { mcpServers: [docs] },
-      { skills: ["pdf-tools"] },
-      { name: "Renamed", mcpServers: [tracker] },
-    ])
-      expectError(
-        await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, patch),
-        422,
-        "MCP_UNAVAILABLE",
-      );
+    expectError(
+      await t.call("PATCH", `/api/runtime-profiles/${profile.id}`, {
+        skills: ["pdf-tools"],
+      }),
+      422,
+      "MCP_UNAVAILABLE",
+    );
     const unchanged = await t.call(
       "GET",
       `/api/runtime-profiles/${profile.id}`,

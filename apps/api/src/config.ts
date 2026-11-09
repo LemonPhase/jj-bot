@@ -13,6 +13,7 @@ import {
   parseMasterKey,
 } from "@jj/backend";
 import { nodeDataDirectory } from "@jj/db";
+import { remoteMcpEnabled } from "@jj/runtime";
 import { parseSubnetPool } from "@jj/sandbox";
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -51,6 +52,8 @@ export interface ServicesConfig {
   enableScripted: boolean;
   /** The secrets store's master keys; absent without `JJ_SECRET_KEY`. */
   secretKeys?: SecretKeys;
+  /** `JJ_MCP_REMOTE`: remote MCP servers may be called. Default true. */
+  mcpRemote?: boolean;
   engine: EngineConfigInput;
   /** `JJ_LOG_LEVEL` and `JJ_LOG_FORMAT`; absent: info, JSON. */
   log?: LogSettings;
@@ -232,6 +235,17 @@ function driverList(env: Env): SandboxDriverId[] {
   return [...new Set(ids)] as SandboxDriverId[];
 }
 
+/** `JJ_MCP_REMOTE`: `on` (or unset) lets the worker call remote MCP servers, `off` turns them off. */
+export function mcpRemote(env: Env): boolean {
+  try {
+    return remoteMcpEnabled(env);
+  } catch (error) {
+    throw new ConfigError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
 /**
  * The master key of the secrets store, and the keys it replaced. Unset: the
  * store is off. A key that cannot be used stops the process, naming the
@@ -297,6 +311,7 @@ export function loadServicesConfig(env: Env): ServicesConfig {
     ...(egressPool ? { dockerEgressSubnetPool: egressPool } : {}),
     enableScripted: flag(env, "JJ_ENABLE_SCRIPTED_MODEL", false),
     ...(keys ? { secretKeys: keys } : {}),
+    mcpRemote: mcpRemote(env),
     engine,
     log,
     drainTimeoutMs:

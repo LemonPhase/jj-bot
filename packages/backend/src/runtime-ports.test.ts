@@ -4,6 +4,7 @@
 import {
   ModelRegistry,
   ChatResponder as PiChatResponder,
+  McpDiscoverer as PiMcpDiscoverer,
   PiSessionExecutor,
   type CollabTool as RuntimeCollabTool,
   type ExecutorEvent as RuntimeExecutorEvent,
@@ -15,6 +16,7 @@ import type {
   ChatResponder,
   CollabTool,
   ExecutorEvent,
+  McpDiscoverer,
   ModelCatalog,
   RunExecutor,
   RunHooks,
@@ -22,14 +24,16 @@ import type {
 } from "./ports";
 
 describe("runtime ports", () => {
-  it("accept the pi runtime's executor, chat responder and model registry", () => {
+  it("accept the pi runtime's executor, chat responder, MCP discoverer and model registry", () => {
     const models = new ModelRegistry({ env: {}, enableScripted: true });
     const executor: RunExecutor = new PiSessionExecutor({ models });
     const chat: ChatResponder = new PiChatResponder({ models });
+    const mcp: McpDiscoverer = new PiMcpDiscoverer({ env: {} });
     const catalog: ModelCatalog = models;
     expect(catalog.defaultModel()).toBe("scripted/team");
     expect(typeof executor.run).toBe("function");
     expect(typeof chat.reply).toBe("function");
+    expect(mcp.remote).toBe(true);
   });
 
   it("exchange compatible tools, hooks, events and outcomes", () => {

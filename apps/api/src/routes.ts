@@ -92,6 +92,19 @@ export function apiRoutes({
     await engine.profiles.delete(idParam(c, "id"));
     return c.body(null, 204);
   });
+  // MCP servers: discovery runs in the worker; clients poll its record.
+  api.post("/runtime-profiles/:id/mcp-discoveries", async (c) =>
+    c.json(
+      await engine.mcp.startDiscovery(idParam(c, "id"), await command(c)),
+      202,
+    ),
+  );
+  api.get("/mcp-discoveries/:id", async (c) =>
+    c.json(await engine.mcp.discovery(idParam(c, "id"))),
+  );
+  api.get("/mcp-snapshots/:id", async (c) =>
+    c.json(await engine.mcp.snapshot(idParam(c, "id"))),
+  );
   api.get("/sandbox-drivers", async (c) => c.json(await engine.drivers()));
   api.get("/models", async (c) => c.json(await engine.models()));
   api.put("/models/providers/:providerId/key", async (c) =>
