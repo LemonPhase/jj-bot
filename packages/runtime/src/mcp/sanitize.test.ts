@@ -82,6 +82,25 @@ function expectWithin(
   expect(timed.ms).toBeLessThan(times * comparison.ms + 5);
 }
 
+/**
+ * Ordinary work to hold a refusal against: sanitizing a plain tool with 40
+ * properties, under a millisecond of processor time.
+ */
+const ordinary = () =>
+  sanitizeTools("docs", [
+    tool("plain", {
+      inputSchema: {
+        type: "object",
+        properties: Object.fromEntries(
+          Array.from({ length: 40 }, (_, index) => [
+            `field_${index}`,
+            { type: "string", description: "A field." },
+          ]),
+        ),
+      },
+    }),
+  ]);
+
 describe("sanitizeTools: hostile input schemas", () => {
   it("drops a catastrophic pattern and format, so validating a call stays fast", () => {
     const hostile = tool("search", {
@@ -147,12 +166,18 @@ describe("sanitizeTools: hostile input schemas", () => {
       tool("limit", { inputSchema: nested(12) }),
       tool("over", { inputSchema: nested(13) }),
     ];
-    // Refused at the limit: twice as deep costs about the same.
-    const [doubled, refused] = timedAgainst(
+    // Refused at the limit: it costs about what ordinary work does, and
+    // twice as deep costs about the same.
+    const [refused, plain] = timedAgainst(
+      () => sanitizeTools("docs", listing(100)),
+      ordinary,
+    );
+    expectWithin(refused, plain, 10);
+    const [doubled, once] = timedAgainst(
       () => sanitizeTools("docs", listing(200)),
       () => sanitizeTools("docs", listing(100)),
     );
-    expectWithin(doubled, refused, 3);
+    expectWithin(doubled, once, 3);
     const { value } = refused;
     expect(value.tools.map((kept) => kept.name)).toEqual(["limit"]);
     expect(value.warnings).toEqual([
@@ -266,13 +291,19 @@ describe("sanitizeTools: hostile input schemas", () => {
       tool("doubling", { inputSchema: doubling(levels) }),
       tool("modest", { inputSchema: doubling(2) }),
     ];
-    // Expanded, each level would double the work; stopped at the cap, twice
-    // the levels cost about the same.
-    const [doubled, refused] = timedAgainst(
+    // Expanded, each level would double the work. Stopped at the cap, the
+    // refusal costs about what ordinary work does, and twice the levels cost
+    // about the same.
+    const [refused, plain] = timedAgainst(
+      () => sanitizeTools("docs", listing(28)),
+      ordinary,
+    );
+    expectWithin(refused, plain, 10);
+    const [doubled, once] = timedAgainst(
       () => sanitizeTools("docs", listing(56)),
       () => sanitizeTools("docs", listing(28)),
     );
-    expectWithin(doubled, refused, 3);
+    expectWithin(doubled, once, 3);
     const { value } = refused;
     expect(value.tools.map((kept) => kept.name)).toEqual(["modest"]);
     expect(value.warnings).toEqual([
