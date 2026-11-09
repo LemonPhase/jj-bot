@@ -55,14 +55,22 @@ beforeEach(async () => {
   await t.database.db.delete(authLoginCodes);
 });
 
-/** An app on the shared engine, with fresh rate limits. */
-function app(settings: AuthSettings = {}, apiToken: string | null = TOKEN) {
+/**
+ * An app on the shared engine, with fresh rate limits. Stream heartbeats,
+ * which recheck a stream's credential, are a minute apart unless a test sets
+ * them shorter, so a stream that ends within seconds was ended at once.
+ */
+function app(
+  settings: AuthSettings = {},
+  apiToken: string | null = TOKEN,
+  heartbeatMs = 60_000,
+) {
   return createApp({
     engine: t.engine,
     logger: quietLogger,
     config: {
       workerEmbedded: false,
-      heartbeatMs: 50,
+      heartbeatMs,
       ...(apiToken ? { apiToken } : {}),
       auth: { password, now: () => clock.now, ...settings },
     },
@@ -704,7 +712,7 @@ describe("devices, signing out and rotation", () => {
   });
 
   it("ends a stream whose session another process signed out, at the next heartbeat", async () => {
-    const guarded = app();
+    const guarded = app({}, TOKEN, 50);
     const { cookie, session } = await signIn(guarded);
     const stream = await openStream(guarded, { cookie });
     // Deleted behind this process's back, as another API process would.
