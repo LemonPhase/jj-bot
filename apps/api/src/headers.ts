@@ -46,9 +46,8 @@ export interface SecurityHeaderOptions {
   strictTransportSecurity: boolean;
 }
 
-export function securityHeaders(
-  options: SecurityHeaderOptions,
-): MiddlewareHandler {
+/** The headers every answer carries but its Content-Security-Policy. */
+function fixedHeaders(options: SecurityHeaderOptions): [string, string][] {
   const fixed: [string, string][] = [
     ["X-Frame-Options", "DENY"],
     ["Referrer-Policy", "no-referrer"],
@@ -56,6 +55,24 @@ export function securityHeaders(
   ];
   if (options.strictTransportSecurity)
     fixed.push(["Strict-Transport-Security", STRICT_TRANSPORT_SECURITY]);
+  return fixed;
+}
+
+/**
+ * Every security header, for an answer written outside the app: deadlines.ts
+ * writes a request's timeout straight to its socket.
+ */
+export const securityHeaderList = (
+  options: SecurityHeaderOptions,
+): [string, string][] => [
+  ["Content-Security-Policy", CONTENT_SECURITY_POLICY],
+  ...fixedHeaders(options),
+];
+
+export function securityHeaders(
+  options: SecurityHeaderOptions,
+): MiddlewareHandler {
+  const fixed = fixedHeaders(options);
   const apply = (headers: Headers) => {
     if (!headers.has("Content-Security-Policy"))
       headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);

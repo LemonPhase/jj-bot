@@ -155,6 +155,10 @@ function responseError(
   );
 }
 
+/** An upload the server stopped receiving (408) without saying why. */
+const UPLOAD_TOO_SLOW =
+  "The file took too long to arrive, so the server stopped receiving it. Try again on a faster connection.";
+
 const parseJson = (text: string): unknown => {
   try {
     return JSON.parse(text);
@@ -320,8 +324,14 @@ export function createHttp({
     const what = "POST /api/uploads";
     const answer = (status: number, text: string) => {
       const data = parseJson(text);
-      if (status < 200 || status >= 300)
-        throw refusal({ status } as Response, data, what, "/uploads");
+      if (status < 200 || status >= 300) {
+        const error = refusal({ status } as Response, data, what, "/uploads");
+        // A 408 without the API's error shape (a proxy's, or a server's from
+        // before it answered one) still says what happened.
+        if (status === 408 && error.code === "INVALID_RESPONSE")
+          throw new ApiError(error.code, UPLOAD_TOO_SLOW, data, status);
+        throw error;
+      }
       const parsed = stagedUploadResultSchema.safeParse(data);
       if (!parsed.success)
         throw new ApiError(

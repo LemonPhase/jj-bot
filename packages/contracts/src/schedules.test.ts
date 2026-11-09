@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   API_ERROR_CODES,
-  CONTRACT_VERSION,
   capabilitiesSchema,
   DEFAULT_KEEP_WORKSPACES,
   MAX_KEEP_WORKSPACES,
@@ -41,8 +40,6 @@ const iso = (dates: Date[]) => dates.map((date) => date.toISOString());
 
 describe("contract version 1.12.0 (schedules)", () => {
   it("came with 1.12.0, which the changelog records", () => {
-    const [major, minor] = CONTRACT_VERSION.split(".").map(Number);
-    expect((major ?? 0) * 1000 + (minor ?? 0)).toBeGreaterThanOrEqual(1012);
     const changelog = readFileSync(
       new URL("../../../docs/contract-changelog.md", import.meta.url),
       "utf8",

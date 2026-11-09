@@ -70,7 +70,7 @@ function mcp(
   options: ScriptedServerOptions & { tools: ScriptedTool[] },
   extra: {
     timeoutMs?: number;
-    refusal?: () => string | undefined;
+    refusal?: () => string | undefined | Promise<string | undefined>;
     /** What the running server lists, when it differs from the snapshot. */
     live?: () => ScriptedTool[];
   } = {},
@@ -571,6 +571,31 @@ describe("createMcpTools: results", () => {
     );
     expect(server.connects).toBe(0);
     expect(server.scripted.calls).toEqual([]);
+  });
+
+  it("waits for a refusal the engine reads at the call, and calls the server only without one", async () => {
+    let reason: string | undefined =
+      "Not run: hidden after this session started.";
+    const server = mcp(
+      { tools: [{ name: "maybe" }] },
+      {
+        refusal: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return reason;
+        },
+      },
+    );
+    const [tool] = createMcpTools(server.bindings(), policy());
+    if (!tool) throw new Error("no tool");
+    const refused = await run(tool, { a: 1 });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toBe("Not run: hidden after this session started.");
+    expect(server.connects).toBe(0);
+    reason = undefined;
+    const answered = await run(tool, { a: 2 });
+    expect(answered.isError).toBeUndefined();
+    expect(server.connects).toBe(1);
+    expect(server.scripted.calls).toEqual([{ name: "maybe", args: { a: 2 } }]);
   });
 });
 

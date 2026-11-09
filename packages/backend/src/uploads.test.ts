@@ -583,12 +583,26 @@ describe("limits and refusals", () => {
     await engine.uploads.delete(late.id);
   });
 
+  it("gives an upload's body the time its size needs at the slowest pace staging accepts", async () => {
+    const { engine } = await engineWith({ start: false });
+    const MiB = 1024 * 1024;
+    // 16 KiB a second over 30 s windows: 480 KiB a window. 16 MiB is 35
+    // windows' worth, and one more window of slack: 18 minutes.
+    expect(engine.uploads.receiveMs(16 * MiB)).toBe(36 * 30_000);
+    expect(engine.uploads.receiveMs(480 * 1024)).toBe(2 * 30_000);
+    expect(engine.uploads.receiveMs(0)).toBe(30_000);
+    // A size over the file limit is refused before its body is read, so it
+    // gets no more time than the largest file.
+    expect(engine.uploads.receiveMs(100 * 1024 * MiB)).toBe(36 * 30_000);
+  });
+
   it("answers NOT_FOUND everywhere, and reports no capability, when uploads are off", async () => {
     const { engine } = await engineWith({
       start: false,
       config: { uploads: null },
     });
     expect((await engine.bootstrap()).capabilities.uploads).toBeNull();
+    expect(engine.uploads.receiveMs(1)).toBeNull();
     const off = await refusal(
       engine.uploads.stage({ name: "a.txt", sizeBytes: 1, body: unread }),
     );

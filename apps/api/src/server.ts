@@ -4,7 +4,7 @@
 // worker lets running sessions reach a turn boundary, requests are still
 // served), then stop accepting connections, end event streams, stop the
 // worker, close the database, flush the traces.
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type ServerType, serve } from "@hono/node-server";
 import { createLogger, type Logger } from "@jj/backend";
@@ -18,6 +18,12 @@ import {
   type ServerConfig,
   stopGraceWarning,
 } from "./config";
+import {
+  type DeadlineOptions,
+  enforceDeadlines,
+  isUploadWrite,
+  REQUEST_TIMEOUT_MS,
+} from "./deadlines";
 import { sendsHsts } from "./headers";
 import { type ApiAuth, describeAuth, resolveApiToken } from "./token";
 import { startTracing, type Tracing } from "./tracing";
@@ -28,6 +34,11 @@ export interface StartOptions {
   env?: Env;
   /** Default: JSON lines (JJ_LOG_FORMAT, JJ_LOG_LEVEL) on stdout and stderr. */
   logger?: Logger;
+  /**
+   * How long a request may take to arrive, an upload that needs longer
+   * excepted (deadlines.ts). Default 300 s, Node's own; tests shorten it.
+   */
+  requestTimeoutMs?: number;
 }
 
 export interface CloseOptions {
@@ -65,12 +76,14 @@ function listen(
   app: JJApp,
   hostname: string,
   port: number,
+  deadlines: DeadlineOptions,
 ): Promise<{ server: ServerType; address: AddressInfo }> {
   return new Promise((resolve, reject) => {
     const server = serve({ fetch: app.fetch, hostname, port }, (address) =>
       resolve({ server, address }),
     );
     server.once("error", reject);
+    enforceDeadlines(server as Server, deadlines);
     // `Expect: 100-continue`: Node answers 100 at once unless someone
     // listens. An upload's route answers it itself, once its limits pass, so
     // a body it refuses is never sent; every other request is invited as before.
@@ -83,11 +96,6 @@ function listen(
     );
   });
 }
-
-/** `POST /api/uploads`, as the raw request names it. */
-const isUploadWrite = (request: IncomingMessage) =>
-  request.method === "POST" &&
-  (request.url ?? "").split("?", 1)[0] === "/api/uploads";
 
 const hostForUrl = (host: string) => (host.includes(":") ? `[${host}]` : host);
 
@@ -143,7 +151,12 @@ export async function startServer(
     // A token or password changed since the last boot signs every device out.
     await app.auth.reconcileCredentials();
     // Listen first: a port clash fails before the worker claims any run.
-    const listening = await listen(app, config.host, config.port);
+    const listening = await listen(app, config.host, config.port, {
+      requestTimeoutMs: options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+      uploadReceiveMs: (sizeBytes) => engine.uploads.receiveMs(sizeBytes),
+      headers: { strictTransportSecurity: sendsHsts(config.publicUrl) },
+      logger,
+    });
     server = listening.server;
     const url = `http://${hostForUrl(config.host)}:${listening.address.port}`;
     if (config.embedWorker) await engine.worker.start();

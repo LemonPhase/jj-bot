@@ -1281,6 +1281,27 @@ export type McpToolSnapshotRow = typeof mcpToolSnapshots.$inferSelect;
 export type NewMcpToolSnapshot = typeof mcpToolSnapshots.$inferInsert;
 
 /**
+ * The toolset a session pinned at its first run, kept for its life. `mcp`
+ * holds one entry per MCP server it declares tools of: the server's name,
+ * the profile and snapshot they came from, and those tools' definitions as
+ * the snapshot held them (`mcpToolSchema`), so its declarations never
+ * change, whatever happens to the profile or the snapshot later. Written
+ * once; deleted with its session.
+ */
+export const sessionToolsets = pgTable("session_toolsets", {
+  sessionId: text("session_id")
+    .primaryKey()
+    .references(() => sessions.id, { onDelete: "cascade" }),
+  ownerId: ownerId(),
+  mcp: jsonb("mcp").$type<JsonObject[]>().notNull(),
+  pinnedAt: timestamp("pinned_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type SessionToolsetRow = typeof sessionToolsets.$inferSelect;
+
+/**
  * One test of an MCP server configuration (`mcpDiscoverySchema`), run by an
  * `mcp.discover` job: `config` is the configuration tested, saved in the
  * profile or not (secrets by name only). `error` and `stderr_tail` are
@@ -1368,4 +1389,5 @@ export const tables = {
   retiredSecrets,
   mcpToolSnapshots,
   mcpDiscoveries,
+  sessionToolsets,
 };

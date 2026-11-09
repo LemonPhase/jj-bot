@@ -31,7 +31,7 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.13.0 — 2026-11-09 — Sign-in
+## 1.14.0 — 2026-11-09 — Sign-in
 
 **Changed by:** backend and frontend ([#93](https://github.com/LemonPhase/jj-bot/issues/93), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/93#issuecomment-6613577807)) · **Compatibility:** additive in the schemas; deliberately breaking for installs that use `API_ALLOWED_HOSTS` or a proxy without a token (they now sign in)
 
@@ -71,6 +71,26 @@ change.
 **Action required (backend):** none beyond this change. Bearer clients (scripts, `/metrics`,
 `JJ_SMOKE_TOKEN`) are unchanged; they read the token with `npm run auth:token` now that no log line
 prints it.
+
+## 1.13.0 — 2026-11-09 — MCP servers in sessions; a discovery's configuration hash
+
+**Changed by:** backend ([#29](https://github.com/LemonPhase/jj-bot/issues/29), step 4b) · **Compatibility:** additive (a new response field; a client before 1.13.0 ignores it)
+
+- `mcpDiscoverySchema.configHash` (SHA-256, required): the hash of what the test runs, the one its
+  snapshot will carry, present from the moment the test is queued. A client can match a running
+  test to the snapshot it will give and to other tests and snapshots of the same configuration.
+  Testing a server while a test of another `configHash` is queued or running is refused with 409
+  `CONFLICT`, whose `details` name the running test (`discoveryId`, `configHash`); testing the same
+  `configHash` again still answers with the running test.
+- `capabilitiesSchema.mcp`: the docstring states when each kind is true, now that servers reach
+  sessions. `stdio` is true when the server has an MCP client and an available driver declares
+  `spawn`; `remote` when it has an MCP client and `JJ_MCP_REMOTE` is not `off`. No schema change.
+
+**Action required (frontend):** none to keep working; the demo API gives its failed discoveries a
+hash of what they were asked to test. The profile editor (step 6) says so when a test of another
+configuration is running, and follows the running test the `CONFLICT` names.
+**Action required (backend):** none beyond this change: discoveries return the stored hash, and
+bootstrap reports `capabilities.mcp` per kind from the MCP client, the drivers and `JJ_MCP_REMOTE`.
 
 ## 1.12.0 — 2026-11-09 — Schedules
 
