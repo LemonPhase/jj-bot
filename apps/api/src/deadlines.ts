@@ -4,10 +4,11 @@
 // gives each request a deadline of its own instead: 300 s, or for an upload
 // what its size needs at the slowest pace staging accepts
 // (`engine.uploads.receiveMs`). A request still arriving at its deadline
-// gets the API's JSON 408, written to the socket as Node writes its own,
-// and its connection is closed. Node's headersTimeout still bounds the
-// headers.
+// gets the API's JSON 408, written to the socket as Node writes its own
+// unless the connection is already sending an answer, and its connection is
+// closed. Node's headersTimeout still bounds the headers.
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Socket } from "node:net";
 import type { Logger } from "@jj/backend";
 import type { ApiError } from "@jj/contracts";
 import { type SecurityHeaderOptions, securityHeaderList } from "./headers";
@@ -72,6 +73,15 @@ export function enforceDeadlines(server: Server, options: DeadlineOptions) {
   });
 }
 
+/**
+ * The answer the connection is sending now, as Node records it: this
+ * request's own, or one to an earlier request on the connection, which a
+ * pipelined request's answer waits behind. Node's own request timeout looks
+ * here before it writes its 408.
+ */
+const answerUnderWay = (socket: Socket) =>
+  (socket as Socket & { _httpMessage?: ServerResponse | null })._httpMessage;
+
 function timedOut(
   request: IncomingMessage,
   response: ServerResponse,
@@ -80,35 +90,41 @@ function timedOut(
 ) {
   const socket = request.socket;
   const what = `${request.method} ${(request.url ?? "").split("?", 1)[0]}`;
-  options.logger.warn(
-    `${what} did not arrive within ${seconds(ms)}: answered 408 and closed the connection`,
-  );
-  // Something of an answer is out already: only closing is left.
-  if (!socket.writable || response.headersSent) {
-    socket.destroy();
-    return;
+  // Something of an answer is out already, this request's or the one the
+  // connection is sending: a 408 would land inside it, so only closing is left.
+  const answers =
+    socket.writable &&
+    !response.headersSent &&
+    !answerUnderWay(socket)?.headersSent;
+  if (answers) {
+    const message = isUploadWrite(request)
+      ? `The file did not arrive within ${seconds(ms)}, the most a file of its size may take at the slowest pace the server accepts, so the server stopped receiving it. Try again on a faster connection.`
+      : `The request did not arrive within ${seconds(ms)}, so the server stopped receiving it.`;
+    const body = JSON.stringify({
+      error: {
+        code: "VALIDATION_FAILED",
+        message,
+        details: { timeoutMs: ms },
+      },
+    } satisfies ApiError);
+    const head = [
+      "HTTP/1.1 408 Request Timeout",
+      "Content-Type: application/json",
+      `Content-Length: ${Buffer.byteLength(body)}`,
+      "Cache-Control: no-store",
+      "Connection: close",
+      ...securityHeaderList(options.headers).map(
+        ([name, value]) => `${name}: ${value}`,
+      ),
+    ];
+    socket.write(`${head.join("\r\n")}\r\n\r\n${body}`);
   }
-  const message = isUploadWrite(request)
-    ? `The file did not arrive within ${seconds(ms)}, the most a file of its size may take at the slowest pace the server accepts, so the server stopped receiving it. Try again on a faster connection.`
-    : `The request did not arrive within ${seconds(ms)}, so the server stopped receiving it.`;
-  const body = JSON.stringify({
-    error: {
-      code: "VALIDATION_FAILED",
-      message,
-      details: { timeoutMs: ms },
-    },
-  } satisfies ApiError);
-  const head = [
-    "HTTP/1.1 408 Request Timeout",
-    "Content-Type: application/json",
-    `Content-Length: ${Buffer.byteLength(body)}`,
-    "Cache-Control: no-store",
-    "Connection: close",
-    ...securityHeaderList(options.headers).map(
-      ([name, value]) => `${name}: ${value}`,
-    ),
-  ];
-  socket.end(`${head.join("\r\n")}\r\n\r\n${body}`, () => socket.destroy());
+  // At once, as Node does: a client that does not read would never let
+  // the write drain, and would keep the connection.
+  socket.destroy();
+  options.logger.warn(
+    `${what} did not arrive within ${seconds(ms)}: ${answers ? "answered 408 and closed" : "closed"} the connection`,
+  );
 }
 
 const seconds = (ms: number) =>

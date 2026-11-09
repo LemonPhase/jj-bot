@@ -251,3 +251,41 @@ describe("a deadline ends with its request", () => {
     }
   });
 });
+
+describe("a request still arriving at its deadline", () => {
+  const REQUEST_MS = 500;
+  let served: Served;
+  beforeAll(async () => {
+    served = await serveWithDeadlines(REQUEST_MS, 800);
+  });
+  afterAll(async () => {
+    await served?.close();
+  });
+
+  it("closes its connection without a 408 when the connection is sending another answer", async () => {
+    const host = `Host: 127.0.0.1:${served.port}`;
+    // A slow write sent on behind an event stream, on one connection: the
+    // stream's answer is under way when the write's deadline runs out.
+    const started = Date.now();
+    const received = await exchange(
+      served.port,
+      [
+        "GET /api/stream HTTP/1.1",
+        host,
+        "Accept: text/event-stream",
+        "",
+        "POST /api/bots HTTP/1.1",
+        host,
+        "Content-Type: application/json",
+        "Content-Length: 100",
+        "",
+        '{"na',
+      ].join("\r\n"),
+    );
+    expect(Date.now() - started).toBeGreaterThanOrEqual(REQUEST_MS - 50);
+    // Before the fix, a raw 408 went into the middle of the stream's body.
+    expect(statusLines(received)).toEqual(["HTTP/1.1 200 "]);
+    expect(received).toMatch(/text\/event-stream/);
+    expect(received).not.toMatch(/408|VALIDATION_FAILED/);
+  });
+});
