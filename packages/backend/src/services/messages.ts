@@ -31,6 +31,7 @@ import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import { planOf, toMessage } from "../records";
 import { expireApprovals } from "./approvals";
+import { workspaceRemovalUnderWay } from "./schedules";
 import { lockTask, updateSession, updateTask } from "./sessions";
 import { assertWithinCaps } from "./spend";
 import { endSpendStretch, holdingApproval } from "./spend-approvals";
@@ -210,14 +211,16 @@ export async function rootSession(
  * SPEND_CAP_REACHED while the coordinator could not make a model call (the
  * task's, its bot's or the instance's cap is reached). A coordinator that
  * holds a call for the user's approval is left waiting: the message reaches
- * it with the answer.
+ * it with the answer. A task whose workspace was removed continues on a
+ * fresh one: `notice` says so, and the caller puts it ahead of the message
+ * it delivers.
  */
 export async function continueTask(
   tx: Tx,
   ctx: EngineContext,
   task: TaskRow,
   attribution: Attribution = {},
-): Promise<{ task: TaskRow; root: SessionRow }> {
+): Promise<{ task: TaskRow; root: SessionRow; notice?: string }> {
   assertOpen(task);
   await assertWithinCaps(tx, ctx, {
     taskId: task.id,
@@ -225,23 +228,39 @@ export async function continueTask(
   });
   let root = await rootSession(tx, task.id);
   if (!root) throw new Error(`Task ${task.id} has no coordinator session.`);
+  let notice: string | undefined;
   // A coordinator an approval holds (its own call, or spend past a
   // threshold) reads the message with the user's answer: nothing reopens,
   // and the message waits in its inbox.
   if (await holdingApproval(tx, root)) return { task, root };
+  if (workspaceRemovalUnderWay(task, ctx.clock()))
+    throw new DomainError(
+      "CONFLICT",
+      "This task's workspace is being removed right now (its schedule keeps only its newest tasks' workspaces); send the message again in a minute.",
+    );
   if (
     task.status === "waiting" ||
     task.status === "completed" ||
     task.status === "failed"
   ) {
     const previous = task.status;
+    const removedAt = task.workspaceRemovedAt;
     task = await updateTask(
       tx,
       ctx,
       task,
-      { status: "running", result: null, error: null },
+      {
+        status: "running",
+        result: null,
+        error: null,
+        ...(removedAt ? { workspaceRemovedAt: null } : {}),
+        // A stale claim, lost by a worker that stopped, is released: a late
+        // answer to it then records nothing on the continued task.
+        ...(task.workspaceRemovingAt ? { workspaceRemovingAt: null } : {}),
+      },
       attribution,
     );
+    if (removedAt) notice = workspaceRemovedNotice(removedAt);
     await emit(tx, ctx, task.id, {
       type: "task.reopened",
       payload: { previous },
@@ -263,8 +282,12 @@ export async function continueTask(
       },
       attribution,
     );
-  return { task, root };
+  return { task, root, ...(notice ? { notice } : {}) };
 }
+
+/** What a continued task's coordinator is told first when its workspace was removed. */
+export const workspaceRemovedNotice = (removedAt: Date) =>
+  `Note from JJ Bot: this task's workspace was removed on ${removedAt.toISOString()}, because the schedule that started it keeps only its newest tasks' workspaces. You continue in a fresh, empty workspace: files from earlier runs are not there. The task log, the reports and the stored artifacts remain.`;
 
 /** What the coordinator is told about a new goal version. */
 function changeText(change: {
@@ -380,9 +403,10 @@ export async function postTaskMessage(
       text: command.text,
       recipientBotIds: [task.coordinatorBotId],
     });
-    const text = goalChange
+    const said = goalChange
       ? `${changeText(goalChange)}\n\nTheir message:\n${command.text}`
       : `Message from the user:\n${command.text}`;
+    const text = continued.notice ? `${continued.notice}\n\n${said}` : said;
     const delivered = await deliver(
       tx,
       continued.root,

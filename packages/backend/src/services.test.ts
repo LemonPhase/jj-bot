@@ -97,6 +97,7 @@ describe("bootstrap", () => {
       // No MCP server or skill reaches a session on this build.
       mcp: { stdio: false, remote: false },
       skills: false,
+      schedules: true,
       // Uploads are served, within the default limits.
       uploads: {
         maxFileBytes: 16 * 1024 * 1024,

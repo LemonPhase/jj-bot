@@ -189,6 +189,7 @@ function compactedView(): TaskView {
       spendCapUsd: null,
       approveSpendPastThreshold: false,
       templateId: null,
+      scheduleId: null,
       createdAt: at(0),
       updatedAt: at(12),
       finishedAt: at(12),

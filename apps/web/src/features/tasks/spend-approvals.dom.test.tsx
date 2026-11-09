@@ -73,6 +73,7 @@ function view(
       spendCapUsd: 5,
       approveSpendPastThreshold: true,
       templateId: null,
+      scheduleId: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: null,

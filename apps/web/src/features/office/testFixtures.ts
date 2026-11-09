@@ -82,6 +82,7 @@ export const task = (over: Partial<Task> = {}): Task => ({
   spendCapUsd: null,
   approveSpendPastThreshold: false,
   templateId: null,
+  scheduleId: null,
   createdAt: at(0),
   updatedAt: at(0),
   finishedAt: null,

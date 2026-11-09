@@ -8,6 +8,7 @@
 import {
   COMMAND_TEXT_LIMIT,
   type CreateTaskTemplateCommand,
+  createTaskCommandSchema,
   createTaskTemplateCommandSchema,
   describeTemplateProblem,
   MAX_TASK_TEMPLATES,
@@ -28,6 +29,8 @@ import {
   type BotRow,
   bots,
   type Executor,
+  schedules,
+  type TaskRow,
   type TaskTemplateRow,
   type Tx,
   taskTemplates,
@@ -37,7 +40,13 @@ import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { participantOrder, planOf, toTaskTemplate } from "../records";
-import { createTask } from "./tasks";
+import { taskSpendFor } from "./spend";
+import {
+  assertTaskBots,
+  createTask,
+  createTaskTx,
+  type NewTaskInput,
+} from "./tasks";
 import { VERIFICATION_ENFORCED } from "./verification";
 
 type BotFacts = Pick<BotRow, "id" | "name" | "model" | "archivedAt">;
@@ -250,12 +259,32 @@ export async function updateTemplate(
   return { template: template as TaskTemplate };
 }
 
-/** `DELETE /api/task-templates/:id`. Tasks started from it keep their `templateId`. */
+/**
+ * `DELETE /api/task-templates/:id`. Tasks started from it keep their
+ * `templateId`; a template a schedule starts is TEMPLATE_IN_USE.
+ */
 export async function deleteTemplate(
   ctx: EngineContext,
   templateId: string,
 ): Promise<void> {
   await ctx.db.transaction(async (tx) => {
+    // Locked first, so a schedule saved meanwhile waits and then fails its key.
+    await templateRow(tx, templateId, true);
+    const using = await tx
+      .select({ id: schedules.id, name: schedules.name })
+      .from(schedules)
+      .where(eq(schedules.templateId, templateId))
+      .orderBy(asc(schedules.createdAt), asc(schedules.id));
+    if (using.length > 0)
+      throw new DomainError(
+        "TEMPLATE_IN_USE",
+        `This template is started by ${using.length === 1 ? "the schedule" : "the schedules"} ${using
+          .map((schedule) => `"${schedule.name}"`)
+          .join(
+            ", ",
+          )}; delete ${using.length === 1 ? "it" : "them"} or point ${using.length === 1 ? "it" : "them"} at another template first.`,
+        { schedules: using },
+      );
     const [deleted] = await tx
       .delete(taskTemplates)
       .where(eq(taskTemplates.id, templateId))
@@ -307,12 +336,66 @@ export async function startTemplate(
   }
 }
 
+/**
+ * A start of the template in the caller's transaction, for the scheduler: the
+ * checks `startTemplate` makes (problems, the goal's length, the bots and
+ * their models), then the task `createTask` makes from the same command,
+ * with the schedule's attribution. Throws the same refusals.
+ */
+export async function startTemplateTx(
+  tx: Tx,
+  ctx: EngineContext,
+  row: TaskTemplateRow,
+  input: StartTemplateCommand,
+  schedule: NonNullable<NewTaskInput["schedule"]>,
+): Promise<TaskRow> {
+  const command = parseCommand(startTemplateCommandSchema, input);
+  const template = await usableTemplate(ctx, row, tx);
+  if (templateGoalTooLong(template.goal, command.instructions)) {
+    const length = templateRunGoal(template.goal, command.instructions).length;
+    throw new DomainError(
+      "VALIDATION_FAILED",
+      `instructions: the goal with these instructions is ${length} characters, over the ${COMMAND_TEXT_LIMIT} a task takes; shorten them.`,
+      { length, limit: COMMAND_TEXT_LIMIT },
+      422,
+    );
+  }
+  const task = parseCommand(
+    createTaskCommandSchema,
+    templateTaskCommand(template, command),
+  );
+  await assertTaskBots(tx, ctx, task.participantBotIds);
+  const created = await createTaskTx(tx, ctx, {
+    ...task,
+    templateId: template.id,
+    schedule,
+  });
+  return created.task;
+}
+
+/**
+ * The task cap a start of the template sets: its own (null for none), or
+ * the coordinator's profile's when it inherits, read now.
+ */
+export async function templateTaskCap(
+  exec: Executor,
+  row: Pick<
+    TaskTemplateRow,
+    "spendCapInherit" | "spendCapUsd" | "coordinatorBotId"
+  >,
+): Promise<number | null> {
+  return row.spendCapInherit
+    ? (await taskSpendFor(exec, row.coordinatorBotId)).capUsd
+    : row.spendCapUsd;
+}
+
 /** The template with its problems now; TEMPLATE_UNUSABLE when it has any. */
 async function usableTemplate(
   ctx: EngineContext,
   row: TaskTemplateRow,
+  exec: Executor = ctx.db,
 ): Promise<TaskTemplate> {
-  const [template] = await withProblems(ctx, ctx.db, [row]);
+  const [template] = await withProblems(ctx, exec, [row]);
   if (!template) throw notFound("Task template", row.id);
   if (template.problems.length > 0)
     throw new DomainError(

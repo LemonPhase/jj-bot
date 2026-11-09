@@ -47,6 +47,7 @@ const task = {
   spendCapUsd: 5,
   approveSpendPastThreshold: false,
   templateId: null,
+  scheduleId: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,
@@ -233,6 +234,7 @@ export const SAMPLE_PAYLOADS: {
     stderrTail: "Error: [redacted] is invalid",
     drift: ["search"],
   },
+  "workspace.removed": { scheduleId: "sched-1", keepWorkspaces: 10 },
   "cancellation.requested": { reason: "Enough" },
   "cancellation.completed": {
     stopped: [

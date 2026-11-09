@@ -31,15 +31,15 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
-## 1.12.0 — 2026-11-09 — Spend approvals past the soft threshold
+## 1.13.0 — 2026-11-09 — Spend approvals past the soft threshold
 
-**Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.11 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
+**Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.12 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
 
 - `profileBudgetsSchema.approveSpendPastThreshold`: boolean, default false (parsed as false from
   stored profiles). Optional in `updateRuntimeProfileCommandSchema.budgets`; omitting it keeps the
   stored value, so an older editor never turns it off.
 - `taskObjectSchema.approveSpendPastThreshold`: boolean, false when missing (events stored before
-  1.12.0). Copied from the coordinator's profile when the task is created, like `spendCapUsd`;
+  1.13.0). Copied from the coordinator's profile when the task is created, like `spendCapUsd`;
   optional in `createTaskCommandObjectSchema` (omitted: the profile's) and in
   `updateTaskCommandSchema` (PATCH). Not in the template create command: a task started from a
   template takes the coordinator's profile's.
@@ -67,6 +67,71 @@ threshold of a cap whose option is on and that no approval covers, the API answe
 approvals with the existing route, and PATCH or a profile change expires a pending one. The
 migration adds `approvals.kind`, the `spend` column, a check per kind, the one-pending-spend-per-cap
 index and `tasks.approve_spend_past_threshold`.
+
+## 1.12.0 — 2026-11-09 — Schedules
+
+**Changed by:** backend and frontend ([#40](https://github.com/LemonPhase/jj-bot/issues/40), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/40#issuecomment-6613502548)) · **Compatibility:** additive
+
+- New `schedules.ts` (in the index): `scheduleSchema`: `id`, `name` (1–80 characters, one line, as
+  bot names), `templateId`, `trigger` (`storedTriggerSchema`, its read form: `{ kind: "cron", cron,
+  timeZone }`, not parsed again), `instructions` (at most 4000, default ""), `enabled`, `overlap`
+  (`"skip"`, the only value), `keepWorkspaces` (0–50, default 10), `chatUpdates` (`"attention"` |
+  `"all"`, default `"attention"`), `nextFireAt` (null exactly while disabled), `pausedReason`
+  (`SCHEDULE_PAUSED_REASONS`: `"template_unusable"`, `"interval_too_short"`, `"no_next_fire"`, or
+  null), `lastFire` and timestamps. `scheduleFireSchema`: `id`, `scheduleId`, `scheduledFor`,
+  `recordedAt`, `outcome` (`started`, `skipped`, `missed`, `refused`), `reason`, `missedCount`,
+  `taskId`, and, beyond the agreed list, a refusal's `code` and `details` (null and absent
+  otherwise), which the agreed acceptance needs ("refused with the `SPEND_CAP_REACHED` details").
+  Limits: `MAX_SCHEDULES` = 50, `MAX_ENABLED_SCHEDULES` = 20, `SCHEDULE_FIRES_SHOWN` = 50,
+  `SCHEDULE_FIRES_KEPT` = 200, `SCHEDULE_MIN_INTERVAL_BOUNDS` (15–1440 minutes),
+  `SCHEDULE_HORIZON_DAYS` = 2928, `SCHEDULE_GAP_DAYS` = 366 and `SCHEDULER_STALE_MS` (2 minutes).
+- New entry `@jj/contracts/schedule-rules` (`schedule-rules.ts`, with `cron.ts`), kept out of the
+  index so clients load it only where they write or preview a schedule; the index re-exports its
+  types (`ScheduleTrigger`, `CreateScheduleCommand`, `UpdateScheduleCommand`).
+  - The cron grammar: `parseCron` and `cronProblem` (5 fields of `*`, numbers, ranges, steps after
+    `*` or a range, lists, `JAN`–`DEC` and `SUN`–`SAT` in any case, day of week 0–7; both day
+    fields restricted match either, as in Vixie cron, where a field that starts with `*` is
+    unrestricted; a seconds or year field, macros and `L`, `W`, `#`, `?` are refused, each with one
+    sentence) and `canonicalTimeZone` (an IANA name `Intl` knows, in canonical form; offsets
+    refused).
+  - The commands: `scheduleTriggerSchema` (a union on `kind` with only `cron`; `cronSchema` tidies
+    the expression to single spaces, `timeZoneSchema` stores the zone canonical),
+    `createScheduleCommandSchema` (`name`, `templateId`, `trigger`, optional `instructions`,
+    `enabled` (default true), `overlap`, `keepWorkspaces`, `chatUpdates`) and
+    `updateScheduleCommandSchema` (partial, at least one field).
+  - Evaluation: `zoneOffsetMs`, `wallTimeToInstant`, the generators `cronFires` and
+    `cronInstants`, `nextFires(trigger, after, n)` (over `SCHEDULE_HORIZON_DAYS`, so a leap-day
+    schedule always finds its next fire), `firesBetween(trigger, after, until, limit)`,
+    `minimumGapMinutes(trigger, from, stopBelow?)` (over `SCHEDULE_GAP_DAYS`, measured on the zone's
+    wall clock; with `stopBelow` it returns at the first gap under it; null for fewer than two
+    fires), `triggerProblem(trigger, from, minIntervalMinutes)`, `sameTrigger(a, b)` (the same
+    expression, single-spaced, in the same canonical zone) and `formatFireTime`. A wall time
+    daylight saving skips fires once, at the end of the gap; a repeated one once, at its first
+    occurrence; in real time a change of offset can bring two runs as close as a minute, which the
+    docs state. The zone is read about twice per matching day, never per minute.
+- Routes: `GET /api/schedules` → `scheduleListSchema` (`{ schedules, scheduler: { lastPassAt,
+  minIntervalMinutes, graceMinutes } }`, oldest first); `POST` → 201 `scheduleResultSchema`; `GET
+  /api/schedules/:id` → `scheduleDetailSchema` (`{ schedule, fires }`, the latest 50, newest
+  first); `PATCH` → `{ schedule }`; `DELETE` → 204, leaving its tasks running with their
+  `scheduleId`. A save answers `VALIDATION_FAILED` for a bad cron or zone, one that never runs in
+  the horizon, a gap under the server's minimum, or a template that is unknown or whose task cap
+  resolves to none, and `CONFLICT` past either limit. A `PATCH` runs the trigger and template
+  checks only when it changes the trigger (`sameTrigger`) or the template from the stored ones, or
+  turns a disabled schedule on, so one that disables it always applies, even when it repeats the
+  trigger and template unchanged.
+- `capabilities.schedules` (false by default, so older servers read as without them); while false
+  the routes answer 404. `taskObjectSchema.scheduleId` (null by default and for records before
+  1.12.0). The hint `schedules.changed`. The error `TEMPLATE_IN_USE` (409, `details` per
+  `templateInUseDetailsSchema`: `{ schedules: [{ id, name }] }`), answered to deleting a template a
+  schedule starts. The marker event `workspace.removed` (`{ scheduleId, keepWorkspaces }`): a
+  schedule removed the task's workspace; clients that do not know it ignore it.
+- `refineOneLine` (`bots.ts`) is exported for other one-line names.
+
+**Action required (frontend):** the schedule editor (presets, zone, next 3 runs, refusals inline),
+the schedules list with each last outcome and pause, the stale-scheduler banner and "Scheduled ·
+X" on a task. Done in the same change, the demo included.
+**Action required (backend):** none beyond this change; a client built against 1.11.0 that parses
+tasks strictly must accept `scheduleId`.
 
 ## 1.11.0 — 2026-11-09 — Uploads
 

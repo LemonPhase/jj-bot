@@ -50,6 +50,7 @@ const taskQueued: Task = {
   spendCapUsd: null,
   approveSpendPastThreshold: false,
   templateId: null,
+  scheduleId: null,
   createdAt: time(1),
   updatedAt: time(1),
   finishedAt: null,

@@ -59,6 +59,7 @@ type TaskPatch = Partial<
     | "cancelRequestedAt"
     | "spendCapUsd"
     | "approveSpendPastThreshold"
+    | "workspaceRemovedAt"
   >
 >;
 

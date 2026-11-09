@@ -11,6 +11,7 @@ export function stubShell(): ShellActions {
     openNewBot: vi.fn(),
     openNewTask: vi.fn(),
     openTemplateDialog: vi.fn(),
+    openScheduleDialog: vi.fn(),
   };
 }
 

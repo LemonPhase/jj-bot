@@ -11,6 +11,7 @@ import {
 } from "../../components/ui";
 import { isStoppable } from "../../lib/status";
 import { useWorkspace } from "../../state/WorkspaceContext";
+import { scheduleOrigin } from "../schedules/scheduleModel";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { useShell } from "../shell/ShellContext";
 import { templateOrigin } from "../templates/templateModel";
@@ -31,10 +32,14 @@ import { ChecksButton, VerificationBadge } from "./VerificationSection";
  */
 export function TaskHeader({ view }: { view: TaskView }) {
   const api = useApi();
-  const { getBot, taskStreamState, templates } = useWorkspace();
+  const { getBot, taskStreamState, templates, schedules } = useWorkspace();
   const { openTemplateDialog } = useShell();
   const { task } = view;
   const origin = templateOrigin(task.templateId, templates);
+  const scheduled = scheduleOrigin(
+    task.scheduleId,
+    schedules?.schedules ?? null,
+  );
   const { heading, goal } = headingFor(task);
   const approvals = pendingLabel(pendingOf(view.approvals));
   // Say so while the live event stream is down, instead of looking current.
@@ -63,6 +68,9 @@ export function TaskHeader({ view }: { view: TaskView }) {
               </Badge>
             )}
             <VerificationBadge view={view} />
+            {scheduled && (
+              <span className="task-head__template">{scheduled}</span>
+            )}
             {origin && <span className="task-head__template">{origin}</span>}
             {reconnecting && (
               <span className="task-head__stream" role="status">

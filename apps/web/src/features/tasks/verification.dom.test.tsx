@@ -95,6 +95,7 @@ function viewOf(
       spendCapUsd: null,
       approveSpendPastThreshold: false,
       templateId: null,
+      scheduleId: null,
       createdAt: at,
       updatedAt: at,
       finishedAt: status === "completed" ? at : null,

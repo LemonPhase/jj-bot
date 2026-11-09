@@ -19,6 +19,7 @@ const task: TaskView["task"] = {
   spendCapUsd: null,
   approveSpendPastThreshold: false,
   templateId: null,
+  scheduleId: null,
   createdAt: at,
   updatedAt: at,
   finishedAt: null,

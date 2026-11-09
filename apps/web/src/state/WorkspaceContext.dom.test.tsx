@@ -46,6 +46,7 @@ const task: Task = {
   spendCapUsd: null,
   approveSpendPastThreshold: false,
   templateId: null,
+  scheduleId: null,
   createdAt: T0,
   updatedAt: T0,
   finishedAt: null,

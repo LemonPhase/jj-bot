@@ -1,4 +1,4 @@
-// Contract 1.12.0 (#106): spend approvals share the approval records, events
+// Contract 1.13.0 (#106): spend approvals share the approval records, events
 // and summaries with tool approvals, as a union on `kind`. What servers
 // stored before it (approvals without `kind`, tasks and profiles without the
 // option) still parses, as a tool approval and with the option off.
@@ -40,7 +40,7 @@ const spend: SpendApproval = {
   decidedAt: null,
 };
 
-/** An `approval.requested` event exactly as a server before 1.12 stored and streamed it. */
+/** An `approval.requested` event exactly as a server before 1.13 stored and streamed it. */
 const storedBefore = {
   id: "evt_01",
   taskId: "task_1",
@@ -75,8 +75,8 @@ const storedBefore = {
   },
 };
 
-describe("spend approvals (1.12.0)", () => {
-  it("parses approvals stored before 1.12 as tool approvals", () => {
+describe("spend approvals (1.13.0)", () => {
+  it("parses approvals stored before 1.13 as tool approvals", () => {
     const parsed = taskEventSchema.parse(storedBefore);
     expect(parsed.type).toBe("approval.requested");
     if (parsed.type !== "approval.requested") throw new Error("unreachable");
