@@ -82,6 +82,17 @@ export function enforceDeadlines(server: Server, options: DeadlineOptions) {
 const answerUnderWay = (socket: Socket) =>
   (socket as Socket & { _httpMessage?: ServerResponse | null })._httpMessage;
 
+/** Requests whose deadline ran out, with the 408 they got. */
+const missed = new WeakMap<IncomingMessage, ApiError>();
+
+/**
+ * The 408 this request got at its deadline, if it missed it. The app
+ * answers it too: the request then fails to read its cut-off body, and is
+ * logged as the timeout it is rather than as a server failure.
+ */
+export const missedDeadline = (request: IncomingMessage | undefined) =>
+  request ? missed.get(request) : undefined;
+
 function timedOut(
   request: IncomingMessage,
   response: ServerResponse,
@@ -90,6 +101,13 @@ function timedOut(
 ) {
   const socket = request.socket;
   const what = `${request.method} ${(request.url ?? "").split("?", 1)[0]}`;
+  const message = isUploadWrite(request)
+    ? `The file did not arrive within ${seconds(ms)}, the most a file of its size may take at the slowest pace the server accepts, so the server stopped receiving it. Try again on a faster connection.`
+    : `The request did not arrive within ${seconds(ms)}, so the server stopped receiving it.`;
+  const answer = {
+    error: { code: "VALIDATION_FAILED", message, details: { timeoutMs: ms } },
+  } satisfies ApiError;
+  missed.set(request, answer);
   // Something of an answer is out already, this request's or the one the
   // connection is sending: a 408 would land inside it, so only closing is left.
   const answers =
@@ -97,16 +115,7 @@ function timedOut(
     !response.headersSent &&
     !answerUnderWay(socket)?.headersSent;
   if (answers) {
-    const message = isUploadWrite(request)
-      ? `The file did not arrive within ${seconds(ms)}, the most a file of its size may take at the slowest pace the server accepts, so the server stopped receiving it. Try again on a faster connection.`
-      : `The request did not arrive within ${seconds(ms)}, so the server stopped receiving it.`;
-    const body = JSON.stringify({
-      error: {
-        code: "VALIDATION_FAILED",
-        message,
-        details: { timeoutMs: ms },
-      },
-    } satisfies ApiError);
+    const body = JSON.stringify(answer);
     const head = [
       "HTTP/1.1 408 Request Timeout",
       "Content-Type: application/json",

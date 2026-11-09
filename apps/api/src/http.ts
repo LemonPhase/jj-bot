@@ -2,10 +2,12 @@
 // engine unparsed (it validates every command with its contract schema);
 // params, query and headers are checked here with the contract's id schema.
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { HttpBindings } from "@hono/node-server";
 import { DomainError, HTTP_STATUS, type Logger } from "@jj/backend";
 import { type ApiError, type ApiErrorCode, idSchema, z } from "@jj/contracts";
 import type { Context, MiddlewareHandler } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { missedDeadline } from "./deadlines";
 
 export const envelope = (
   code: ApiErrorCode,
@@ -36,11 +38,18 @@ const isDomainError = (error: unknown): error is DomainError =>
     (error as unknown as { code: string }).code in HTTP_STATUS);
 
 /**
- * A refusal becomes its contract envelope and status. Anything else is a
- * server fault: logged here with its stack, answered without one.
+ * A refusal becomes its contract envelope and status, and a request cut off
+ * at its deadline the 408 it got. Anything else is a server fault: logged
+ * here with its stack, answered without one.
  */
 export function onError(logger: Logger) {
   return (error: unknown, c: Context) => {
+    // Cut off at its deadline (deadlines.ts), a request fails to read its
+    // body, whatever its route reads it with.
+    const timedOut = missedDeadline(
+      (c.env as Partial<HttpBindings> | undefined)?.incoming,
+    );
+    if (timedOut) return c.json(timedOut, 408);
     if (isDomainError(error))
       return errorResponse(
         c,

@@ -262,6 +262,64 @@ describe("a request still arriving at its deadline", () => {
     await served?.close();
   });
 
+  it("is logged as the 408 it got, not as a server failure", async () => {
+    const host = `Host: 127.0.0.1:${served.port}`;
+    const from = quietLogger.lines.length;
+    const answers = await Promise.all([
+      exchange(
+        served.port,
+        [
+          "POST /api/bots HTTP/1.1",
+          host,
+          "Content-Type: application/json",
+          "Content-Length: 100",
+          "",
+          '{"na',
+        ].join("\r\n"),
+      ),
+      exchange(
+        served.port,
+        [
+          "POST /api/uploads?name=slow.bin HTTP/1.1",
+          host,
+          "Content-Type: application/octet-stream",
+          "Content-Length: 4096",
+          "",
+          "x".repeat(1000),
+        ].join("\r\n"),
+      ),
+    ]);
+    expect(answers.map(statusLines)).toEqual([
+      ["HTTP/1.1 408 "],
+      ["HTTP/1.1 408 "],
+    ]);
+    const logged = () => quietLogger.lines.slice(from);
+    const access = () =>
+      logged()
+        .filter((line) =>
+          /^POST \/api\/(bots|uploads) \d{3}$/.test(line.message),
+        )
+        .map((line) => `${line.level} ${line.message}`)
+        .sort();
+    await until(() => access().length === 2, { what: "the access lines" });
+    // Before the fix: the write's body read "failed Error: aborted", logged
+    // with its stack as a 500, and the upload as a 400 cut off.
+    expect(access()).toEqual([
+      "info POST /api/bots 408",
+      "info POST /api/uploads 408",
+    ]);
+    expect(logged().filter((line) => line.level === "error")).toEqual([]);
+    expect(
+      logged()
+        .filter((line) => line.level === "warn")
+        .map((line) => line.message)
+        .sort(),
+    ).toEqual([
+      "POST /api/bots did not arrive within 0.5 s: answered 408 and closed the connection",
+      "POST /api/uploads did not arrive within 0.8 s: answered 408 and closed the connection",
+    ]);
+  });
+
   it("closes its connection without a 408 when the connection is sending another answer", async () => {
     const host = `Host: 127.0.0.1:${served.port}`;
     // A slow write sent on behind an event stream, on one connection: the
