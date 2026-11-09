@@ -252,6 +252,7 @@ describe("profiles", () => {
       maxRunMinutes: 5,
       maxUsdPerTask: 5,
       maxUsdPerBotPerDay: 20,
+      approveSpendPastThreshold: false,
     });
     expect(patched.sandbox.limits).toEqual({
       execTimeoutMs: 5_000,

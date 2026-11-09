@@ -113,6 +113,11 @@ export const DEFAULT_MAX_USD_PER_BOT_PER_DAY = 20;
  *   profile, copied onto the task (`task.spendCapUsd`) when it is created.
  * - `maxUsdPerBotPerDay`: what each bot on this profile may spend in any
  *   rolling 24 hours, task sessions and direct chat together.
+ * - `approveSpendPastThreshold`: ask the user before spending past
+ *   SPEND_SOFT_THRESHOLD (80%) of a cap (a spend approval). Copied onto a
+ *   task this is the coordinator's profile of, for the task's cap
+ *   (`task.approveSpendPastThreshold`); read live for this profile's bots'
+ *   own daily cap. Off by default, and parsed as off from stored profiles.
  * Caps count model calls with a listed price only (see `usageSchema`).
  */
 export const profileBudgetsSchema = z.object({
@@ -122,6 +127,7 @@ export const profileBudgetsSchema = z.object({
   maxUsdPerBotPerDay: spendCapUsdSchema
     .nullable()
     .default(DEFAULT_MAX_USD_PER_BOT_PER_DAY),
+  approveSpendPastThreshold: z.boolean().default(false),
 });
 
 /**
@@ -231,6 +237,8 @@ export const updateRuntimeProfileCommandObjectSchema = z
         maxRunMinutes: maxRunMinutesSchema,
         maxUsdPerTask: spendCapUsdSchema.nullable(),
         maxUsdPerBotPerDay: spendCapUsdSchema.nullable(),
+        /** Omitted: the stored value is kept, so an older editor never turns it off. */
+        approveSpendPastThreshold: z.boolean(),
       })
       .partial(),
     approvals: approvalRulesSchema,

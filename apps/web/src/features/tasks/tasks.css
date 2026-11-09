@@ -1005,6 +1005,35 @@
   color: var(--ink-muted);
 }
 
+/* A checkbox in a task form: "Ask before spending past 80% of a cap". */
+.task-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  width: fit-content;
+  font-size: var(--fs-ui);
+  cursor: pointer;
+}
+
+.task-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ink);
+}
+
+.task-check input:focus-visible {
+  outline: 1px solid var(--ink-2);
+  outline-offset: 2px;
+}
+
+/* Phones: the label is a 44px touch target. */
+@media (max-width: 759px) {
+  .task-check {
+    min-height: 44px;
+  }
+}
+
 /* ── Verification ──────────────────────────────────────────────────────── */
 .verification {
   display: flex;
@@ -1223,6 +1252,14 @@
   font-family: var(--font-mono);
   font-size: var(--fs-meta);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A spend approval's question: amounts, no call. */
+.approval-card__question {
+  margin: 0;
+  font-size: var(--fs-ui);
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 

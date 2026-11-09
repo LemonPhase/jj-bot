@@ -56,11 +56,8 @@ export const botSpentUsd = (exec: Executor, botId: string, now: Date) =>
 export const instanceSpentUsd = (exec: Executor, now: Date) =>
   spent(exec, gt(usage.createdAt, new Date(now.getTime() - DAY_MS)));
 
-/** A bot's cap over any 24 hours, from its profile (else the default profile). */
-export async function botCapUsd(
-  exec: Executor,
-  botId: string,
-): Promise<{ name: string; capUsd: number | null }> {
+/** A bot's budgets: its own profile's, else the default profile's, else the defaults. */
+async function botBudgets(exec: Executor, botId: string) {
   const [bot] = await exec
     .select({ name: bots.name, profileId: bots.runtimeProfileId })
     .from(bots)
@@ -69,22 +66,43 @@ export async function botCapUsd(
   const budgets = profile
     ? profileSettings(profile).budgets
     : profileBudgetsSchema.parse({});
-  return { name: bot?.name ?? "The bot", capUsd: budgets.maxUsdPerBotPerDay };
+  return { name: bot?.name ?? "The bot", budgets };
 }
 
-/** The task cap a new task of this coordinator gets: its profile's `maxUsdPerTask`. */
-export async function taskCapFor(
+/**
+ * A bot's cap over any 24 hours, from its profile (else the default
+ * profile), and whether that profile asks before spending past
+ * SPEND_SOFT_THRESHOLD of it.
+ */
+export async function botCapUsd(
+  exec: Executor,
+  botId: string,
+): Promise<{
+  name: string;
+  capUsd: number | null;
+  approveSpendPastThreshold: boolean;
+}> {
+  const { name, budgets } = await botBudgets(exec, botId);
+  return {
+    name,
+    capUsd: budgets.maxUsdPerBotPerDay,
+    approveSpendPastThreshold: budgets.approveSpendPastThreshold,
+  };
+}
+
+/**
+ * What a new task of this coordinator gets from its profile: the cap
+ * (`maxUsdPerTask`) and whether to ask before spending past 80% of it.
+ */
+export async function taskSpendFor(
   exec: Executor,
   coordinatorBotId: string,
-): Promise<number | null> {
-  const [bot] = await exec
-    .select({ profileId: bots.runtimeProfileId })
-    .from(bots)
-    .where(eq(bots.id, coordinatorBotId));
-  const profile = await profileFor(exec, bot?.profileId ?? null);
-  return (
-    profile ? profileSettings(profile).budgets : profileBudgetsSchema.parse({})
-  ).maxUsdPerTask;
+): Promise<{ capUsd: number | null; approveSpendPastThreshold: boolean }> {
+  const { budgets } = await botBudgets(exec, coordinatorBotId);
+  return {
+    capUsd: budgets.maxUsdPerTask,
+    approveSpendPastThreshold: budgets.approveSpendPastThreshold,
+  };
 }
 
 const reached = (spentUsd: number, capUsd: number | null): capUsd is number =>

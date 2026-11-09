@@ -20,7 +20,7 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { type TemplateDialogRequest, useShell } from "../shell/ShellContext";
 import { ChecksEditor } from "../tasks/ChecksEditor";
-import { readCapInput } from "../tasks/SpendControl";
+import { readCapInput } from "../tasks/spendInput";
 import { rosterOf, TeamPicker } from "../tasks/TeamPicker";
 import {
   type CheckDraft,

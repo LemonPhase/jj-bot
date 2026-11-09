@@ -24,6 +24,7 @@ import {
   mcpServerSchema,
   type TaskEvent,
   type TaskView,
+  type ToolApproval,
 } from "@jj/contracts";
 import {
   JOB_KINDS,
@@ -758,7 +759,10 @@ describe("MCP calls", () => {
       coordinatorBotId: bot.id,
     });
     const pendingOf = (view: TaskView) =>
-      view.approvals.find((approval) => approval.status === "pending");
+      view.approvals.find(
+        (approval): approval is ToolApproval =>
+          approval.kind === "tool" && approval.status === "pending",
+      );
     const first = await untilTask(
       engine,
       task.id,

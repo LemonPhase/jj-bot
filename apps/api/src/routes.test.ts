@@ -144,7 +144,7 @@ describe("bootstrap, models and drivers", () => {
     const bootstrap = bootstrapSchema.parse(body);
     expect(bootstrap).toMatchObject({
       mode: "backend",
-      contractVersion: "1.13.0",
+      contractVersion: "1.14.0",
       defaultModel: "scripted/team",
       capabilities: {
         agentExecution: true,
@@ -1135,6 +1135,80 @@ describe("spend caps and usage", () => {
       "NOT_FOUND",
     );
   });
+
+  it("asks before spending past 80% of the cap when the task says so, and answers once", async () => {
+    const created = await t.call("POST", "/api/bots", {
+      name: "Prudence",
+      model: "scripted/team-priced",
+    });
+    const prudence = created.body.bot.id as string;
+    const { body } = await t.call("POST", "/api/tasks", {
+      goal: `Write notes-prudence.md: ${Array.from({ length: 40 }, (_, i) => `run \`echo ${i}\``).join(", ")}.`,
+      coordinatorBotId: prudence,
+      spendCapUsd: 0.05,
+      approveSpendPastThreshold: true,
+    });
+    const task = taskSchema.parse(body.task);
+    expect(task.approveSpendPastThreshold).toBe(true);
+    const held = await untilTask(
+      t,
+      task.id,
+      (view) =>
+        view.task.status === "waiting" &&
+        view.approvals.some(
+          (approval) =>
+            approval.kind === "spend" && approval.status === "pending",
+        ),
+      "the spend approval",
+    );
+    const approval = held.approvals.find(
+      (candidate) => candidate.kind === "spend",
+    );
+    expect(approval).toMatchObject({
+      kind: "spend",
+      scope: "task",
+      capUsd: 0.05,
+      thresholdUsd: 0.04,
+    });
+    const listed = await t.call("GET", "/api/tasks");
+    expect(
+      z
+        .array(taskSummarySchema)
+        .parse(listed.body.tasks)
+        .find((summary) => summary.id === task.id)?.pendingApprovals,
+    ).toEqual([
+      expect.objectContaining({
+        kind: "spend",
+        summary: "Spend past $0.04 of the task's $0.05 cap",
+        shownInFull: true,
+      }),
+    ]);
+    // PATCH carries the option alone, and keeps it when omitted.
+    const unchanged = await t.call("PATCH", `/api/tasks/${task.id}`, {
+      spendCapUsd: 0.05,
+    });
+    expect(
+      taskSchema.parse(unchanged.body.task).approveSpendPastThreshold,
+    ).toBe(true);
+    const route = `/api/tasks/${task.id}/approvals/${approval?.id}`;
+    const answered = await t.call("POST", route, { decision: "approve" });
+    expect(answered.status).toBe(200);
+    expect(answered.body.approval).toMatchObject({
+      kind: "spend",
+      status: "approved",
+    });
+    expectError(
+      await t.call("POST", route, { decision: "deny" }),
+      409,
+      "APPROVAL_NOT_PENDING",
+    );
+    await untilTask(
+      t,
+      task.id,
+      (view) => view.events.some((event) => event.type === "spend.capped"),
+      "the task to run on to its cap",
+    );
+  }, 60_000);
 });
 
 describe("artifacts", () => {

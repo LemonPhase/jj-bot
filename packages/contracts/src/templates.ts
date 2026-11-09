@@ -90,11 +90,12 @@ export const taskTemplateSchema = taskTemplateObjectSchema.superRefine(
 /**
  * The create command before participant normalization: the create-task
  * fields, with a title. A template carries no files: uploads are given at
- * each start.
+ * each start. A task started from a template takes the coordinator's
+ * profile's `approveSpendPastThreshold`.
  */
 export const createTaskTemplateCommandObjectSchema =
   createTaskCommandObjectSchema
-    .omit({ uploads: true })
+    .omit({ uploads: true, approveSpendPastThreshold: true })
     .extend({ title: titleSchema });
 
 /**

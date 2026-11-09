@@ -6,10 +6,17 @@ import {
   MCP_TOOL_PREFIX,
   matchingApprovalRule,
 } from "@jj/contracts";
-import { type RunRow, type SessionRow, sessions, type Tx, tasks } from "@jj/db";
+import {
+  enqueue,
+  type RunRow,
+  type SessionRow,
+  sessions,
+  type Tx,
+  tasks,
+} from "@jj/db";
 import { and, eq, inArray } from "drizzle-orm";
 import type { EngineContext } from "../context";
-import type { Attribution } from "../events";
+import { type Attribution, wakeWorkers } from "../events";
 import type {
   HeldCallDecision,
   PendingToolCall,
@@ -19,12 +26,12 @@ import {
   claimApproval,
   decisionInput,
   notRunText,
-  pendingApproval,
   pendingApprovals,
   requestApproval,
   unresolvedDecision,
 } from "../services/approvals";
 import { lockTask, updateSession, updateTask } from "../services/sessions";
+import { holdingApproval } from "../services/spend-approvals";
 import { COMPLETION_SET_ASIDE } from "./prompts";
 import { attributionOf, type RunContext, writeRun } from "./run-context";
 import { closeRun, closeStaleRun } from "./runs";
@@ -103,7 +110,13 @@ export async function runDecision(
   return { decision: decisionInput(row), inputs: [COMPLETION_SET_ASIDE] };
 }
 
-/** The run ended `held`: the session waits for the user's answer, without a run. */
+/**
+ * The run ended `held`: the session waits for the user's answer, without a
+ * run. Call it with the task locked. An answer (or expiry) that landed after
+ * the hold and before this write found the session still running, so it
+ * woke nobody: checked again here, a session nothing holds any more is
+ * woken at once, and its next run goes on.
+ */
 export async function parkHeld(
   tx: Tx,
   rc: RunContext,
@@ -119,20 +132,37 @@ export async function parkHeld(
     { status: "waiting", waitingFor: "approval" },
     attribution,
   );
+  if (await holdingApproval(tx, session)) return;
+  await enqueue(tx, {
+    kind: "session.run",
+    taskId: session.taskId,
+    sessionId: session.id,
+  });
+  await wakeWorkers(tx, session.taskId);
 }
 
 /**
- * At a run's launch: a session that holds a pending approval does not run.
- * It waits for the answer (again, after a crash that left its run open),
- * and its inbox waits with it. True when it was parked.
+ * At a run's launch: a session that a pending approval holds (its own held
+ * call, or a spend approval that covers it) does not run. It waits for the
+ * answer (again, after a crash that left its run open), and its inbox waits
+ * with it. True when it was parked.
+ *
+ * A recovery is not parked by a spend approval: parked, it would lose its
+ * reason, and the wake after the answer would find a turn that had ended
+ * with nothing left to do. It runs as a recovery instead: a turn that had
+ * ended finishes (its report is sent) without a model call, and a call it
+ * does need waits at the gate like any other.
  */
 export async function parkIfHeld(
   tx: Tx,
   ctx: EngineContext,
   session: SessionRow,
   stale: RunRow | undefined,
+  recovering: boolean,
 ): Promise<boolean> {
-  if (!(await pendingApproval(tx, session.id))) return false;
+  const holding = await holdingApproval(tx, session);
+  if (!holding || (recovering && holding.kind === "spend")) return false;
+  // Only a recovery has a stale run, so here it is held by its own call.
   if (stale)
     await closeStaleRun(
       tx,

@@ -480,6 +480,7 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
     participantBotIds: string[];
     title?: string;
     spendCapUsd?: number | null;
+    approveSpendPastThreshold?: boolean;
     templateId?: string | null;
     scheduleId?: string | null;
   }): TaskState => {
@@ -501,6 +502,9 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
         input.spendCapUsd !== undefined
           ? input.spendCapUsd
           : budgetsOf(input.coordinatorBotId).maxUsdPerTask,
+      approveSpendPastThreshold:
+        input.approveSpendPastThreshold ??
+        budgetsOf(input.coordinatorBotId).approveSpendPastThreshold,
       templateId: input.templateId ?? null,
       scheduleId: input.scheduleId ?? null,
       createdAt,
@@ -2007,9 +2011,14 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
       stopState(state, reason ?? null);
       return clone(state.view.task);
     },
-    // As services/tasks.ts `updateTaskSettings`: the cap only; it continues nothing.
+    // As services/tasks.ts `updateTaskSettings`: the cap and the question
+    // past 80% of it; it continues nothing. The demo's bots spend nothing,
+    // so no spend approval is ever pending to expire.
     updateTask: async (taskId, command) => {
-      const { spendCapUsd } = validate(updateTaskCommandSchema, command);
+      const { spendCapUsd, approveSpendPastThreshold } = validate(
+        updateTaskCommandSchema,
+        command,
+      );
       const state = getState(taskId);
       const { task } = state.view;
       if (task.status === "cancelled" || task.cancelRequestedAt)
@@ -2021,13 +2030,23 @@ export function createDemoApi(options: DemoApiOptions = {}): JJApi {
           undefined,
           409,
         );
-      if (spendCapUsd !== undefined && spendCapUsd !== task.spendCapUsd) {
-        new Ops(state.host).updateTask({ spendCapUsd });
+      const patch = {
+        ...(spendCapUsd !== undefined && spendCapUsd !== task.spendCapUsd
+          ? { spendCapUsd }
+          : {}),
+        ...(approveSpendPastThreshold !== undefined &&
+        approveSpendPastThreshold !== task.approveSpendPastThreshold
+          ? { approveSpendPastThreshold }
+          : {}),
+      };
+      if (Object.keys(patch).length > 0) {
+        new Ops(state.host).updateTask(patch);
         notify({ type: "tasks.changed", taskId });
       }
       return clone(state.view.task);
     },
-    // The demo's scripted bots never make a call that needs approval.
+    // The demo's scripted bots never make a call that needs approval, and
+    // spend nothing, so no spend approval is asked either.
     decideApproval: async (taskId, approvalId, command) => {
       validate(decideApprovalCommandSchema, command);
       const state = getState(taskId);
