@@ -1027,6 +1027,13 @@
   outline-offset: 2px;
 }
 
+/* Phones: the label is a 44px touch target. */
+@media (max-width: 759px) {
+  .task-check {
+    min-height: 44px;
+  }
+}
+
 /* ── Verification ──────────────────────────────────────────────────────── */
 .verification {
   display: flex;
