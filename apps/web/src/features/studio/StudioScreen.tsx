@@ -96,12 +96,19 @@ function Studio({ bot }: { bot: Bot | null }) {
   const dirty = bot ? update !== null : true;
   const busy = save.kind === "busy";
 
-  // While nothing is edited here, follow changes saved elsewhere.
+  // While nothing is edited here, follow changes saved elsewhere: a stored
+  // bot newer than the one the draft was taken from. Never on mount, where
+  // the draft already is the stored bot: React can run this effect after a
+  // first edit is made (it only runs effects before that edit renders), and
+  // a reset queued then would throw the edit away.
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const updatedAt = bot?.updatedAt;
+  const followedAt = useRef(updatedAt);
   useEffect(() => {
-    if (bot && !dirtyRef.current)
+    if (!bot || updatedAt === followedAt.current) return;
+    followedAt.current = updatedAt;
+    if (!dirtyRef.current)
       dispatch({ type: "reset", draft: draftFromBot(bot) });
     // `updatedAt` stands for every stored field of the bot.
   }, [updatedAt]);
