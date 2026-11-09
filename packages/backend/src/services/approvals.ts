@@ -4,7 +4,9 @@
 // run until the user decides. Approving runs the call once when the session
 // resumes; denying, expiry (a newer goal version) and cancellation never run
 // it. The record is the single source for what the user sees: every change
-// emits `approval.updated` with the whole record.
+// emits `approval.updated` with the whole record. Spend approvals (held
+// spend past a cap's soft threshold) share the table, the events and the
+// answer; spend-approvals.ts has the rest of them.
 import {
   type Approval,
   type ApprovalOutcome,
@@ -33,32 +35,54 @@ import { DomainError, notFound, parseCommand } from "../errors";
 import { type Attribution, emit, wakeWorkers } from "../events";
 import type { HeldCallDecision, PendingToolCall } from "../ports";
 import type { Redactor } from "../redact";
+import { toSpendApproval, wakeSpendHeld } from "./spend-approvals";
 import { recordTaskUpdate } from "./task-updates";
 
 const clip = (text: string, limit: number) =>
   text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 const isoOrNull = (date: Date | null) => (date ? date.toISOString() : null);
 
+/** A tool approval's row: its tool columns are set (`approvals_kind_columns_check`). */
+export type ToolApprovalRow = ApprovalRow & {
+  kind: "tool";
+  toolCallId: string;
+  tool: string;
+  summary: string;
+  args: JsonObject;
+  rule: JsonObject;
+  goalVersion: number;
+};
+
+/** The row as a tool approval's, or undefined for a spend approval's. */
+export const asToolRow = (row: ApprovalRow): ToolApprovalRow | undefined =>
+  row.kind === "tool" ? (row as ToolApprovalRow) : undefined;
+
+/** Only tool approvals: a spend approval holds no call. */
+const isTool = eq(approvals.kind, "tool");
+
 export function toApproval(row: ApprovalRow): Approval {
+  const tool = asToolRow(row);
+  if (!tool) return toSpendApproval(row);
   return {
-    id: row.id,
-    taskId: row.taskId,
-    sessionId: row.sessionId,
-    runId: row.runId,
-    botId: row.botId,
-    toolCallId: clip(row.toolCallId, 128),
-    tool: row.tool,
-    summary: row.summary,
-    args: row.args,
-    rule: approvalRuleSchema.parse(row.rule),
-    text: row.text,
-    goalVersion: row.goalVersion,
-    status: row.status,
-    reason: row.reason,
-    outcome: (row.outcome as ApprovalOutcome | null) ?? null,
-    createdAt: row.createdAt.toISOString(),
-    decidedAt: isoOrNull(row.decidedAt),
-    startedAt: isoOrNull(row.startedAt),
+    kind: "tool",
+    id: tool.id,
+    taskId: tool.taskId,
+    sessionId: tool.sessionId,
+    runId: tool.runId,
+    botId: tool.botId,
+    toolCallId: clip(tool.toolCallId, 128),
+    tool: tool.tool,
+    summary: tool.summary,
+    args: tool.args,
+    rule: approvalRuleSchema.parse(tool.rule),
+    text: tool.text,
+    goalVersion: tool.goalVersion,
+    status: tool.status,
+    reason: tool.reason,
+    outcome: (tool.outcome as ApprovalOutcome | null) ?? null,
+    createdAt: tool.createdAt.toISOString(),
+    decidedAt: isoOrNull(tool.decidedAt),
+    startedAt: isoOrNull(tool.startedAt),
   };
 }
 
@@ -72,6 +96,7 @@ type ApprovalPatch = Partial<
     ApprovalRow,
     | "status"
     | "reason"
+    | "spend"
     | "outcome"
     | "decidedAt"
     | "startedRunId"
@@ -80,21 +105,28 @@ type ApprovalPatch = Partial<
   >
 >;
 
-/** Updates the approval and emits `approval.updated` with the whole record. */
-async function updateApproval(
+/**
+ * Updates the approval and emits `approval.updated` with the whole record.
+ * Undefined, with nothing changed, when its status moved since `current`.
+ */
+export async function updateApproval(
   tx: Tx,
   ctx: EngineContext,
   current: ApprovalRow,
   patch: ApprovalPatch,
   attribution: Attribution = attributionOf(current),
-): Promise<ApprovalRow> {
+): Promise<ApprovalRow | undefined> {
+  // Only while its status is still the one `current` was read with: an
+  // answer, expiry or cancellation that won meanwhile is never overwritten,
+  // and nothing is emitted for the loser.
   const [row] = await tx
     .update(approvals)
     .set(patch)
-    .where(eq(approvals.id, current.id))
+    .where(
+      and(eq(approvals.id, current.id), eq(approvals.status, current.status)),
+    )
     .returning();
-  if (!row)
-    throw new Error(`Approval ${current.id} vanished during an update.`);
+  if (!row) return undefined;
   await emit(tx, ctx, row.taskId, {
     type: "approval.updated",
     payload: { approval: toApproval(row), previousStatus: current.status },
@@ -104,9 +136,8 @@ async function updateApproval(
   return row;
 }
 
-/** What the coordinator's chat is told about a request. */
 /** What the coordinator's chat is told, hidden characters written out as on the cards. */
-function updateText(row: ApprovalRow, botName: string): string {
+function updateText(row: ToolApprovalRow, botName: string): string {
   return [
     `${botName} wants to run ${row.tool}: ${visibleText(row.summary)}`,
     `It needs approval under the rule for ${describeApprovalRule(approvalRuleSchema.parse(row.rule))}.`,
@@ -137,14 +168,15 @@ export async function requestApproval(
     rule: ApprovalRule;
     redact: Redactor;
   },
-): Promise<ApprovalRow> {
+): Promise<ToolApprovalRow> {
   const { task, session, call } = input;
   const stale = task.goalVersion > input.goalVersion;
   const now = ctx.clock();
-  const [row] = await tx
+  const [inserted] = await tx
     .insert(approvals)
     .values({
       id: ctx.ids("approval"),
+      kind: "tool",
       taskId: task.id,
       sessionId: session.id,
       runId: input.runId,
@@ -167,6 +199,7 @@ export async function requestApproval(
         : {}),
     })
     .returning();
+  const row = inserted && asToolRow(inserted);
   if (!row) throw new Error("The approval insert returned no row.");
   await emit(tx, ctx, task.id, {
     type: "approval.requested",
@@ -190,33 +223,38 @@ export async function requestApproval(
   return row;
 }
 
-/** The session's pending approval, if it holds one. */
+/** The session's own pending tool approval: the call it holds, if any. */
 export async function pendingApproval(
   exec: Executor,
   sessionId: string,
-): Promise<ApprovalRow | undefined> {
-  const [row] = await exec
-    .select()
-    .from(approvals)
-    .where(
-      and(eq(approvals.sessionId, sessionId), eq(approvals.status, "pending")),
-    );
-  return row;
-}
-
-/**
- * The session's decided approval whose result has not reached its
- * transcript yet: the decision its next run applies.
- */
-export async function unresolvedDecision(
-  exec: Executor,
-  sessionId: string,
-): Promise<ApprovalRow | undefined> {
+): Promise<ToolApprovalRow | undefined> {
   const [row] = await exec
     .select()
     .from(approvals)
     .where(
       and(
+        isTool,
+        eq(approvals.sessionId, sessionId),
+        eq(approvals.status, "pending"),
+      ),
+    );
+  return row && asToolRow(row);
+}
+
+/**
+ * The session's decided tool approval whose result has not reached its
+ * transcript yet: the decision its next run applies.
+ */
+export async function unresolvedDecision(
+  exec: Executor,
+  sessionId: string,
+): Promise<ToolApprovalRow | undefined> {
+  const [row] = await exec
+    .select()
+    .from(approvals)
+    .where(
+      and(
+        isTool,
         eq(approvals.sessionId, sessionId),
         inArray(approvals.status, ["approved", "denied", "expired"]),
         isNull(approvals.resolvedAt),
@@ -224,7 +262,7 @@ export async function unresolvedDecision(
     )
     .orderBy(asc(approvals.createdAt))
     .limit(1);
-  return row;
+  return row && asToolRow(row);
 }
 
 /** The text a call that will not run gets as its error result. */
@@ -242,7 +280,7 @@ export function notRunText(row: ApprovalRow): string {
 }
 
 /** The decision a run applies for this approval. */
-export function decisionInput(row: ApprovalRow): HeldCallDecision {
+export function decisionInput(row: ToolApprovalRow): HeldCallDecision {
   return row.status === "approved"
     ? { toolCallId: row.toolCallId, approved: true }
     : { toolCallId: row.toolCallId, approved: false, text: notRunText(row) };
@@ -264,6 +302,7 @@ export async function claimApproval(
     .from(approvals)
     .where(
       and(
+        isTool,
         eq(approvals.sessionId, sessionId),
         eq(approvals.toolCallId, toolCallId),
       ),
@@ -271,13 +310,14 @@ export async function claimApproval(
     .for("update");
   if (!current || current.status !== "approved" || current.startedAt)
     return false;
-  await updateApproval(
+  const claimed = await updateApproval(
     tx,
     ctx,
     current,
     { startedRunId: runId, startedAt: ctx.clock() },
     { ...attributionOf(current), runId },
   );
+  if (!claimed) return false;
   return true;
 }
 
@@ -318,6 +358,7 @@ export async function noteResolved(
     .from(approvals)
     .where(
       and(
+        isTool,
         eq(approvals.sessionId, sessionId),
         eq(approvals.toolCallId, toolCallId),
         isNull(approvals.resolvedAt),
@@ -369,9 +410,10 @@ async function wake(tx: Tx, row: ApprovalRow) {
 
 /**
  * `POST /api/tasks/:taskId/approvals/:approvalId`: the user's answer.
- * Approving or denying wakes the session; an approval that is no longer
- * pending answers 409 APPROVAL_NOT_PENDING, and a stopping or stopped task
- * 409 TASK_TERMINAL.
+ * Approving or denying wakes the session, or, for a spend approval, every
+ * session of the task waiting for approval without a call of its own; an
+ * approval that is no longer pending answers 409 APPROVAL_NOT_PENDING, and a
+ * stopping or stopped task 409 TASK_TERMINAL.
  */
 export async function decideApproval(
   ctx: EngineContext,
@@ -417,16 +459,20 @@ export async function decideApproval(
       reason: command.decision === "deny" ? (command.reason ?? null) : null,
       decidedAt: ctx.clock(),
     });
-    await wake(tx, row);
+    // The row is locked above, so its status cannot have moved.
+    if (!row) throw new Error(`Approval ${current.id} changed under its lock.`);
+    if (row.kind === "spend") await wakeSpendHeld(tx, row.taskId);
+    else await wake(tx, row);
     return { approval: toApproval(row) };
   });
 }
 
 /**
- * A goal (or plan) change: every approval of the task made at an older
+ * A goal (or plan) change: every tool approval of the task made at an older
  * version that has not run, pending or approved and not started, expires,
  * and its session wakes to tell the model. A call approved for the old goal
- * never runs for the new one.
+ * never runs for the new one. Spend approvals are about the cap, not the
+ * goal: they stay as they are.
  */
 export async function expireApprovals(
   tx: Tx,
@@ -439,6 +485,7 @@ export async function expireApprovals(
     .from(approvals)
     .where(
       and(
+        isTool,
         eq(approvals.taskId, taskId),
         inArray(approvals.status, ["pending", "approved"] as ApprovalStatus[]),
         isNull(approvals.startedAt),
@@ -457,13 +504,14 @@ export async function expireApprovals(
           : `the task's goal or plan changed (now goal version ${goalVersion}) before it ran.`,
       decidedAt: current.decidedAt ?? ctx.clock(),
     });
-    await wake(tx, row);
+    if (row) await wake(tx, row);
   }
 }
 
 /**
- * A session finished (stopped, failed or completed): its pending approval,
- * or an approved call that has not started, is cancelled and never runs. An
+ * A session finished (stopped, failed or completed): its pending tool
+ * approval, or an approved call that has not started, is cancelled and never
+ * runs (a spend approval is the task's, cancelled when the task finishes). An
  * approved call a run started and never reported (that run stopped before
  * its result was stored) gets an unknown outcome: it may have run, and no
  * run is left to say.
@@ -479,6 +527,7 @@ export async function cancelApprovals(
     .from(approvals)
     .where(
       and(
+        isTool,
         eq(approvals.sessionId, session.id),
         inArray(approvals.status, ["pending", "approved"] as ApprovalStatus[]),
         isNull(approvals.startedAt),
@@ -508,6 +557,7 @@ export async function cancelApprovals(
     .from(approvals)
     .where(
       and(
+        isTool,
         eq(approvals.sessionId, session.id),
         eq(approvals.status, "approved"),
         isNotNull(approvals.startedAt),

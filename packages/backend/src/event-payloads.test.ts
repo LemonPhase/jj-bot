@@ -12,6 +12,7 @@ import {
   type TaskEventOf,
   type TaskEventType,
   TOOL_OUTPUT_PREVIEW_LIMIT,
+  type ToolApproval,
   VERIFICATION_PLAN_LIMIT,
 } from "@jj/contracts";
 import { describe, expect, it } from "vitest";
@@ -168,7 +169,9 @@ describe("clippedPayload", () => {
     expect(validPayload("approval.requested", clipped)).toBe(true);
     const args = clipped?.approval.args as { rows: number[] };
     expect(args.rows.slice(0, 3)).toEqual([0, 1, 2]);
-    expect(clipped?.approval.summary).toBe(payload.approval.summary);
+    expect((clipped?.approval as ToolApproval | undefined)?.summary).toBe(
+      (payload.approval as ToolApproval).summary,
+    );
   });
 
   it("clips a held call's arguments however deeply they nest", () => {

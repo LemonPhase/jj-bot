@@ -80,6 +80,7 @@ export const task = (over: Partial<Task> = {}): Task => ({
   cancelRequestedAt: null,
   verificationPlan: null,
   spendCapUsd: null,
+  approveSpendPastThreshold: false,
   templateId: null,
   scheduleId: null,
   createdAt: at(0),

@@ -62,6 +62,7 @@ const stored: RuntimeProfile = {
     maxRunMinutes: 30,
     maxUsdPerTask: 5,
     maxUsdPerBotPerDay: null,
+    approveSpendPastThreshold: false,
   },
   approvals: [],
   secrets: [],
@@ -127,6 +128,7 @@ describe("profile drafts", () => {
         maxRunMinutes: 30,
         maxUsdPerTask: 5,
         maxUsdPerBotPerDay: 20,
+        approveSpendPastThreshold: false,
       },
       isDefault: true,
     });

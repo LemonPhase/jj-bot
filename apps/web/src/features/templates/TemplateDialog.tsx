@@ -25,7 +25,7 @@ import {
   draftsFromPlan,
   planFromDrafts,
 } from "../tasks/checkDrafts";
-import { readCapInput } from "../tasks/SpendControl";
+import { readCapInput } from "../tasks/spendInput";
 import { rosterOf, TeamPicker } from "../tasks/TeamPicker";
 import {
   blankDraft,

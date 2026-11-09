@@ -67,6 +67,8 @@ export const APPROVAL_STATUSES = [
   "expired",
   "cancelled",
 ] as const;
+/** What an approval holds: a tool call, or spend past the threshold of a cap. */
+export const APPROVAL_KINDS = ["tool", "spend"] as const;
 export const ARTIFACT_KINDS = ["file", "output"] as const;
 /** Where an uploaded file stands in the workspace; set exactly on uploaded artifacts. */
 export const UPLOAD_STATES = ["pending", "placed", "failed"] as const;
@@ -122,6 +124,7 @@ export type AuthorKind = (typeof AUTHOR_KINDS)[number];
 export type ConversationRole = (typeof CONVERSATION_ROLES)[number];
 export type TaskUpdateEvent = (typeof TASK_UPDATE_EVENTS)[number];
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 export type UploadState = (typeof UPLOAD_STATES)[number];
 export type CheckMethod = (typeof CHECK_METHODS)[number];
@@ -264,6 +267,10 @@ export const tasks = pgTable(
     cancelRequestedAt: optionalTime("cancel_requested_at"),
     /** The task's spend cap in US dollars (`task.spendCapUsd`); null for none. */
     spendCapUsd: doublePrecision("spend_cap_usd"),
+    /** Ask before spending past 80% of the cap (`task.approveSpendPastThreshold`). */
+    approveSpendPastThreshold: boolean("approve_spend_past_threshold")
+      .notNull()
+      .default(false),
     /**
      * The user's verification plan for the current goal version (the
      * contract's `verificationPlanSchema`); null for none. Its history is in
@@ -953,18 +960,25 @@ export const approvals = pgTable(
     sessionId: text("session_id")
       .notNull()
       .references(() => sessions.id, { onDelete: "cascade" }),
+    /** `tool`: a held tool call (the tool columns); `spend`: held spend (`spend`). */
+    kind: text("kind").$type<ApprovalKind>().notNull().default("tool"),
     /** The run that made the call (attribution, not a foreign key). */
     runId: text("run_id").notNull(),
     botId: text("bot_id").notNull(),
-    toolCallId: text("tool_call_id").notNull(),
-    tool: text("tool").notNull(),
-    summary: text("summary").notNull(),
+    toolCallId: text("tool_call_id"),
+    tool: text("tool"),
+    summary: text("summary"),
     /** The call's arguments, redacted. */
-    args: jsonb("args").$type<JsonObject>().notNull(),
+    args: jsonb("args").$type<JsonObject>(),
     /** The profile rule that asked for approval. */
-    rule: jsonb("rule").$type<JsonObject>().notNull(),
+    rule: jsonb("rule").$type<JsonObject>(),
     text: text("text").notNull().default(""),
-    goalVersion: integer("goal_version").notNull(),
+    goalVersion: integer("goal_version"),
+    /**
+     * A spend approval's cap and amounts: `{ scope, spentUsd, capUsd,
+     * thresholdUsd }` (the contract's `spendApprovalSchema` fields).
+     */
+    spend: jsonb("spend").$type<SpendApprovalColumn>(),
     status: text("status").$type<ApprovalStatus>().notNull().default("pending"),
     reason: text("reason"),
     /** How an approved call ended, once its result was stored. */
@@ -979,11 +993,40 @@ export const approvals = pgTable(
     unique("approvals_session_call").on(t.sessionId, t.toolCallId),
     uniqueIndex("approvals_one_pending")
       .on(t.sessionId)
-      .where(sql`${t.status} = 'pending'`),
+      .where(sql`${t.kind} = 'tool' and ${t.status} = 'pending'`),
+    // One pending spend approval per cap value: task, scope, the bot on bot
+    // scope, and the cap.
+    uniqueIndex("approvals_one_pending_spend")
+      .on(
+        t.taskId,
+        sql`(${t.spend} ->> 'scope')`,
+        sql`(case when ${t.spend} ->> 'scope' = 'bot' then ${t.botId} else '' end)`,
+        sql`((${t.spend} ->> 'capUsd')::numeric)`,
+      )
+      .where(sql`${t.kind} = 'spend' and ${t.status} = 'pending'`),
     index("approvals_task_idx").on(t.taskId, t.createdAt),
     check("approvals_status_check", oneOf(t.status, APPROVAL_STATUSES)),
+    check("approvals_kind_check", oneOf(t.kind, APPROVAL_KINDS)),
+    check(
+      "approvals_kind_columns_check",
+      sql`case when ${t.kind} = 'tool' then ${t.toolCallId} is not null and ${t.tool} is not null and ${t.summary} is not null and ${t.args} is not null and ${t.rule} is not null and ${t.goalVersion} is not null and ${t.spend} is null else ${t.spend} is not null and ${t.toolCallId} is null and ${t.tool} is null and ${t.args} is null and ${t.rule} is null and ${t.spend} ->> 'scope' in ('task', 'bot') end`,
+    ),
   ],
 );
+
+/** `approvals.spend`: a spend approval's cap and amounts, and why it expired. */
+export interface SpendApprovalColumn {
+  scope: "task" | "bot";
+  spentUsd: number;
+  capUsd: number;
+  thresholdUsd: number;
+  /** Set when it expires (`SpendExpiryCause` in the contracts). */
+  expiredBecause?:
+    | "cap_changed"
+    | "cap_removed"
+    | "asking_turned_off"
+    | "cap_reached";
+}
 
 export const jobs = pgTable(
   "jobs",

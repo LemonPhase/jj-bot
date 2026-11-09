@@ -255,6 +255,25 @@ describe("ChatResponder with the scripted model", () => {
       '"Release" needs your approval: Nova wants to run bash: git push origin main. Approve or deny it on the card below.',
     );
   });
+
+  it("tells spend waiting for approval past a cap's threshold, and points at the card", async () => {
+    const { tools } = chatTools();
+    const answer = await reply(
+      [
+        "[Task update] This comes from JJ Bot, not from the user: a task you coordinate passed 80% of a spend cap and asks the user before spending more: no model call it covers starts until they answer.",
+        'Task: task_7 "Release"',
+        "Status now: waiting for the user.",
+        "The spend, as the task recorded it:",
+        "The task spent $4.02 of its $5.00 cap, past the 80% threshold (Nova was about to make a model call). No model call starts until the user approves spending up to the cap.",
+        "",
+        "Tell the user how much the task spent.",
+      ].join("\n"),
+      tools.filter((tool) => tool.readOnly),
+    );
+    expect(answer.text).toBe(
+      '"Release" needs your approval: The task spent $4.02 of its $5.00 cap, past the 80% threshold (Nova was about to make a model call). No model call starts until the user approves spending up to the cap. Approve or deny it on the card below.',
+    );
+  });
 });
 
 describe("ChatResponder", () => {

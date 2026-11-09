@@ -14,7 +14,8 @@ import {
   unpricedNote,
   usageDetail,
 } from "./format";
-import { readCapInput, SpendControl } from "./SpendControl";
+import { SpendControl } from "./SpendControl";
+import { readCapInput } from "./spendInput";
 
 const at = "2026-11-03T12:00:00.000Z";
 
@@ -62,6 +63,7 @@ function viewWith(
       cancelRequestedAt: null,
       verificationPlan: null,
       spendCapUsd,
+      approveSpendPastThreshold: false,
       templateId: null,
       scheduleId: null,
       createdAt: at,

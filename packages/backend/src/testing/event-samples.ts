@@ -45,6 +45,7 @@ const task = {
     },
   ],
   spendCapUsd: 5,
+  approveSpendPastThreshold: false,
   templateId: null,
   scheduleId: null,
   createdAt: at,
@@ -84,6 +85,7 @@ const message = {
   createdAt: at,
 };
 const approval = {
+  kind: "tool" as const,
   id: "ap1",
   taskId: "t1",
   sessionId: "s1",

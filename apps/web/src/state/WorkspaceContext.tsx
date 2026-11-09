@@ -75,6 +75,8 @@ export interface NewTaskInput {
   verificationPlan?: VerificationPlan | null;
   /** Omitted: the coordinator's profile's cap. Null: no cap. */
   spendCapUsd?: number | null;
+  /** Omitted: the coordinator's profile's choice. */
+  approveSpendPastThreshold?: boolean;
   /** Staged uploads to attach, placed before the coordinator starts. */
   uploads?: UploadEntry[];
 }
@@ -688,6 +690,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         participantBotIds,
         verificationPlan,
         spendCapUsd,
+        approveSpendPastThreshold,
         uploads,
       }) => {
         const [coordinatorBotId] = participantBotIds;
@@ -699,6 +702,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
           participantBotIds,
           ...(verificationPlan ? { verificationPlan } : {}),
           ...(spendCapUsd !== undefined ? { spendCapUsd } : {}),
+          ...(approveSpendPastThreshold !== undefined
+            ? { approveSpendPastThreshold }
+            : {}),
           ...(uploads && uploads.length > 0 ? { uploads } : {}),
         });
         openCreated(task);

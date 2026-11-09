@@ -6,7 +6,7 @@ A task is one durable timeline. Work continues in the same task after its first 
 
 Every user message in a task is steering to the coordinator, posted with `POST /api/tasks/:id/messages`. There is no separate continue or steer endpoint. The message activates the coordinator only; it never re-enqueues the whole roster, and the coordinator decides whom to involve.
 
-Posting to a `waiting`, `completed` or `failed` task continues it. The server emits `task.reopened` with the previous status, and the task record returns to `running` with its result, error and finish time cleared (`task.updated`). The coordinator resumes from its transcript with the new message in context. A coordinator that holds a call for the user's approval is the exception: the message waits in its inbox, nothing reopens, and it reads the message with the user's answer.
+Posting to a `waiting`, `completed` or `failed` task continues it. The server emits `task.reopened` with the previous status, and the task record returns to `running` with its result, error and finish time cleared (`task.updated`). The coordinator resumes from its transcript with the new message in context. A coordinator that an approval holds (a call of its own, or spend past a cap's threshold) is the exception: the message waits in its inbox, nothing reopens, and it reads the message with the user's answer. A message that continues a task after a spend approval was denied starts a new stretch of work, so the next call past the threshold asks again.
 
 ## Terminal tasks
 

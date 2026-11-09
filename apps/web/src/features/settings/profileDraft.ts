@@ -46,6 +46,8 @@ export interface ProfileDraft {
   /** US dollars; empty for no cap. */
   maxUsdPerTask: string;
   maxUsdPerBotPerDay: string;
+  /** Ask the user before spending past 80% of a cap. */
+  approveSpendPastThreshold: boolean;
   /** Calls that wait for the user's approval; an empty match is every call of the tool. */
   approvals: readonly ApprovalRuleDraft[];
   /** Carried as stored; the form does not edit them. */
@@ -98,7 +100,8 @@ export interface DesiredProfile {
   sandbox: { driver: string } & Record<string, unknown>;
   tools: ToolName[];
   secrets: string[];
-  budgets: Record<BudgetKey, number> & Record<SpendCapKey, number | null>;
+  budgets: Record<BudgetKey, number> &
+    Record<SpendCapKey, number | null> & { approveSpendPastThreshold: boolean };
   approvals: ApprovalRule[];
   mcpServers: McpServer[];
   skills: string[];
@@ -122,6 +125,7 @@ export function newProfileDraft(
     maxRunMinutes: String(BUDGETS.maxRunMinutes.default),
     maxUsdPerTask: String(SPEND_CAPS.maxUsdPerTask.default),
     maxUsdPerBotPerDay: String(SPEND_CAPS.maxUsdPerBotPerDay.default),
+    approveSpendPastThreshold: false,
     approvals: [],
     mcpServers: [],
     skills: [],
@@ -144,6 +148,7 @@ export function draftFromProfile(
     maxRunMinutes: String(profile.budgets.maxRunMinutes),
     maxUsdPerTask: capText(profile.budgets.maxUsdPerTask),
     maxUsdPerBotPerDay: capText(profile.budgets.maxUsdPerBotPerDay),
+    approveSpendPastThreshold: profile.budgets.approveSpendPastThreshold,
     approvals: profile.approvals.map((rule) => ({
       tool: rule.tool,
       match: rule.match ?? "",
@@ -228,6 +233,7 @@ export function readProfileDraft(
       draft.maxUsdPerBotPerDay,
       errors,
     ),
+    approveSpendPastThreshold: draft.approveSpendPastThreshold,
   };
   const approvals = readApprovals(draft.approvals, errors);
   if (Object.keys(errors).length > 0) return { errors };
@@ -364,6 +370,12 @@ export function profilePatch(
   for (const key of Object.keys(SPEND_CAPS) as SpendCapKey[])
     if (desired.budgets[key] !== stored.budgets[key])
       budgets[key] = desired.budgets[key];
+  if (
+    desired.budgets.approveSpendPastThreshold !==
+    stored.budgets.approveSpendPastThreshold
+  )
+    budgets.approveSpendPastThreshold =
+      desired.budgets.approveSpendPastThreshold;
   if (Object.keys(budgets).length > 0) patch.budgets = budgets;
 
   // Replaced whole, like `tools`.

@@ -197,8 +197,10 @@ export class FakeExecutor implements RunExecutor {
     let lastText = "";
     for (let turn = 0; turn < input.budgets.maxTurns; turn += 1) {
       if (input.signal.aborted) return { kind: "aborted", reason: "signal" };
-      // Like the runtime: a refused call is never made and ends the run.
+      // Like the runtime: a refused call is never made and ends the run; a
+      // held one is never made either, and the run ends `held`.
       const refusal = await hooks.admitModelCall?.();
+      if (typeof refusal === "object") return { kind: "held" };
       if (refusal !== undefined)
         return {
           kind: "budget",

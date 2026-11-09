@@ -40,7 +40,7 @@ import type { EngineContext } from "../context";
 import { DomainError, errorMessage, notFound, parseCommand } from "../errors";
 import { hint } from "../events";
 import { participantOrder, planOf, toTaskTemplate } from "../records";
-import { taskCapFor } from "./spend";
+import { taskSpendFor } from "./spend";
 import {
   assertTaskBots,
   createTask,
@@ -385,7 +385,7 @@ export async function templateTaskCap(
   >,
 ): Promise<number | null> {
   return row.spendCapInherit
-    ? taskCapFor(exec, row.coordinatorBotId)
+    ? (await taskSpendFor(exec, row.coordinatorBotId)).capUsd
     : row.spendCapUsd;
 }
 

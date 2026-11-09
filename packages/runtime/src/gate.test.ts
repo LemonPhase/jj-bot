@@ -57,6 +57,22 @@ function gate(allowed: number) {
   };
 }
 
+/** A gate that allows the first `allowed` calls and holds every later one. */
+function holding(allowed: number) {
+  let asked = 0;
+  return {
+    get asked() {
+      return asked;
+    },
+    admitModelCall: async () => {
+      asked++;
+      return asked > allowed
+        ? { hold: "Waiting for the user's approval to spend past 80%." }
+        : undefined;
+    },
+  };
+}
+
 function input(
   overrides: Partial<RunInput> & Pick<RunInput, "hooks">,
 ): RunInput {
@@ -225,6 +241,74 @@ describe("the model call gate in a session run", () => {
     expect(summaries).toHaveLength(1);
     expect(requests).toHaveLength(0);
     expect(admission.asked).toBe(2);
+  });
+
+  it("never sends a held call: the run ends held and stores only its input", async () => {
+    const recorded = recordingHooks();
+    const admission = holding(0);
+    faux.setResponses([say("Should never be asked.")]);
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: { ...recorded.hooks, admitModelCall: admission.admitModelCall },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "held" });
+    expect(faux.getPendingResponseCount()).toBe(1);
+    expect(admission.asked).toBe(1);
+    expect(modelEvents(recorded.events)).toEqual([]);
+    expect(recorded.entries.map((entry) => entry.role)).toEqual(["user"]);
+  });
+
+  it("holds after earlier work, and the next run resumes from the stored transcript", async () => {
+    const recorded = recordingHooks();
+    const admission = holding(1);
+    faux.setResponses([
+      callTool("bash", { command: "echo first" }),
+      say("Resumed and done."),
+    ]);
+    const executor = new PiSessionExecutor({ models: registry });
+    const outcome = await executor.run(
+      input({
+        hooks: { ...recorded.hooks, admitModelCall: admission.admitModelCall },
+      }),
+    );
+    expect(outcome).toEqual({ kind: "held" });
+    expect(faux.getPendingResponseCount()).toBe(1);
+    // The call, its result and nothing for the held call.
+    expect(recorded.entries.map((entry) => entry.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+    ]);
+
+    // Once answered, a run with no new input makes the held call.
+    const resumed = recordingHooks();
+    const again = await executor.run(
+      input({
+        hooks: { ...resumed.hooks, admitModelCall: async () => undefined },
+        transcript: recorded.entries as PiMessage[],
+        inputs: [],
+      }),
+    );
+    expect(again).toEqual({ kind: "ended", finalText: "Resumed and done." });
+    expect(faux.getPendingResponseCount()).toBe(0);
+  });
+
+  it("holds a compaction's summary call like any other", async () => {
+    const recorded = recordingHooks();
+    const admission = holding(0);
+    const { requests, summaries } = respond(say("All counted."));
+    const outcome = await new PiSessionExecutor({ models: registry }).run(
+      input({
+        hooks: { ...recorded.hooks, admitModelCall: admission.admitModelCall },
+        transcript: longTranscript(6),
+        inputs: ["Now report the count."],
+      }),
+    );
+    expect(outcome).toEqual({ kind: "held" });
+    expect(summaries).toHaveLength(0);
+    expect(requests).toHaveLength(0);
+    expect(modelEvents(recorded.events)).toEqual([]);
   });
 
   it("runs as before without the hook", async () => {

@@ -67,6 +67,9 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
     what: "Bot Studio's drafts, shared with the profile panel",
   },
   "src/features/tasks/SpendControl.tsx": { what: "the spend cap controls" },
+  "src/features/tasks/spendInput.tsx": {
+    what: "the spend cap and approval threshold inputs",
+  },
   "src/features/bots/BotInspector.tsx": { what: "the bot's profile panel" },
   "src/features/bots/ChatApprovals.tsx": {
     what: "the calls waiting for approval under a chat's task card",

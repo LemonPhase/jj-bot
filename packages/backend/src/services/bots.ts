@@ -33,6 +33,7 @@ import {
 } from "../errors";
 import { hint } from "../events";
 import { type Presence, toBot } from "../records";
+import { recheckSpendApprovals } from "./spend-approvals";
 import { assertModel } from "./tasks";
 
 /** Presence for the given bots (all bots when omitted). */
@@ -205,6 +206,9 @@ export async function updateBot(
         .where(and(eq(bots.id, botId), isNull(bots.archivedAt)))
         .returning();
       if (!updated) throw notFound("Bot", botId);
+      // Another profile brings another daily cap and question past its threshold.
+      if (command.runtimeProfileId !== undefined)
+        await recheckSpendApprovals(tx, ctx);
       await hint(tx, { type: "bots.changed", botId });
       return updated;
     });
