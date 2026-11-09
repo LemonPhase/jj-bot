@@ -11,6 +11,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   type Brain,
+  type FakeExecutor,
   type FakeMessage,
   promptBot,
   said,
@@ -44,14 +45,25 @@ afterAll(async () => {
   await db?.close();
 });
 
-/** Workers over one database and one workspace root, as across a restart. */
-async function worker(options: Parameters<typeof testEngine>[1] = {}) {
+/**
+ * Workers over one database and one workspace root, as across a restart.
+ * `ready` sets up the worker's fake model (its bots' replies) before the
+ * worker starts: a started worker claims a queued job at once, and a reply
+ * set up after that comes too late for the run ("No brain for Ada").
+ */
+async function worker(
+  options: Parameters<typeof testEngine>[1] = {},
+  ready: (executor: FakeExecutor) => unknown = () => {},
+) {
   root ??= await mkdtemp(join(tmpdir(), "jj-drain-"));
   const engine = await testEngine(db.database, {
     workspaceRoot: root,
     ...options,
+    start: false,
   });
   engines.push(engine);
+  ready(engine.executor);
+  await engine.engine.worker.start();
   return engine;
 }
 
@@ -144,8 +156,9 @@ describe("draining a worker", () => {
         "The worker stopped; the session resumes from its last completed turn.",
     });
 
-    const second = await worker();
-    second.executor.brain(ada, gatedThenComplete("hold"));
+    const second = await worker({}, (executor) =>
+      executor.brain(ada, gatedThenComplete("hold")),
+    );
     const view = await untilTask(second.engine, task.id, status("completed"));
     expect(view.task.result).toBe("resumed");
     expect(
@@ -191,12 +204,14 @@ describe("draining a worker", () => {
     ]);
 
     // The next worker takes both.
-    const second = await worker();
-    second.executor.brain(ada, gatedThenComplete("busy"));
-    second.executor.brain(bea, (view) =>
-      lastResult(view)?.name === "complete_task"
-        ? { text: "done" }
-        : { calls: [{ name: "complete_task", args: { result: "late" } }] },
+    const second = await worker({}, (executor) =>
+      executor
+        .brain(ada, gatedThenComplete("busy"))
+        .brain(bea, (view) =>
+          lastResult(view)?.name === "complete_task"
+            ? { text: "done" }
+            : { calls: [{ name: "complete_task", args: { result: "late" } }] },
+        ),
     );
     await untilTask(second.engine, busy.id, status("completed"));
     const view = await untilTask(second.engine, late.id, status("completed"));
@@ -297,8 +312,7 @@ describe("draining a worker", () => {
     ).toMatchObject({ outcome: "cancelled" });
     expect(first.executor.inputs).toHaveLength(1);
 
-    const second = await worker();
-    second.executor.brain(ada, brain);
+    const second = await worker({}, (executor) => executor.brain(ada, brain));
     const view = await untilTask(second.engine, task.id, status("completed"));
     expect(view.task.result).toBe("blue");
     expect(second.executor.inputs[0]?.inputs.join("\n")).toContain("use blue");
@@ -353,10 +367,9 @@ describe("draining a worker", () => {
     first.executor.gate("hold").open();
     await until(() => drain.settled, { what: "the drain" });
 
-    const second = await worker();
-    second.executor
-      .brain(ada, coordinator)
-      .brain(bob, () => ({ text: "bob done" }));
+    const second = await worker({}, (executor) =>
+      executor.brain(ada, coordinator).brain(bob, () => ({ text: "bob done" })),
+    );
     const view = await untilTask(
       second.engine,
       task.id,
@@ -459,8 +472,9 @@ async function interruptAndResume(
     { status: "running", attempts: 1, expired: true },
   ]);
 
-  const second = await worker({ config: { leaseMs: 120_000 } });
-  second.executor.brain(ada, resumable);
+  const second = await worker({ config: { leaseMs: 120_000 } }, (executor) =>
+    executor.brain(ada, resumable),
+  );
   const view = await untilTask(
     second.engine,
     task.id,
@@ -556,11 +570,11 @@ describe("a run still going when the drain times out", () => {
         `command ${cut}`,
       );
       await current.engine.worker.drain(0);
-      current = await worker({ config: { leaseMs: 120_000 } });
-      current.executor.brain(ada, cutOff);
-      // Call ids are per executor: keep them unique across the workers.
-      (current.executor as unknown as { calls: number }).calls =
-        100 * (cut + 1);
+      current = await worker({ config: { leaseMs: 120_000 } }, (executor) => {
+        executor.brain(ada, cutOff);
+        // Call ids are per executor: keep them unique across the workers.
+        (executor as unknown as { calls: number }).calls = 100 * (cut + 1);
+      });
     }
     const view = await untilTask(
       current.engine,
