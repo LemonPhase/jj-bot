@@ -143,6 +143,32 @@ test.describe("at phone width", () => {
   });
 });
 
+test.describe("the login screen's own chunk", () => {
+  // The page's own requests: a service worker would answer some itself.
+  test.use({ serviceWorkers: "block" });
+
+  test("whose stylesheet does not arrive says so, never unstyled, and a reload brings it styled", async ({
+    page,
+  }) => {
+    let fail = true;
+    await page.route(/\/assets\/LoginScreen-[\w-]+\.css$/, (route) =>
+      fail ? route.abort("failed") : route.continue(),
+    );
+    await page.goto("/");
+    await expect(
+      page.getByRole("alert").filter({ hasText: /the sign-in screen: / }),
+    ).toBeVisible();
+    await expect(loginHeading(page)).toHaveCount(0);
+    fail = false;
+    await page.getByRole("button", { name: "Reload" }).click();
+    await expect(loginHeading(page)).toBeVisible();
+    await expect(page.locator(".login-card")).toHaveCSS(
+      "flex-direction",
+      "column",
+    );
+  });
+});
+
 test("a password that keeps failing counts down, and the right one signs in after", async ({
   page,
   instance,
