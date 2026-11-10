@@ -19,7 +19,7 @@ import {
 import { type RunningServer, startServer } from "./server";
 import { OPEN_TIMEOUT, quietLogger, type TestApp, testApp } from "./testing";
 
-const TOKEN = "headers-test-token-0123456789";
+const TOKEN = "headers-test-token-0123456789abcdef";
 
 /** A policy's directives by name, each with its sources. */
 const directives = (policy: string | null) =>

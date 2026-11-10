@@ -156,7 +156,7 @@ function TaskLoadFailure({
         <p className="task-failure__note">
           {problem.terminal
             ? error.code === "UNAUTHORIZED"
-              ? "The API refused the request. Open the app with ?token=<API_TOKEN> to use a token."
+              ? "The API refused the request: sign in again."
               : "Retrying will not help until the cause is fixed."
             : "Retrying automatically."}
         </p>

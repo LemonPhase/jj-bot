@@ -58,6 +58,12 @@ export const LAZY_MODULES: Readonly<Record<string, LazyModule>> = {
   "src/features/studio/StudioScreen.tsx": { what: "Bot Studio" },
   "src/features/settings/SettingsScreen.tsx": { what: "the Settings screen" },
   "src/features/tasks/NewTaskDialog.tsx": { what: "the New task dialog" },
+  "src/features/auth/LoginScreen.tsx": {
+    what: "the login screen, shown only to a browser not signed in",
+  },
+  "src/api/signIn.ts": {
+    what: "signing in with a login link or a kept token, only when a load brings one",
+  },
   "src/features/tasks/uploads.tsx": {
     what: "the upload fields of the New task dialog and the task chat",
   },

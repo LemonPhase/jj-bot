@@ -1,0 +1,99 @@
+/* `#/login`: one card, centred; at phone width it takes the width less a 16px
+   gutter and never scrolls sideways. */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: var(--sp-8);
+  background: var(--bg-app);
+}
+
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  width: min(400px, 100%);
+  min-width: 0;
+  padding: var(--sp-11);
+  border: 1px solid var(--line-card);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.login-card__mark {
+  align-self: flex-start;
+}
+
+.login-card__title {
+  margin: 0;
+  font-size: var(--fs-title-lg);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-title);
+  color: var(--ink);
+}
+
+.login-card__lead {
+  margin: 0;
+  font-size: var(--fs-ui);
+  line-height: var(--lh-body);
+  color: var(--ink-2);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.login-form code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+  overflow-wrap: anywhere;
+}
+
+.login-form .ui-btn--primary {
+  align-self: stretch;
+  justify-content: center;
+}
+
+.login-form__switch {
+  align-self: center;
+  padding: var(--sp-2) var(--sp-4);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font: inherit;
+  font-size: var(--fs-ui);
+  color: var(--ink-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.login-form__switch:hover {
+  color: var(--ink);
+}
+
+.login-form__switch:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+/* NARROW_QUERY: 44px touch targets, as the kit's controls have. */
+@media (max-width: 759px) {
+  .login-form__switch {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  .login-screen {
+    align-items: flex-start;
+    padding: var(--sp-8);
+  }
+
+  .login-card {
+    padding: var(--sp-9);
+  }
+}

@@ -1,11 +1,14 @@
 // The generated API token: created on the first boot beyond loopback without
 // API_TOKEN, kept in the database and reused on later boots, required on
-// /api/*, and printed only in the one "Open JJ Bot" line. Loopback without a
-// token and a configured API_TOKEN are unchanged.
-import { spawn } from "node:child_process";
+// /api/*, and printed in no line at all: `npm run auth:token` reads it. Each
+// boot prints a one-time login link instead, whose code is in the URL
+// fragment and appears in that line alone. Loopback without a token stays
+// open; a configured API_TOKEN is never printed either.
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { Logger } from "@jj/backend";
 import { instanceSettings } from "@jj/db";
 import { eq, ne } from "drizzle-orm";
@@ -18,11 +21,14 @@ import {
   it,
   vi,
 } from "vitest";
+import { CREDENTIALS_KEY } from "./auth/service";
 import { REPO_ROOT } from "./config";
 import { type RunningServer, startServer } from "./server";
 import { OPEN_TIMEOUT } from "./testing";
 import { GENERATED_TOKEN_KEY } from "./token";
 import { databasePassword } from "./wiring";
+
+const exec = promisify(execFile);
 
 let dir: string;
 beforeAll(async () => {
@@ -78,9 +84,13 @@ const local = (server: RunningServer) =>
 const status = async (url: string, headers: Record<string, string> = {}) =>
   (await fetch(url, { headers })).status;
 
+/** The login link of a boot line: its base and its one-time code. */
+const LOGIN_LINE =
+  /Open JJ Bot: (http:\/\/127\.0\.0\.1:(\d+))\/#\/login\?code=([A-Za-z0-9_-]+)/;
+
 describe("beyond loopback without API_TOKEN", () => {
   it(
-    "generates a token on first boot, requires it, and keeps it across restarts",
+    "generates a token on first boot, requires it, keeps it across restarts, and never prints it",
     async () => {
       const env = { API_HOST: "0.0.0.0", JJ_DATABASE_PATH: join(dir, "db") };
       const first = capture();
@@ -104,22 +114,27 @@ describe("beyond loopback without API_TOKEN", () => {
         }),
       ).toBe(200);
       expect(await status(`${base}/health`)).toBe(200);
-      // The page a user opens with the token, and a failing request.
+      // A token pasted where it does not belong: a query, a Referer.
       await fetch(`${base}/?token=${token}`);
-      await fetch(`${base}/api/nope?token=${token}`);
+      await fetch(`${base}/api/nope?token=${token}`, {
+        headers: { Referer: `${base}/?token=${token}` },
+      });
 
-      // The scheduler's last pass is stored there too; the token is the only secret.
+      // The scheduler's last pass and the credentials' fingerprint are
+      // stored there too; the token is the only secret.
       const stored = await server.services.database.db
         .select()
         .from(instanceSettings)
         .where(ne(instanceSettings.key, "scheduler.last_pass_at"));
-      expect(stored.map((row) => [row.key, row.value])).toEqual([
-        [GENERATED_TOKEN_KEY, token],
-      ]);
-      const carrying = first.lines.filter((line) => line.includes(token));
-      expect(carrying).toEqual([
-        `Open JJ Bot: http://127.0.0.1:${new URL(server.url).port}/?token=${token}`,
-      ]);
+      expect(
+        Object.fromEntries(stored.map((row) => [row.key, row.value])),
+      ).toEqual({
+        [GENERATED_TOKEN_KEY]: token,
+        [CREDENTIALS_KEY]: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+      expect(first.lines.filter((line) => line.includes(token))).toEqual([]);
+      const opening = first.lines.filter((line) => LOGIN_LINE.test(line));
+      expect(opening).toHaveLength(1);
       expect(first.lines.join("\n")).toContain("generated now");
       // The engine redacts it from what runs persist.
       expect(await secretValues(server)).toContain(token);
@@ -140,9 +155,12 @@ describe("beyond loopback without API_TOKEN", () => {
         }),
       ).toBe(200);
       expect(await status(`${local(again)}/api/bootstrap`)).toBe(401);
-      expect(second.lines.filter((line) => line.includes(token))).toEqual([
-        `Open JJ Bot: http://127.0.0.1:3101/?token=${token}`,
-      ]);
+      expect(second.lines.filter((line) => line.includes(token))).toEqual([]);
+      expect(
+        second.lines.filter((line) =>
+          line.includes("Open JJ Bot: http://127.0.0.1:3101/#/login?code="),
+        ),
+      ).toHaveLength(1);
       expect(second.lines.join("\n")).toContain("generated on first boot");
       expect(await secretValues(again)).toContain(token);
     },
@@ -150,93 +168,161 @@ describe("beyond loopback without API_TOKEN", () => {
   );
 
   it(
-    "prints the token in exactly one line of the whole process output",
+    "puts the token in no line of the process output, and each login code only in its boot line",
     async () => {
-      const child = spawn(
-        process.execPath,
-        ["--import", "tsx", join(REPO_ROOT, "apps/api/src/index.ts")],
-        {
-          env: {
-            PATH: process.env.PATH,
-            API_HOST: "0.0.0.0",
-            API_PORT: "0",
-            JJ_DATABASE_PATH: "memory://",
-            JJ_SANDBOX_DRIVERS: "local",
-            JJ_SANDBOX_ROOT: join(dir, "process-sandbox"),
-          },
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
+      const database = join(dir, "process-db");
+      const childEnv = {
+        PATH: process.env.PATH,
+        API_HOST: "0.0.0.0",
+        API_PORT: "0",
+        JJ_DATABASE_PATH: database,
+        JJ_SANDBOX_DRIVERS: "local",
+        JJ_SANDBOX_ROOT: join(dir, "process-sandbox"),
+      };
       let output = "";
-      child.stdout.on("data", (chunk) => {
-        output += chunk;
-      });
-      child.stderr.on("data", (chunk) => {
-        output += chunk;
-      });
-      const exited = new Promise<number | null>((resolve) =>
-        child.once("exit", (code) => resolve(code)),
-      );
-      let token = "";
-      try {
-        // A fresh process transpiles the app and creates its database before
+      const start = async () => {
+        const before = output.length;
+        const child = spawn(
+          process.execPath,
+          ["--import", "tsx", join(REPO_ROOT, "apps/api/src/index.ts")],
+          { env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
+        );
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+          output += chunk;
+        });
+        const exited = new Promise<number | null>((resolve) =>
+          child.once("exit", (code) => resolve(code)),
+        );
+        // A fresh process transpiles the app and opens its database before
         // it prints anything: like opening a server in-process, only from
         // scratch, so it gets the whole opening budget.
         const deadline = Date.now() + OPEN_TIMEOUT;
         let match: RegExpExecArray | null = null;
         while (!match) {
-          // The token is base64url; the line is a JSON object by default.
-          match =
-            /Open JJ Bot: (http:\/\/127\.0\.0\.1:(\d+))\/\?token=([A-Za-z0-9_-]+)/.exec(
-              output,
-            );
-          if (child.exitCode !== null || Date.now() > deadline)
+          match = LOGIN_LINE.exec(output.slice(before));
+          if (child.exitCode !== null || Date.now() > deadline) {
+            child.kill("SIGKILL");
             throw new Error(`The API did not start:\n${output}`);
+          }
           if (!match) await new Promise((resolve) => setTimeout(resolve, 50));
         }
-        const base = match[1] as string;
-        token = match[3] as string;
+        return {
+          child,
+          exited,
+          base: match[1] as string,
+          code: match[3] as string,
+        };
+      };
+      const stop = async (child: ChildProcess, exited: Promise<unknown>) => {
+        child.kill("SIGTERM");
+        expect(await exited).toBe(0);
+      };
+      const cli = async (command: string) =>
+        (
+          await exec(
+            process.execPath,
+            [
+              "--import",
+              "tsx",
+              join(REPO_ROOT, "apps/api/src/auth-cli.ts"),
+              command,
+            ],
+            { env: childEnv },
+          )
+        ).stdout.trim();
+      const signIn = (base: string, body: unknown) =>
+        fetch(`${base}/api/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Origin: base },
+          body: JSON.stringify(body),
+        });
+
+      // First boot: sign in with the boot line's code, once.
+      const first = await start();
+      try {
         expect(output).toMatch(/JJ Bot API at http:\/\/0\.0\.0\.0:\d+/);
-        expect(await status(`${base}/api/bootstrap`)).toBe(401);
+        expect(await status(`${first.base}/api/bootstrap`)).toBe(401);
+        const login = await signIn(first.base, { code: first.code });
+        expect(login.status).toBe(200);
+        const cookie = (login.headers.get("Set-Cookie") ?? "").split(";")[0];
+        expect(cookie).toMatch(/^jj_session=/);
         expect(
-          await status(`${base}/api/bootstrap`, {
+          await status(`${first.base}/api/bootstrap`, { Cookie: cookie ?? "" }),
+        ).toBe(200);
+        expect((await signIn(first.base, { code: first.code })).status).toBe(
+          401,
+        );
+      } finally {
+        await stop(first.child, first.exited);
+      }
+
+      // Stopped, the CLI reads the token and mints a link; the token is
+      // nowhere in what the server printed.
+      const token = await cli("token");
+      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const link = await cli("login-link");
+      const minted = /#\/login\?code=([A-Za-z0-9_-]+)$/.exec(link)?.[1];
+      expect(minted).toBeDefined();
+
+      // Second boot: the token as bearer, in a query and in a Referer; the
+      // CLI's code signs in.
+      const second = await start();
+      try {
+        expect(
+          await status(`${second.base}/api/bootstrap`, {
             Authorization: `Bearer ${token}`,
           }),
         ).toBe(200);
-        await fetch(`${base}/?token=${token}`);
+        await fetch(`${second.base}/?token=${token}`);
+        await fetch(`${second.base}/api/nope?token=${token}`, {
+          headers: { Referer: `${second.base}/?token=${token}` },
+        });
+        expect(
+          await status(`${second.base}/api/bootstrap`, {
+            Authorization: `Bearer ${token}x`,
+          }),
+        ).toBe(401);
+        expect((await signIn(second.base, { token })).status).toBe(200);
+        expect((await signIn(second.base, { code: minted })).status).toBe(200);
       } finally {
-        child.kill("SIGTERM");
+        await stop(second.child, second.exited);
       }
-      expect(await exited).toBe(0);
-      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(output.split(token).length - 1).toBe(1);
+
+      expect(output.split(token).length - 1).toBe(0);
+      expect(output.split(first.code).length - 1).toBe(1);
+      expect(output.split(second.code).length - 1).toBe(1);
+      expect(output).not.toContain(minted);
+      expect(output.match(/Open JJ Bot: /g)).toHaveLength(2);
     },
-    // Its start, then the requests and the shutdown.
-    OPEN_TIMEOUT + 30_000,
+    // Two starts, the CLI and the requests.
+    3 * OPEN_TIMEOUT,
   );
 });
 
 describe("API_TOKEN and loopback", () => {
   it(
-    "uses API_TOKEN beyond loopback without generating or printing one",
+    "uses API_TOKEN beyond loopback without generating or printing a token",
     async () => {
       const { lines, logger } = capture();
       const server = await boot(
         {
           API_HOST: "0.0.0.0",
-          API_TOKEN: "configured-token",
+          API_TOKEN: "configured-token-0123456789abcdefghij",
           JJ_DATABASE_PATH: "memory://",
         },
         logger,
       );
       expect(server.auth).toEqual({
         kind: "configured",
-        token: "configured-token",
+        token: "configured-token-0123456789abcdefghij",
       });
       expect(await status(`${local(server)}/api/bootstrap`)).toBe(401);
       expect(
         await status(`${local(server)}/api/bootstrap`, {
-          Authorization: "Bearer configured-token",
+          Authorization: "Bearer configured-token-0123456789abcdefghij",
         }),
       ).toBe(200);
       expect(
@@ -245,8 +331,12 @@ describe("API_TOKEN and loopback", () => {
           .from(instanceSettings)
           .where(eq(instanceSettings.key, GENERATED_TOKEN_KEY)),
       ).toEqual([]);
-      expect(lines.join("\n")).not.toContain("configured-token");
-      expect(lines.join("\n")).not.toContain("Open JJ Bot");
+      expect(lines.join("\n")).not.toContain(
+        "configured-token-0123456789abcdefghij",
+      );
+      expect(
+        lines.filter((line) => /Open JJ Bot: .*#\/login\?code=/.test(line)),
+      ).toHaveLength(1);
     },
     OPEN_TIMEOUT,
   );
@@ -269,9 +359,17 @@ describe("API_TOKEN and loopback", () => {
       ]);
       // Too short to redact as a bare value: named in a boot warning, never printed.
       const warning = lines.find((line) =>
-        line.includes("API_TOKEN is shorter"),
+        line.includes("is not redacted from task history"),
       );
-      expect(warning).toContain("is not redacted from task history");
+      expect(warning).toContain("API_TOKEN is shorter");
+      // Too short for an API beyond loopback: allowed here, with a warning.
+      expect(
+        lines.filter((line) =>
+          line.includes(
+            "API_TOKEN is shorter than 32 characters: fine while only this machine reaches the API",
+          ),
+        ),
+      ).toHaveLength(1);
       expect(lines.join("\n")).not.toContain("short-token1");
     },
     OPEN_TIMEOUT,

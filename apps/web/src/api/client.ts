@@ -58,8 +58,15 @@ import type {
   UsageReport,
   WorkspaceHint,
 } from "@jj/contracts";
+import type { AuthApi } from "./auth";
 
 export type ApiMode = "demo" | "live";
+
+/** Signing in, on a live server that asks for it. */
+export interface SessionControls extends AuthApi {
+  /** This browser's session ended (signed out here): show the login screen. */
+  ended(): void;
+}
 
 /** The sidebar mode chip. `Live` is shown only when `mode` is `live`. */
 export interface ApiBadge {
@@ -140,6 +147,11 @@ export interface JJApi {
   /** From bootstrap. Offer only what is reported here. */
   readonly capabilities: Capabilities;
   readonly contractVersion: string;
+  /**
+   * Signing in, devices and the token (Settings → Security): present on a
+   * live server that has the sign-in routes; absent on the demo data.
+   */
+  readonly auth?: SessionControls;
 
   /** `GET /api/bootstrap`. */
   bootstrap(): Promise<Bootstrap>;
@@ -259,8 +271,9 @@ export interface JJApi {
   /** Where an artifact's content downloads from. */
   artifactUrl(taskId: string, artifactId: string): string;
   /**
-   * Present when requests need an `Authorization` header (an API token is
-   * configured), which a plain link cannot send: fetch the content instead.
+   * Present when requests need an `Authorization` header (a bearer client),
+   * which a plain link cannot send: fetch the content instead. A signed-in
+   * browser's links carry its session cookie, so it downloads plainly.
    */
   fetchArtifact?(taskId: string, artifactId: string): Promise<Blob>;
 

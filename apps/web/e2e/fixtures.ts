@@ -14,6 +14,9 @@ const scripts = join(repo, ".agents/skills/verify-jj-bot/scripts");
 export interface Instance {
   url: string;
   run: string;
+  /** With `auth`: the access token and the password it signs in with. */
+  token?: string;
+  password?: string;
 }
 
 /**
@@ -24,14 +27,24 @@ export interface Instance {
  * `page.goto("/#/settings")` and `request.get("/api/bots")` reach that
  * instance. A failed test gets the server log attached.
  */
-export const test = base.extend<{ instance: Instance; secretStore: boolean }>({
+export const test = base.extend<{
+  instance: Instance;
+  secretStore: boolean;
+  auth: boolean;
+}>({
   /**
    * `test.use({ secretStore: true })` launches with `--secret-store`: the
    * instance gets a fresh random JJ_SECRET_KEY, so Settings can store keys
    * and secrets.
    */
   secretStore: [false, { option: true }],
-  instance: async ({ secretStore }, use, testInfo) => {
+  /**
+   * `test.use({ auth: true })` launches with `--auth`: the instance asks to
+   * sign in, with a random token and password (`instance.token`,
+   * `instance.password`), so the browser starts signed out.
+   */
+  auth: [false, { option: true }],
+  instance: async ({ secretStore, auth }, use, testInfo) => {
     if (!existsSync(join(repo, "apps/web/dist/index.html")))
       throw new Error(
         "apps/web/dist is missing: build the web app first (npm run test:browser does)",
@@ -41,7 +54,11 @@ export const test = base.extend<{ instance: Instance; secretStore: boolean }>({
     try {
       ({ stdout } = await exec(
         join(scripts, "launch.sh"),
-        ["--no-build", ...(secretStore ? ["--secret-store"] : [])],
+        [
+          "--no-build",
+          ...(secretStore ? ["--secret-store"] : []),
+          ...(auth ? ["--auth"] : []),
+        ],
         { env: { ...process.env, JJ_VERIFY_ROOT: root } },
       ));
     } catch (error) {
@@ -52,8 +69,14 @@ export const test = base.extend<{ instance: Instance; secretStore: boolean }>({
     }
     const run = stdout.trim();
     const url = (await readFile(join(run, "url"), "utf8")).trim();
+    const credentials = auth
+      ? {
+          token: await readFile(join(run, "token"), "utf8"),
+          password: await readFile(join(run, "password"), "utf8"),
+        }
+      : {};
     try {
-      await use({ url, run });
+      await use({ url, run, ...credentials });
     } finally {
       // stop.sh copies the server log into evidence/ and removes the data.
       await exec(join(scripts, "stop.sh"), [run]);

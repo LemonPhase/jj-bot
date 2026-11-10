@@ -5,18 +5,28 @@
 import type { Engine, Logger } from "@jj/backend";
 import { Hono, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import type { TrustedProxies } from "./auth/clients";
+import { authGuard } from "./auth/guard";
+import type { PasswordHash } from "./auth/password";
+import { authRoutes } from "./auth/routes";
+import { AuthService } from "./auth/service";
 import { isUploadWrite, originGuard, requireJson } from "./guard";
 import { securityHeaders } from "./headers";
 import { healthRoutes } from "./health";
-import { bearerAuth, errorResponse, onError } from "./http";
+import { errorResponse, onError } from "./http";
 import { requestLog } from "./request-log";
 import { apiRoutes } from "./routes";
 import { StreamRegistry } from "./sse";
 import { mountWeb, spaFallback } from "./web";
 
 export interface AppConfig {
-  /** Required as `Authorization: Bearer` on `/api/*` when set. */
+  /**
+   * The access token: when set, `/api/*` and `/metrics` need it as
+   * `Authorization: Bearer`, or a session cookie from signing in.
+   */
   apiToken?: string;
+  /** Signing in beyond the token. */
+  auth?: AuthSettings;
   /**
    * Without a token, `Host` values besides loopback that `/api/*` answers
    * (API_ALLOWED_HOSTS): a hostname with any port, or an exact `host:port`.
@@ -38,6 +48,19 @@ export interface AppConfig {
   strictTransportSecurity?: boolean;
 }
 
+export interface AuthSettings {
+  /** `apiToken` is the generated token, which Settings → Security can rotate, not API_TOKEN. */
+  generated?: boolean;
+  /** `JJ_PASSWORD_HASH`, parsed, with its text. */
+  password?: { hash: PasswordHash; text: string };
+  /** `API_PUBLIC_URL`: the session cookie's flags and the origin cookie writes come from. */
+  publicUrl?: string;
+  /** `JJ_TRUSTED_PROXIES`; default loopback. */
+  trustedProxies?: TrustedProxies;
+  /** The clock sessions, codes and limits use; tests inject one. */
+  now?: () => number;
+}
+
 export interface AppOptions {
   engine: Engine;
   config: AppConfig;
@@ -55,6 +78,8 @@ export type JJApp = Hono & {
    */
   startDraining(): void;
   readonly draining: boolean;
+  /** Signing in: sessions, login codes, the token in force. */
+  readonly auth: AuthService;
 };
 
 export function createApp({
@@ -94,14 +119,34 @@ export function createApp({
     ),
   );
 
+  const settings = config.auth ?? {};
+  const auth = new AuthService({
+    db: engine.context.db,
+    token: config.apiToken
+      ? {
+          kind: settings.generated ? "generated" : "configured",
+          token: config.apiToken,
+        }
+      : { kind: "none" },
+    ...(settings.password ? { password: settings.password } : {}),
+    ...(settings.publicUrl ? { publicUrl: settings.publicUrl } : {}),
+    ...(settings.trustedProxies
+      ? { trustedProxies: settings.trustedProxies }
+      : {}),
+    ...(settings.now ? { now: settings.now } : {}),
+    logger,
+    // The redactor reads the generated token afresh, so it covers a rotated one.
+    onTokenChanged: () => engine.context.redactor(),
+  });
+
   // `/api` and `/metrics` answer the same callers: the browser protection,
-  // and the bearer token when there is one.
+  // then, when the API requires them, the token or a session (auth/guard.ts).
   const guards: MiddlewareHandler[] = [
     originGuard({
-      tokenRequired: Boolean(config.apiToken),
+      tokenRequired: auth.required,
       allowedHosts: config.allowedHosts ?? [],
     }),
-    ...(config.apiToken ? [bearerAuth(config.apiToken)] : []),
+    authGuard(auth),
   ];
   const metrics = new Hono();
   metrics.onError(handleError);
@@ -130,6 +175,7 @@ export function createApp({
   // An upload's body is bounded by the upload limits instead, checked
   // against its Content-Length before it is read (routes.ts).
   api.use("*", (c, next) => (isUploadWrite(c) ? next() : jsonLimit(c, next)));
+  api.route("/auth", authRoutes(auth, streams));
   api.route(
     "/",
     apiRoutes({
@@ -165,5 +211,6 @@ export function createApp({
       },
     },
     draining: { get: () => draining },
+    auth: { value: auth },
   }) as JJApp;
 }

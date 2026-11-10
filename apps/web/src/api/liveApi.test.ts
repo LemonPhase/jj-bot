@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type StreamState } from "./client";
 import { createLiveApi, liveBadge, probeBackend } from "./liveApi";
 import { type EventSourceLike, type SseFrame, SseParser } from "./sse";
-import { readApiToken } from "./token";
 
 const T0 = "2026-10-31T12:00:00.000Z";
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -866,7 +865,7 @@ describe("backend probe", () => {
     });
     expect(await probeBackend({ fetch: locked.fetch })).toMatchObject({
       demo: false,
-      reason: expect.stringMatching(/\?token=/),
+      reason: expect.stringMatching(/reload to sign in/),
     });
     const scaffold = mockFetch({
       "GET /api/bootstrap": { ...bootstrap, mode: "scaffold" },
@@ -896,51 +895,5 @@ describe("SSE parser", () => {
       { id: "7", event: "a", data: "one\ntwo" },
       { id: "7", event: "message", data: "three" },
     ]);
-  });
-});
-
-describe("API token", () => {
-  const storage = () => {
-    const values = new Map<string, string>();
-    return {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => void values.set(key, value),
-      removeItem: (key: string) => void values.delete(key),
-    };
-  };
-
-  it("keeps a pasted ?token= in storage and removes it from the address bar", () => {
-    const store = storage();
-    const replaceState = vi.fn();
-    expect(
-      readApiToken({
-        location: { href: "http://localhost:5173/?token=abc&demo" },
-        history: { replaceState },
-        storage: store,
-      }),
-    ).toBe("abc");
-    expect(replaceState).toHaveBeenCalledWith(
-      null,
-      "",
-      "http://localhost:5173/?demo",
-    );
-    expect(
-      readApiToken({
-        location: { href: "http://localhost:5173/" },
-        storage: store,
-      }),
-    ).toBe("abc");
-    expect(
-      readApiToken({
-        location: { href: "http://localhost:5173/?token=" },
-        storage: store,
-      }),
-    ).toBeNull();
-    expect(
-      readApiToken({
-        location: { href: "http://localhost:5173/" },
-        storage: store,
-      }),
-    ).toBeNull();
   });
 });

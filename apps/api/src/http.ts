@@ -1,11 +1,10 @@
 // Request parsing and the contract error envelope. Bodies are handed to the
 // engine unparsed (it validates every command with its contract schema);
 // params, query and headers are checked here with the contract's id schema.
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { HttpBindings } from "@hono/node-server";
 import { DomainError, HTTP_STATUS, type Logger } from "@jj/backend";
 import { type ApiError, type ApiErrorCode, idSchema, z } from "@jj/contracts";
-import type { Context, MiddlewareHandler } from "hono";
+import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { missedDeadline } from "./deadlines";
 
@@ -137,31 +136,6 @@ export async function jsonBody(c: Context): Promise<unknown> {
   } catch {
     throw invalid("The request body is not valid JSON.");
   }
-}
-
-const digest = (value: string) => createHash("sha256").update(value).digest();
-
-/**
- * Requires `Authorization: Bearer <token>`. Both tokens are hashed before the
- * constant-time compare, so neither their content nor their length leaks.
- */
-export function bearerAuth(token: string): MiddlewareHandler {
-  const expected = digest(token);
-  return async (c, next) => {
-    const match = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(
-      c.req.header("Authorization") ?? "",
-    );
-    if (!match?.[1] || !timingSafeEqual(digest(match[1]), expected)) {
-      c.header("WWW-Authenticate", 'Bearer realm="jj-bot"');
-      return errorResponse(
-        c,
-        401,
-        "UNAUTHORIZED",
-        "This API requires Authorization: Bearer <API_TOKEN>.",
-      );
-    }
-    await next();
-  };
 }
 
 /**

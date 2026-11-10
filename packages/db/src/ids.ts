@@ -25,6 +25,8 @@ export const ID_PREFIXES = {
   retiredSecret: "rsec",
   mcpSnapshot: "mcps",
   mcpDiscovery: "mcpd",
+  /** A signed-in device (cookie session). */
+  authSession: "auth",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

@@ -15,6 +15,17 @@ import {
 import { nodeDataDirectory } from "@jj/db";
 import { remoteMcpEnabled } from "@jj/runtime";
 import { parseSubnetPool } from "@jj/sandbox";
+import {
+  DEFAULT_TRUSTED_PROXIES,
+  parseTrustedProxies,
+  type TrustedProxies,
+  TrustedProxiesError,
+} from "./auth/clients";
+import {
+  type PasswordHash,
+  PasswordHashError,
+  parsePasswordHash,
+} from "./auth/password";
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -101,6 +112,28 @@ export function parseDuration(text: string): number | undefined {
 }
 
 /**
+ * The shortest `API_TOKEN` an API reachable beyond loopback accepts: the token
+ * is let in whatever the rate limits say (so a limit never locks its owner
+ * out), so only its length keeps it from being guessed.
+ */
+export const MIN_API_TOKEN_LENGTH = 32;
+
+/** How to make a token long enough, for the refusal and the warning. */
+const MAKE_A_TOKEN = `Set a random one of ${MIN_API_TOKEN_LENGTH} characters or more, such as \`openssl rand -hex 32\` prints, or unset API_TOKEN and the server generates one (\`npm run auth:token\` prints it)`;
+
+/**
+ * The boot warning for a short `API_TOKEN` on an API only loopback reaches
+ * (beyond loopback, `loadServerConfig` refuses it).
+ */
+export function shortTokenWarning(
+  config: Pick<ServerConfig, "apiToken">,
+): string | undefined {
+  if (!config.apiToken || config.apiToken.length >= MIN_API_TOKEN_LENGTH)
+    return undefined;
+  return `API_TOKEN is shorter than ${MIN_API_TOKEN_LENGTH} characters: fine while only this machine reaches the API, but the server refuses it once API_HOST, API_ALLOWED_HOSTS or API_PUBLIC_URL reaches beyond loopback. ${MAKE_A_TOKEN}.`;
+}
+
+/**
  * The boot warning when the platform would kill a stop before its drain and
  * shutdown end: its sessions would then resume as after a crash, once their
  * leases run out.
@@ -127,9 +160,13 @@ export interface ServerConfig extends ServicesConfig {
   /** The listen address, without IPv6 brackets. */
   host: string;
   port: number;
-  /** `API_TOKEN`. Without it, a listener beyond loopback uses a generated token. */
+  /** `API_TOKEN`. Without it, a listener beyond loopback, or a password, uses a generated token. */
   apiToken?: string;
-  /** Where users open the app, for the startup line: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
+  /** `JJ_PASSWORD_HASH`, parsed, with its text: a sign-in password besides the token. */
+  password?: { hash: PasswordHash; text: string };
+  /** `JJ_TRUSTED_PROXIES`: peers whose `X-Forwarded-For` names the client for rate limits. Default loopback. */
+  trustedProxies: TrustedProxies;
+  /** Where users open the app, for the startup line and the session cookie: `API_PUBLIC_URL`, else `http://127.0.0.1:<port>`. */
   publicUrl?: string;
   /** API_ALLOWED_HOSTS: `Host` values besides loopback that `/api/*` answers without a token (refused at boot without one). */
   allowedHosts: string[];
@@ -326,13 +363,42 @@ export function loadServicesConfig(env: Env): ServicesConfig {
 }
 
 /**
- * Whether the API answers without any token: no API_TOKEN and a loopback
- * listener. Anywhere else it requires one, generating it when API_TOKEN is
- * unset (see `resolveApiToken`).
+ * Whether the API answers without any token: no API_TOKEN, no password and a
+ * loopback listener. Anywhere else it requires sign-in, generating the token
+ * when API_TOKEN is unset (see `resolveApiToken`): a password asks for
+ * sign-in even on loopback.
  */
 export const servesWithoutToken = (
-  config: Pick<ServerConfig, "apiToken" | "host">,
-) => !config.apiToken && isLoopbackHost(config.host);
+  config: Pick<ServerConfig, "apiToken" | "host"> & {
+    password?: unknown;
+  },
+) => !config.apiToken && !config.password && isLoopbackHost(config.host);
+
+/** `JJ_PASSWORD_HASH`, parsed; a malformed one stops the boot. */
+function passwordSetting(env: Env): ServerConfig["password"] {
+  const value = text(env, "JJ_PASSWORD_HASH");
+  if (value === undefined) return undefined;
+  try {
+    return { hash: parsePasswordHash(value), text: value };
+  } catch (error) {
+    if (error instanceof PasswordHashError)
+      throw new ConfigError(error.message);
+    throw error;
+  }
+}
+
+/** `JJ_TRUSTED_PROXIES`, default loopback; a malformed one stops the boot. */
+function trustedProxiesSetting(env: Env): TrustedProxies {
+  try {
+    return parseTrustedProxies(
+      text(env, "JJ_TRUSTED_PROXIES") ?? DEFAULT_TRUSTED_PROXIES,
+    );
+  } catch (error) {
+    if (error instanceof TrustedProxiesError)
+      throw new ConfigError(error.message);
+    throw error;
+  }
+}
 
 /**
  * Refuses settings that would expose the API beyond this machine without a
@@ -343,12 +409,16 @@ export const servesWithoutToken = (
  *   host forwards from loopback, so the listener alone cannot tell.
  * - A plain-http API_PUBLIC_URL beyond loopback, unless
  *   JJ_ALLOW_INSECURE_HTTP=true.
+ * - An API_TOKEN shorter than MIN_API_TOKEN_LENGTH on an API reachable beyond
+ *   loopback: a listener beyond it, API_ALLOWED_HOSTS or an API_PUBLIC_URL
+ *   beyond it. The right token always gets in, rate limits or not, so a short
+ *   one could be guessed.
  */
 function checkExposure(
   env: Env,
   config: Pick<
     ServerConfig,
-    "apiToken" | "host" | "allowedHosts" | "publicUrl"
+    "apiToken" | "password" | "host" | "allowedHosts" | "publicUrl"
   >,
 ) {
   const url = config.publicUrl ? new URL(config.publicUrl) : undefined;
@@ -357,13 +427,24 @@ function checkExposure(
   if (servesWithoutToken(config)) {
     if (config.allowedHosts.length > 0)
       throw new ConfigError(
-        "API_ALLOWED_HOSTS is set, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards those names to it (a reverse proxy, `tailscale serve`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.",
+        "API_ALLOWED_HOSTS is set, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards those names to it (a reverse proxy, `tailscale serve`) would expose it unauthenticated. Set API_TOKEN (or JJ_PASSWORD_HASH, and the server generates a token), and serve it over HTTPS.",
       );
     if (remote)
       throw new ConfigError(
-        `API_PUBLIC_URL names "${remote.hostname}", beyond loopback, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards that address to it (a reverse proxy, \`tailscale serve\`) would expose it unauthenticated. Set API_TOKEN, and serve it over HTTPS.`,
+        `API_PUBLIC_URL names "${remote.hostname}", beyond loopback, but the API has no token: it listens on loopback without API_TOKEN, so whatever forwards that address to it (a reverse proxy, \`tailscale serve\`) would expose it unauthenticated. Set API_TOKEN (or JJ_PASSWORD_HASH, and the server generates a token), and serve it over HTTPS.`,
       );
   }
+  const reach = !isLoopbackHost(config.host)
+    ? `API_HOST is ${config.host}`
+    : config.allowedHosts.length > 0
+      ? "API_ALLOWED_HOSTS is set"
+      : remote
+        ? `API_PUBLIC_URL names "${remote.hostname}"`
+        : undefined;
+  if (reach && config.apiToken && config.apiToken.length < MIN_API_TOKEN_LENGTH)
+    throw new ConfigError(
+      `API_TOKEN is shorter than ${MIN_API_TOKEN_LENGTH} characters, but the API is reachable beyond loopback (${reach}), where a short token could be guessed: the right token always signs in, whatever the rate limits. ${MAKE_A_TOKEN}.`,
+    );
   if (remote?.protocol === "http:" && !allowInsecure)
     throw new ConfigError(
       `API_PUBLIC_URL is plain http beyond loopback ("${remote.hostname}"), so the token would cross the network in the clear. Serve the app over HTTPS through a reverse proxy and set API_PUBLIC_URL to its https:// address, or set JJ_ALLOW_INSECURE_HTTP=true on a network that encrypts traffic itself.`,
@@ -413,10 +494,12 @@ export function loadServerConfig(env: Env): ServerConfig {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+  const password = passwordSetting(env);
   checkExposure(env, {
     host,
     allowedHosts,
     ...(apiToken ? { apiToken } : {}),
+    ...(password ? { password } : {}),
     ...(url ? { publicUrl: url } : {}),
   });
   return {
@@ -424,6 +507,8 @@ export function loadServerConfig(env: Env): ServerConfig {
     host,
     port: port(env, "API_PORT", 3001),
     ...(apiToken ? { apiToken } : {}),
+    ...(password ? { password } : {}),
+    trustedProxies: trustedProxiesSetting(env),
     ...(url ? { publicUrl: url } : {}),
     allowedHosts,
     embedWorker,

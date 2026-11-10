@@ -1,8 +1,10 @@
 // The bearer token the API requires. API_TOKEN when it is set. Otherwise a
-// listener beyond loopback gets a token generated on its first boot and kept
-// in the database (`instance_settings`), so restarts keep it; the startup
-// line that opens the app is the only place its value is printed. Loopback
-// without API_TOKEN stays unauthenticated.
+// listener beyond loopback, or a password (JJ_PASSWORD_HASH), gets a token
+// generated on its first boot and kept in the database (`instance_settings`),
+// so restarts keep it; Settings → Security replaces it. It is never printed:
+// `npm run auth:token` reads it, and the boot line carries a one-time login
+// link instead (auth/). Loopback without a token or a password stays
+// unauthenticated.
 import { randomBytes } from "node:crypto";
 import { type Executor, instanceSetting } from "@jj/db";
 import { type ServerConfig, servesWithoutToken } from "./config";
@@ -15,11 +17,11 @@ export type ApiAuth =
   | { kind: "generated"; token: string; created: boolean }
   | { kind: "none" };
 
-/** 32 random bytes, base64url: URL-safe, so it can travel as `?token=`. */
+/** 32 random bytes, base64url. */
 export const generateApiToken = () => randomBytes(32).toString("base64url");
 
 export async function resolveApiToken(
-  config: Pick<ServerConfig, "apiToken" | "host">,
+  config: Pick<ServerConfig, "apiToken" | "host" | "password">,
   db: Executor,
 ): Promise<ApiAuth> {
   if (config.apiToken) return { kind: "configured", token: config.apiToken };
@@ -32,13 +34,14 @@ export async function resolveApiToken(
   return { kind: "generated", token: value, created };
 }
 
-/** The startup line's auth part. Never carries the token's value. */
-export function describeAuth(auth: ApiAuth): string {
+/** The startup line's auth part. Never carries a credential. */
+export function describeAuth(auth: ApiAuth, password: boolean): string {
+  const withPassword = password ? " or password" : "";
   switch (auth.kind) {
     case "configured":
-      return "bearer token (API_TOKEN)";
+      return `sign-in with the token (API_TOKEN)${withPassword}`;
     case "generated":
-      return `bearer token (${auth.created ? "generated now" : "generated on first boot"}, kept in the database)`;
+      return `sign-in with the token (${auth.created ? "generated now" : "generated on first boot"}, kept in the database)${withPassword}`;
     default:
       return "none (loopback only)";
   }

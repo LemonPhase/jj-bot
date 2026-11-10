@@ -1190,6 +1190,46 @@ export const workerHeartbeats = pgTable("worker_heartbeats", {
 export type WorkerHeartbeatRow = typeof workerHeartbeats.$inferSelect;
 
 /**
+ * Signed-in devices: one row per cookie session. The cookie carries 32
+ * random bytes the server never stores; `secret_hash` is their SHA-256 (hex),
+ * which the API looks a request's session up by. `expires_at` is the
+ * absolute expiry; the idle one is `last_seen_at` plus the idle limit, and
+ * `last_seen_at` is written at most hourly. Signing out deletes the row.
+ */
+export const authSessions = pgTable(
+  "auth_sessions",
+  {
+    id: text("id").primaryKey(),
+    ownerId: ownerId(),
+    secretHash: text("secret_hash").notNull().unique(),
+    /** The browser and system it signed in from (at most 80 characters). */
+    label: text("label").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("auth_sessions_expires_idx").on(t.expiresAt)],
+);
+
+export type AuthSessionRow = typeof authSessions.$inferSelect;
+
+/**
+ * One-time login codes, as a login link (`#/login?code=`) carries them:
+ * stored as the SHA-256 (hex) of the code, used once (signing in with one
+ * deletes it), and refused after `expires_at`.
+ */
+export const authLoginCodes = pgTable(
+  "auth_login_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    ownerId: ownerId(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("auth_login_codes_expires_idx").on(t.expiresAt)],
+);
+
+/**
  * Values entered through settings: provider keys (`name` is the provider id)
  * and sandbox secrets (`name` is the variable), stored as ciphertext:
  * AES-256-GCM under a key derived from the server's `JJ_SECRET_KEY`, which
@@ -1386,6 +1426,8 @@ export const tables = {
   jobs,
   instanceSettings,
   workerHeartbeats,
+  authSessions,
+  authLoginCodes,
   secrets,
   retiredSecrets,
   mcpToolSnapshots,

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Start an isolated JJ Bot instance for verification and print its run dir.
 #
-#   .agents/skills/verify-jj-bot/scripts/launch.sh [--no-build] [--driver local|docker] [--secret-store]
+#   .agents/skills/verify-jj-bot/scripts/launch.sh [--no-build] [--driver local|docker] [--secret-store] [--auth]
 #
 # One process serves the API, the embedded worker and the built web app on a
 # free loopback port. It never reads the repository's .env: the environment is
 # cleared, so provider keys, API_TOKEN and DATABASE_URL from your shell or .env
 # never reach it. The only model is the keyless scripted test model.
+# --auth makes it ask to sign in: a random API_TOKEN and a JJ_PASSWORD_HASH for
+# a random password, written to $RUN/token and $RUN/password (mode 600) for the
+# driver; the login link it prints is in $RUN/server.log.
 # --secret-store gives the instance a fresh random JJ_SECRET_KEY, so keys and
 # secrets can be stored in Settings; it is never written to disk.
 # Data, sandbox workspaces and logs live in the run dir; stop.sh removes all of
@@ -17,11 +20,13 @@ repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 build=1
 driver=local
 secret_store=0
+auth=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-build) build=0 ;;
     --driver) driver=$2; shift ;;
     --secret-store) secret_store=1 ;;
+    --auth) auth=1 ;;
     *) echo "launch.sh: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -65,8 +70,21 @@ git -C "$repo" rev-parse HEAD >"$run/commit"
 git -C "$repo" status --porcelain -- . ':!.agents' ':!.claude' >"$run/dirty"
 echo "$driver" >"$run/driver"
 echo "$secret_store" >"$run/secret-store"
+echo "$auth" >"$run/auth"
 
 cd "$repo"
+
+# Sign-in for this run only: a token and a password, kept in the run dir for
+# the driver and in the server's environment (the password as its hash).
+auth_env=()
+if [ "$auth" = 1 ]; then
+  (umask 077
+    node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))' >"$run/token"
+    node -e 'process.stdout.write(`verify ${require("node:crypto").randomBytes(12).toString("hex")}`)' >"$run/password")
+  hash=$(node --import tsx apps/api/src/auth-cli.ts hash-password <"$run/password" 2>/dev/null | sed -n 's/^JJ_PASSWORD_HASH=//p')
+  [ -n "$hash" ] || { echo "launch.sh: could not hash the run's password" >&2; exit 1; }
+  auth_env=(API_TOKEN="$(cat "$run/token")" JJ_PASSWORD_HASH="$hash")
+fi
 # A launch that fails after the server started tears it down, so a failed
 # attempt never strands a detached process; the run dir keeps the logs.
 give_up() {
@@ -95,6 +113,7 @@ nohup env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" NODE_ENV=product
   JJ_SANDBOX_DRIVERS="$driver" JJ_SANDBOX_ROOT="$run/sandbox" \
   ${docker_env[@]+"${docker_env[@]}"} \
   ${secret_env[@]+"${secret_env[@]}"} \
+  ${auth_env[@]+"${auth_env[@]}"} \
   node --import tsx apps/api/src/index.ts "--jj-verify-run=$run/" >"$run/server.log" 2>&1 &
 echo $! >"$run/pid"
 set +m

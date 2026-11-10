@@ -31,6 +31,52 @@ Add an entry before merging the schema change, using the template below.
 A `breaking` entry needs agreement from both sides first. Raise it as a `decision` issue
 rather than landing it and announcing it afterwards.
 
+## 1.15.0 — 2026-11-09 — Sign-in
+
+**Changed by:** backend and frontend ([#93](https://github.com/LemonPhase/jj-bot/issues/93), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/93#issuecomment-6613577807)) · **Compatibility:** additive in the schemas; deliberately breaking for installs that use `API_ALLOWED_HOSTS` or a proxy without a token (they now sign in), and for installs reachable beyond loopback with an `API_TOKEN` shorter than 32 characters (they no longer start)
+
+- New `auth.ts` (in the index): `authStateSchema` (`{ required, authenticated, via: "none" |
+  "cookie" | "bearer", methods: { token, password, passkey }, session }`), `authSessionSchema`
+  (`{ id, label (at most 80, the browser and system), createdAt, lastSeenAt (written at most
+  hourly), expiresAt (the earlier of the absolute and idle expiry), current }`),
+  `loginCommandSchema` (exactly one of `{ token }`, `{ password }`, `{ code }`, strict),
+  `loginResultSchema` (`{ session }`), `authSessionListSchema` (`{ sessions }`),
+  `rotateTokenCommandSchema` (`{ current: { token } | { password } }`), `rotateTokenResultSchema`
+  (`{ token }`), `authCredentialSchema` and `rateLimitedDetailsSchema` (`{ retryAfterSeconds }`),
+  with `AUTH_SESSION_LABEL_LIMIT` (80) and `AUTH_CREDENTIAL_LIMIT` (1024).
+- Routes: `GET /api/auth/session` → `authStateSchema`, answered without credentials (still behind
+  the cross-site check); `POST /api/auth/login` → 200 `loginResultSchema` with the session cookie
+  (`__Host-jj_session; HttpOnly; Secure; SameSite=Strict; Path=/` for an https `API_PUBLIC_URL`,
+  `jj_session` without `Secure` otherwise), 409 `CONFLICT` on a server that asks for no sign-in;
+  `POST /api/auth/logout` → 204; `GET /api/auth/sessions` → `authSessionListSchema`; `DELETE
+  /api/auth/sessions/:id` → 204 (404 for none); `DELETE /api/auth/sessions` (all but the current
+  one) → 204; `POST /api/auth/token` → 201 `rotateTokenResultSchema`, shown once, signing out every
+  other session and ending the streams of the old token, 409 `CONFLICT` when `API_TOKEN` sets the
+  token. Every `/api/auth` answer is `Cache-Control: no-store`.
+- No new error code: every failed sign-in (a wrong token, password or code, a used or expired
+  code, a password on a server without one) answers 401 `UNAUTHORIZED` with one message; too many
+  answer 429 `RATE_LIMITED` with `Retry-After` and `details.retryAfterSeconds`. A cookie write
+  (any method but GET, HEAD and OPTIONS) whose `Origin` is not where users open the app answers 403
+  `UNAUTHORIZED`, as a cross-site request does.
+- Every other `/api` route and `/metrics` need `Authorization: Bearer <token>` or a live session
+  cookie whenever the server asks for sign-in: beyond loopback, with `API_TOKEN`, or with
+  `JJ_PASSWORD_HASH`. Installs that relied on `API_ALLOWED_HOSTS` without a token were refused at
+  boot already; they now set a token and sign in.
+- The right bearer token always gets in, whatever the rate limits, so a configured `API_TOKEN`
+  shorter than 32 characters is refused at boot when the API is reachable beyond loopback (a
+  listener beyond it, `API_ALLOWED_HOSTS`, or an `API_PUBLIC_URL` beyond it), and logs a warning
+  on loopback. Breaking for such installs: set a random token (`openssl rand -hex 32`), or unset
+  `API_TOKEN` and use the generated one.
+
+**Action required (frontend):** the login screen (`#/login`, with the login link's code, a
+password when the server has one, and a countdown on 429), the session cookie in place of the
+`?token=` flow (a token kept in localStorage is exchanged once, then deleted), native
+`EventSource` and plain artifact links on the cookie, and Settings → Security. Done in the same
+change.
+**Action required (backend):** none beyond this change. Bearer clients (scripts, `/metrics`,
+`JJ_SMOKE_TOKEN`) are unchanged; they read the token with `npm run auth:token` now that no log line
+prints it.
+
 ## 1.14.0 — 2026-11-09 — Spend approvals past the soft threshold
 
 **Changed by:** backend and frontend ([#106](https://github.com/LemonPhase/jj-bot/issues/106), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/106#issuecomment-6613570653)) · **Compatibility:** additive for writers; a 1.13 reader that parses approvals strictly cannot parse a spend approval (`approvalSchema` was the tool shape only), as with 1.7.0's rules
