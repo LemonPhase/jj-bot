@@ -1,4 +1,4 @@
-import { lazy, StrictMode, Suspense } from "react";
+import { StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ApiProvider } from "./api/ApiContext";
@@ -8,13 +8,20 @@ import { Spinner } from "./components/ui";
 import { StartFailed } from "./features/shell/AppShell";
 import { parseRoute } from "./features/shell/router";
 import { preloadScreen } from "./features/shell/screens";
+import { LoadBoundary, lazyComponent } from "./lib/lazyComponent";
 import { registerServiceWorker } from "./lib/serviceWorker";
+import { watchStylesheets } from "./lib/stylesheets";
 import { WorkspaceProvider } from "./state/WorkspaceContext";
 import "./styles/index.css";
 
 /** The login screen, loaded only when the browser is not signed in. */
-const LoginScreen = lazy(() => import("./features/auth/LoginScreen"));
+const loginScreen = lazyComponent("LoginScreen", () =>
+  import("./features/auth/LoginScreen").then((module) => module.LoginScreen),
+);
 
+// Before any lazy chunk loads: a stylesheet that fails is asked for again
+// before the next chunk renders, never skipped.
+watchStylesheets();
 // A deep link's or reload's screen starts downloading now, while the API is
 // probed and the workspace loads, instead of once they are done.
 preloadScreen(parseRoute(window.location.hash));
@@ -69,20 +76,26 @@ function show(startup: Startup) {
     }
     root.render(
       <StrictMode>
-        <Suspense
-          fallback={
-            <main className="screen screen--center">
-              <Spinner label="Loading…" showLabel />
-            </main>
-          }
+        <LoadBoundary
+          failed={(error) => (
+            <StartFailed message={`the sign-in screen: ${error.message}`} />
+          )}
         >
-          <LoginScreen
-            auth={startup.auth}
-            state={startup.state}
-            {...(startup.error ? { error: startup.error } : {})}
-            onSignedIn={start}
-          />
-        </Suspense>
+          <Suspense
+            fallback={
+              <main className="screen screen--center">
+                <Spinner label="Loading…" showLabel />
+              </main>
+            }
+          >
+            <loginScreen.Component
+              auth={startup.auth}
+              state={startup.state}
+              {...(startup.error ? { error: startup.error } : {})}
+              onSignedIn={start}
+            />
+          </Suspense>
+        </LoadBoundary>
       </StrictMode>,
     );
     return;

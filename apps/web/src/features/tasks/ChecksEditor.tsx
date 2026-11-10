@@ -4,7 +4,8 @@ import {
   type CheckExpect,
   type CheckMethod,
   emptyDraft,
-} from "./verification";
+} from "./checkDrafts";
+import "./tasks.css";
 
 const METHODS = [
   { value: "command", label: "Command exits 0" },

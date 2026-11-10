@@ -20,13 +20,13 @@ import {
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { type TemplateDialogRequest, useShell } from "../shell/ShellContext";
 import { ChecksEditor } from "../tasks/ChecksEditor";
-import { readCapInput } from "../tasks/spendInput";
-import { rosterOf, TeamPicker } from "../tasks/TeamPicker";
 import {
   type CheckDraft,
   draftsFromPlan,
   planFromDrafts,
-} from "../tasks/verification";
+} from "../tasks/checkDrafts";
+import { readCapInput } from "../tasks/spendInput";
+import { rosterOf, TeamPicker } from "../tasks/TeamPicker";
 import {
   blankDraft,
   type CapChoice,
@@ -38,6 +38,7 @@ import {
   type TemplateDraft,
   teamLine,
 } from "./templateModel";
+import "../tasks/tasks.css";
 import "./templates.css";
 
 const reasonOf = (reason: unknown, fallback: string) =>

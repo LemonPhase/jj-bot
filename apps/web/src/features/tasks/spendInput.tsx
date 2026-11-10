@@ -1,4 +1,5 @@
 import { MAX_SPEND_CAP_USD, SPEND_SOFT_THRESHOLD } from "@jj/contracts";
+import "./tasks.css";
 
 /** What a cap input holds: empty is no cap; otherwise an amount the contract accepts. */
 export function readCapInput(

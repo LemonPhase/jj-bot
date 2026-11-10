@@ -23,9 +23,10 @@
  *   chunk is never stored: the app must not open on it without the API.
  *
  * A fetched shell that differs from the stored one (a deploy) is stored once
- * the assets it loads first are, so the stored shell always has its assets
- * (and a failed attempt is retried on the next load); then stored assets
- * that neither the stored shell loads nor the server still has are dropped.
+ * the assets it names are (those it loads first and those it prefetches), so
+ * the stored shell always has its assets (and a failed attempt is retried on
+ * the next load); then stored assets that neither the stored shell names nor
+ * the server still has are dropped.
  *
  * Recovery: a release that bumps CACHE makes every browser drop the old
  * caches when the new worker activates. Registered by
@@ -143,7 +144,10 @@ const isShell = (response) =>
   !response.redirected &&
   contentType(response).includes("text/html");
 
-/** The `/assets/` files index.html loads first: its script, preloads, styles. */
+/**
+ * The `/assets/` files index.html names: its script, preloads and styles,
+ * and the chunks it prefetches for the parts the first screen opens.
+ */
 const shellAssets = (html) => [
   ...new Set(
     [...html.matchAll(/\s(?:src|href)="(\/assets\/[^"?#]+)"/g)]
@@ -152,7 +156,7 @@ const shellAssets = (html) => [
   ),
 ];
 
-/** The assets the stored shell loads first; none without one. */
+/** The assets the stored shell names; none without one. */
 async function storedAssets(cache) {
   const stored = await cache.match(SHELL);
   return new Set(stored ? shellAssets(await stored.text()) : []);

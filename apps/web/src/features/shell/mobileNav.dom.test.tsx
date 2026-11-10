@@ -129,6 +129,7 @@ describe("the phone menu", () => {
       ).getByRole("button", { name: "New task" }),
     );
     await waitFor(() => expect(drawer()?.hasAttribute("open")).toBe(false));
+    // It opens once its chunk loads, or with its placeholder.
     expect(
       await screen.findByRole("dialog", { name: "New task" }),
     ).toBeTruthy();

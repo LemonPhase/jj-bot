@@ -1,7 +1,9 @@
-import { lazy, Suspense, useId } from "react";
+import { Suspense, useId } from "react";
 import { useApi } from "../../api/ApiContext";
 import { liveBadge } from "../../api/liveApi";
 import {
+  Button,
+  EmptyState,
   Icon,
   IconButton,
   ModeBadge,
@@ -12,22 +14,14 @@ import {
   Tooltip,
   Wordmark,
 } from "../../components/ui";
+import { LoadBoundary } from "../../lib/lazyComponent";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotList } from "../bots/BotList";
 import { useModels } from "../bots/useModels";
-import { TaskList } from "../tasks/TaskList";
-import { TemplateList } from "../templates/TemplateList";
 import { modeBadgeFor } from "./modeBadge";
 import { botHref, type Route, SETTINGS_HREF, type Section } from "./router";
 import { useShell } from "./ShellContext";
-
-// Shown with the Tasks list only, after the schedules load: it loads on
-// demand, out of the initial bundle.
-const ScheduleList = lazy(() =>
-  import("../schedules/ScheduleList").then((module) => ({
-    default: module.ScheduleList,
-  })),
-);
+import { TasksSection } from "./screens";
 
 /** What the mode badge says: the API in use and whether a model can run. */
 export type ShellBadge = { kind: ModeBadgeKind; title: string };
@@ -136,13 +130,22 @@ export function Sidebar({
         {section === "bots" ? (
           <BotList labelledBy={listLabelId} />
         ) : (
-          <>
-            <TaskList labelledBy={listLabelId} />
-            <TemplateList />
-            <Suspense fallback={null}>
-              <ScheduleList />
+          <LoadBoundary
+            failed={(error) => (
+              <EmptyState
+                message={`The task list did not load: ${error.message}`}
+                action={
+                  <Button size="sm" onClick={() => window.location.reload()}>
+                    Reload
+                  </Button>
+                }
+              />
+            )}
+          >
+            <Suspense fallback={<p className="shell-list__note">Loading…</p>}>
+              <TasksSection labelledBy={listLabelId} />
             </Suspense>
-          </>
+          </LoadBoundary>
         )}
       </div>
 

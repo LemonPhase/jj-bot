@@ -16,7 +16,7 @@ export function clockText(seconds: number): string {
  * never reads, so nothing typed here is kept. Every failure reads the same
  * (the server's one message); too many failures count down to the next try.
  */
-export default function LoginScreen({
+export function LoginScreen({
   auth,
   state,
   error: initialError,

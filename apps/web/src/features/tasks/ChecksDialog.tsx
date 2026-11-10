@@ -4,7 +4,7 @@ import type { ApiError } from "../../api/client";
 import { Button, Dialog, ErrorBanner, Textarea } from "../../components/ui";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { ChecksEditor } from "./ChecksEditor";
-import { draftsFromPlan, planFromDrafts } from "./verification";
+import { draftsFromPlan, planFromDrafts } from "./checkDrafts";
 
 /**
  * Changes a task's verification plan. The change is a message to the

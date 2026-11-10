@@ -1,6 +1,4 @@
 import {
-  Component,
-  lazy,
   type ReactNode,
   Suspense,
   useEffect,
@@ -10,6 +8,11 @@ import {
   useState,
 } from "react";
 import { Button, Dialog, ErrorBanner, Spinner } from "../../components/ui";
+import {
+  LoadBoundary,
+  lazyComponent,
+  openWhenLoaded,
+} from "../../lib/lazyComponent";
 import { NARROW_QUERY, useMediaQuery } from "../../lib/media";
 import { useWorkspace } from "../../state/WorkspaceContext";
 import { BotsScreen } from "../bots/BotsScreen";
@@ -44,16 +47,22 @@ type OpenDialog =
   | { kind: "template"; request: TemplateDialogRequest }
   | { kind: "schedule"; request: ScheduleDialogRequest };
 
-/** The template dialogs, loaded when one first opens. */
-const TemplateDialog = lazy(() => import("../templates/TemplateDialog"));
-/** The schedule dialogs, loaded when one first opens. */
-const ScheduleDialog = lazy(() => import("../schedules/ScheduleDialog"));
-/** The New task dialog, loaded when it first opens. */
-const NewTaskDialog = lazy(() =>
-  import("../tasks/NewTaskDialog").then((module) => ({
-    default: module.NewTaskDialog,
-  })),
+/**
+ * The New task dialog, offered on every screen: a chunk of its own, which
+ * the browser prefetches once the page has loaded (`prefetchChunks` in
+ * vite.config.ts) and the first click imports.
+ */
+const newTaskDialog = lazyComponent("NewTaskDialog", () =>
+  import("../tasks/NewTaskDialog").then((module) => module.NewTaskDialog),
 );
+/** The template dialogs, loaded when one first opens. */
+const TemplateDialog = lazyComponent("TemplateDialog", () =>
+  import("../templates/TemplateDialog").then((module) => module.default),
+).Component;
+/** The schedule dialogs, loaded when one first opens. */
+const ScheduleDialog = lazyComponent("ScheduleDialog", () =>
+  import("../schedules/ScheduleDialog").then((module) => module.default),
+).Component;
 
 /**
  * The app frame (SPEC §2): no top bar; the sidebar, then the routed screen.
@@ -146,14 +155,15 @@ export function AppShell() {
         // From the drawer: the dialog takes its place, and gives focus back
         // to the menu button when it closes.
         setNavOpen(false);
-        setDialog({
-          kind: "task",
-          botIds: botIds?.length
-            ? botIds
-            : selectedBotId
-              ? [selectedBotId]
-              : [],
-        });
+        const initialBotIds = botIds?.length
+          ? botIds
+          : selectedBotId
+            ? [selectedBotId]
+            : [];
+        // Prefetched, the dialog opens once loaded, without its placeholder.
+        openWhenLoaded(newTaskDialog, () =>
+          setDialog({ kind: "task", botIds: initialBotIds }),
+        );
       },
       openTemplateDialog: (request) => {
         setNavOpen(false);
@@ -220,8 +230,10 @@ export function AppShell() {
       </div>
       {dialog.kind === "task" && (
         <DialogBoundary onClose={closeDialog}>
-          <Suspense fallback={null}>
-            <NewTaskDialog
+          <Suspense
+            fallback={<LoadingDialog title="New task" onClose={closeDialog} />}
+          >
+            <newTaskDialog.Component
               initialBotIds={dialog.botIds}
               onClose={closeDialog}
             />
@@ -293,66 +305,71 @@ export function StartFailed({ message }: { message: string }) {
 
 /**
  * A screen that fails to load or render says so, with a reload, instead of
- * unmounting the whole app. A lazy screen's chunk can fail to arrive: the
- * connection dropped, or a redeploy replaced it while the page was open. React
- * keeps a failed import's rejection, so only a reload fetches it again.
- * Mounted per screen (keyed by route name), so leaving the screen clears it.
+ * unmounting the whole app (`LoadBoundary`). Mounted per screen (keyed by
+ * route name), so leaving the screen clears it.
  */
-class ScreenBoundary extends Component<
-  { children: ReactNode },
-  { error: Error | null }
-> {
-  override state: { error: Error | null } = { error: null };
+function ScreenBoundary({ children }: { children: ReactNode }) {
+  return (
+    <LoadBoundary
+      failed={(error) => (
+        <ShellLoadFailed
+          message={`this screen: ${error.message}`}
+          onRetry={() => window.location.reload()}
+          retryLabel="Reload"
+        />
+      )}
+    >
+      {children}
+    </LoadBoundary>
+  );
+}
 
-  static getDerivedStateFromError(error: unknown): { error: Error } {
-    return { error: error instanceof Error ? error : new Error(String(error)) };
-  }
-
-  override render() {
-    const { error } = this.state;
-    if (!error) return this.props.children;
-    return (
-      <ShellLoadFailed
-        message={`this screen: ${error.message}`}
-        onRetry={() => window.location.reload()}
-        retryLabel="Reload"
-      />
-    );
-  }
+/** A lazy dialog while its chunk loads: its title, and a spinner. */
+function LoadingDialog({
+  title,
+  onClose,
+}: {
+  title: string;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog open onClose={onClose} title={title}>
+      <Spinner label="Loading…" showLabel />
+    </Dialog>
+  );
 }
 
 /**
  * A lazy dialog whose chunk fails to load says so in a dialog of its own,
- * with a reload, instead of unmounting the app.
+ * with a reload, instead of unmounting the app (`LoadBoundary`).
  */
-class DialogBoundary extends Component<
-  { children: ReactNode; onClose: () => void },
-  { error: Error | null }
-> {
-  override state: { error: Error | null } = { error: null };
-
-  static getDerivedStateFromError(error: unknown): { error: Error } {
-    return { error: error instanceof Error ? error : new Error(String(error)) };
-  }
-
-  override render() {
-    const { error } = this.state;
-    if (!error) return this.props.children;
-    return (
-      <Dialog
-        open
-        onClose={this.props.onClose}
-        title="Couldn't open this"
-        footer={
-          <Button variant="primary" onClick={() => window.location.reload()}>
-            Reload
-          </Button>
-        }
-      >
-        <ErrorBanner word="Couldn't load">{error.message}</ErrorBanner>
-      </Dialog>
-    );
-  }
+function DialogBoundary({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <LoadBoundary
+      failed={(error) => (
+        <Dialog
+          open
+          onClose={onClose}
+          title="Couldn't open this"
+          footer={
+            <Button variant="primary" onClick={() => window.location.reload()}>
+              Reload
+            </Button>
+          }
+        >
+          <ErrorBanner word="Couldn't load">{error.message}</ErrorBanner>
+        </Dialog>
+      )}
+    >
+      {children}
+    </LoadBoundary>
+  );
 }
 
 /** The routed screen. Later screens plug in here. */

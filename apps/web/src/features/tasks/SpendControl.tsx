@@ -19,6 +19,7 @@ import {
   usageDetail,
 } from "./format";
 import { readCapInput, SpendQuestion } from "./spendInput";
+import "./tasks.css";
 
 /**
  * True while the task waits because its own cap, as it is now, refused a
