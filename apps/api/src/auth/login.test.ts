@@ -621,6 +621,47 @@ describe("rate limits", () => {
       await fail("203.0.113.77", `198.51.100.${attempt + 30}`);
     expect((await fail("203.0.113.77", "198.51.100.200")).status).toBe(429);
   });
+
+  it("counts an IPv6 client by its /64, so new addresses in it get no fresh limits", async () => {
+    const guarded = app({ trustedProxies: parseTrustedProxies("loopback") });
+    const fail = (client: string, forwardedFor?: string) =>
+      call(guarded, "POST", "/api/auth/login", {
+        origin: ORIGIN,
+        body: { token: "wrong" },
+        client,
+        ...(forwardedFor
+          ? { headers: { "X-Forwarded-For": forwardedFor } }
+          : {}),
+      });
+    for (let attempt = 1; attempt <= 5; attempt += 1)
+      expect((await fail(`2001:db8:1:2::${attempt}`)).status).toBe(401);
+    expect((await fail("2001:db8:1:2:ffff:ffff:ffff:ffff")).status).toBe(429);
+    // The neighbouring /64 is another client; so is one forwarded by a proxy.
+    expect((await fail("2001:db8:1:3::1")).status).toBe(401);
+    expect((await fail("127.0.0.1", "2001:db8:1:2::abcd")).status).toBe(429);
+    // Wrong bearer tokens count the same way; the right one still gets in.
+    for (let attempt = 0; attempt < 30; attempt += 1)
+      await call(guarded, "GET", "/api/bootstrap", {
+        bearer: `guess-${attempt}`,
+        client: `2001:db8:9:9::${attempt + 1}`,
+      });
+    expect(
+      (
+        await call(guarded, "GET", "/api/bootstrap", {
+          bearer: "one-more",
+          client: "2001:db8:9:9::beef",
+        })
+      ).status,
+    ).toBe(429);
+    expect(
+      (
+        await call(guarded, "GET", "/api/bootstrap", {
+          bearer: TOKEN,
+          client: "2001:db8:9:9::beef",
+        })
+      ).status,
+    ).toBe(200);
+  });
 });
 
 describe("devices, signing out and rotation", () => {

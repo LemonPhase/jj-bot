@@ -310,19 +310,19 @@ describe("API_TOKEN and loopback", () => {
       const server = await boot(
         {
           API_HOST: "0.0.0.0",
-          API_TOKEN: "configured-token",
+          API_TOKEN: "configured-token-0123456789abcdefghij",
           JJ_DATABASE_PATH: "memory://",
         },
         logger,
       );
       expect(server.auth).toEqual({
         kind: "configured",
-        token: "configured-token",
+        token: "configured-token-0123456789abcdefghij",
       });
       expect(await status(`${local(server)}/api/bootstrap`)).toBe(401);
       expect(
         await status(`${local(server)}/api/bootstrap`, {
-          Authorization: "Bearer configured-token",
+          Authorization: "Bearer configured-token-0123456789abcdefghij",
         }),
       ).toBe(200);
       expect(
@@ -331,7 +331,9 @@ describe("API_TOKEN and loopback", () => {
           .from(instanceSettings)
           .where(eq(instanceSettings.key, GENERATED_TOKEN_KEY)),
       ).toEqual([]);
-      expect(lines.join("\n")).not.toContain("configured-token");
+      expect(lines.join("\n")).not.toContain(
+        "configured-token-0123456789abcdefghij",
+      );
       expect(
         lines.filter((line) => /Open JJ Bot: .*#\/login\?code=/.test(line)),
       ).toHaveLength(1);
@@ -357,9 +359,17 @@ describe("API_TOKEN and loopback", () => {
       ]);
       // Too short to redact as a bare value: named in a boot warning, never printed.
       const warning = lines.find((line) =>
-        line.includes("API_TOKEN is shorter"),
+        line.includes("is not redacted from task history"),
       );
-      expect(warning).toContain("is not redacted from task history");
+      expect(warning).toContain("API_TOKEN is shorter");
+      // Too short for an API beyond loopback: allowed here, with a warning.
+      expect(
+        lines.filter((line) =>
+          line.includes(
+            "API_TOKEN is shorter than 32 characters: fine while only this machine reaches the API",
+          ),
+        ),
+      ).toHaveLength(1);
       expect(lines.join("\n")).not.toContain("short-token1");
     },
     OPEN_TIMEOUT,

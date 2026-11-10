@@ -2,7 +2,7 @@
 // proxies, the cookie's name and flags, device labels, and the settings.
 import { describe, expect, it } from "vitest";
 import { ConfigError, loadServerConfig, servesWithoutToken } from "../config";
-import { normalizeAddress, parseTrustedProxies } from "./clients";
+import { limitKey, normalizeAddress, parseTrustedProxies } from "./clients";
 import {
   clearSessionCookie,
   readSessionCookie,
@@ -96,6 +96,22 @@ describe("trusted proxies", () => {
     expect(local.trusts("172.19.0.9")).toBe(false);
     expect(parseTrustedProxies("none").trusts("127.0.0.1")).toBe(false);
     expect(normalizeAddress("::FFFF:10.0.0.1")).toBe("10.0.0.1");
+  });
+
+  it("counts an IPv4 client by its address and an IPv6 client by its /64", () => {
+    expect(limitKey("198.51.100.7")).toBe("198.51.100.7");
+    expect(limitKey("unknown")).toBe("unknown");
+    for (const address of [
+      "2001:db8:1:2::1",
+      "2001:0DB8:0001:0002:ffff:ffff:ffff:ffff",
+      "2001:db8:1:2:a:b:192.0.2.1",
+      "2001:db8:1:2::5%eth0",
+    ])
+      expect(limitKey(address), address).toBe("2001:db8:1:2::/64");
+    expect(limitKey("2001:db8:1:3::1")).toBe("2001:db8:1:3::/64");
+    expect(limitKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(limitKey("::1")).toBe("0:0:0:0::/64");
+    expect(limitKey("64:ff9b::192.0.2.1")).toBe("64:ff9b:0:0::/64");
   });
 
   it("refuses anything else", () => {

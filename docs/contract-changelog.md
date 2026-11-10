@@ -33,7 +33,7 @@ rather than landing it and announcing it afterwards.
 
 ## 1.15.0 — 2026-11-09 — Sign-in
 
-**Changed by:** backend and frontend ([#93](https://github.com/LemonPhase/jj-bot/issues/93), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/93#issuecomment-6613577807)) · **Compatibility:** additive in the schemas; deliberately breaking for installs that use `API_ALLOWED_HOSTS` or a proxy without a token (they now sign in)
+**Changed by:** backend and frontend ([#93](https://github.com/LemonPhase/jj-bot/issues/93), agreed in [this comment](https://github.com/LemonPhase/jj-bot/issues/93#issuecomment-6613577807)) · **Compatibility:** additive in the schemas; deliberately breaking for installs that use `API_ALLOWED_HOSTS` or a proxy without a token (they now sign in), and for installs reachable beyond loopback with an `API_TOKEN` shorter than 32 characters (they no longer start)
 
 - New `auth.ts` (in the index): `authStateSchema` (`{ required, authenticated, via: "none" |
   "cookie" | "bearer", methods: { token, password, passkey }, session }`), `authSessionSchema`
@@ -62,6 +62,11 @@ rather than landing it and announcing it afterwards.
   cookie whenever the server asks for sign-in: beyond loopback, with `API_TOKEN`, or with
   `JJ_PASSWORD_HASH`. Installs that relied on `API_ALLOWED_HOSTS` without a token were refused at
   boot already; they now set a token and sign in.
+- The right bearer token always gets in, whatever the rate limits, so a configured `API_TOKEN`
+  shorter than 32 characters is refused at boot when the API is reachable beyond loopback (a
+  listener beyond it, `API_ALLOWED_HOSTS`, or an `API_PUBLIC_URL` beyond it), and logs a warning
+  on loopback. Breaking for such installs: set a random token (`openssl rand -hex 32`), or unset
+  `API_TOKEN` and use the generated one.
 
 **Action required (frontend):** the login screen (`#/login`, with the login link's code, a
 password when the server has one, and a countdown on 429), the session cookie in place of the

@@ -117,6 +117,29 @@ describe("resolveApi", () => {
     expect(window.location.href).toBe("http://localhost:3000/#/tasks/task-1");
   });
 
+  it("deletes a kept token unused on a server without the sign-in routes", async () => {
+    localStorage.setItem("jj.apiToken", "kept-by-an-earlier-version");
+    const fetch = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/bootstrap") return json(200, bootstrap);
+        return json(404, { error: { code: "NOT_FOUND", message: url } });
+      },
+    );
+    vi.stubGlobal("fetch", fetch);
+    const api = appOf(await resolveApi());
+    expect(api.mode).toBe("live");
+    expect(api.auth).toBeUndefined();
+    expect(localStorage.getItem("jj.apiToken")).toBeNull();
+    expect(fetch.mock.calls.map(([url]) => String(url))).not.toContain(
+      "/api/auth/login",
+    );
+    for (const [, init] of fetch.mock.calls)
+      expect(JSON.stringify(init?.headers ?? {})).not.toContain(
+        "kept-by-an-earlier-version",
+      );
+  });
+
   it("signs in with a login link's code, then opens the workspace on the session cookie", async () => {
     window.history.replaceState(null, "", "/#/login?code=one-time-code");
     let signedIn = false;

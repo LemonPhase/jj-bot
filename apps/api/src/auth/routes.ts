@@ -6,7 +6,7 @@ import { loginCommandSchema, rotateTokenCommandSchema, z } from "@jj/contracts";
 import { type Context, Hono } from "hono";
 import { errorResponse, idParam, jsonBody } from "../http";
 import type { StreamRegistry } from "../sse";
-import { clientAddress } from "./clients";
+import { rateLimitClient } from "./clients";
 import { clearSessionCookie, setSessionCookie } from "./cookie";
 import { originMatches, principalOf, rateLimited } from "./guard";
 import { deviceLabel } from "./label";
@@ -83,7 +83,7 @@ export function authRoutes(auth: AuthService, streams: StreamRegistry) {
     const command = await parse(c, loginCommandSchema);
     const result = await auth.check(
       command,
-      clientAddress(c, auth.trustedProxies),
+      rateLimitClient(c, auth.trustedProxies),
     );
     if (!result.ok) return refused(c, result);
     const { row, secret } = await auth.store.createSession(
@@ -160,7 +160,7 @@ export function authRoutes(auth: AuthService, streams: StreamRegistry) {
     const { current } = await parse(c, rotateTokenCommandSchema);
     const result = await auth.check(
       current,
-      clientAddress(c, auth.trustedProxies),
+      rateLimitClient(c, auth.trustedProxies),
     );
     if (!result.ok) return refused(c, result);
     const keep = currentSession(c);

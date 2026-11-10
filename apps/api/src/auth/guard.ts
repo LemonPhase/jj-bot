@@ -13,7 +13,7 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { errorResponse } from "../http";
 import { setStreamAuth } from "../sse";
-import { clientAddress } from "./clients";
+import { rateLimitClient } from "./clients";
 import { clearSessionCookie, readSessionCookie } from "./cookie";
 import type { AuthService, Principal } from "./service";
 
@@ -64,7 +64,7 @@ export function authGuard(auth: AuthService): MiddlewareHandler {
       const match = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(authorization);
       const digest = match?.[1] ? await auth.tokenMatches(match[1]) : undefined;
       if (!digest) {
-        const client = clientAddress(c, auth.trustedProxies);
+        const client = rateLimitClient(c, auth.trustedProxies);
         const waitMs = auth.limits.bearerWaitMs(client);
         if (waitMs > 0)
           return rateLimited(

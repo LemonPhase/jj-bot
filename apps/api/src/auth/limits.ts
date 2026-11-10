@@ -4,8 +4,10 @@
 // - Sign-ins: after 5 failed sign-ins (or token rotations) from a client in
 //   15 minutes, its sign-ins answer 429 until the oldest failure leaves the
 //   window. A password is then not checked at all; a token or a login code
-//   still is, and lets the owner in: both are 256-bit, so checking them gives
-//   a guesser nothing, and the owner is never locked out.
+//   still is, and lets the owner in: a code and a generated token are
+//   256-bit, and a configured token beyond loopback at least 32 characters
+//   (config.ts), so checking them gives a guesser nothing, and the owner is
+//   never locked out.
 // - The password: after 20 failed password checks from anywhere, password
 //   sign-ins are locked for 15 minutes, then 30, doubling up to 4 hours, until
 //   one succeeds or a day passes without a failure. Token and code sign-ins
@@ -17,6 +19,8 @@
 // - Bearer requests: the right token is always let in. After 30 wrong tokens
 //   from a client in a minute, its wrong ones answer 429 until the oldest
 //   leaves the window.
+//
+// A client is an address, or for IPv6 a /64 (clients.ts, `limitKey`).
 
 const MINUTE = 60_000;
 

@@ -15,10 +15,14 @@ import {
   REPO_ROOT,
   redactEndpoint,
   servesWithoutToken,
+  shortTokenWarning,
   stopGraceWarning,
 } from "./config";
 import { startServer } from "./server";
 import { quietLogger } from "./testing";
+
+/** An API_TOKEN long enough for an API reachable beyond loopback. */
+const TOKEN = "config-test-token-0123456789abcdef";
 
 describe("isLoopbackHost", () => {
   it("accepts only loopback addresses", () => {
@@ -171,8 +175,8 @@ describe("loadServerConfig", () => {
     for (const host of ["0.0.0.0", "::", "192.168.1.10"])
       expect(loadServerConfig({ API_HOST: host }).apiToken).toBeUndefined();
     expect(
-      loadServerConfig({ API_HOST: "0.0.0.0", API_TOKEN: "t" }),
-    ).toMatchObject({ host: "0.0.0.0", apiToken: "t" });
+      loadServerConfig({ API_HOST: "0.0.0.0", API_TOKEN: TOKEN }),
+    ).toMatchObject({ host: "0.0.0.0", apiToken: TOKEN });
   });
 
   it("reads API_PUBLIC_URL without its trailing slash, and refuses a malformed one", () => {
@@ -192,7 +196,7 @@ describe("loadServerConfig", () => {
     expect(
       loadServerConfig({
         API_ALLOWED_HOSTS: " jj.example.com, proxy:8443 ,,",
-        API_TOKEN: "t",
+        API_TOKEN: TOKEN,
       }).allowedHosts,
     ).toEqual(["jj.example.com", "proxy:8443"]);
   });
@@ -267,7 +271,7 @@ describe("loadServerConfig", () => {
       expect(
         loadServerConfig({
           API_ALLOWED_HOSTS: "jj.example.com",
-          API_TOKEN: "t",
+          API_TOKEN: TOKEN,
         }).allowedHosts,
       ).toEqual(["jj.example.com"]);
       expect(
@@ -291,7 +295,7 @@ describe("loadServerConfig", () => {
       expect(
         loadServerConfig({
           API_PUBLIC_URL: "https://jj.tail1234.ts.net",
-          API_TOKEN: "t",
+          API_TOKEN: TOKEN,
         }).publicUrl,
       ).toBe("https://jj.tail1234.ts.net");
       expect(
@@ -302,13 +306,55 @@ describe("loadServerConfig", () => {
       ).toBe("https://jj.example.com");
     });
 
+    it("refuses an API_TOKEN shorter than 32 characters beyond loopback, and only warns on loopback", () => {
+      const reachable: Record<string, string>[] = [
+        {
+          API_HOST: "0.0.0.0",
+          API_TOKEN: "abc",
+          API_PUBLIC_URL: "https://jj.example.com",
+        },
+        { API_HOST: "192.168.1.10", API_TOKEN: "x".repeat(31) },
+        { API_ALLOWED_HOSTS: "jj.example.com", API_TOKEN: "short-token-1" },
+        { API_PUBLIC_URL: "https://jj.tail1234.ts.net", API_TOKEN: "abc" },
+      ];
+      for (const env of reachable) {
+        refused(
+          env,
+          /^API_TOKEN is shorter than 32 characters, but the API is reachable beyond loopback \((API_HOST is|API_ALLOWED_HOSTS is set|API_PUBLIC_URL names)[^)]*\), where a short token could be guessed.*openssl rand -hex 32.*npm run auth:token/,
+        );
+        // The refusal never repeats the token.
+        expect(() => loadServerConfig(env)).not.toThrow(
+          env.API_TOKEN as string,
+        );
+      }
+      // 32 characters are enough, and the generated token is longer.
+      expect(
+        loadServerConfig({
+          API_HOST: "0.0.0.0",
+          API_TOKEN: "x".repeat(32),
+          API_PUBLIC_URL: "https://jj.example.com",
+        }).apiToken,
+      ).toHaveLength(32);
+      // On loopback a short token is a warning, not a refusal.
+      const local = loadServerConfig({ API_TOKEN: "abc" });
+      expect(local.apiToken).toBe("abc");
+      expect(shortTokenWarning(local)).toMatch(
+        /^API_TOKEN is shorter than 32 characters: fine while only this machine reaches the API, but the server refuses it once .*openssl rand -hex 32/,
+      );
+      expect(shortTokenWarning(local)).not.toContain("abc");
+      expect(shortTokenWarning(loadServerConfig({}))).toBeUndefined();
+      expect(
+        shortTokenWarning(loadServerConfig({ API_TOKEN: TOKEN })),
+      ).toBeUndefined();
+    });
+
     it("refuses a plain-http public URL beyond loopback unless JJ_ALLOW_INSECURE_HTTP=true", () => {
       const insecure: Record<string, string>[] = [
-        { API_PUBLIC_URL: "http://jj.example.com", API_TOKEN: "t" },
+        { API_PUBLIC_URL: "http://jj.example.com", API_TOKEN: TOKEN },
         { API_PUBLIC_URL: "http://192.168.1.10:3001", API_HOST: "0.0.0.0" },
         {
           API_PUBLIC_URL: "http://jj.lan",
-          API_TOKEN: "t",
+          API_TOKEN: TOKEN,
           JJ_ALLOW_INSECURE_HTTP: "false",
         },
       ];
@@ -320,7 +366,7 @@ describe("loadServerConfig", () => {
       expect(
         loadServerConfig({
           API_PUBLIC_URL: "http://jj.lan:3001",
-          API_TOKEN: "t",
+          API_TOKEN: TOKEN,
           JJ_ALLOW_INSECURE_HTTP: "true",
         }).publicUrl,
       ).toBe("http://jj.lan:3001");

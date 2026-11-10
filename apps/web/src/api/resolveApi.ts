@@ -62,7 +62,9 @@ export async function resolveApi(
   let state: AuthState | null;
   try {
     state = await authState(auth);
-    if (state && pending) {
+    // No sign-in routes: a kept token has nothing to be exchanged for.
+    if (state === null) pending?.forgetKeptToken();
+    else if (pending) {
       const signIn = await pending.signInOnce(auth, state, code);
       if (!signIn.signedIn)
         return {
@@ -71,7 +73,7 @@ export async function resolveApi(
           state,
           ...(signIn.error ? { error: signIn.error } : {}),
         };
-    } else if (state?.required && !state.authenticated)
+    } else if (state.required && !state.authenticated)
       return { kind: "login", auth, state };
   } catch (error) {
     if (error instanceof ApiError && error.code === "NETWORK_ERROR")

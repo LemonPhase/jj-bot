@@ -71,6 +71,21 @@ const browserStorage = (): TokenStorage | undefined => {
   }
 };
 
+/**
+ * Deletes a token an earlier version kept in localStorage, unused: for a
+ * server without the sign-in routes, which has no session to exchange it for
+ * and to which this app never sends it.
+ */
+export function forgetKeptToken(
+  storage: TokenStorage | undefined = browserStorage(),
+): void {
+  try {
+    storage?.removeItem(LEGACY_TOKEN_KEY);
+  } catch {
+    // Storage blocked: nothing was kept.
+  }
+}
+
 /** What the app opens on: the workspace, or the login screen with why. */
 export type SignIn =
   | { signedIn: true }
@@ -94,11 +109,7 @@ export async function signInOnce(
   } catch {
     // Storage blocked: nothing was kept.
   }
-  const forget = () => {
-    try {
-      storage?.removeItem(LEGACY_TOKEN_KEY);
-    } catch {}
-  };
+  const forget = () => forgetKeptToken(storage);
   if (!state.required || state.authenticated) {
     forget();
     return { signedIn: true };

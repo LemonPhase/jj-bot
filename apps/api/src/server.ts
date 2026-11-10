@@ -16,6 +16,7 @@ import {
   loadServerConfig,
   redactEndpoint,
   type ServerConfig,
+  shortTokenWarning,
   stopGraceWarning,
 } from "./config";
 import {
@@ -181,6 +182,8 @@ export async function startServer(
     if (defaultModelWarning) logger.warn(defaultModelWarning);
     const graceWarning = stopGraceWarning(config);
     if (graceWarning) logger.warn(graceWarning);
+    const tokenWarning = shortTokenWarning(config);
+    if (tokenWarning) logger.warn(tokenWarning);
     // A one-time login link, whatever JJ_LOG_LEVEL says. Its code is in the
     // fragment, which no browser sends to a server, so it never reaches a
     // proxy's log or a `Referer`; it signs in once, within 15 minutes.

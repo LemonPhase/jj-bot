@@ -113,7 +113,46 @@ export function peerAddress(c: Context): string {
   return address ? normalizeAddress(address) : "unknown";
 }
 
-/** The client a request counts against. */
+/** The eight 16-bit groups of an IPv6 address, as lowercase hex without leading zeros. */
+function ipv6Groups(address: string): string[] {
+  let text = address.toLowerCase().replace(/%.*$/, "");
+  // An IPv4 tail (`64:ff9b::192.0.2.1`) is the last two groups.
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    text = `${text.slice(0, v4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = "", tail] = text.split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const zeros =
+    tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
+  return [...left, ...zeros, ...right].map((group) =>
+    Number.parseInt(group, 16).toString(16),
+  );
+}
+
+/**
+ * The bucket a client's failures count in: its address, or for IPv6 its /64,
+ * the smallest block a network hands one subscriber, so a client cycling
+ * through its /64's addresses gets no fresh limits.
+ */
+export function limitKey(address: string): string {
+  if (isIP(address.replace(/%.*$/, "")) !== 6) return address;
+  return `${ipv6Groups(address).slice(0, 4).join(":")}::/64`;
+}
+
+/** The client a request counts against: its address, or for IPv6 its /64 (`limitKey`). */
+export function rateLimitClient(c: Context, trusted: TrustedProxies): string {
+  return limitKey(clientAddress(c, trusted));
+}
+
+/** The client a request comes from. */
 export function clientAddress(c: Context, trusted: TrustedProxies): string {
   const peer = peerAddress(c);
   if (!trusted.trusts(peer)) return peer;
